@@ -194,12 +194,13 @@ képernyőképek, szkennelések, AI-képek, térképek; ms/kép):
 | Apple ImageIO, saját puffer | 364 | 345 |
 | Apple ImageIO → BGRA | 392 | 376 |
 | Wuffs → BGRA | 272 | 180 |
-| nitropng, 1 szál | 354 | 223 |
-| **nitropng, párhuzamos** | **~100** | **45.5** |
+| nitropng, 1 szál | 326 | 223 |
+| **nitropng, párhuzamos** | **90** | **45.5** |
 
-PNG-hez nincs hardveres dekóder, így az ImageIO mindkét gépen ugyanolyan lassú. A nitropng
-ARM-on SIMD nélkül számolja az Adler-32-t és a visszahivatkozások feloldását (x86-on ezek AVX2-t
-használnak); párhuzamosan így is 2.7×-esen gyorsabb a Wuffs-nál és 3.6×-osan az ImageIO-nál az M1-en.
+PNG-hez nincs hardveres dekóder, így az ImageIO mindkét gépen ugyanolyan lassú. Az M1-en a
+nitropng 3×-osan gyorsabb a Wuffs-nál és 4×-esen az ImageIO-nál. Az Adler-32 és a
+visszahivatkozások feloldása ott NEON-t használ (x86-on AVX2-t): ez ~100-ról 90 ms-ra gyorsított;
+az idő nagy része a Huffman-dekódolás és a sorszűrők visszafejtése, ezek mindkét gépen sima C-ben futnak.
 
 ### nitrojpeg: hogyan párhuzamosít egyetlen képen belül?
 

@@ -182,12 +182,13 @@ scans, AI images, maps; ms/image):
 | Apple ImageIO, native buffer | 364 | 345 |
 | Apple ImageIO → BGRA | 392 | 376 |
 | Wuffs → BGRA | 272 | 180 |
-| nitropng, 1 thread | 354 | 223 |
-| **nitropng, parallel** | **~100** | **45.5** |
+| nitropng, 1 thread | 326 | 223 |
+| **nitropng, parallel** | **90** | **45.5** |
 
-There is no hardware PNG decoder, so ImageIO is equally slow on both. nitropng runs its
-Adler-32 and back-reference resolving without SIMD on ARM (they use AVX2 on x86); in parallel it
-is still 2.7× faster than Wuffs and 3.6× faster than ImageIO on the M1.
+There is no hardware PNG decoder, so ImageIO is equally slow on both. On the M1 nitropng is 3×
+faster than Wuffs and 4× faster than ImageIO. Its Adler-32 and back-reference resolving use NEON
+there (AVX2 on x86): that took it from ~100 to 90 ms; most of the time is Huffman decoding
+and the row filters, which are plain C on both.
 
 ### How nitrojpeg parallelises a single image
 
