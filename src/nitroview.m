@@ -520,8 +520,7 @@ typedef struct {
     _device = dev;
     _queue = [dev newCommandQueue];
     NSError *err = nil;
-    MTLCompileOptions *opt = [MTLCompileOptions new];
-    opt.mathMode = MTLMathModeFast;
+    MTLCompileOptions *opt = [MTLCompileOptions new];   // fast math is the default
     id<MTLLibrary> lib = [dev newLibraryWithSource:[[NSString alloc] initWithBytes:shaders_metal length:shaders_metal_len encoding:NSUTF8StringEncoding]
                                                   options:opt error:&err];
     if (!lib) { NSLog(@"shader: %@", err); exit(1); }
