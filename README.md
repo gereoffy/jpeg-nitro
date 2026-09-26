@@ -61,9 +61,12 @@ there. Timing follows the display refresh (±8 ms at 60 Hz). Run without argumen
 for the full list of options.
 
 **Other formats:** besides JPEG, nitroview opens PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP and PSD
-(the flattened composite). PNG is decoded with [Wuffs](https://github.com/google/wuffs)
-when it is available (`scripts/get-deps.sh`), otherwise — like all the other formats — with
-Apple ImageIO. Transparent images are shown over black.
+(the flattened composite). PNG is decoded by **nitropng**, our own parallel PNG decoder
+(8-bit gray / RGB / RGBA, non-interlaced: most PNGs), otherwise by
+[Wuffs](https://github.com/google/wuffs) when it is available (`scripts/get-deps.sh`) or by
+Apple ImageIO like the other formats. Transparent images are shown over black. On 38 real PNGs
+(screenshots, scans, AI images, upscaled textures, Photoshop exports) nitropng averages
+**~43 ms/image** vs ~171 ms for Wuffs and ~318 ms for ImageIO; see [nitropng](#nitropng).
 
 **Colour management:** embedded ICC profiles are honoured for every format (e.g. Display P3
 from iPhones and Mac screenshots, Adobe RGB scans); images without a profile are treated as
@@ -195,7 +198,28 @@ Re-measured this way (5 repetitions, 3 s pause, ms/image, `bench/results/ab_resu
 | 4 / 8 / 12 / 16 threads | 27.0 / 15.4 / 12.3 / **11.8** |
 | 256 / 512 / 1024 chunks | 11.9 / **11.7** / 12.2 (overlapping ranges: within noise) |
 
-### PNG: why not parallel (yet)
+### nitropng
+
+PNG = deflate (LZ77 + Huffman) + per-row filters, both sequential by design:
+
+1. **Parallel inflate (speculative, like *pugz*):** the compressed stream is cut into one chunk
+   per thread. Every thread finds the first valid deflate block header in its chunk (Huffman
+   tables must be exactly complete, so false positives are rare and get rejected anyway) and
+   decodes from there. Back-references into the still unknown 32 KB before the chunk are written
+   as placeholders (16-bit symbols). The chunks are chained in order; only the last 32 KB of each
+   need to be resolved sequentially, the rest in parallel (AVX2). The Adler-32 of the whole
+   output (combined from per-chunk sums, AVX2) must match, otherwise the viewer falls back.
+2. **Parallel filter reversal ("wavefront"):** None / Sub rows are independent; Up / Average /
+   Paeth rows follow the previous row segment by segment (1 KB), on 12 of the 16 threads
+   (waiting hyper-threads would slow down their working siblings).
+3. The unfiltered rows go straight to the GPU, which reads them in place (skipping the filter
+   byte), premultiplies alpha and converts to RGBA — no CPU colour conversion.
+
+`bench/pngverify` checks the output byte-for-byte against zlib + a straightforward filter
+reversal (all 33 supported test PNGs identical), `bench/pngrobust` runs damaged PNGs with ASan +
+UBSan (no errors), `--selftest` checks the whole path against ImageIO (pixel-exact).
+
+### PNG: why it was not parallel
 
 `bench/pngbench` (decoders) and `bench/pngsplit` (where the time goes), on 24 MP photos saved
 as PNG:
@@ -212,7 +236,8 @@ in the middle of the stream does not know the previous 32 KB of output that back
 point to, and 97% of the rows used the Paeth filter, which depends on the previous row. Both
 can be parallelised in principle: speculative inflate with placeholder back-references resolved
 later (as in *pugz*), and a "wavefront" filter reversal where row *r* trails row *r−1*. That
-could bring a 24 MP PNG to perhaps 20–40 ms (an estimate, not measured) — a separate project.
+could bring a 24 MP PNG to perhaps 20–40 ms (the estimate at the time — see nitropng above
+for what it became).
 
 ### Damaged files
 
@@ -304,8 +329,10 @@ symlink). The measurements above were made on 50 private photos that are not in 
 - `bench/bench.m`: decoder benchmark, `bench/verify.c`: bit-exactness + sync statistics,
   `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,
   `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
-- `src/png_wuffs.c/.h`: optional Wuffs PNG decoding for the viewer
-- `bench/pngbench.m`, `bench/pngsplit.c`: PNG decoder comparison and time split
+- `src/nitropng.c/.h`: self-contained parallel PNG decoder
+- `src/png_wuffs.c/.h`: optional Wuffs PNG decoding for the viewer (PNG types nitropng skips)
+- `bench/pngbench.m`, `bench/pngsplit.c`: PNG decoder comparison and time split,
+  `bench/pngverify.c`: nitropng byte-exactness vs zlib, `bench/pngrobust.c`: damaged PNGs (ASan)
 - `bench/results/`: measured results
 
 ## License

@@ -50,9 +50,12 @@ folytatja. Az időzítés a monitor frissítéséhez igazodik (60 Hz-en ±8 ms).
 Paraméterek nélkül (vagy `-h`) a program kiírja az összes kapcsolót.
 
 **Más formátumok:** a JPEG mellett a nitroview megnyitja a PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP
-és PSD (a lapított kép) fájlokat is. A PNG-t a [Wuffs](https://github.com/google/wuffs) dekódolja,
-ha elérhető (`scripts/get-deps.sh`), egyébként – a többi formátumhoz hasonlóan – az Apple ImageIO.
-Az átlátszó képek fekete háttéren jelennek meg.
+és PSD (a lapított kép) fájlokat is. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
+dekódolja (8 bites szürke / RGB / RGBA, nem interlaced: a legtöbb PNG), egyébként a
+[Wuffs](https://github.com/google/wuffs), ha elérhető (`scripts/get-deps.sh`), vagy az Apple ImageIO.
+Az átlátszó képek fekete háttéren jelennek meg. 38 valódi PNG-n (képernyőképek, szkennelések,
+AI-képek, felskálázott textúrák, Photoshop-exportok) a nitropng átlag **~43 ms/kép**, a Wuffs
+~171, az ImageIO ~318 ms (lásd lent: „nitropng”).
 
 **Színkezelés:** a beágyazott ICC-profilokat minden formátumnál figyelembe veszi (pl. Display P3 az
 iPhone-okról és a Mac-es képernyőképekből, Adobe RGB a szkennelésekből); a profil nélküli képeket
@@ -207,7 +210,28 @@ A következtetések kitartanak: a saját motor 1.7× gyorsabb a réginél, a HT 
 ~30%-ot hoz, a darabszám 256–1024 között lényegtelen. (Minden futás külön folyamat, hideg
 pufferkészlettel, ezért ~1 ms-mal lassabb a nézőben mért meleg állapotnál.)
 
-### PNG: miért nem párhuzamos (még)
+### nitropng
+
+A PNG deflate (LZ77 + Huffman) és soronkénti szűrők, mindkettő eredendően soros:
+
+1. **Párhuzamos, spekulatív kicsomagolás (mint a *pugz*):** a tömörített adat szálanként egy
+   darabra oszlik. Minden szál megkeresi a darabjában az első érvényes deflate-blokkfejlécet (a
+   Huffman-tábláknak pontosan teljesnek kell lenniük, így a hamis találat ritka, és úgyis kiesik),
+   és onnan dekódol. A még ismeretlen előző 32 KB-ba mutató visszahivatkozások helyőrzők lesznek
+   (16 bites szimbólumok). A darabokat sorrendben fűzi össze; csak mindegyik utolsó 32 KB-ját kell
+   sorban kitölteni, a többit párhuzamosan (AVX2). A teljes kimenet Adler-32-jének (a darabok
+   összegeiből, AVX2) egyeznie kell, különben a néző tartalékdekóderre vált.
+2. **Párhuzamos szűrő-visszaállítás („hullámfront”):** a None/Sub sorok függetlenek; az Up/
+   Average/Paeth sorok szakaszonként (1 KB) követik az előző sort, 16-ból 12 szálon (a várakozó
+   hyperthread-ek lassítanák a dolgozó testvérszálukat).
+3. A visszaszűrt sorokat a GPU közvetlenül olvassa (a szűrőbájtot átugorva), előszorozza az
+   alfát és RGBA-ra alakít — a CPU-n nincs színkonverzió.
+
+`bench/pngverify`: bájtra pontos összevetés a zlib + egyszerű szűrő-visszaállítással (mind a 33
+támogatott teszt-PNG azonos), `bench/pngrobust`: sérült PNG-k ASan + UBSan alatt (nincs hiba),
+`--selftest`: a teljes út az ImageIO-val összevetve (pixelpontos).
+
+### PNG: miért nem volt párhuzamos
 
 `bench/pngbench` (dekóderek) és `bench/pngsplit` (hová megy az idő), PNG-be mentett 24 MP-es fotókon:
 
@@ -223,7 +247,7 @@ induló szál nem ismeri az előző 32 KB kimenetet, amire a visszahivatkozások
 97%-a Paeth-szűrős, ami az előző sortól függ. Elvileg mindkettő párhuzamosítható: spekulatív
 kicsomagolás utólag kitöltött visszahivatkozásokkal (mint a *pugz*), és „hullámfront”
 szűrő-visszaállítás, ahol az r. sor az (r−1). mögött halad. Ez egy 24 MP-es PNG-t talán
-20–40 ms-ra vihetné le (becslés, nem mérés), de ez külön projekt.
+20–40 ms-ra vihetné le (az akkori becslés; hogy mi lett belőle, lásd fent: nitropng).
 
 ### Hibás fájlok
 
@@ -300,8 +324,10 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
 - `bench/bench.m`: dekóder-benchmark, `bench/verify.c`: bitpontosság + szinkronstatisztika,
   `bench/robust.c`: hibatűrési teszt, `bench/freqprobe.c`: órajelmérés,
   `bench/sustain.c`: tartós terhelés, `bench/ab.sh`: zajtűrő A/B összehasonlítás
-- `src/png_wuffs.c/.h`: opcionális Wuffs-os PNG-dekódolás a nézőhöz
-- `bench/pngbench.m`, `bench/pngsplit.c`: PNG-dekóderek összehasonlítása, időmegoszlás
+- `src/nitropng.c/.h`: önálló párhuzamos PNG-dekóder
+- `src/png_wuffs.c/.h`: opcionális Wuffs-os PNG-dekódolás a nézőhöz (a nitropng által kihagyott PNG-fajtákhoz)
+- `bench/pngbench.m`, `bench/pngsplit.c`: PNG-dekóderek összehasonlítása, időmegoszlás,
+  `bench/pngverify.c`: a nitropng bájtpontossága a zlib-hez képest, `bench/pngrobust.c`: sérült PNG-k (ASan)
 - `bench/results/`: mért eredmények (`results.txt`, `ab_results.txt`, `matrix.txt`, `bands.txt`, `sync.txt`)
 
 ## Licenc
