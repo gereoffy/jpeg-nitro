@@ -186,6 +186,19 @@ hardvernél is ~3×-osan, a libjpeg-turbónál 5.5×-ösen gyorsabb. Ebben a mun
 A NEON-os IDCT 8 szálon 43-ról 31 ms-ra gyorsított. Ott az alapbeállítás (magonként egy szál, 8)
 a legjobb.
 
+PNG (`bench/pngbench`, 6 db ~10 MP-es RGB PNG, ms/kép):
+
+| dekóder | M1 | i9 |
+|---|---|---|
+| Apple ImageIO, saját puffer | 124 | 126 |
+| Wuffs → BGRA | 94 | 53 |
+| nitropng, 1 szál | 132 | 74 |
+| **nitropng, párhuzamos** | **41** | **21** |
+
+PNG-hez nincs hardveres dekóder, így az ImageIO mindkét gépen ugyanolyan lassú. A nitropng
+ARM-on SIMD nélkül számolja az Adler-32-t és a visszahivatkozások feloldását (x86-on ezek AVX2-t
+használnak); párhuzamosan így is 2.3×-osan gyorsabb a Wuffs-nál és 3×-osan az ImageIO-nál az M1-en.
+
 ### nitrojpeg: hogyan párhuzamosít egyetlen képen belül?
 
 A saját motor (alapértelmezés) a Huffman-folyamot **egyszer** dekódolja, libjpeg-turbo nélkül:
