@@ -1,0 +1,18 @@
+# build output
+/build/
+/nitroview
+/bench/bench
+/bench/verify
+/bench/robust
+/bench/freqprobe
+/bench/sustain
+*.o
+*.dSYM/
+
+# downloaded / built dependencies (scripts/get-deps.sh)
+/third_party/
+
+# your own test images
+/samples
+
+.DS_Store
