@@ -6,6 +6,8 @@
 /bench/robust
 /bench/freqprobe
 /bench/sustain
+/bench/pngbench
+/bench/pngsplit
 *.o
 *.dSYM/
 

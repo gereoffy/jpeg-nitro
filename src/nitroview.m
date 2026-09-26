@@ -1409,7 +1409,7 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
             // scale sequence of repeated "+" from fit: must hit 100% exactly
             [v testKey:'0' image:d view:ds];
             NSMutableString *seq = [NSMutableString string];
-            BOOL hit100 = NO;
+            BOOL hit100 = [v testScale:d view:ds] >= 1.0;   // fits at 100% already: nothing to hit
             for (int k = 0; k < 16; k++) {
                 [v testKey:'+' image:d view:ds];
                 double sc = [v testScale:d view:ds];
@@ -1487,6 +1487,13 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 [v testKey:'0' image:d view:ds];
                 DrawParams fp = [v drawParams:d view:ds];
                 CGPoint an = CGPointMake(fp.size[0] / 2 * W * 0.25, -fp.size[1] / 2 * H * 0.25);
+                // along an axis where the image fits the view at 100% it stays centred, so the
+                // point under the cursor can only be kept along the other axis
+                double diw = d.orientation >= 5 ? d.height : d.width, dih = d.orientation >= 5 ? d.width : d.height;
+                double axw = diw > W ? 1 : 0, ayw = dih > H ? 1 : 0;
+                double (^drift)(CGPoint, CGPoint) = ^double(CGPoint a, CGPoint b) {
+                    return hypot((a.x - b.x) * axw, (a.y - b.y) * ayw);
+                };
                 // wheel from 100% (the image covers the view, so the point can always stay put):
                 // 4 notches in, 4 out, then 40 small trackpad-like steps in and out
                 [v testKey:'1' image:d view:ds];
@@ -1495,15 +1502,16 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 for (int k = 0; k < 8; k++) {
                     [v testWheel:k < 4 ? M_SQRT2 : M_SQRT1_2 anchor:an image:d view:ds];
                     CGPoint p1 = under(an);
-                    worst = MAX(worst, hypot(p1.x - p0.x, p1.y - p0.y));   // image px = screen px at 100%
+                    worst = MAX(worst, drift(p1, p0));   // image px = screen px at 100%
                 }
                 double scw = [v testScale:d view:ds];
                 for (int k = 0; k < 80; k++) [v testWheel:k < 40 ? 1.02 : 1 / 1.02 anchor:an image:d view:ds];
                 CGPoint p2 = under(an);
-                double e2 = hypot(p2.x - p0.x, p2.y - p0.y);
+                double e2 = drift(p2, p0);
                 BOOL wheelok = worst <= 1.0 && e2 <= 1.0 && scw == 1.0;
-                printf("   wheel@(%+.0f,%+.0f) from 100%%: 4 notches in + 4 out -> %.0f%%, drift max %.2f px; 40+40 small steps -> drift %.2f px  %s\n",
-                       an.x, an.y, scw * 100, worst, e2, wheelok ? "OK" : "FAIL");
+                printf("   wheel@(%+.0f,%+.0f) from 100%%: 4 notches in + 4 out -> %.0f%%, drift max %.2f px; 40+40 small steps -> drift %.2f px%s  %s\n",
+                       an.x, an.y, scw * 100, worst, e2, axw && ayw ? "" : " (checked along the axis larger than the view)",
+                       wheelok ? "OK" : "FAIL");
                 if (!wheelok) bad++;
                 // drag at 100% from the centre: image follows the mouse exactly
                 [v testKey:'1' image:d view:ds];
@@ -1511,8 +1519,11 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 [v testDragX:137 y:-59 image:d view:ds];
                 DrawParams a1 = [v drawParams:d view:ds];
                 double mx = ((a1.origin[0] - a0.origin[0]) / 2) * W, my = -((a1.origin[1] - a0.origin[1]) / 2) * H;
-                BOOL dragok = fabs(mx - 137) < 0.01 && fabs(my + 59) < 0.01;
-                printf("   drag (+137,-59) at 100%% -> image moved (%+.1f,%+.1f)  %s\n", mx, my, dragok ? "OK" : "FAIL");
+                // the image only moves along axes where it is larger than the view (else it stays centred)
+                BOOL big_x = d.width > W, big_y = d.height > H;
+                BOOL dragok = fabs(mx - (big_x ? 137 : 0)) < 0.01 && fabs(my - (big_y ? -59 : 0)) < 0.01;
+                printf("   drag (+137,-59) at 100%% -> image moved (%+.1f,%+.1f)%s  %s\n", mx, my,
+                       big_x && big_y ? "" : " (image fits the view: stays centred)", dragok ? "OK" : "FAIL");
                 if (!dragok) bad++;
                 // double click in fit mode: 100% with the clicked point kept; again: back to fit
                 [v testKey:'0' image:d view:ds];
@@ -1521,7 +1532,7 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 CGPoint c1 = under(an);
                 double sc1 = [v testScale:d view:ds];
                 double fs = fp.size[0] / 2 * W / (d.orientation >= 5 ? d.height : d.width);   // fit scale
-                double ec = hypot(c1.x - c0.x, c1.y - c0.y) * fs;   // drift in screen px at the clicked scale
+                double ec = drift(c1, c0) * fs;   // drift in screen px at the clicked scale
                 [v testDoubleClick:an image:d view:ds];
                 BOOL dcok = sc1 == 1.0 && ec <= 1.0 && ![v testZoomed];
                 printf("   double click -> %.0f%%, clicked point drift %.2f px, again -> %s  %s\n", sc1 * 100, ec,
