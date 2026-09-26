@@ -306,7 +306,7 @@ Előfeltétel: Xcode Command Line Tools.
 make                 # néző; ha megvan a libjpeg-turbo, tartalék dekódernek beépíti
 make TURBOJPEG=0     # libjpeg-turbo nélkül: a többi JPEG-et az Apple ImageIO dekódolja
 make WUFFS=0         # Wuffs nélkül: PNG az Apple ImageIO-val (~1.6× lassabb)
-make app             # nitroview.app a Finderhez (ad-hoc aláírással)
+make app             # nitroview.app a Finderhez (ad-hoc aláírással, ikon: packaging/icon.png)
 make tools           # bench/bench, bench/verify, bench/robust (referenciának kell a libjpeg-turbo)
 ```
 

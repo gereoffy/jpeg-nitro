@@ -6,6 +6,7 @@
     <key>CFBundleDisplayName</key>          <string>nitroview</string>
     <key>CFBundleIdentifier</key>           <string>com.github.gereoffy.nitroview</string>
     <key>CFBundleExecutable</key>           <string>nitroview</string>
+    <key>CFBundleIconFile</key>             <string>nitroview.icns</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>
     <key>CFBundleShortVersionString</key>   <string>1.0</string>
     <key>CFBundleVersion</key>              <string>1</string>

@@ -70,12 +70,23 @@ nitroview: src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $
 	  $(FRAMEWORKS) -framework ImageIO -o $@
 	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no), Wuffs PNG: $(if $(filter 1,$(WUFFS)),yes,no), ImageIO: always)"
 
+# Dock / Finder icon: every iconset size scaled from packaging/icon.png
+build/nitroview.icns: packaging/icon.png
+	@mkdir -p build
+	rm -rf build/nitroview.iconset && mkdir build/nitroview.iconset
+	for s in 16 32 128 256 512; do \
+	  sips -z $$s $$s $< --out build/nitroview.iconset/icon_$${s}x$${s}.png >/dev/null; \
+	  sips -z $$((s*2)) $$((s*2)) $< --out build/nitroview.iconset/icon_$${s}x$${s}@2x.png >/dev/null; \
+	done
+	iconutil -c icns build/nitroview.iconset -o $@
+
 # macOS app bundle (for the Finder: "Open With" / "Change All"), ad-hoc signed
-app: nitroview packaging/Info.plist
+app: nitroview packaging/Info.plist build/nitroview.icns
 	rm -rf nitroview.app
-	mkdir -p nitroview.app/Contents/MacOS
+	mkdir -p nitroview.app/Contents/MacOS nitroview.app/Contents/Resources
 	cp nitroview nitroview.app/Contents/MacOS/
 	cp packaging/Info.plist nitroview.app/Contents/
+	cp build/nitroview.icns nitroview.app/Contents/Resources/
 	codesign --force --sign - nitroview.app
 	@echo "built nitroview.app (copy it to /Applications, then Finder: Get Info > Open with > nitroview > Change All)"
 
