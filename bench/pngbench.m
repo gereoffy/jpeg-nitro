@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // PNG decoder comparison: Apple ImageIO vs Wuffs vs nitropng, files preloaded into memory.
-//   pngbench files.png...
+//   pngbench files.png...       (ONLY=text: only the decoders whose name contains it)
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -115,7 +115,9 @@ int main(int argc, const char **argv) {
         }
         int n = (int)files.count;
         printf("%d PNG files, %.1f MB, %.1f Mpixel\n\n", n, bytes / 1e6, pixels / 1e6);
+        const char *only = getenv("ONLY");
         for (size_t k = 0; k < sizeof decoders / sizeof *decoders; k++) {
+            if (only && !strstr(decoders[k].name, only)) continue;
             decoders[k].fn(files[0]);   // warm-up
             int fails = 0;
             double t0 = now_ms();
