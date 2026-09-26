@@ -363,6 +363,7 @@ symlink). The measurements above were made on 50 private photos that are not in 
 - `src/nitrojpeg.c/.h`: self-contained parallel JPEG decoder (own Huffman + AVX2 IDCT);
   with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
 - `src/nitroview.m`: Cocoa + Metal viewer; with `NV_TURBOJPEG` the TurboJPEG fallback
+- `src/shaders.metal`: the viewer's GPU shaders (colour conversion, drawing), embedded at build time
 - `scripts/get-deps.sh`: downloads and builds the optional dependencies
 - `bench/bench.m`: decoder benchmark, `bench/verify.c`: bit-exactness + sync statistics,
   `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,

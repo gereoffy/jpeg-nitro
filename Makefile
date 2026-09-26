@@ -65,8 +65,13 @@ build/.config-$(CONFIG):
 	@rm -f build/.config-* nitroview
 	@touch $@
 
-nitroview: src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) build/.config-$(CONFIG) Makefile
-	$(CC) $(CFLAGS) $(VIEWER_DEFS) -fobjc-arc src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) $(VIEWER_LIBS) \
+# the Metal shader source, embedded as a byte array
+build/shaders.inc: src/shaders.metal
+	@mkdir -p build
+	cd src && xxd -i shaders.metal > ../$@
+
+nitroview: src/nitroview.m build/shaders.inc build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) build/.config-$(CONFIG) Makefile
+	$(CC) $(CFLAGS) $(VIEWER_DEFS) -Ibuild -fobjc-arc src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) $(VIEWER_LIBS) \
 	  $(FRAMEWORKS) -framework ImageIO -o $@
 	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no), Wuffs PNG: $(if $(filter 1,$(WUFFS)),yes,no), ImageIO: always)"
 

@@ -353,6 +353,7 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
 - `src/nitrojpeg.c/.h`: önálló párhuzamos JPEG-dekóder (saját Huffman + AVX2 IDCT);
   `NJ_REFERENCE`-szel a libjpeg-turbós összehasonlító részek is
 - `src/nitroview.m`: Cocoa + Metal néző; `NV_TURBOJPEG`-gel TurboJPEG-tartalékkal
+- `src/shaders.metal`: a néző GPU-shaderei (színkonverzió, kirajzolás), fordításkor beágyazva
 - `scripts/get-deps.sh`: az opcionális függőségek letöltése és fordítása
 - `bench/bench.m`: dekóder-benchmark, `bench/verify.c`: bitpontosság + szinkronstatisztika,
   `bench/robust.c`: hibatűrési teszt, `bench/freqprobe.c`: órajelmérés,
