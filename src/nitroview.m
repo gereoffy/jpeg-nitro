@@ -962,6 +962,15 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     [re endEncoding];
     if (tex && !_reported) {
         _reported = YES;
+        static int dbg = -1;
+        if (dbg < 0) dbg = getenv("NV_DEBUG_WINDOW") != NULL;
+        if (dbg) {
+            NSRect vis = NSScreen.mainScreen.visibleFrame;
+            fprintf(stderr, "window content %.0fx%.0f pt, drawable %.0fx%.0f px, screen %.0fx%.0f pt @%gx, image %dx%d, %s %.1f%%\n",
+                    self.bounds.size.width, self.bounds.size.height, view.drawableSize.width, view.drawableSize.height,
+                    vis.size.width, vis.size.height, NSScreen.mainScreen.backingScaleFactor, d.width, d.height,
+                    _zoomed ? "zoom" : "fit", 100 * [self currentScale:d view:view.drawableSize]);
+        }
         double req = _requestTime;
         NSInteger idx = _index;
         NSString *name = _files[idx].lastPathComponent;
@@ -1248,6 +1257,53 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
     return bad != 0;
 }
 
+// Image size after EXIF rotation, from the file header only (no decoding).
+static BOOL header_size(NSString *path, double *w, double *h) {
+    FILE *f = fopen(path.fileSystemRepresentation, "rb");
+    if (!f) return NO;
+    size_t cap = 1 << 20;   // headers (EXIF, previews, tables) practically always fit
+    uint8_t *buf = malloc(cap);
+    size_t n = fread(buf, 1, cap, f);
+    fclose(f);
+    nj_info fi;
+    int ok = !nj_read_info(buf, n, &fi) && fi.width > 0 && fi.height > 0;
+    free(buf);
+    if (!ok && n == cap) {   // unusually large header: try the whole file
+        NSData *all = read_file(path);
+        ok = all && !nj_read_info(all.bytes, all.length, &fi) && fi.width > 0 && fi.height > 0;
+    }
+    if (!ok) return NO;
+    BOOL swap = fi.orientation >= 5;
+    *w = swap ? fi.height : fi.width;
+    *h = swap ? fi.width : fi.height;
+    return YES;
+}
+
+// Initial window: sized to the first image. Smaller than the screen: exactly
+// 100% (one image pixel per screen pixel); larger: the image's aspect ratio,
+// as large as fits the visible screen area. Unknown size: 84% of the screen.
+static NSRect initial_frame(NSString *first, NSWindowStyleMask mask) {
+    NSScreen *scr = NSScreen.mainScreen;
+    NSRect vis = scr.visibleFrame;
+    double bs = scr.backingScaleFactor > 0 ? scr.backingScaleFactor : 1;
+    double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
+    double maxW = vis.size.width, maxH = vis.size.height - tb;
+    double w, h, cw, ch;
+    if (header_size(first, &w, &h)) {
+        double pw = w / bs, ph = h / bs;   // points at 100%
+        double k = MIN(1.0, MIN(maxW / pw, maxH / ph));
+        cw = k >= 1 ? ceil(pw) : floor(pw * k);   // ceil at 100%: never below one pixel per pixel
+        ch = k >= 1 ? ceil(ph) : floor(ph * k);
+        cw = MAX(cw, 320);
+        ch = MAX(ch, 200);
+    } else {
+        cw = floor(maxW * 0.84);
+        ch = floor(maxH * 0.84);
+    }
+    return NSMakeRect(vis.origin.x + floor((vis.size.width - cw) / 2),
+                      vis.origin.y + floor((maxH - ch) / 2), cw, ch);
+}
+
 // Sends synthesized mouse / wheel events (as macOS would) to the viewer and
 // checks the resulting image index and zoom.
 static int run_inputtest(NSArray<NSString *> *files, GPU *gpu) {
@@ -1390,11 +1446,10 @@ int main(int argc, const char **argv) {
         item.submenu = appMenu;
         app.mainMenu = bar;
 
-        NSRect scr = NSScreen.mainScreen.visibleFrame;
-        NSRect frame = NSInsetRect(scr, scr.size.width * 0.08, scr.size.height * 0.08);
-        NSWindow *win = [[NSWindow alloc] initWithContentRect:frame
-                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                                              NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+        NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
+                                 NSWindowStyleMaskMiniaturizable;
+        NSRect frame = initial_frame(files[0], mask);
+        NSWindow *win = [[NSWindow alloc] initWithContentRect:frame styleMask:mask
                                                       backing:NSBackingStoreBuffered defer:NO];
         win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
         win.backgroundColor = NSColor.blackColor;
