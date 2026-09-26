@@ -14,13 +14,16 @@ eredendően soros:
 | **nitropng** | PNG (8 bites, nem interlaced) | spekulatív párhuzamos inflate (a még ismeretlen adatra mutató visszahivatkozásokat utólag oldja fel, Adler-32-vel ellenőrizve) + „hullámfront” szűrővisszafejtés | 38 valódi PNG: átlag **~43 ms** | Wuffs ~171 ms, ImageIO ~318 ms |
 | **nitropsd** | Photoshop PSD/PSB (8 bites RGB / szürke) | összesített kép: RLE-sorok párhuzamosan, ZIP a nitropng inflate-jével; nagy, rétegekkel teli fájlból csak az összesített képet olvassa be | 24 MP RLE: **~5 ms** | ImageIO ~170 ms |
 
-A dekóderek függőség nélküli C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
+Az idők Intel i9-en mérve. A dekóderek ARM-on (NEON) is gyorsak: egy 2020-as M1-es MacBook
+Airen egy 24 MP-es JPEG ~30 ms alatt dekódolódik, ~3×-osan gyorsabban, mint ugyanazon a gépen az
+Apple hardveres JPEG-dekódere (lásd lent: „Apple Silicon (M1)”). A dekóderek függőség nélküli
+C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
 timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal. A HEIC, TIFF,
 WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg.
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
-Apple Siliconon is fut (M1-es MacBook Airen kipróbálva); ott az IDCT az AVX2 helyett NEON-t használ.
+Apple Siliconon is fut (M1-es MacBook Air, lásd lent); ott az IDCT az AVX2 helyett NEON-t használ.
 
 ```
 ./nitroview [-f] [-s ms] [-j szálak] kep1.jpg kep2.jpg ... | konyvtar/
@@ -155,6 +158,33 @@ A 1/4-es skálázás alig gyorsít, tehát az idő nagy része a Huffman-dekódo
 ami a JPEG-ben eredendően soros. A mintaképek többsége nem tartalmaz restart
 markert, ezért a libjpeg-turbo egy képen belül nem tud párhuzamosítani.
 Az RX 580-hoz nincs hardveres JPEG-dekóder.
+
+### Apple Silicon (M1)
+
+Ugyanaz a 43 fotó (`samples/*.JPG`, 765 MB), `bench/bench`, ms/kép: egy 2020-as M1-es MacBook Air
+(4 nagy teljesítményű + 4 energiatakarékos mag, ventilátor nélkül) és az i9. A nyers kimenet:
+`bench/results/m1.txt`.
+
+| dekóder | M1 | i9 |
+|---|---|---|
+| libjpeg-turbo → YUV síkok | 168 | 115 |
+| libjpeg-turbo, BGRX | 185 | 121 |
+| Wuffs | 217 | 161 |
+| stb_image | 384 | 176 |
+| Apple ImageIO → BGRA | 108 | 287 |
+| Apple ImageIO, saját puffer | 89 | 260 |
+| ImageIO thumbnail 3000 px | 67 | 147 |
+| VideoToolbox | 88 | 161 |
+| nitrojpeg, **1 szál** → YUV | 154 | 107 |
+| **nitrojpeg, párhuzamos → YUV** | **30.4** | **10.3** |
+
+Az M1-en az ImageIO és a VideoToolbox hardveresen dekódolja a JPEG-et: 2.5–3×-osan gyorsabban,
+mint az i9-en a szoftveres út. A nitrojpeg (NEON IDCT, 8 szál) teljes méretben ennél a
+hardvernél is ~3×-osan, a libjpeg-turbónál 5.5×-ösen gyorsabb. Ebben a munkában egy M1-es mag
+~1.45×-ösen lassabb egy i9-es magnál (154 és 107 ms); a szálak jól skálázódnak: 2 szálon 81 ms,
+4-en 46 ms, 6-tól 33–36 ms (a négy energiatakarékos mag együtt nagyjából egy nagy magnyit ad).
+A NEON-os IDCT 8 szálon 43-ról 31 ms-ra gyorsított. Ott az alapbeállítás (magonként egy szál, 8)
+a legjobb.
 
 ### nitrojpeg: hogyan párhuzamosít egyetlen képen belül?
 

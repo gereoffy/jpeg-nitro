@@ -14,13 +14,15 @@ sequential by design:
 | **nitropng** | PNG (8-bit, non-interlaced) | speculative parallel inflate (back-references into not yet known data resolved later, Adler-32 verified) + "wavefront" filter reversal | 38 real PNGs: **~43 ms** avg. | Wuffs ~171 ms, ImageIO ~318 ms |
 | **nitropsd** | Photoshop PSD/PSB (8-bit RGB / gray) | merged image: RLE rows in parallel, ZIP via nitropng's inflate; reads only the merged image of huge layered files | 24 MP RLE: **~5 ms** | ImageIO ~170 ms |
 
-The decoders are plain C files without dependencies and can be used on their own
-([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
+Times on an Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacBook Air a
+24 MP JPEG decodes in ~30 ms, ~3× faster than Apple's hardware JPEG decoder on the same machine
+([Apple Silicon](#apple-silicon-m1)). They are plain C files without dependencies and can be
+used on their own ([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
 back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF and BMP open
 through Apple ImageIO. (The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
-Also runs on Apple Silicon (tried on an M1 MacBook Air); there the IDCT uses NEON instead of AVX2.
+Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); there the IDCT uses NEON instead of AVX2.
 
 ```
 ./nitroview [-f] [-s ms] [-j threads] image.jpg ... | directory/
@@ -146,6 +148,31 @@ rate), also from an SSD with nothing cached.
 1/4 scale barely helps, so most of the time goes into Huffman decoding, which is
 inherently sequential in JPEG. Most camera JPEGs have no restart markers, so libjpeg-turbo
 can't parallelise within one image. The RX 580 has no hardware JPEG decoder.
+
+### Apple Silicon (M1)
+
+The same 43 photos (`samples/*.JPG`, 765 MB), `bench/bench`, ms/image: a 2020 M1 MacBook Air
+(4 performance + 4 efficiency cores, no fan) and the i9. Raw output: `bench/results/m1.txt`.
+
+| decoder | M1 | i9 |
+|---|---|---|
+| libjpeg-turbo → YUV planes | 168 | 115 |
+| libjpeg-turbo, BGRX | 185 | 121 |
+| Wuffs | 217 | 161 |
+| stb_image | 384 | 176 |
+| Apple ImageIO → BGRA | 108 | 287 |
+| Apple ImageIO, native buffer | 89 | 260 |
+| ImageIO thumbnail 3000 px | 67 | 147 |
+| VideoToolbox | 88 | 161 |
+| nitrojpeg, **1 thread** → YUV | 154 | 107 |
+| **nitrojpeg, parallel → YUV** | **30.4** | **10.3** |
+
+On the M1, ImageIO and VideoToolbox decode JPEG in hardware: 2.5–3× faster than the software
+path on the i9. nitrojpeg (NEON IDCT, 8 threads) is still ~3× faster than that hardware at full
+size and 5.5× faster than libjpeg-turbo. One M1 core is ~1.45× slower than an i9 core on this
+work (154 vs 107 ms); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 on 33–36 ms (the four
+efficiency cores add roughly one performance core). The NEON IDCT brought 8 threads from 43 to
+31 ms. The default (one thread per core, 8) is the best setting there.
 
 ### How nitrojpeg parallelises a single image
 

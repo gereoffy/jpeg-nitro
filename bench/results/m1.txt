@@ -1,0 +1,53 @@
+# Apple M1 (MacBook Air 2020, 4 performance + 4 efficiency cores), NEON IDCT
+# bench/bench samples/*.JPG: 43 files, 765 MB (read into memory first)
+
+43 files, 765.0 MB, read in 295.3 ms
+libjpeg-turbo  full BGRX             total   7963.9 ms   avg  185.2 ms/img   worst  802.6 ms
+libjpeg-turbo  full, fastDCT+ups     total   7335.6 ms   avg  170.6 ms/img   worst  712.7 ms
+libjpeg-turbo  full -> YUV planes    total   7230.0 ms   avg  168.1 ms/img   worst  702.8 ms
+libjpeg-turbo  1/2 scale BGRX        total   6777.5 ms   avg  157.6 ms/img   worst  662.8 ms
+libjpeg-turbo  1/4 scale BGRX        total   6509.7 ms   avg  151.4 ms/img   worst  641.7 ms
+stb_image      full RGBA             total  16504.0 ms   avg  383.8 ms/img   worst 1515.2 ms
+wuffs          full BGRA             total   9329.8 ms   avg  217.0 ms/img   worst  915.3 ms
+ImageIO        full -> BGRA ctx      total   4636.9 ms   avg  107.8 ms/img   worst  530.8 ms
+ImageIO        full native buf       total   3808.3 ms   avg   88.6 ms/img   worst  447.7 ms
+ImageIO        thumb 3000px          total   2868.6 ms   avg   66.7 ms/img   worst  567.1 ms
+VideoToolbox   JPEG -> BGRA          total   3768.7 ms   avg   87.6 ms/img   worst  390.1 ms
+nitrojpeg       1 thread -> YUV      total   6612.9 ms   avg  153.8 ms/img   worst  666.0 ms
+nitrojpeg       parallel -> YUV      total   1309.3 ms   avg   30.4 ms/img   worst  133.9 ms
+nitrojpeg       parallel -> BGRX     total   2628.2 ms   avg   61.1 ms/img   worst  347.2 ms
+
+# Thread sweep: NJ_WORKERS=N ONLY="parallel -> YUV" bench/bench samples/*.JPG, 15 s pause between runs
+# (no fan: the later runs are warmer; default 8 workers gave 30.4 ms in the first, cool run above)
+# workers  ms/image
+   1       158.9
+   2        80.8
+   3        57.6
+   4        46.2
+   5        43.5
+   6        35.2
+   7        34.8
+   8        36.1
+  10        36.9
+  12        33.1
+  14        36.1
+  16        36.5
+  20        32.5
+  24        32.9
+
+# Intel i9 13th gen (8 cores / 16 threads), AVX2 IDCT, same 43 files
+43 files, 765.0 MB, read in 244.4 ms
+libjpeg-turbo  full BGRX             total   5188.9 ms   avg  120.7 ms/img   worst  610.0 ms
+libjpeg-turbo  full, fastDCT+ups     total   4765.7 ms   avg  110.8 ms/img   worst  481.2 ms
+libjpeg-turbo  full -> YUV planes    total   4933.3 ms   avg  114.7 ms/img   worst  503.7 ms
+libjpeg-turbo  1/2 scale BGRX        total   4609.2 ms   avg  107.2 ms/img   worst  424.2 ms
+libjpeg-turbo  1/4 scale BGRX        total   4260.3 ms   avg   99.1 ms/img   worst  415.9 ms
+stb_image      full RGBA             total   7574.5 ms   avg  176.2 ms/img   worst  747.0 ms
+wuffs          full BGRA             total   6939.6 ms   avg  161.4 ms/img   worst  700.1 ms
+ImageIO        full -> BGRA ctx      total  12356.6 ms   avg  287.4 ms/img   worst 1101.7 ms
+ImageIO        full native buf       total  11159.3 ms   avg  259.5 ms/img   worst 1013.2 ms
+ImageIO        thumb 3000px          total   6303.1 ms   avg  146.6 ms/img   worst  372.6 ms
+VideoToolbox   JPEG -> BGRA          total   6931.7 ms   avg  161.2 ms/img   worst  631.9 ms
+nitrojpeg       1 thread -> YUV      total   4581.5 ms   avg  106.5 ms/img   worst  528.5 ms
+nitrojpeg       parallel -> YUV      total    442.8 ms   avg   10.3 ms/img   worst   51.3 ms
+nitrojpeg       parallel -> BGRX     total   1179.3 ms   avg   27.4 ms/img   worst  105.6 ms
