@@ -38,9 +38,9 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | Esc / Q | quit (Esc in full screen: back to a window) |
 
 The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
-with the image's aspect ratio as large as fits (no black bars). When paging, it follows each
-image's size (keeping its centre), except while zoomed in: then the window, zoom and position
-stay. After you resize the window yourself (edge drag, green button, tiling) it keeps that
+with the image's aspect ratio as large as fits (no black bars). When zooming in, the window grows with the image up to the screen
+size (and shrinks back when zooming out; 0 restores it). When paging, it follows each image's
+size (keeping its centre), except while zoomed in: then the window, zoom and position stay. After you resize the window yourself (edge drag, green button, tiling) it keeps that
 size; W brings it back to the image size and turns the automatic sizing back on. The title shows the zoom level right after the file name. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower

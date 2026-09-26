@@ -595,6 +595,14 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
     return NSMakeSize(MAX(cw, 320), MAX(ch, 200));
 }
 
+// Largest window content size that fits the visible screen area.
+static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
+    if (!scr) scr = NSScreen.mainScreen;
+    NSRect vis = scr.visibleFrame;
+    double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
+    return NSMakeSize(vis.size.width, vis.size.height - tb);
+}
+
 @interface ViewerView : MTKView <MTKViewDelegate>
 @property(nonatomic) NSArray<NSString *> *files;
 @property(nonatomic) GPU *gpu;
@@ -687,14 +695,24 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
     });
 }
 
-// When paging in fit mode, the window follows the image size (keeping its
-// centre, staying on screen). Not when zoomed in, and not in full screen.
-- (void)fitWindowTo:(Decoded *)d {
+// The window follows the image: in fit mode it gets the image's size (see
+// window_content_size); zoomed in, it is as large as the image at the current
+// zoom, up to the screen size. Keeps its centre and stays on screen. Not after
+// a manual resize (until W) and not in full screen.
+- (void)sizeWindowFor:(Decoded *)d {
     NSWindow *w = self.window;
-    if (!w || !d || _zoomed || _userSized || _fsTransition || self.isFullScreen) return;
+    if (!w || !d || _userSized || _fsTransition || self.isFullScreen) return;
     double iw, ih;
     display_size(d, &iw, &ih);
-    NSSize cs = window_content_size(iw, ih, w.styleMask, w.screen);
+    NSSize cs;
+    if (_zoomed) {
+        double bs = w.backingScaleFactor > 0 ? w.backingScaleFactor : 1;
+        NSSize mx = max_content_size(w.styleMask, w.screen);
+        cs = NSMakeSize(MAX(320, MIN(mx.width, floor(iw * _scale / bs))),
+                        MAX(200, MIN(mx.height, floor(ih * _scale / bs))));
+    } else {
+        cs = window_content_size(iw, ih, w.styleMask, w.screen);
+    }
     NSRect cur = [w contentRectForFrameRect:w.frame];
     if (fabs(cur.size.width - cs.width) < 0.5 && fabs(cur.size.height - cs.height) < 0.5) return;
     NSRect nf = [w frameRectForContentRect:NSMakeRect(floor(NSMidX(cur) - cs.width / 2),
@@ -707,6 +725,14 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
     _selfResizing = YES;
     [w setFrame:nf display:YES animate:NO];
     _selfResizing = NO;
+    if (getenv("NV_DEBUG_WINDOW"))
+        fprintf(stderr, "  window -> %.0fx%.0f pt (%s %.1f%%)\n", cs.width, cs.height, _zoomed ? "zoom" : "fit",
+                100 * [self currentScale:d view:self.drawableSize]);
+}
+
+// Paging: follow the new image only in fit mode (zoomed: keep window, zoom, position).
+- (void)fitWindowTo:(Decoded *)d {
+    if (!_zoomed) [self sizeWindowFor:d];
 }
 
 // Any resize we didn't do ourselves (dragging an edge, the green button,
@@ -793,6 +819,8 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 
 - (void)zoomFit {
     _zoomed = NO;
+    Decoded *d = self.window ? [_loader get:_index] : nil;
+    if (d) [self sizeWindowFor:d];
     [self updateTitle];
     self.needsDisplay = YES;
 }
@@ -816,6 +844,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     _zoomed = YES;
     _scale = ns;
     [self clampCenter:d scale:ns view:ds];
+    if (self.window && CGSizeEqualToSize(ds, self.drawableSize)) [self sizeWindowFor:d];   // not for offscreen tests
     [self updateTitle];
     self.needsDisplay = YES;
 }
@@ -1542,6 +1571,20 @@ int main(int argc, const char **argv) {
             __block NSInteger shown = 1;
             [NSTimer scheduledTimerWithTimeInterval:auto_ms / 1000.0 repeats:YES block:^(NSTimer *t) {
                 if (shown++ >= (NSInteger)files.count) { [NSApp terminate:nil]; return; }
+                const char *tk = getenv("NV_TEST_KEYS");   // test: "N:keys,..." at tick N press keys (no paging)
+                if (tk) {
+                    char pat[16];
+                    snprintf(pat, sizeof pat, "%ld:", (long)shown);
+                    const char *m = strstr(tk, pat);
+                    if (m && (m == tk || m[-1] == ',')) {
+                        Decoded *d = [v.loader get:v.index];
+                        for (const char *k = m + strlen(pat); d && *k && *k != ','; k++) {
+                            if (*k == 'W') [v windowToImage];
+                            else [v testKey:*k image:d view:v.drawableSize];
+                        }
+                        return;
+                    }
+                }
                 if (getenv("NV_TEST_RESIZE")) {   // test: "user" resize before image 2, W before image 4
                     if (shown == 2) [win setFrame:[win frameRectForContentRect:NSMakeRect(200, 200, 1000, 700)] display:YES];
                     if (shown == 4) [v windowToImage];

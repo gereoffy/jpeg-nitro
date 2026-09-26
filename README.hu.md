@@ -52,9 +52,10 @@ A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai 
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
 Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
-arányával, akkorára, amekkora kifér (fekete sávok nélkül). Lapozáskor minden képnél igazodik
-(a közepe helyben marad), kivéve ha bele van nagyítva: akkor az ablak, a nagyítás és a pozíció
-is marad. Ha kézzel átméretezed az ablakot (szél húzása, zöld gomb, ablakrendezés), azt a
+arányával, akkorára, amekkora kifér (fekete sávok nélkül). Nagyításkor az ablak a képpel együtt nő, a
+képernyő méretéig (kicsinyítéskor visszamegy, a 0 visszaállítja). Lapozáskor minden képnél
+igazodik (a közepe helyben marad), kivéve ha bele van nagyítva: akkor az ablak, a nagyítás és a
+pozíció is marad. Ha kézzel átméretezed az ablakot (szél húzása, zöld gomb, ablakrendezés), azt a
 méretet megtartja; a W visszaállítja a kép méretére, és újra bekapcsolja az automatikus méretezést. A címsorban a fájlnév után látszik a nagyítás mértéke.
 
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
