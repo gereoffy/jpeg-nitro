@@ -112,8 +112,8 @@ bench/robust: bench/robust.c src/nitrojpeg.c src/nitrojpeg.h | deps
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I$(LJT)/include \
 	  bench/robust.c src/nitrojpeg.c $(REF_LIBS) -o $@
 
-bench/pngbench: bench/pngbench.m | deps
-	$(CC) -O3 $(CPUFLAGS) -w -fobjc-arc $< -framework Foundation -framework ImageIO -framework CoreGraphics -o $@
+bench/pngbench: bench/pngbench.m build/nitropng.o | deps
+	$(CC) -O3 $(CPUFLAGS) -w -fobjc-arc $^ -framework Foundation -framework ImageIO -framework CoreGraphics -o $@
 
 bench/pngverify: bench/pngverify.c build/nitropng.o
 	$(CC) -O3 $(CPUFLAGS) -w $^ -lz -o $@

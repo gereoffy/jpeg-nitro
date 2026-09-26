@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
-// PNG decoder comparison: Apple ImageIO vs Wuffs, files preloaded into memory.
+// PNG decoder comparison: Apple ImageIO vs Wuffs vs nitropng, files preloaded into memory.
 //   pngbench files.png...
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
@@ -16,6 +16,7 @@
 #define WUFFS_CONFIG__MODULE__ZLIB
 #define WUFFS_CONFIG__MODULE__PNG
 #include "../third_party/wuffs.c"
+#include "../src/nitropng.h"
 
 static double now_ms(void) {
     static mach_timebase_info_data_t tb;
@@ -74,11 +75,27 @@ static int wuffs_png(NSData *d) {
     return st.repr ? -1 : 0;
 }
 
+// nitropng: unfiltered rows (the viewer's GPU converts them to RGBA, like YUV for JPEG).
+// Files it does not handle (palette, 16-bit, interlaced) count as failures.
+static int nitropng(NSData *d, int nthreads) {
+    np_info in;
+    if (np_read_info(d.bytes, d.length, &in) || !in.supported) return -1;
+    uint8_t *out = malloc(in.raw_size);
+    int rc = np_decode(d.bytes, d.length, &in, out, nthreads, NULL);
+    touch(out, in.raw_size);
+    free(out);
+    return rc;
+}
+static int nitropng_1(NSData *d) { return nitropng(d, 1); }
+static int nitropng_par(NSData *d) { return nitropng(d, 0); }
+
 typedef struct { const char *name; int (*fn)(NSData *); } Decoder;
 static Decoder decoders[] = {
     {"ImageIO   native buffer", imageio_raw},
     {"ImageIO   -> BGRA ctx",   imageio_bgra},
     {"Wuffs     -> BGRA",       wuffs_png},
+    {"nitropng  1 thread -> rows", nitropng_1},
+    {"nitropng  parallel -> rows", nitropng_par},
 };
 
 int main(int argc, const char **argv) {
@@ -105,7 +122,7 @@ int main(int argc, const char **argv) {
             for (int i = 0; i < n; i++) @autoreleasepool { if (decoders[k].fn(files[i])) fails++; }
             double t = now_ms() - t0;
             printf("%-26s avg %7.1f ms/img  (%.0f MB/s compressed, %.0f Mpix/s)%s\n", decoders[k].name, t / n,
-                   bytes / 1e3 / t, pixels / 1e3 / t, fails ? "  FAILED" : "");
+                   bytes / 1e3 / t, pixels / 1e3 / t, fails ? "  (some files failed / unsupported)" : "");
             if (getenv("PER")) {   // per-file times (3 runs, best)
                 for (int i = 0; i < n; i++) {
                     double best = 1e9;
