@@ -589,6 +589,9 @@ typedef struct {
 - (DrawParams)drawParams:(Decoded *)d view:(CGSize)ds;
 - (double)testScale:(Decoded *)d view:(CGSize)ds;
 - (BOOL)testZoomed;
+- (void)testWheel:(double)f anchor:(CGPoint)a image:(Decoded *)d view:(CGSize)ds;
+- (void)testDragX:(double)dx y:(double)dy image:(Decoded *)d view:(CGSize)ds;
+- (void)testDoubleClick:(CGPoint)a image:(Decoded *)d view:(CGSize)ds;
 @end
 
 @implementation ViewerView {
@@ -606,6 +609,7 @@ typedef struct {
     BOOL _zoomed;             // NO: fit to window
     double _scale;            // image pixels -> drawable (device) pixels
     double _cx, _cy;          // image point (display orientation, pixels) at the view centre
+    CGPoint _dragLast;        // last mouse position while dragging
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 
@@ -711,28 +715,42 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     _cy = ih <= vh ? ih / 2 : MAX(vh / 2, MIN(_cy, ih - vh / 2));
 }
 
-- (void)zoomTo:(double)ns image:(Decoded *)d {
-    if (!_zoomed) {   // leaving fit mode: start from the image centre
-        double iw, ih;
-        display_size(d, &iw, &ih);
-        _cx = iw / 2;
-        _cy = ih / 2;
-    }
-    _zoomed = YES;
-    _scale = ns;
-    [self updateTitle];
-    self.needsDisplay = YES;
-}
-
 - (void)zoomFit {
     _zoomed = NO;
     [self updateTitle];
     self.needsDisplay = YES;
 }
 
-- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds {
+// Sets the zoom so that the image point under 'a' (device pixels from the view
+// centre, y down) stays under it. a = (0,0) zooms around the view centre.
+- (void)setScale:(double)ns image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
     double fit = [self fitScale:d view:ds];
-    double cur = _zoomed ? _scale : fit;
+    if (fabs(ns - fit) < 1e-9 && fabs(ns - 1.0) > 1e-9) { [self zoomFit]; return; }
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    double cur = [self currentScale:d view:ds], cx = iw / 2, cy = ih / 2;
+    if (_zoomed) {
+        [self clampCenter:d scale:_scale view:ds];
+        cx = _cx;
+        cy = _cy;
+    }
+    double px = cx + a.x / cur, py = cy + a.y / cur;   // image point under the anchor
+    _cx = px - a.x / ns;
+    _cy = py - a.y / ns;
+    _zoomed = YES;
+    _scale = ns;
+    [self clampCenter:d scale:ns view:ds];
+    [self updateTitle];
+    self.needsDisplay = YES;
+}
+
+- (void)zoomTo:(double)ns image:(Decoded *)d view:(CGSize)ds {
+    [self setScale:ns image:d view:ds anchor:CGPointZero];
+}
+
+- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
+    double fit = [self fitScale:d view:ds];
+    double cur = [self currentScale:d view:ds];
     double ns = cur * f;
     // stop exactly at 100% and at "fit" when a step crosses them
     for (int k = 0; k < 2; k++) {
@@ -745,16 +763,76 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     ns = MAX(MIN(fit, 1.0) / 4, MIN(ns, 32.0));
     if (fabs(ns - 1.0) < 1e-6) ns = 1.0;        // e.g. sqrt(2) * sqrt(1/2)
     if (fabs(ns - fit) < 1e-6 * fit) ns = fit;
-    if (fabs(ns - fit) < 1e-9 && fabs(ns - 1.0) > 1e-9) { [self zoomFit]; return; }
-    [self zoomTo:ns image:d];
+    [self setScale:ns image:d view:ds anchor:a];
+}
+
+- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds {
+    [self zoomBy:f image:d view:ds anchor:CGPointZero];
 }
 
 - (void)panX:(double)fx y:(double)fy image:(Decoded *)d view:(CGSize)ds {   // fractions of the view size
+    [self panPixelsX:-fx * ds.width y:-fy * ds.height image:d view:ds];
+}
+
+// Moves the image by (dx, dy) device pixels (y down), e.g. following the mouse.
+- (void)panPixelsX:(double)dx y:(double)dy image:(Decoded *)d view:(CGSize)ds {
     if (!_zoomed) return;
-    _cx += fx * ds.width / _scale;
-    _cy += fy * ds.height / _scale;
+    [self clampCenter:d scale:_scale view:ds];
+    _cx -= dx / _scale;
+    _cy -= dy / _scale;
     [self clampCenter:d scale:_scale view:ds];
     self.needsDisplay = YES;
+}
+
+// Double click: fit -> 100% at the clicked point, otherwise back to fit.
+- (void)toggleActualSize:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
+    if (_zoomed) [self zoomFit];
+    else [self setScale:1.0 image:d view:ds anchor:a];
+}
+
+// --- mouse ---
+
+- (CGPoint)anchorForEvent:(NSEvent *)e {   // device pixels from the view centre, y down
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSRect b = self.bounds;
+    double bs = self.drawableSize.width / MAX(b.size.width, 1);
+    return CGPointMake((p.x - NSMidX(b)) * bs, (NSMidY(b) - p.y) * bs);
+}
+
+- (void)mouseDown:(NSEvent *)e {
+    Decoded *d = [_loader get:_index];
+    if (!d) return;
+    if (e.clickCount == 2) {
+        [self toggleActualSize:d view:self.drawableSize anchor:[self anchorForEvent:e]];
+        return;
+    }
+    _dragLast = [self anchorForEvent:e];
+    if (_zoomed) [[NSCursor closedHandCursor] set];
+}
+
+- (void)mouseDragged:(NSEvent *)e {
+    Decoded *d = [_loader get:_index];
+    CGPoint p = [self anchorForEvent:e];
+    if (d) [self panPixelsX:p.x - _dragLast.x y:p.y - _dragLast.y image:d view:self.drawableSize];
+    _dragLast = p;
+}
+
+- (void)mouseUp:(NSEvent *)e { [[NSCursor arrowCursor] set]; }
+
+- (void)scrollWheel:(NSEvent *)e {
+    Decoded *d = [_loader get:_index];
+    if (!d) return;
+    double dy = e.scrollingDeltaY;
+    if (e.isDirectionInvertedFromDevice) dy = -dy;   // physical direction: forward / up = zoom in
+    if (dy == 0) return;
+    double f = e.hasPreciseScrollingDeltas ? exp(dy * 0.01)          // trackpad: continuous
+                                           : (dy > 0 ? M_SQRT2 : M_SQRT1_2);   // wheel: one step per notch
+    [self zoomBy:f image:d view:self.drawableSize anchor:[self anchorForEvent:e]];
+}
+
+- (void)magnifyWithEvent:(NSEvent *)e {   // trackpad pinch
+    Decoded *d = [_loader get:_index];
+    if (d) [self zoomBy:1 + e.magnification image:d view:self.drawableSize anchor:[self anchorForEvent:e]];
 }
 
 // Where to draw the image: NDC corner + extent (top-left snapped to device pixels).
@@ -777,7 +855,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
     case '0': [self zoomFit]; break;
-    case '1': [self zoomTo:1.0 image:d]; break;
+    case '1': [self zoomTo:1.0 image:d view:ds]; break;
     case 'L': [self panX:-0.125 y:0 image:d view:ds]; break;
     case 'R': [self panX:0.125 y:0 image:d view:ds]; break;
     case 'U': [self panX:0 y:-0.125 image:d view:ds]; break;
@@ -785,6 +863,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     }
 }
 - (double)testScale:(Decoded *)d view:(CGSize)ds { return [self currentScale:d view:ds]; }
+- (void)testWheel:(double)f anchor:(CGPoint)a image:(Decoded *)d view:(CGSize)ds { [self zoomBy:f image:d view:ds anchor:a]; }
+- (void)testDragX:(double)dx y:(double)dy image:(Decoded *)d view:(CGSize)ds { [self panPixelsX:dx y:dy image:d view:ds]; }
+- (void)testDoubleClick:(CGPoint)a image:(Decoded *)d view:(CGSize)ds { [self toggleActualSize:d view:ds anchor:a]; }
 - (BOOL)testZoomed { return _zoomed; }
 
 - (void)keyDown:(NSEvent *)e {
@@ -796,7 +877,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         case '+': case '=': if (cur) [self zoomBy:M_SQRT2 image:cur view:self.drawableSize]; return;
         case '-': case '_': if (cur) [self zoomBy:M_SQRT1_2 image:cur view:self.drawableSize]; return;
         case '0': [self zoomFit]; return;
-        case '1': if (cur) [self zoomTo:1.0 image:cur]; return;
+        case '1': if (cur) [self zoomTo:1.0 image:cur view:self.drawableSize]; return;
         default: break;
         }
     }
@@ -1081,6 +1162,61 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                        ok ? "OK" : "FAIL");
                 if (!ok) bad++;
             }
+            // mouse: the image point under the cursor must stay under it when zooming,
+            // and dragging must move the image by exactly the mouse movement
+            {
+                // image point under anchor a, from where the image is actually drawn
+                CGPoint (^under)(CGPoint) = ^CGPoint(CGPoint a) {
+                    DrawParams q = [v drawParams:d view:ds];
+                    double sc = [v testScale:d view:ds];
+                    double qx0 = (q.origin[0] + 1) / 2 * W, qy0 = (1 - q.origin[1]) / 2 * H;
+                    return CGPointMake((W / 2.0 + a.x - qx0) / sc, (H / 2.0 + a.y - qy0) / sc);
+                };
+                // cursor inside the drawn image (fit mode): a quarter of the way to its corner
+                [v testKey:'0' image:d view:ds];
+                DrawParams fp = [v drawParams:d view:ds];
+                CGPoint an = CGPointMake(fp.size[0] / 2 * W * 0.25, -fp.size[1] / 2 * H * 0.25);
+                // wheel from 100% (the image covers the view, so the point can always stay put):
+                // 4 notches in, 4 out, then 40 small trackpad-like steps in and out
+                [v testKey:'1' image:d view:ds];
+                CGPoint p0 = under(an);
+                double worst = 0;
+                for (int k = 0; k < 8; k++) {
+                    [v testWheel:k < 4 ? M_SQRT2 : M_SQRT1_2 anchor:an image:d view:ds];
+                    CGPoint p1 = under(an);
+                    worst = MAX(worst, hypot(p1.x - p0.x, p1.y - p0.y));   // image px = screen px at 100%
+                }
+                double scw = [v testScale:d view:ds];
+                for (int k = 0; k < 80; k++) [v testWheel:k < 40 ? 1.02 : 1 / 1.02 anchor:an image:d view:ds];
+                CGPoint p2 = under(an);
+                double e2 = hypot(p2.x - p0.x, p2.y - p0.y);
+                BOOL wheelok = worst <= 1.0 && e2 <= 1.0 && scw == 1.0;
+                printf("   wheel@(%+.0f,%+.0f) from 100%%: 4 notches in + 4 out -> %.0f%%, drift max %.2f px; 40+40 small steps -> drift %.2f px  %s\n",
+                       an.x, an.y, scw * 100, worst, e2, wheelok ? "OK" : "FAIL");
+                if (!wheelok) bad++;
+                // drag at 100% from the centre: image follows the mouse exactly
+                [v testKey:'1' image:d view:ds];
+                DrawParams a0 = [v drawParams:d view:ds];
+                [v testDragX:137 y:-59 image:d view:ds];
+                DrawParams a1 = [v drawParams:d view:ds];
+                double mx = ((a1.origin[0] - a0.origin[0]) / 2) * W, my = -((a1.origin[1] - a0.origin[1]) / 2) * H;
+                BOOL dragok = fabs(mx - 137) < 0.01 && fabs(my + 59) < 0.01;
+                printf("   drag (+137,-59) at 100%% -> image moved (%+.1f,%+.1f)  %s\n", mx, my, dragok ? "OK" : "FAIL");
+                if (!dragok) bad++;
+                // double click in fit mode: 100% with the clicked point kept; again: back to fit
+                [v testKey:'0' image:d view:ds];
+                CGPoint c0 = under(an);
+                [v testDoubleClick:an image:d view:ds];
+                CGPoint c1 = under(an);
+                double sc1 = [v testScale:d view:ds];
+                double fs = fp.size[0] / 2 * W / (d.orientation >= 5 ? d.height : d.width);   // fit scale
+                double ec = hypot(c1.x - c0.x, c1.y - c0.y) * fs;   // drift in screen px at the clicked scale
+                [v testDoubleClick:an image:d view:ds];
+                BOOL dcok = sc1 == 1.0 && ec <= 1.0 && ![v testZoomed];
+                printf("   double click -> %.0f%%, clicked point drift %.2f px, again -> %s  %s\n", sc1 * 100, ec,
+                       [v testZoomed] ? "zoomed" : "fit", dcok ? "OK" : "FAIL");
+                if (!dcok) bad++;
+            }
             [gpu.pool putTexture:d.texture];
             d.texture = nil;
             [gpu.pool put:d.buffer];
@@ -1125,6 +1261,10 @@ int main(int argc, const char **argv) {
                 "  Home / End              first / last       F / Enter                full screen\n"
                 "  + / -                   zoom in / out      0 fit to window          1 actual size (1:1)\n"
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
+                "mouse:\n"
+                "  drag                    move a zoomed image\n"
+                "  scroll wheel            zoom around the cursor (trackpad: smooth, pinch too)\n"
+                "  double click            fit <-> 100%% at the clicked point\n"
                 "  P                       pause/resume slideshow\n"
                 "  Esc                     leave full screen / quit                Q   quit\n",
 #ifdef NV_TURBOJPEG

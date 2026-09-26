@@ -26,13 +26,17 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | 0 | fit to window |
 | 1 | actual size: one image pixel = one screen pixel |
 | ← → ↑ ↓ | move a zoomed image (Shift: half a screen per step) |
+| mouse drag | move a zoomed image |
+| scroll wheel | zoom around the point under the cursor (one √2 step per notch; trackpad: smooth, pinch too) |
+| double click | fit → 100% at the clicked point; again → back to fit |
 | F / Enter | toggle full screen (`-f`: start in full screen) |
 | P | pause / resume the slideshow |
 | Esc / Q | quit (Esc in full screen: back to a window) |
 
 Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
-sharpest shot. The zoom keys work by character, so they work on any keyboard layout and the
+sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
+than the window along an axis: it stays centred there until it fills the window. The zoom keys work by character, so they work on any keyboard layout and the
 numeric keypad; the title shows the current zoom. The window title shows the file name, size and
 decode time; stdout gets one line per image with read time, decode time and the
 key → on-screen latency. EXIF orientation is honoured.

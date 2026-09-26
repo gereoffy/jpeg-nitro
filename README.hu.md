@@ -26,6 +26,9 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 | 0 | képernyőhöz illesztés |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
+| egérhúzás | a nagyított kép mozgatása |
+| görgő | nagyítás a kurzor alatti pont körül (kattanásonként √2-es lépés; trackpaden folyamatos, csíptetés is) |
+| dupla kattintás | illesztett → 100% a kattintott ponton; újra → vissza illesztettre |
 | F / Enter | teljes képernyő be/ki (`-f`: indításkor teljes képernyő) |
 | P | diavetítés szüneteltetése / folytatása |
 | Esc / Q | kilépés (Esc teljes képernyőn: vissza ablakba) |
@@ -45,7 +48,9 @@ A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai 
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
-egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A nagyító
+egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A görgős nagyítás
+helyben tartja a kurzor alatti pontot, kivéve amíg a kép valamelyik irányban keskenyebb az
+ablaknál: abban az irányban addig középen marad, amíg ki nem tölti. A nagyító
 billentyűket a leütött karakter alapján ismeri fel, így bármilyen billentyűzetkiosztáson és a
 numerikus billentyűzeten is működnek; a címsor mutatja az aktuális nagyítást.
 
