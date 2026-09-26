@@ -60,6 +60,19 @@ at the last image; P pauses; the paging keys keep working and the slideshow cont
 there. Timing follows the display refresh (±8 ms at 60 Hz). Run without arguments (or `-h`)
 for the full list of options.
 
+**Other formats:** besides JPEG, nitroview opens PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP and PSD
+(the flattened composite). PNG is decoded with [Wuffs](https://github.com/google/wuffs)
+when it is available (`scripts/get-deps.sh`), otherwise — like all the other formats — with
+Apple ImageIO. Transparent images are shown over black.
+
+**Colour management:** embedded ICC profiles are honoured for every format (e.g. Display P3
+from iPhones and Mac screenshots, Adobe RGB scans); images without a profile are treated as
+sRGB. The decoded pixel values are left as they are and the display layer is tagged with the
+image's colour space, so macOS converts to the monitor's profile at no extra cost and wide-gamut
+colours are kept. A 24 MP photo PNG takes ~190 ms with
+Wuffs (~310 ms with ImageIO), so PNG is much slower than JPEG; see
+[PNG: why not parallel (yet)](#png-why-not-parallel-yet).
+
 `-j N` limits the decoder to N threads (default: all logical CPUs). With 8 threads decoding
 takes ~15.4 ms/image instead of 11.8, but heats the CPU less.
 
@@ -182,6 +195,25 @@ Re-measured this way (5 repetitions, 3 s pause, ms/image, `bench/results/ab_resu
 | 4 / 8 / 12 / 16 threads | 27.0 / 15.4 / 12.3 / **11.8** |
 | 256 / 512 / 1024 chunks | 11.9 / **11.7** / 12.2 (overlapping ranges: within noise) |
 
+### PNG: why not parallel (yet)
+
+`bench/pngbench` (decoders) and `bench/pngsplit` (where the time goes), on 24 MP photos saved
+as PNG:
+
+| decoder | ms/image |
+|---|---|
+| Apple ImageIO | 339 |
+| Wuffs | 193 |
+| zlib inflate alone | 91 |
+| filter reversal alone (plain C) | 67–134 |
+
+PNG is deflate (LZ77 + Huffman with per-block tables) plus per-row filters. A thread starting
+in the middle of the stream does not know the previous 32 KB of output that back-references
+point to, and 97% of the rows used the Paeth filter, which depends on the previous row. Both
+can be parallelised in principle: speculative inflate with placeholder back-references resolved
+later (as in *pugz*), and a "wavefront" filter reversal where row *r* trails row *r−1*. That
+could bring a 24 MP PNG to perhaps 20–40 ms (an estimate, not measured) — a separate project.
+
 ### Damaged files
 
 When the decoder detects an error (invalid Huffman code, coefficient index overrun, the last
@@ -238,7 +270,8 @@ Requirements: Xcode Command Line Tools.
 
 ```
 make                 # nitroview; uses libjpeg-turbo as fallback if it is in third_party/
-make TURBOJPEG=0     # fully standalone viewer, no libjpeg-turbo (~110 KB)
+make TURBOJPEG=0     # no libjpeg-turbo: other JPEGs go to Apple ImageIO
+make WUFFS=0         # no Wuffs: PNG via Apple ImageIO (~1.6x slower)
 scripts/get-deps.sh  # download + build libjpeg-turbo, stb_image, Wuffs into third_party/ (~30 s)
 make tools           # bench/bench, verify, robust, freqprobe, sustain (needs get-deps.sh)
 ```
@@ -248,8 +281,9 @@ make tools           # bench/bench, verify, robust, freqprobe, sustain (needs ge
 - **`TURBOJPEG=1`** (default when `third_party/ljt` exists): progressive, CMYK, RGB, >16384 px
   and damaged files are decoded by TurboJPEG, which also shows what is recoverable from
   damaged images. `--selftest` is only available in this mode.
-- **`TURBOJPEG=0`**: those files show `CANNOT DECODE` and paging continues. Valid baseline
-  images are exactly as fast.
+- **`TURBOJPEG=0`**: those files are decoded by Apple ImageIO instead (slower; damaged files
+  that ImageIO can't read show `CANNOT DECODE` and paging continues). Valid baseline images are
+  exactly as fast. Without any optional dependency the viewer needs only macOS frameworks.
 
 The parts of nitrojpeg that need libjpeg-turbo are behind `#ifdef NJ_REFERENCE`: the old
 engine where libjpeg-turbo decodes the bands, the CPU BGRX output and the single-threaded
@@ -270,10 +304,14 @@ symlink). The measurements above were made on 50 private photos that are not in 
 - `bench/bench.m`: decoder benchmark, `bench/verify.c`: bit-exactness + sync statistics,
   `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,
   `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
+- `src/png_wuffs.c/.h`: optional Wuffs PNG decoding for the viewer
+- `bench/pngbench.m`, `bench/pngsplit.c`: PNG decoder comparison and time split
 - `bench/results/`: measured results
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The inverse DCT implements the algorithm of jidctint.c from the
+MIT, see [LICENSE](LICENSE). The optional dependencies downloaded by `scripts/get-deps.sh`
+have their own licenses: libjpeg-turbo (BSD-style / IJG / zlib), Wuffs (Apache-2.0),
+stb_image (public domain / MIT). The inverse DCT implements the algorithm of jidctint.c from the
 Independent JPEG Group's libjpeg: this software is based in part on the work of the
 Independent JPEG Group.

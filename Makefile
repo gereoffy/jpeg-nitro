@@ -2,8 +2,8 @@
 #
 #   make                 nitroview; uses libjpeg-turbo as fallback decoder if it is present
 #                        in third_party/ljt (see scripts/get-deps.sh), standalone otherwise
-#   make TURBOJPEG=0     force a fully standalone viewer (no libjpeg-turbo): files nitrojpeg
-#                        can't decode (progressive, CMYK, damaged ...) show "CANNOT DECODE"
+#   make TURBOJPEG=0     no libjpeg-turbo: JPEGs nitrojpeg can't decode go to Apple ImageIO
+#   make WUFFS=0         no Wuffs: PNG is decoded by Apple ImageIO (~1.8x slower)
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
 
 LJT        := third_party/ljt
@@ -18,9 +18,15 @@ endif
 CFLAGS     := -O3 $(CPUFLAGS) -Wall -Wextra -Wno-unused-parameter
 FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore
 
+WUFFS      ?= $(if $(wildcard third_party/wuffs.c),1,0)
+
 ifeq ($(TURBOJPEG),1)
-VIEWER_DEFS := -DNV_TURBOJPEG -I$(LJT)/include
-VIEWER_LIBS := $(LJT)/lib/libturbojpeg.a -Wl,-w
+VIEWER_DEFS += -DNV_TURBOJPEG -I$(LJT)/include
+VIEWER_LIBS += $(LJT)/lib/libturbojpeg.a -Wl,-w
+endif
+ifeq ($(WUFFS),1)
+VIEWER_DEFS += -DNV_WUFFS
+VIEWER_OBJS += build/png_wuffs.o
 endif
 
 REF_CFLAGS := $(CFLAGS) -DNJ_REFERENCE -I$(LJT)/include
@@ -38,15 +44,22 @@ build/nitrojpeg_ref.o: src/nitrojpeg.c src/nitrojpeg.h | deps
 	@mkdir -p build
 	$(CC) $(REF_CFLAGS) -c $< -o $@
 
-# rebuild the viewer when TURBOJPEG changes
-build/.turbojpeg-$(TURBOJPEG):
+# optional Wuffs PNG decoder (third_party/wuffs.c, Apache-2.0), compiled once
+build/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
 	@mkdir -p build
-	@rm -f build/.turbojpeg-* nitroview
+	$(CC) -O3 $(CPUFLAGS) -w -c $< -o $@
+
+# rebuild the viewer when the optional parts change
+CONFIG := tj$(TURBOJPEG)-wuffs$(WUFFS)
+build/.config-$(CONFIG):
+	@mkdir -p build
+	@rm -f build/.config-* nitroview
 	@touch $@
 
-nitroview: src/nitroview.m build/nitrojpeg.o build/.turbojpeg-$(TURBOJPEG) Makefile
-	$(CC) $(CFLAGS) $(VIEWER_DEFS) -fobjc-arc src/nitroview.m build/nitrojpeg.o $(VIEWER_LIBS) $(FRAMEWORKS) -o $@
-	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no))"
+nitroview: src/nitroview.m build/nitrojpeg.o $(VIEWER_OBJS) build/.config-$(CONFIG) Makefile
+	$(CC) $(CFLAGS) $(VIEWER_DEFS) -fobjc-arc src/nitroview.m build/nitrojpeg.o $(VIEWER_OBJS) $(VIEWER_LIBS) \
+	  $(FRAMEWORKS) -framework ImageIO -o $@
+	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no), Wuffs PNG: $(if $(filter 1,$(WUFFS)),yes,no), ImageIO: always)"
 
 deps:
 	@test -f $(LJT)/lib/libturbojpeg.a -a -f third_party/stb_image.h -a -f third_party/wuffs.c || \
@@ -65,15 +78,21 @@ bench/robust: bench/robust.c src/nitrojpeg.c src/nitrojpeg.h | deps
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I$(LJT)/include \
 	  bench/robust.c src/nitrojpeg.c $(REF_LIBS) -o $@
 
+bench/pngbench: bench/pngbench.m | deps
+	$(CC) -O3 $(CPUFLAGS) -w -fobjc-arc $< -framework Foundation -framework ImageIO -framework CoreGraphics -o $@
+
+bench/pngsplit: bench/pngsplit.c
+	$(CC) -O3 $(CPUFLAGS) $< -lz -o $@
+
 bench/freqprobe: bench/freqprobe.c
 	$(CC) -O2 $< -o $@
 
 bench/sustain: bench/sustain.c build/nitrojpeg.o
 	$(CC) -O2 $^ -o $@
 
-tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain
+tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit
 
 clean:
-	rm -rf build nitroview bench/bench bench/verify bench/robust bench/freqprobe bench/sustain
+	rm -rf build nitroview bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit
 
 .PHONY: all tools clean deps

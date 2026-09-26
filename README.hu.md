@@ -49,6 +49,18 @@ Az utolsó képnél megáll. P szünetelteti, a lapozó gombok közben is műkö
 folytatja. Az időzítés a monitor frissítéséhez igazodik (60 Hz-en ±8 ms).
 Paraméterek nélkül (vagy `-h`) a program kiírja az összes kapcsolót.
 
+**Más formátumok:** a JPEG mellett a nitroview megnyitja a PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP
+és PSD (a lapított kép) fájlokat is. A PNG-t a [Wuffs](https://github.com/google/wuffs) dekódolja,
+ha elérhető (`scripts/get-deps.sh`), egyébként – a többi formátumhoz hasonlóan – az Apple ImageIO.
+Az átlátszó képek fekete háttéren jelennek meg.
+
+**Színkezelés:** a beágyazott ICC-profilokat minden formátumnál figyelembe veszi (pl. Display P3 az
+iPhone-okról és a Mac-es képernyőképekből, Adobe RGB a szkennelésekből); a profil nélküli képeket
+sRGB-nek tekinti. A dekódolt képpontok változatlanok maradnak, a kirajzoló réteg kapja meg a kép
+színterét, így a monitor profiljára a macOS számol át, többletköltség nélkül, és a széles
+színtartomány is megmarad. Egy 24 MP-es fotó-PNG Wuffs-szal ~190 ms,
+ImageIO-val ~310 ms, tehát a PNG jóval lassabb a JPEG-nél (lásd lent: „PNG: miért nem párhuzamos”).
+
 A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai szál). 8 szálon
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
@@ -195,6 +207,24 @@ A következtetések kitartanak: a saját motor 1.7× gyorsabb a réginél, a HT 
 ~30%-ot hoz, a darabszám 256–1024 között lényegtelen. (Minden futás külön folyamat, hideg
 pufferkészlettel, ezért ~1 ms-mal lassabb a nézőben mért meleg állapotnál.)
 
+### PNG: miért nem párhuzamos (még)
+
+`bench/pngbench` (dekóderek) és `bench/pngsplit` (hová megy az idő), PNG-be mentett 24 MP-es fotókon:
+
+| dekóder | ms/kép |
+|---|---|
+| Apple ImageIO | 339 |
+| Wuffs | 193 |
+| csak a zlib-es kicsomagolás | 91 |
+| csak a szűrők visszaállítása (sima C) | 67–134 |
+
+A PNG deflate (LZ77 + blokkonként változó Huffman-táblák) és soronkénti szűrők. A folyam közepén
+induló szál nem ismeri az előző 32 KB kimenetet, amire a visszahivatkozások mutatnak, és a sorok
+97%-a Paeth-szűrős, ami az előző sortól függ. Elvileg mindkettő párhuzamosítható: spekulatív
+kicsomagolás utólag kitöltött visszahivatkozásokkal (mint a *pugz*), és „hullámfront”
+szűrő-visszaállítás, ahol az r. sor az (r−1). mögött halad. Ez egy 24 MP-es PNG-t talán
+20–40 ms-ra vihetné le (becslés, nem mérés), de ez külön projekt.
+
 ### Hibás fájlok
 
 Ha a dekóder hibát lát (érvénytelen Huffman-kód, túlfutó együtthatóindex, az utolsó
@@ -227,7 +257,8 @@ Előfeltétel: Xcode Command Line Tools.
 
 ```
 make                 # néző; ha megvan a libjpeg-turbo, tartalék dekódernek beépíti
-make TURBOJPEG=0     # teljesen önálló néző, libjpeg-turbo nélkül (~105 KB)
+make TURBOJPEG=0     # libjpeg-turbo nélkül: a többi JPEG-et az Apple ImageIO dekódolja
+make WUFFS=0         # Wuffs nélkül: PNG az Apple ImageIO-val (~1.6× lassabb)
 make tools           # bench/bench, bench/verify, bench/robust (referenciának kell a libjpeg-turbo)
 ```
 
@@ -238,8 +269,9 @@ restart markerrel vagy anélkül). Ehhez csak C, pthreads, GCD és AVX2 kell.
 - **`TURBOJPEG=1`** (alapértelmezés, ha a `third_party/ljt` létezik): a progresszív, CMYK, RGB,
   16384 px-nél nagyobb és a sérült fájlokat a TurboJPEG dekódolja. A sérült képekből is
   megmutatja, ami menthető. A `--selftest` is ebben a módban érhető el.
-- **`TURBOJPEG=0`**: ezeknél a fájloknál a címsorban `CANNOT DECODE` jelenik meg, és
-  tovább lehet lapozni. Az ép baseline képek sebessége ugyanaz.
+- **`TURBOJPEG=0`**: ezeket a fájlokat az Apple ImageIO dekódolja (lassabban; ha az sem tudja,
+  a címsorban `CANNOT DECODE` jelenik meg, és tovább lehet lapozni). Az ép baseline képek
+  sebessége ugyanaz. Opcionális függőségek nélkül a nézőnek csak a macOS keretrendszerei kellenek.
 
 A nitrojpeg-ben a libjpeg-turbót igénylő részek `#ifdef NJ_REFERENCE` mögött vannak: a régi
 motor, ahol a libjpeg-turbo dekódolja a sávokat, a CPU-s BGRX kimenet és az egyszálas
@@ -268,9 +300,13 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
 - `bench/bench.m`: dekóder-benchmark, `bench/verify.c`: bitpontosság + szinkronstatisztika,
   `bench/robust.c`: hibatűrési teszt, `bench/freqprobe.c`: órajelmérés,
   `bench/sustain.c`: tartós terhelés, `bench/ab.sh`: zajtűrő A/B összehasonlítás
+- `src/png_wuffs.c/.h`: opcionális Wuffs-os PNG-dekódolás a nézőhöz
+- `bench/pngbench.m`, `bench/pngsplit.c`: PNG-dekóderek összehasonlítása, időmegoszlás
 - `bench/results/`: mért eredmények (`results.txt`, `ab_results.txt`, `matrix.txt`, `bands.txt`, `sync.txt`)
 
 ## Licenc
 
-MIT, lásd [LICENSE](LICENSE). Az IDCT a Independent JPEG Group libjpeg-jének jidctint.c
+MIT, lásd [LICENSE](LICENSE). A `scripts/get-deps.sh` által letöltött opcionális függőségeknek
+saját licencük van: libjpeg-turbo (BSD-szerű / IJG / zlib), Wuffs (Apache-2.0), stb_image
+(public domain / MIT). Az IDCT a Independent JPEG Group libjpeg-jének jidctint.c
 algoritmusát valósítja meg: ez a szoftver részben az Independent JPEG Group munkáján alapul.

@@ -14,5 +14,6 @@
 
 # your own test images
 /samples
+/samples_png
 
 .DS_Store

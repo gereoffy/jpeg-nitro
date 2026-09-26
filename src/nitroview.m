@@ -29,6 +29,10 @@
 #include <unistd.h>
 
 #include "nitrojpeg.h"
+#ifdef NV_WUFFS
+#include "png_wuffs.h"   // optional fast PNG decoder
+#endif
+#import <ImageIO/ImageIO.h>
 
 static double now_ms(void) {
     static mach_timebase_info_data_t tb;
@@ -55,6 +59,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1 } Kind;
 @property(nonatomic) Kind kind;
 @property(nonatomic) int width, height;      // decoded size
 @property(nonatomic) int ncomp, orientation;
+@property(nonatomic) id colorSpace;          // CGColorSpaceRef the pixel values are in (display tags the layer)
 @property(nonatomic) int h0, v0, h1, v1, hmax, vmax;  // sampling (Y, chroma)
 - (int *)pw;
 - (int *)ph;
@@ -149,6 +154,133 @@ static NSData *read_file(NSString *path) {
 }
 
 // Decode one file into a Metal buffer. Runs on the decoder thread.
+enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3 };
+
+static const char *mode_name(int m) {
+    switch (m) {
+    case 2: return "split";
+    case 1: return "RST";
+    case 0: return "single";
+    case MODE_TURBOJPEG: return "tj";
+    case MODE_WUFFS: return "wuffs";
+    case MODE_IMAGEIO: return "imageio";
+    default: return "?";
+    }
+}
+
+// Fills d as a BGRA image in a fresh pool buffer.
+static id<MTLBuffer> bgra_buffer(Decoded *d, int w, int h, BufferPool *pool, size_t align) {
+    size_t pitch = align_up((size_t)w * 4, align);
+    id<MTLBuffer> buf = [pool get:pitch * h];
+    if (!buf) return nil;
+    d.kind = KIND_BGRA;
+    d.width = w;
+    d.height = h;
+    d.pitch[0] = pitch;
+    d.bands = 1;
+    return buf;
+}
+
+static void bgra_done(Decoded *d, id<MTLBuffer> buf, int mode, double t1) {
+    if (buf.storageMode == MTLStorageModeManaged) [buf didModifyRange:NSMakeRange(0, d.pitch[0] * d.height)];
+    d.buffer = buf;
+    d.mode = mode;
+    d.decode_ms = now_ms() - t1;
+}
+
+// EXIF orientation of any image ImageIO understands (PNG eXIf, HEIC, TIFF ...).
+static int imageio_orientation(CGImageSourceRef src) {
+    NSDictionary *p = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, NULL));
+    int o = [p[(id)kCGImagePropertyOrientation] intValue];
+    return o >= 1 && o <= 8 ? o : 1;
+}
+
+static id srgb_space(void) {
+    static id cs;
+    if (!cs) cs = CFBridgingRelease(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));
+    return cs;
+}
+
+// The RGB colour space the file's pixel values are in: its embedded ICC profile
+// (Display P3, Adobe RGB, a screen profile ...), or sRGB when it has none.
+// Only the header is parsed: the CGImage is created lazily and never drawn.
+static id image_colorspace(NSData *data) {
+    id result = nil;
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    CGImageRef img = src ? CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)@{
+                               (id)kCGImageSourceShouldCache: @NO}) : NULL;
+    CGColorSpaceRef cs = img ? CGImageGetColorSpace(img) : NULL;
+    if (cs && CGColorSpaceGetModel(cs) == kCGColorSpaceModelRGB) {
+        NSString *name = CFBridgingRelease(CGColorSpaceCopyName(cs));
+        if (!name || ![name isEqualToString:(__bridge NSString *)kCGColorSpaceGenericRGB]) result = (__bridge id)cs;
+    }
+    if (img) CGImageRelease(img);
+    if (src) CFRelease(src);
+    return result ?: srgb_space();
+}
+
+// Apple ImageIO: PNG (without Wuffs), HEIC, TIFF, WebP, GIF, BMP, PSD (composite),
+// and JPEGs nothing else could decode. Huge images are downscaled to MAX_TEX.
+static Decoded *decode_imageio(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!src || CGImageSourceGetCount(src) < 1) { if (src) CFRelease(src); return nil; }
+    NSDictionary *p = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, NULL));
+    long pw = [p[(id)kCGImagePropertyPixelWidth] longValue], ph = [p[(id)kCGImagePropertyPixelHeight] longValue];
+    CGImageRef img;
+    if (pw > MAX_TEX || ph > MAX_TEX) {
+        NSDictionary *o = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                            (id)kCGImageSourceThumbnailMaxPixelSize: @(MAX_TEX),
+                            (id)kCGImageSourceShouldCacheImmediately: @YES};
+        img = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)o);
+    } else {
+        NSDictionary *o = @{(id)kCGImageSourceShouldCacheImmediately: @YES};
+        img = CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)o);
+    }
+    d.orientation = imageio_orientation(src);
+    CFRelease(src);
+    if (!img) return nil;
+    int w = (int)CGImageGetWidth(img), h = (int)CGImageGetHeight(img);
+    id<MTLBuffer> buf = w > 0 && h > 0 ? bgra_buffer(d, w, h, pool, align) : nil;
+    if (!buf) { CGImageRelease(img); return nil; }
+    // draw in the image's own colour space: values stay as in the file (no gamut clipping);
+    // gray / indexed images are converted to sRGB
+    if (!d.colorSpace) d.colorSpace = image_colorspace(data);
+    CGContextRef ctx = CGBitmapContextCreate(buf.contents, (size_t)w, (size_t)h, 8, d.pitch[0],
+                                             (__bridge CGColorSpaceRef)d.colorSpace,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    if (!ctx) { CGImageRelease(img); [pool put:buf]; return nil; }
+    CGContextSetBlendMode(ctx, kCGBlendModeCopy);   // premultiplied: transparent areas come out black
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+    CGContextRelease(ctx);
+    CGImageRelease(img);
+    bgra_done(d, buf, MODE_IMAGEIO, t1);
+    return d;
+}
+
+#ifdef NV_TURBOJPEG
+static Decoded *decode_turbojpeg(const uint8_t *bytes, size_t len, Decoded *d, BufferPool *pool, size_t align, double t1) {
+    tjhandle h = tj3Init(TJINIT_DECOMPRESS);
+    if (tj3DecompressHeader(h, bytes, len) < 0) { tj3Destroy(h); return nil; }
+    int w = tj3Get(h, TJPARAM_JPEGWIDTH), ht = tj3Get(h, TJPARAM_JPEGHEIGHT);
+    tjscalingfactor sf = {1, 1};
+    while ((w + sf.denom - 1) / sf.denom > MAX_TEX || (ht + sf.denom - 1) / sf.denom > MAX_TEX) sf.denom *= 2;
+    tj3SetScalingFactor(h, sf);
+    w = TJSCALED(w, sf);
+    ht = TJSCALED(ht, sf);
+    id<MTLBuffer> buf = w > 0 && ht > 0 ? bgra_buffer(d, w, ht, pool, align) : nil;
+    if (!buf) { tj3Destroy(h); return nil; }
+    tj3Set(h, TJPARAM_STOPONWARNING, 0);
+    int rc = tj3Decompress8(h, bytes, len, buf.contents, (int)d.pitch[0], TJPF_BGRX);
+    int fatal = rc < 0 && tj3GetErrorCode(h) == TJERR_FATAL;
+    tj3Destroy(h);
+    if (fatal) { [pool put:buf]; return nil; }
+    bgra_done(d, buf, MODE_TURBOJPEG, t1);
+    return d;
+}
+#endif
+
+static BOOL is_png(const uint8_t *b, size_t n) { return n >= 8 && !memcmp(b, "\x89PNG\r\n\x1a\n", 8); }
+
 static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     double t0 = now_ms();
     NSData *data = read_file(path);
@@ -158,6 +290,24 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     d.read_ms = t1 - t0;
     const uint8_t *bytes = data.bytes;
     size_t len = data.length;
+    d.colorSpace = image_colorspace(data);   // tags the display layer (ICC profile or sRGB)
+    if (is_png(bytes, len)) {
+#ifdef NV_WUFFS
+        int w, h;
+        if (!nv_png_size(bytes, len, &w, &h) && w <= MAX_TEX && h <= MAX_TEX) {
+            id<MTLBuffer> buf = bgra_buffer(d, w, h, pool, align);
+            if (buf && !nv_png_decode_bgra(bytes, len, buf.contents, d.pitch[0], w, h)) {
+                CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+                d.orientation = src ? imageio_orientation(src) : 1;   // eXIf chunk (header only)
+                if (src) CFRelease(src);
+                bgra_done(d, buf, MODE_WUFFS, t1);
+                return d;
+            }
+            if (buf) [pool put:buf];
+        }
+#endif
+        return decode_imageio(data, d, pool, align, t1);
+    }
     nj_info fi;
     int ok = !nj_read_info(bytes, len, &fi);
     d.orientation = ok ? fi.orientation : 1;
@@ -192,38 +342,13 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
         }
         [pool put:buf];
     }
-#ifndef NV_TURBOJPEG
-    return nil;   // built without the fallback: progressive, CMYK, damaged ... files are skipped
-#else
-    // fallback: TurboJPEG (progressive, CMYK, RGB, huge images, damaged files)
-    tjhandle h = tj3Init(TJINIT_DECOMPRESS);
-    if (tj3DecompressHeader(h, bytes, len) < 0) { tj3Destroy(h); return nil; }
-    int w = tj3Get(h, TJPARAM_JPEGWIDTH), ht = tj3Get(h, TJPARAM_JPEGHEIGHT);
-    tjscalingfactor sf = {1, 1};
-    while ((w + sf.denom - 1) / sf.denom > MAX_TEX || (ht + sf.denom - 1) / sf.denom > MAX_TEX) sf.denom *= 2;
-    tj3SetScalingFactor(h, sf);
-    w = TJSCALED(w, sf);
-    ht = TJSCALED(ht, sf);
-    size_t pitch = align_up((size_t)w * 4, align);
-    if (w <= 0 || ht <= 0) { tj3Destroy(h); return nil; }
-    id<MTLBuffer> buf = [pool get:pitch * ht];
-    if (!buf) { tj3Destroy(h); return nil; }
-    tj3Set(h, TJPARAM_STOPONWARNING, 0);
-    int rc = tj3Decompress8(h, bytes, len, buf.contents, (int)pitch, TJPF_BGRX);
-    int fatal = rc < 0 && tj3GetErrorCode(h) == TJERR_FATAL;
-    tj3Destroy(h);
-    if (fatal) { [pool put:buf]; return nil; }
-    if (buf.storageMode == MTLStorageModeManaged) [buf didModifyRange:NSMakeRange(0, pitch * ht)];
-    d.buffer = buf;
-    d.kind = KIND_BGRA;
-    d.width = w;
-    d.height = ht;
-    d.pitch[0] = pitch;
-    d.decode_ms = now_ms() - t1;
-    d.mode = -1;
-    d.bands = 1;
-    return d;
+#ifdef NV_TURBOJPEG
+    {   // fallback: TurboJPEG (progressive, CMYK, RGB, huge images, damaged files)
+        Decoded *t = decode_turbojpeg(bytes, len, d, pool, align, t1);
+        if (t) return t;
+    }
 #endif
+    return decode_imageio(data, d, pool, align, t1);   // anything else ImageIO can read
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1200,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
             [self scheduleSlide];
         }
         DrawParams p = [self drawParams:d view:view.drawableSize];
+        // colour management: the compositor converts from the image's space to the display
+        CGColorSpaceRef ics = (__bridge CGColorSpaceRef)(d.colorSpace ?: srgb_space());
+        if (!view.colorspace || !CFEqual(view.colorspace, ics)) view.colorspace = ics;
         [re setRenderPipelineState:_gpu.draw];
         [re setVertexBytes:&p length:sizeof p atIndex:0];
         [re setFragmentBytes:&p length:sizeof p atIndex:0];
@@ -1100,9 +1228,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         BOOL wasCached = _wasReady;
         [cb addCompletedHandler:^(id<MTLCommandBuffer> b) {
             double total = now_ms() - req;
-            printf("[%3ld] %-40s %5dx%-5d read %5.1f ms  decode %6.1f ms (%s, %2d bands)  key->on screen %6.1f ms%s\n",
+            printf("[%3ld] %-40s %5dx%-5d read %5.1f ms  decode %6.1f ms (%-7s %3d bands)  key->on screen %6.1f ms%s\n",
                    idx + 1, name.UTF8String, d.width, d.height, d.read_ms, d.decode_ms,
-                   d.mode == 2 ? "split " : d.mode == 1 ? "RST   " : d.mode == 0 ? "single" : "tj    ", d.bands, total,
+                   mode_name(d.mode), d.bands, total,
                    wasCached ? "  (prefetched)" : "");
             fflush(stdout);
         }];
@@ -1131,7 +1259,10 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args) {
         NSArray *items = [[fm contentsOfDirectoryAtPath:a error:nil] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
         for (NSString *f in items) {
             NSString *ext = f.pathExtension.lowercaseString;
-            if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] || [ext isEqualToString:@"jpe"])
+            static NSSet *exts;
+            if (!exts) exts = [NSSet setWithArray:@[@"jpg", @"jpeg", @"jpe", @"png", @"heic", @"heif", @"tif", @"tiff",
+                                                    @"webp", @"gif", @"bmp", @"psd"]];
+            if ([exts containsObject:ext])
                 [out addObject:[a stringByAppendingPathComponent:f]];
         }
     }
@@ -1152,7 +1283,7 @@ static int run_bench(NSArray<NSString *> *files, GPU *gpu) {
             [cb waitUntilCompleted];
             double g = now_ms() - g0;
             printf("%-45s %5dx%-5d read %5.1f  decode %6.1f  gpu %5.1f ms  (%s)\n", f.lastPathComponent.UTF8String, d.width,
-                   d.height, d.read_ms, d.decode_ms, g, d.mode == 2 ? "split" : d.mode == 1 ? "RST" : d.mode == 0 ? "single" : "tj");
+                   d.height, d.read_ms, d.decode_ms, g, mode_name(d.mode));
             tr += d.read_ms; td += d.decode_ms; tg += g;
             [pool putTexture:d.texture];
             d.texture = nil;
@@ -1188,9 +1319,27 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
             [cb waitUntilCompleted];
             NSData *data = read_file(f);
             uint8_t *ref = malloc(rp * d.height);
-            tjhandle h = tj3Init(TJINIT_DECOMPRESS);
-            tj3Decompress8(h, data.bytes, data.length, ref, (int)rp, TJPF_RGBX);
-            tj3Destroy(h);
+            const uint8_t *fb = data.bytes;
+            if (data.length > 2 && fb[0] == 0xFF && fb[1] == 0xD8) {   // JPEG: TurboJPEG as reference
+                tjhandle h = tj3Init(TJINIT_DECOMPRESS);
+                tj3Decompress8(h, data.bytes, data.length, ref, (int)rp, TJPF_RGBX);
+                tj3Destroy(h);
+            } else {   // PNG & co: Apple ImageIO as reference (premultiplied RGBA, like the viewer)
+                memset(ref, 0, rp * d.height);
+                CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+                CGImageRef img = src ? CGImageSourceCreateImageAtIndex(src, 0, NULL) : NULL;
+                CGColorSpaceRef cs = CGColorSpaceRetain((__bridge CGColorSpaceRef)d.colorSpace);   // no conversion
+                CGContextRef ctx = CGBitmapContextCreate(ref, d.width, d.height, 8, rp, cs,
+                                                         kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault);
+                if (ctx && img) {
+                    CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+                    CGContextDrawImage(ctx, CGRectMake(0, 0, d.width, d.height), img);
+                }
+                if (ctx) CGContextRelease(ctx);
+                CGColorSpaceRelease(cs);
+                if (img) CGImageRelease(img);
+                if (src) CFRelease(src);
+            }
             const uint8_t *g = rb.contents;
             long hist[256] = {0};
             int maxd = 0;
@@ -1204,7 +1353,10 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
                 cnt++;
                 if (e > maxd) maxd = e;
             }
-            printf("%-45s max diff %3d  mean %.3f  <=1: %.4f%%\n", f.lastPathComponent.UTF8String, maxd, sum / cnt,
+            NSString *csn = CFBridgingRelease(CGColorSpaceCopyName((__bridge CGColorSpaceRef)d.colorSpace));
+            if (!csn) csn = @"(embedded ICC)";
+            printf("%-26.26s %-7s %-22.22s max diff %3d  mean %.3f  <=1: %.4f%%\n", f.lastPathComponent.UTF8String,
+                   mode_name(d.mode), [csn stringByReplacingOccurrencesOfString:@"kCGColorSpace" withString:@""].UTF8String, maxd, sum / cnt,
                    100.0 * (hist[0] + hist[1]) / cnt);
             if (maxd > 8) bad++;
             free(ref);
@@ -1400,10 +1552,20 @@ static BOOL header_size(NSString *path, double *w, double *h) {
         NSData *all = read_file(path);
         ok = all && !nj_read_info(all.bytes, all.length, &fi) && fi.width > 0 && fi.height > 0;
     }
-    if (!ok) return NO;
-    BOOL swap = fi.orientation >= 5;
-    *w = swap ? fi.height : fi.width;
-    *h = swap ? fi.width : fi.height;
+    int ow = fi.width, oh = fi.height, orient = fi.orientation;
+    if (!ok) {   // PNG, HEIC, TIFF ...: ImageIO reads just the header
+        CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
+        if (!src) return NO;
+        NSDictionary *p = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, NULL));
+        CFRelease(src);
+        ow = [p[(id)kCGImagePropertyPixelWidth] intValue];
+        oh = [p[(id)kCGImagePropertyPixelHeight] intValue];
+        orient = [p[(id)kCGImagePropertyOrientation] intValue];
+        if (ow <= 0 || oh <= 0) return NO;
+    }
+    BOOL swap = orient >= 5;
+    *w = swap ? oh : ow;
+    *h = swap ? ow : oh;
     return YES;
 }
 
@@ -1575,6 +1737,7 @@ int main(int argc, const char **argv) {
 
         ViewerView *v = [[ViewerView alloc] initWithFrame:frame device:dev];
         v.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+        v.colorspace = (__bridge CGColorSpaceRef)srgb_space();   // untagged content is sRGB
         v.paused = YES;
         v.enableSetNeedsDisplay = YES;
         v.delegate = v;
