@@ -65,7 +65,10 @@ PSD/PSB: the merged (composite) image is shown, decoded by **nitropsd** for 8-bi
 grayscale files (all four compressions: raw, RLE, ZIP, ZIP with prediction), otherwise by Apple
 ImageIO — which cannot read ZIP-compressed PSDs at all. A 24 MP RLE PSD decodes in ~5 ms
 (ImageIO: ~170 ms), ZIP in ~46 ms: the RLE row table gives every row's position, so all rows
-are unpacked in parallel; ZIP uses nitropng's parallel inflate. PNG is decoded by **nitropng**, our own parallel PNG decoder
+are unpacked in parallel; ZIP uses nitropng's parallel inflate. Big layered PSDs are mostly layer
+data (the merged image is often only 13–23% of the file), so the viewer reads just the header,
+the image resources (ICC profile) and the merged image: a 482 MB PSD loads in ~20 ms instead of
+~155 ms. PNG is decoded by **nitropng**, our own parallel PNG decoder
 (8-bit gray / RGB / RGBA, non-interlaced: most PNGs), otherwise by
 [Wuffs](https://github.com/google/wuffs) when it is available (`scripts/get-deps.sh`) or by
 Apple ImageIO like the other formats. Transparent images are shown over black. On 38 real PNGs

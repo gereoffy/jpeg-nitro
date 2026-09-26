@@ -55,7 +55,9 @@ szürkeárnyalatos fájloknál a **nitropsd** dekódolja (mind a négy tömörí
 predikcióval), egyébként az Apple ImageIO – ami a ZIP-es PSD-ket egyáltalán nem tudja megnyitni. Egy
 24 MP-es RLE-s PSD ~5 ms (ImageIO: ~170 ms), a ZIP-es ~46 ms: az RLE sorhossz-táblájából minden sor
 helye kiszámolható, így a sorok párhuzamosan bonthatók ki; a ZIP a nitropng párhuzamos inflate-jét
-használja. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
+használja. A nagy, réteges PSD-k nagy része rétegadat (az összefésült kép sokszor a fájlnak csak
+13–23%-a), ezért a néző csak a fejlécet, az erőforrásokat (ICC-profil) és az összefésült képet olvassa
+be: egy 482 MB-os PSD beolvasása ~155 ms helyett ~20 ms. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
 dekódolja (8 bites szürke / RGB / RGBA, nem interlaced: a legtöbb PNG), egyébként a
 [Wuffs](https://github.com/google/wuffs), ha elérhető (`scripts/get-deps.sh`), vagy az Apple ImageIO.
 Az átlátszó képek fekete háttéren jelennek meg. 38 valódi PNG-n (képernyőképek, szkennelések,

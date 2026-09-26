@@ -155,6 +155,66 @@ static NSData *read_file(NSString *path) {
     return got == (size_t)st.st_size ? d : nil;
 }
 
+// PSD/PSB: reads only what the merged image needs. Big PSDs are mostly layer
+// data (~80% of the file); the merged image is at the end. Builds a slim PSD in
+// memory: header + colour mode data + image resources (ICC profile) + an empty
+// layer section that keeps the layer count's sign (merged transparency) + the
+// merged image data. Returns nil if the file is not a sane PSD (caller reads it all).
+static NSData *read_psd_merged(NSString *path) {
+    int fd = open(path.fileSystemRepresentation, O_RDONLY);
+    if (fd < 0) return nil;
+    NSMutableData *out = nil;
+    struct stat st;
+    uint8_t h[26], b[8];
+    if (fstat(fd, &st) || pread(fd, h, 26, 0) != 26 || memcmp(h, "8BPS", 4)) goto done;
+    {
+        uint64_t size = (uint64_t)st.st_size;
+        int psb = h[5] == 2;
+        size_t L = psb ? 8 : 4;
+        uint64_t pos = 26;
+        for (int k = 0; k < 2; k++) {   // colour mode data, image resources
+            if (pread(fd, b, 4, (off_t)pos) != 4) goto done;
+            uint32_t l = (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
+            pos += 4 + (uint64_t)l;
+            if (pos > size) goto done;
+        }
+        uint64_t head = pos;   // bytes kept as they are
+        if (pread(fd, b, L, (off_t)pos) != (ssize_t)L) goto done;
+        uint64_t lm = 0;
+        for (size_t i = 0; i < L; i++) lm = lm << 8 | b[i];
+        uint64_t x = pos + L + lm;   // merged image data (compression field first)
+        if (lm > size || x + 2 > size) goto done;
+        int16_t count = 0;
+        if (lm >= L + 2) {
+            uint8_t c[10];
+            if (pread(fd, c, L + 2, (off_t)(pos + L)) != (ssize_t)(L + 2)) goto done;
+            uint64_t li = 0;
+            for (size_t i = 0; i < L; i++) li = li << 8 | c[i];
+            if (li >= 2) count = (int16_t)(c[L] << 8 | c[L + 1]);
+        }
+        uint64_t merged = size - x;
+        out = [NSMutableData dataWithLength:(NSUInteger)(head + L + L + 2 + merged)];
+        uint8_t *o = out.mutableBytes;
+        if (pread(fd, o, (size_t)head, 0) != (ssize_t)head) { out = nil; goto done; }
+        uint8_t *q = o + head;
+        uint64_t slim = L + 2;   // layer and mask section: layer info (length 2) + layer count
+        for (size_t i = 0; i < L; i++) q[i] = (uint8_t)(slim >> (8 * (L - 1 - i)));
+        for (size_t i = 0; i < L; i++) q[L + i] = (uint8_t)(2 >> (8 * (L - 1 - i)));
+        q[2 * L] = (uint8_t)((uint16_t)count >> 8);
+        q[2 * L + 1] = (uint8_t)count;
+        uint8_t *m = q + 2 * L + 2;
+        size_t got = 0;
+        while (got < merged) {
+            ssize_t r = pread(fd, m + got, (size_t)(merged - got), (off_t)(x + got));
+            if (r <= 0) { out = nil; goto done; }
+            got += (size_t)r;
+        }
+    }
+done:
+    close(fd);
+    return out;
+}
+
 // Decode one file into a Metal buffer. Runs on the decoder thread.
 enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_NITROPNG = -4, MODE_NITROPSD = -5 };
 static int g_nthreads = 0;   // -j
@@ -288,7 +348,15 @@ static BOOL is_png(const uint8_t *b, size_t n) { return n >= 8 && !memcmp(b, "\x
 
 static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     double t0 = now_ms();
-    NSData *data = read_file(path);
+    NSData *data = nil;
+    NSString *ext = path.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"psd"] || [ext isEqualToString:@"psb"]) {
+        data = read_psd_merged(path);
+        ps_info pi;   // only if nitropsd can decode it; ImageIO gets the whole file
+        if (data && (ps_read_info(data.bytes, data.length, &pi) || !pi.supported || pi.width > MAX_TEX || pi.height > MAX_TEX))
+            data = nil;
+    }
+    if (!data) data = read_file(path);
     if (!data) return nil;
     double t1 = now_ms();
     Decoded *d = [Decoded new];
