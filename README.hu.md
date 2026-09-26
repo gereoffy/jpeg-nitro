@@ -19,9 +19,13 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 
 | billentyű | funkció |
 |---|---|
-| PgDn / Space / → / ↓ | következő kép |
-| PgUp / Backspace / ← / ↑ | előző kép |
+| PgDn / Space | következő kép |
+| PgUp / Backspace | előző kép |
 | Home / End | első / utolsó |
+| + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
+| 0 | képernyőhöz illesztés |
+| 1 | eredeti méret: egy képpixel = egy képernyőpixel |
+| ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
 | F / Enter | teljes képernyő be/ki (`-f`: indításkor teljes képernyő) |
 | P | diavetítés szüneteltetése / folytatása |
 | Esc / Q | kilépés (Esc teljes képernyőn: vissza ablakba) |
@@ -40,9 +44,17 @@ Paraméterek nélkül (vagy `-h`) a program kiírja az összes kapcsolót.
 A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai szál). 8 szálon
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
+**Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
+egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A nagyító
+billentyűket a leütött karakter alapján ismeri fel, így bármilyen billentyűzetkiosztáson és a
+numerikus billentyűzeten is működnek; a címsor mutatja az aktuális nagyítást.
+
 Egyéb módok:
 - `--bench fájlok…`: ablak nélkül betölti az összeset (olvasás, dekódolás, GPU), és időt mér.
 - `--selftest fájlok…`: a GPU-s színkonverziót összeveti a libjpeg-turbo kimenetével.
+- `--zoomtest fájlok…`: a nagyítás/mozgatás billentyűsorozatait képernyőn kívül lejátssza, és
+  ellenőrzi, hogy 100%-nál minden kirajzolt pixel egyezik a dekódolt képpel (a szélek és a
+  nagyítási lépések igazítása is).
 - `--auto <ms>`: tesztelési mód: adott időközönként lapoz (akkor is, ha a kép még nem jelent
   meg), a végén kilép. Késleltetésméréshez.
 

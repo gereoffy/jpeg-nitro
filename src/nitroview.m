@@ -7,8 +7,9 @@
 //   nitroview --selftest files...  compare GPU colour conversion with libjpeg-turbo
 //                                 (only in builds with the optional libjpeg-turbo fallback)
 //
-// Keys: PgDn/Space/Right/Down next, PgUp/Backspace/Left/Up previous,
-//       Home/End first/last, F or Enter toggle full screen, P pause slideshow,
+// Keys: PgDn/Space next, PgUp/Backspace previous, Home/End first/last,
+//       +/- zoom, 0 fit, 1 actual size, arrows pan, F or Enter toggle
+//       full screen, P pause slideshow,
 //       Esc/Q quit.
 //
 // Pipeline: file -> nitrojpeg (multi-threaded, planar Y/Cb/Cr straight into a
@@ -308,12 +309,12 @@ kernel void convert_buf(device const uchar *src [[buffer(1)]],
 }
 
 struct VOut { float4 pos [[position]]; float2 uv; };
-struct DrawParams { float2 scale; uint orientation; };
+struct DrawParams { float2 origin; float2 size; uint orientation; };   // NDC top-left + extent
 
 vertex VOut vmain(uint vid [[vertex_id]], constant DrawParams &p [[buffer(0)]]) {
     float2 q = float2(vid & 1, vid >> 1);            // 0..1 display space, y down
     VOut o;
-    o.pos = float4((q.x * 2 - 1) * p.scale.x, (1 - q.y * 2) * p.scale.y, 0, 1);
+    o.pos = float4(p.origin.x + q.x * p.size.x, p.origin.y - q.y * p.size.y, 0, 1);
     float u = q.x, v = q.y;
     float2 t;
     switch (p.orientation) {                          // EXIF orientation
@@ -344,8 +345,10 @@ typedef struct {
 } ConvParams;
 
 typedef struct {
-    float scale[2];
+    float origin[2];     // NDC position of the image's top-left corner
+    float size[2];       // NDC extent
     uint32_t orientation;
+    uint32_t pad;
 } DrawParams;
 
 typedef struct {
@@ -581,6 +584,11 @@ typedef struct {
 @property(nonatomic) Loader *loader;
 @property(nonatomic) NSInteger index;
 - (void)startSlideshow:(double)ms;
+// used by --zoomtest
+- (void)testKey:(char)k image:(Decoded *)d view:(CGSize)ds;
+- (DrawParams)drawParams:(Decoded *)d view:(CGSize)ds;
+- (double)testScale:(Decoded *)d view:(CGSize)ds;
+- (BOOL)testZoomed;
 @end
 
 @implementation ViewerView {
@@ -594,6 +602,10 @@ typedef struct {
     NSInteger _shownIndex;    // last image actually drawn
     double _shownTime;
     unsigned _slideGen;       // invalidates pending slideshow steps
+    // zoom / pan: kept when paging, so a series can be compared at the same spot
+    BOOL _zoomed;             // NO: fit to window
+    double _scale;            // image pixels -> drawable (device) pixels
+    double _cx, _cy;          // image point (display orientation, pixels) at the view centre
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 
@@ -618,6 +630,8 @@ typedef struct {
                                                  _files.count, d.width, d.height, d.decode_ms]
                     : [NSString stringWithFormat:@"%@  (%ld/%lu)  %@", name, _index + 1, _files.count,
                                                  [_loader failed:_index] ? @"CANNOT DECODE (not a JPEG or damaged)" : @"loading..."];
+    if (d)
+        t = [t stringByAppendingFormat:@"   %@ %.0f%%", _zoomed ? @"zoom" : @"fit", 100 * [self currentScale:d view:self.drawableSize]];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -668,10 +682,133 @@ typedef struct {
     }
 }
 
+// --- zoom / pan --- (view size is a parameter so --zoomtest can drive it offscreen)
+
+static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF rotation
+    BOOL swap = d.orientation >= 5;
+    *iw = swap ? d.height : d.width;
+    *ih = swap ? d.width : d.height;
+}
+
+- (BOOL)isFullScreen { return (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0; }
+
+- (double)fitScale:(Decoded *)d view:(CGSize)ds {
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    double s = MIN(ds.width / iw, ds.height / ih);
+    if (s > 1 && self.window && !self.isFullScreen) s = 1;   // don't upscale in a window
+    return s;
+}
+- (double)fitScale:(Decoded *)d { return [self fitScale:d view:self.drawableSize]; }
+- (double)currentScale:(Decoded *)d view:(CGSize)ds { return _zoomed ? _scale : [self fitScale:d view:ds]; }
+
+// Keeps the view centre inside the image (or centred where the image is smaller).
+- (void)clampCenter:(Decoded *)d scale:(double)s view:(CGSize)ds {
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    double vw = ds.width / s, vh = ds.height / s;
+    _cx = iw <= vw ? iw / 2 : MAX(vw / 2, MIN(_cx, iw - vw / 2));
+    _cy = ih <= vh ? ih / 2 : MAX(vh / 2, MIN(_cy, ih - vh / 2));
+}
+
+- (void)zoomTo:(double)ns image:(Decoded *)d {
+    if (!_zoomed) {   // leaving fit mode: start from the image centre
+        double iw, ih;
+        display_size(d, &iw, &ih);
+        _cx = iw / 2;
+        _cy = ih / 2;
+    }
+    _zoomed = YES;
+    _scale = ns;
+    [self updateTitle];
+    self.needsDisplay = YES;
+}
+
+- (void)zoomFit {
+    _zoomed = NO;
+    [self updateTitle];
+    self.needsDisplay = YES;
+}
+
+- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds {
+    double fit = [self fitScale:d view:ds];
+    double cur = _zoomed ? _scale : fit;
+    double ns = cur * f;
+    // stop exactly at 100% and at "fit" when a step crosses them
+    for (int k = 0; k < 2; k++) {
+        double snap = k == 0 ? 1.0 : fit;
+        if ((cur < snap - 1e-9 && ns > snap + 1e-9) || (cur > snap + 1e-9 && ns < snap - 1e-9)) {
+            ns = snap;
+            break;
+        }
+    }
+    ns = MAX(MIN(fit, 1.0) / 4, MIN(ns, 32.0));
+    if (fabs(ns - 1.0) < 1e-6) ns = 1.0;        // e.g. sqrt(2) * sqrt(1/2)
+    if (fabs(ns - fit) < 1e-6 * fit) ns = fit;
+    if (fabs(ns - fit) < 1e-9 && fabs(ns - 1.0) > 1e-9) { [self zoomFit]; return; }
+    [self zoomTo:ns image:d];
+}
+
+- (void)panX:(double)fx y:(double)fy image:(Decoded *)d view:(CGSize)ds {   // fractions of the view size
+    if (!_zoomed) return;
+    _cx += fx * ds.width / _scale;
+    _cy += fy * ds.height / _scale;
+    [self clampCenter:d scale:_scale view:ds];
+    self.needsDisplay = YES;
+}
+
+// Where to draw the image: NDC corner + extent (top-left snapped to device pixels).
+- (DrawParams)drawParams:(Decoded *)d view:(CGSize)ds {
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    double s = [self currentScale:d view:ds];
+    if (_zoomed) [self clampCenter:d scale:s view:ds];
+    double cx = _zoomed ? _cx : iw / 2, cy = _zoomed ? _cy : ih / 2;
+    double x0 = round(ds.width / 2 - cx * s), y0 = round(ds.height / 2 - cy * s);
+    DrawParams p = {{(float)(x0 / ds.width * 2 - 1), (float)(1 - y0 / ds.height * 2)},
+                    {(float)(2 * iw * s / ds.width), (float)(2 * ih * s / ds.height)},
+                    (uint32_t)d.orientation, 0};
+    return p;
+}
+
+// Test hook: apply one key action ("+", "-", "0", "1", "L", "R", "U", "D") without events.
+- (void)testKey:(char)k image:(Decoded *)d view:(CGSize)ds {
+    switch (k) {
+    case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
+    case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
+    case '0': [self zoomFit]; break;
+    case '1': [self zoomTo:1.0 image:d]; break;
+    case 'L': [self panX:-0.125 y:0 image:d view:ds]; break;
+    case 'R': [self panX:0.125 y:0 image:d view:ds]; break;
+    case 'U': [self panX:0 y:-0.125 image:d view:ds]; break;
+    case 'D': [self panX:0 y:0.125 image:d view:ds]; break;
+    }
+}
+- (double)testScale:(Decoded *)d view:(CGSize)ds { return [self currentScale:d view:ds]; }
+- (BOOL)testZoomed { return _zoomed; }
+
 - (void)keyDown:(NSEvent *)e {
+    // zoom keys by character, so they work on any keyboard layout and the keypad
+    NSString *ch = e.charactersIgnoringModifiers;
+    Decoded *cur = [_loader get:_index];
+    if (ch.length == 1) {
+        switch ([ch characterAtIndex:0]) {
+        case '+': case '=': if (cur) [self zoomBy:M_SQRT2 image:cur view:self.drawableSize]; return;
+        case '-': case '_': if (cur) [self zoomBy:M_SQRT1_2 image:cur view:self.drawableSize]; return;
+        case '0': [self zoomFit]; return;
+        case '1': if (cur) [self zoomTo:1.0 image:cur]; return;
+        default: break;
+        }
+    }
+    double step = (e.modifierFlags & NSEventModifierFlagShift) ? 0.5 : 0.125;
+    CGSize ds = self.drawableSize;
     switch (e.keyCode) {
-    case 121: case 49: case 124: case 125: [self go:_index + 1 dir:1]; break;    // PgDn Space Right Down
-    case 116: case 51: case 123: case 126: [self go:_index - 1 dir:-1]; break;   // PgUp Backspace Left Up
+    case 123: if (cur) [self panX:-step y:0 image:cur view:ds]; break;             // Left
+    case 124: if (cur) [self panX:step y:0 image:cur view:ds]; break;              // Right
+    case 126: if (cur) [self panX:0 y:-step image:cur view:ds]; break;             // Up
+    case 125: if (cur) [self panX:0 y:step image:cur view:ds]; break;              // Down
+    case 121: case 49: [self go:_index + 1 dir:1]; break;                           // PgDn Space
+    case 116: case 51: [self go:_index - 1 dir:-1]; break;                          // PgUp Backspace
     case 115: [self go:0 dir:1]; break;                                            // Home
     case 119: [self go:(NSInteger)_files.count - 1 dir:-1]; break;                // End
     case 3: case 36: [self.window toggleFullScreen:nil]; break;                    // F Return
@@ -693,7 +830,10 @@ typedef struct {
     }
 }
 
-- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size { view.needsDisplay = YES; }
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
+    view.needsDisplay = YES;
+    [self updateTitle];   // fit percentage changes with the window size
+}
 
 - (void)drawInMTKView:(MTKView *)view {
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
@@ -710,12 +850,7 @@ typedef struct {
             _shownTime = now_ms();
             [self scheduleSlide];
         }
-        CGSize ds = view.drawableSize;
-        BOOL swap = d.orientation >= 5;
-        double iw = swap ? d.height : d.width, ih = swap ? d.width : d.height;
-        double s = MIN(ds.width / iw, ds.height / ih);
-        if (s > 1 && !(self.window.styleMask & NSWindowStyleMaskFullScreen)) s = MIN(s, 1.0);
-        DrawParams p = {{(float)(iw * s / ds.width), (float)(ih * s / ds.height)}, (uint32_t)d.orientation};
+        DrawParams p = [self drawParams:d view:view.drawableSize];
         [re setRenderPipelineState:_gpu.draw];
         [re setVertexBytes:&p length:sizeof p atIndex:0];
         [re setFragmentTexture:tex atIndex:0];
@@ -852,15 +987,119 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
 }
 #endif
 
+// Offscreen check of zoom/pan: replays key sequences through the viewer's own
+// code, renders into a texture and, at 100%, compares every drawn pixel with
+// the decoded image.
+static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
+    const CGSize ds = {1600, 1000};
+    const int W = (int)ds.width, H = (int)ds.height;
+    ViewerView *v = [[ViewerView alloc] initWithFrame:NSMakeRect(0, 0, 800, 500) device:gpu.device];
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                  width:W height:H mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> target = [gpu.device newTextureWithDescriptor:td];
+    id<MTLBuffer> out = [gpu.device newBufferWithLength:(size_t)W * H * 4 options:MTLResourceStorageModeShared];
+    const char *scen[] = {"1", "1RRRDD", "1RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+                          "1UUUUUUUUUUUUUUUUUUUUUUUUUUUULLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "1+-", "1-+", "+", "++--", "0", NULL};
+    int bad = 0;
+    for (NSString *f in files) {
+        @autoreleasepool {
+            Decoded *d = decode_file(f, gpu.pool, gpu.align);
+            if (!d) continue;
+            id<MTLCommandBuffer> cb = [gpu.queue commandBuffer];
+            id<MTLTexture> tex = [gpu textureFor:d commandBuffer:cb];
+            size_t rp = (size_t)d.width * 4;
+            id<MTLBuffer> ref = [gpu.device newBufferWithLength:rp * d.height options:MTLResourceStorageModeShared];
+            id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+            [be copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                     sourceSize:MTLSizeMake(d.width, d.height, 1) toBuffer:ref destinationOffset:0
+            destinationBytesPerRow:rp destinationBytesPerImage:rp * d.height];
+            [be endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+            // scale sequence of repeated "+" from fit: must hit 100% exactly
+            [v testKey:'0' image:d view:ds];
+            NSMutableString *seq = [NSMutableString string];
+            BOOL hit100 = NO;
+            for (int k = 0; k < 16; k++) {
+                [v testKey:'+' image:d view:ds];
+                double sc = [v testScale:d view:ds];
+                if (sc == 1.0) hit100 = YES;
+                if (k < 8) [seq appendFormat:@"%.0f%% ", sc * 100];
+            }
+            printf("%-24s %5dx%-5d orient %d  '+' steps: %s... %s\n", f.lastPathComponent.UTF8String, d.width,
+                   d.height, d.orientation, seq.UTF8String, hit100 ? "hits 100%" : "MISSES 100%");
+            if (!hit100) bad++;
+            for (int si = 0; scen[si]; si++) {
+                [v testKey:'0' image:d view:ds];
+                for (const char *k = scen[si]; *k; k++) [v testKey:*k image:d view:ds];
+                DrawParams p = [v drawParams:d view:ds];
+                double sc = [v testScale:d view:ds];
+                id<MTLCommandBuffer> c2 = [gpu.queue commandBuffer];
+                MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+                rpd.colorAttachments[0].texture = target;
+                rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+                rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+                rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+                id<MTLRenderCommandEncoder> re = [c2 renderCommandEncoderWithDescriptor:rpd];
+                [re setRenderPipelineState:gpu.draw];
+                [re setVertexBytes:&p length:sizeof p atIndex:0];
+                [re setFragmentTexture:tex atIndex:0];
+                [re drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+                [re endEncoding];
+                id<MTLBlitCommandEncoder> b2 = [c2 blitCommandEncoder];
+                [b2 copyFromTexture:target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(W, H, 1) toBuffer:out destinationOffset:0
+                destinationBytesPerRow:(size_t)W * 4 destinationBytesPerImage:(size_t)W * H * 4];
+                [b2 endEncoding];
+                [c2 commit];
+                [c2 waitUntilCompleted];
+                // image rectangle in target pixels
+                double x0 = (p.origin[0] + 1) / 2 * W, y0 = (1 - p.origin[1]) / 2 * H;
+                double wpx = p.size[0] / 2 * W, hpx = p.size[1] / 2 * H;
+                long ix0 = lround(x0), iy0 = lround(y0);
+                const uint8_t *o = out.contents, *r = ref.contents;
+                long checked = 0, diff = 0;
+                if (sc == 1.0 && d.orientation == 1) {
+                    for (int y = 0; y < H; y++)
+                        for (int x = 0; x < W; x++) {
+                            long sx = x - ix0, sy = y - iy0;
+                            if (sx < 0 || sy < 0 || sx >= d.width || sy >= d.height) continue;
+                            const uint8_t *a = o + ((size_t)y * W + x) * 4, *b = r + (size_t)sy * rp + (size_t)sx * 4;
+                            checked++;
+                            if (a[2] != b[0] || a[1] != b[1] || a[0] != b[2]) diff++;   // BGRA vs RGBA
+                        }
+                }
+                BOOL inside = x0 <= 0.5 || x0 + wpx >= W - 0.5 || fabs(x0 - (W - wpx) / 2) < 1;   // fills or centred
+                BOOL insidey = y0 <= 0.5 || y0 + hpx >= H - 0.5 || fabs(y0 - (H - hpx) / 2) < 1;
+                BOOL covers = (wpx < W || (x0 <= 0.5 && x0 + wpx >= W - 0.5)) && (hpx < H || (y0 <= 0.5 && y0 + hpx >= H - 0.5));
+                BOOL ok = inside && insidey && covers && diff == 0;
+                printf("   %-10.10s%s scale %6.1f%%  image at (%6.0f,%6.0f) %6.0fx%-6.0f %s%s\n", scen[si],
+                       strlen(scen[si]) > 10 ? "…" : " ", sc * 100, x0, y0, wpx, hpx,
+                       checked ? [NSString stringWithFormat:@"1:1 check %ld px, %ld differ  ", checked, diff].UTF8String : "",
+                       ok ? "OK" : "FAIL");
+                if (!ok) bad++;
+            }
+            [gpu.pool putTexture:d.texture];
+            d.texture = nil;
+            [gpu.pool put:d.buffer];
+        }
+    }
+    printf(bad ? "ZOOMTEST: %d problem(s)\n" : "ZOOMTEST OK\n", bad);
+    return bad != 0;
+}
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
-        BOOL full = NO, bench = NO, selftest = NO;
+        BOOL full = NO, bench = NO, selftest = NO, zoomtest = NO;
         double auto_ms = 0, slide_ms = 0;
         NSMutableArray *args = [NSMutableArray array];
         for (int i = 1; i < argc; i++) {
             if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--fullscreen")) full = YES;
             else if (!strcmp(argv[i], "--bench")) bench = YES;
             else if (!strcmp(argv[i], "--selftest")) selftest = YES;
+            else if (!strcmp(argv[i], "--zoomtest")) zoomtest = YES;
             else if (!strcmp(argv[i], "--auto") && i + 1 < argc) auto_ms = atof(argv[++i]);   // page every N ms, then quit
             else if (!strcmp(argv[i], "-j") && i + 1 < argc) nj_set_max_workers(atoi(argv[++i]));   // decoder threads
             else if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--slideshow")) && i + 1 < argc) slide_ms = atof(argv[++i]);
@@ -882,8 +1121,10 @@ int main(int argc, const char **argv) {
                 "  -h, --help            this help\n"
                 "\n"
                 "keys:\n"
-                "  PgDn Space Right Down   next image         PgUp Backspace Left Up   previous\n"
+                "  PgDn Space              next image         PgUp Backspace           previous\n"
                 "  Home / End              first / last       F / Enter                full screen\n"
+                "  + / -                   zoom in / out      0 fit to window          1 actual size (1:1)\n"
+                "  arrows                  move a zoomed image (Shift: bigger steps)\n"
                 "  P                       pause/resume slideshow\n"
                 "  Esc                     leave full screen / quit                Q   quit\n",
 #ifdef NV_TURBOJPEG
@@ -903,6 +1144,7 @@ int main(int argc, const char **argv) {
         gpu.pool = [[BufferPool alloc] initWithDevice:dev];
         if (bench) return run_bench(files, gpu);
         if (selftest) return run_selftest(files, gpu);
+        if (zoomtest) return run_zoomtest(files, gpu);
 
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;

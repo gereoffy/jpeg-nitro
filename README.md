@@ -19,14 +19,21 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 
 | key | action |
 |---|---|
-| PgDn / Space / → / ↓ | next image |
-| PgUp / Backspace / ← / ↑ | previous image |
+| PgDn / Space | next image |
+| PgUp / Backspace | previous image |
 | Home / End | first / last |
+| + / − | zoom in / out (√2 steps, stops exactly at 100% and at fit) |
+| 0 | fit to window |
+| 1 | actual size: one image pixel = one screen pixel |
+| ← → ↑ ↓ | move a zoomed image (Shift: half a screen per step) |
 | F / Enter | toggle full screen (`-f`: start in full screen) |
 | P | pause / resume the slideshow |
 | Esc / Q | quit (Esc in full screen: back to a window) |
 
-Paging stops at the first and last image. The window title shows the file name, size and
+Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
+a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
+sharpest shot. The zoom keys work by character, so they work on any keyboard layout and the
+numeric keypad; the title shows the current zoom. The window title shows the file name, size and
 decode time; stdout gets one line per image with read time, decode time and the
 key → on-screen latency. EXIF orientation is honoured.
 
@@ -43,6 +50,8 @@ takes ~15.4 ms/image instead of 11.8, but heats the CPU less.
 Other modes:
 - `--bench files…`: load everything without a window (read, decode, GPU) and print timings.
 - `--selftest files…`: compare the GPU colour conversion with libjpeg-turbo's output.
+- `--zoomtest files…`: replays zoom/pan key sequences offscreen and checks that at 100% every
+  drawn pixel equals the decoded image (plus edge clamping and zoom snapping).
 - `--auto <ms>`: test mode: pages every `ms` (even if the image isn't shown yet) and quits
   at the end. For latency measurements.
 
