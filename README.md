@@ -23,10 +23,11 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | PgUp / Backspace | previous image |
 | Home / End | first / last |
 | + / − | zoom in / out (√2 steps, stops exactly at 100% and at fit) |
-| 0 | fit to window |
+| 0 | fit to the screen: small images are enlarged too (stays on while paging, until W) |
 | 1 | actual size: one image pixel = one screen pixel |
+| 2 | 200%, pixel-exact: one image pixel = 2×2 screen pixels |
 | ← → ↑ ↓ | move a zoomed image (Shift: half a screen per step) |
-| W | window back to the image size, and follow image sizes again |
+| W | back to the image's own size (small images at 100%), window follows image sizes again |
 | mouse drag | move a zoomed image |
 | scroll wheel | zoom around the point under the cursor (one √2 step per notch; trackpad: smooth, pinch too) |
 | double click | fit → 100% at the clicked point; again → back to fit |
@@ -41,7 +42,9 @@ The window is sized to the image: at exactly 100% if it is smaller than the scre
 with the image's aspect ratio as large as fits (no black bars). When zooming in, the window grows with the image up to the screen
 size (and shrinks back when zooming out; 0 restores it). When paging, it follows each image's
 size (keeping its centre), except while zoomed in: then the window, zoom and position stay. After you resize the window yourself (edge drag, green button, tiling) it keeps that
-size; W brings it back to the image size and turns the automatic sizing back on. The title shows the zoom level right after the file name. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
+size; W brings it back to the image size and turns the automatic sizing back on. The title shows the zoom level right after the file name. Integer zoom levels (200%, 300%,
+400%, … also when reached with the wheel or +/−) show the pixels as exact square blocks;
+other levels are smoothly interpolated. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
 than the window along an axis: it stays centred there until it fills the window. If Ctrl + scroll zooms the whole screen instead, macOS Accessibility zoom is set to use

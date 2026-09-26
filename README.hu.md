@@ -23,10 +23,11 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
-| 0 | képernyőhöz illesztés |
+| 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
+| 2 | 200%, pixelpontosan: egy képpixel = 2×2 képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
-| W | ablak vissza a kép méretére, és újra kövesse a képek méretét |
+| W | vissza a kép saját méretére (kis képek 100%-on), az ablak újra követi a képek méretét |
 | egérhúzás | a nagyított kép mozgatása |
 | görgő | nagyítás a kurzor alatti pont körül (kattanásonként √2-es lépés; trackpaden folyamatos, csíptetés is) |
 | dupla kattintás | illesztett → 100% a kattintott ponton; újra → vissza illesztettre |
@@ -56,7 +57,9 @@ arányával, akkorára, amekkora kifér (fekete sávok nélkül). Nagyításkor 
 képernyő méretéig (kicsinyítéskor visszamegy, a 0 visszaállítja). Lapozáskor minden képnél
 igazodik (a közepe helyben marad), kivéve ha bele van nagyítva: akkor az ablak, a nagyítás és a
 pozíció is marad. Ha kézzel átméretezed az ablakot (szél húzása, zöld gomb, ablakrendezés), azt a
-méretet megtartja; a W visszaállítja a kép méretére, és újra bekapcsolja az automatikus méretezést. A címsorban a fájlnév után látszik a nagyítás mértéke.
+méretet megtartja; a W visszaállítja a kép méretére, és újra bekapcsolja az automatikus méretezést. A címsorban a fájlnév után látszik a nagyítás mértéke. Egész
+számú nagyításnál (200%, 300%, 400%…, görgővel vagy +/−-szal elérve is) a képpontok pontos
+négyzetekként látszanak, a többi nagyítás simított.
 
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
 egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A görgős nagyítás

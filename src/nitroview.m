@@ -309,7 +309,7 @@ kernel void convert_buf(device const uchar *src [[buffer(1)]],
 }
 
 struct VOut { float4 pos [[position]]; float2 uv; };
-struct DrawParams { float2 origin; float2 size; uint orientation; };   // NDC top-left + extent
+struct DrawParams { float2 origin; float2 size; uint orientation; uint nearest; };   // NDC top-left + extent
 
 vertex VOut vmain(uint vid [[vertex_id]], constant DrawParams &p [[buffer(0)]]) {
     float2 q = float2(vid & 1, vid >> 1);            // 0..1 display space, y down
@@ -331,9 +331,11 @@ vertex VOut vmain(uint vid [[vertex_id]], constant DrawParams &p [[buffer(0)]]) 
     return o;
 }
 
-fragment float4 fmain(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+fragment float4 fmain(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]],
+                      constant DrawParams &p [[buffer(0)]]) {
     constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge, max_anisotropy(4));
-    return tex.sample(s, in.uv);
+    constexpr sampler sn(filter::nearest, address::clamp_to_edge);   // integer zoom: exact pixel blocks
+    return p.nearest ? tex.sample(sn, in.uv, level(0)) : tex.sample(s, in.uv);
 }
 )MSL";
 
@@ -348,7 +350,7 @@ typedef struct {
     float origin[2];     // NDC position of the image's top-left corner
     float size[2];       // NDC extent
     uint32_t orientation;
-    uint32_t pad;
+    uint32_t nearest;    // 1: sample the nearest pixel (integer zoom >= 200%: pixel-exact blocks)
 } DrawParams;
 
 typedef struct {
@@ -580,18 +582,19 @@ typedef struct {
 
 // Window content size for an image of w x h pixels (after EXIF rotation):
 // smaller than the screen: exactly 100% (one image pixel per device pixel,
-// rounded up so it is never scaled down); larger: the image's aspect ratio,
-// as large as fits the visible screen area.
-static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NSScreen *scr) {
+// rounded up so it is never scaled down) unless 'upscale'; larger (or with
+// 'upscale'): the image's aspect ratio, as large as fits the visible screen.
+static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NSScreen *scr, BOOL upscale) {
     if (!scr) scr = NSScreen.mainScreen;
     NSRect vis = scr.visibleFrame;
     double bs = scr.backingScaleFactor > 0 ? scr.backingScaleFactor : 1;
     double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
     double maxW = vis.size.width, maxH = vis.size.height - tb;
     double pw = w / bs, ph = h / bs;   // points at 100%
-    double k = MIN(1.0, MIN(maxW / pw, maxH / ph));
-    double cw = k >= 1 ? ceil(pw) : floor(pw * k);
-    double ch = k >= 1 ? ceil(ph) : floor(ph * k);
+    double k = MIN(maxW / pw, maxH / ph);
+    if (!upscale) k = MIN(k, 1.0);
+    double cw = k == 1 ? ceil(pw) : floor(pw * k);
+    double ch = k == 1 ? ceil(ph) : floor(ph * k);
     return NSMakeSize(MAX(cw, 320), MAX(ch, 200));
 }
 
@@ -633,6 +636,7 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
     unsigned _slideGen;       // invalidates pending slideshow steps
     // zoom / pan: kept when paging, so a series can be compared at the same spot
     BOOL _zoomed;             // NO: fit to window
+    BOOL _fitScreen;          // fit mode also enlarges small images to the screen (key 0)
     double _scale;            // image pixels -> drawable (device) pixels
     double _cx, _cy;          // image point (display orientation, pixels) at the view centre
     CGPoint _dragLast;        // last mouse position while dragging
@@ -711,7 +715,7 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
         cs = NSMakeSize(MAX(320, MIN(mx.width, floor(iw * _scale / bs))),
                         MAX(200, MIN(mx.height, floor(ih * _scale / bs))));
     } else {
-        cs = window_content_size(iw, ih, w.styleMask, w.screen);
+        cs = window_content_size(iw, ih, w.styleMask, w.screen, _fitScreen);
     }
     NSRect cur = [w contentRectForFrameRect:w.frame];
     if (fabs(cur.size.width - cs.width) < 0.5 && fabs(cur.size.height - cs.height) < 0.5) return;
@@ -755,9 +759,16 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
 - (void)fsBegin:(NSNotification *)n { _fsTransition = YES; }
 - (void)fsEnd:(NSNotification *)n { _fsTransition = NO; }
 
-// W: window back to the image size (fit), and follow the image size again.
+// W: back to the image's own size (small images 100%), window follows it again.
+// 0: fit to the screen, enlarging small images too; stays on while paging (until W).
+- (void)fitToScreen {
+    _fitScreen = YES;
+    [self zoomFit];
+}
+
 - (void)windowToImage {
     _userSized = NO;
+    _fitScreen = NO;
     [self zoomFit];
     Decoded *d = [_loader get:_index];
     if (d) [self fitWindowTo:d];
@@ -802,7 +813,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     double iw, ih;
     display_size(d, &iw, &ih);
     double s = MIN(ds.width / iw, ds.height / ih);
-    if (s > 1 && self.window && !self.isFullScreen) s = 1;   // don't upscale in a window
+    if (s > 1 && self.window && !self.isFullScreen && !_fitScreen) s = 1;   // small images: 100% (unless key 0)
     return s;
 }
 - (double)fitScale:(Decoded *)d { return [self fitScale:d view:self.drawableSize]; }
@@ -866,7 +877,8 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         }
     }
     ns = MAX(MIN(fit, 1.0) / 4, MIN(ns, 32.0));
-    if (fabs(ns - 1.0) < 1e-6) ns = 1.0;        // e.g. sqrt(2) * sqrt(1/2)
+    double r = round(ns);                       // e.g. sqrt(2)^2 -> exactly 200%
+    if (r >= 1 && fabs(ns - r) < 1e-6 * r) ns = r;
     if (fabs(ns - fit) < 1e-6 * fit) ns = fit;
     [self setScale:ns image:d view:ds anchor:a];
 }
@@ -971,7 +983,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     double x0 = round(ds.width / 2 - cx * s), y0 = round(ds.height / 2 - cy * s);
     DrawParams p = {{(float)(x0 / ds.width * 2 - 1), (float)(1 - y0 / ds.height * 2)},
                     {(float)(2 * iw * s / ds.width), (float)(2 * ih * s / ds.height)},
-                    (uint32_t)d.orientation, 0};
+                    (uint32_t)d.orientation, (uint32_t)(s >= 2 && s == floor(s))};
     return p;
 }
 
@@ -980,8 +992,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     switch (k) {
     case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
-    case '0': [self zoomFit]; break;
+    case '0': [self fitToScreen]; break;
     case '1': [self zoomTo:1.0 image:d view:ds]; break;
+    case '2': [self zoomTo:2.0 image:d view:ds]; break;
     case 'L': [self panX:-0.125 y:0 image:d view:ds]; break;
     case 'R': [self panX:0.125 y:0 image:d view:ds]; break;
     case 'U': [self panX:0 y:-0.125 image:d view:ds]; break;
@@ -1002,8 +1015,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         switch ([ch characterAtIndex:0]) {
         case '+': case '=': if (cur) [self zoomBy:M_SQRT2 image:cur view:self.drawableSize]; return;
         case '-': case '_': if (cur) [self zoomBy:M_SQRT1_2 image:cur view:self.drawableSize]; return;
-        case '0': [self zoomFit]; return;
+        case '0': [self fitToScreen]; return;
         case '1': if (cur) [self zoomTo:1.0 image:cur view:self.drawableSize]; return;
+        case '2': if (cur) [self zoomTo:2.0 image:cur view:self.drawableSize]; return;
         case 'w': case 'W': [self windowToImage]; return;
         default: break;
         }
@@ -1061,6 +1075,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         DrawParams p = [self drawParams:d view:view.drawableSize];
         [re setRenderPipelineState:_gpu.draw];
         [re setVertexBytes:&p length:sizeof p atIndex:0];
+        [re setFragmentBytes:&p length:sizeof p atIndex:0];
         [re setFragmentTexture:tex atIndex:0];
         [re drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
     }
@@ -1219,7 +1234,8 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
     id<MTLTexture> target = [gpu.device newTextureWithDescriptor:td];
     id<MTLBuffer> out = [gpu.device newBufferWithLength:(size_t)W * H * 4 options:MTLResourceStorageModeShared];
     const char *scen[] = {"1", "1RRRDD", "1RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
-                          "1UUUUUUUUUUUUUUUUUUUUUUUUUUUULLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "1+-", "1-+", "+", "++--", "0", NULL};
+                          "1UUUUUUUUUUUUUUUUUUUUUUUUUUUULLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "1+-", "1-+", "+", "++--", "0",
+                          "2", "2RRRDD", "1++", "1++++", "1+", NULL};
     int bad = 0;
     for (NSString *f in files) {
         @autoreleasepool {
@@ -1263,6 +1279,7 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 id<MTLRenderCommandEncoder> re = [c2 renderCommandEncoderWithDescriptor:rpd];
                 [re setRenderPipelineState:gpu.draw];
                 [re setVertexBytes:&p length:sizeof p atIndex:0];
+                [re setFragmentBytes:&p length:sizeof p atIndex:0];
                 [re setFragmentTexture:tex atIndex:0];
                 [re drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
                 [re endEncoding];
@@ -1279,11 +1296,14 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 long ix0 = lround(x0), iy0 = lround(y0);
                 const uint8_t *o = out.contents, *r = ref.contents;
                 long checked = 0, diff = 0;
-                if (sc == 1.0 && d.orientation == 1) {
+                if (sc >= 1 && sc == floor(sc) && d.orientation == 1) {   // integer zoom: exact pixel blocks
+                    long isc = (long)sc;
                     for (int y = 0; y < H; y++)
                         for (int x = 0; x < W; x++) {
-                            long sx = x - ix0, sy = y - iy0;
-                            if (sx < 0 || sy < 0 || sx >= d.width || sy >= d.height) continue;
+                            long dx = x - ix0, dy = y - iy0;
+                            if (dx < 0 || dy < 0) continue;
+                            long sx = dx / isc, sy = dy / isc;
+                            if (sx >= d.width || sy >= d.height) continue;
                             const uint8_t *a = o + ((size_t)y * W + x) * 4, *b = r + (size_t)sy * rp + (size_t)sx * 4;
                             checked++;
                             if (a[2] != b[0] || a[1] != b[1] || a[0] != b[2]) diff++;   // BGRA vs RGBA
@@ -1295,7 +1315,7 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
                 BOOL ok = inside && insidey && covers && diff == 0;
                 printf("   %-10.10s%s scale %6.1f%%  image at (%6.0f,%6.0f) %6.0fx%-6.0f %s%s\n", scen[si],
                        strlen(scen[si]) > 10 ? "…" : " ", sc * 100, x0, y0, wpx, hpx,
-                       checked ? [NSString stringWithFormat:@"1:1 check %ld px, %ld differ  ", checked, diff].UTF8String : "",
+                       checked ? [NSString stringWithFormat:@"pixel-exact check %ld px, %ld differ  ", checked, diff].UTF8String : "",
                        ok ? "OK" : "FAIL");
                 if (!ok) bad++;
             }
@@ -1392,7 +1412,7 @@ static NSRect initial_frame(NSString *first, NSWindowStyleMask mask) {
     NSRect vis = scr.visibleFrame;
     double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
     double maxH = vis.size.height - tb, w, h;
-    NSSize cs = header_size(first, &w, &h) ? window_content_size(w, h, mask, scr)
+    NSSize cs = header_size(first, &w, &h) ? window_content_size(w, h, mask, scr, NO)
                                            : NSMakeSize(floor(vis.size.width * 0.84), floor(maxH * 0.84));
     return NSMakeRect(vis.origin.x + floor((vis.size.width - cs.width) / 2),
                       vis.origin.y + floor((maxH - cs.height) / 2), cs.width, cs.height);
@@ -1497,9 +1517,10 @@ int main(int argc, const char **argv) {
                 "keys:\n"
                 "  PgDn Space              next image         PgUp Backspace           previous\n"
                 "  Home / End              first / last       F / Enter                full screen\n"
-                "  + / -                   zoom in / out      0 fit to window          1 actual size (1:1)\n"
+                "  + / -                   zoom in / out      0 fit to screen          1 actual size (1:1)\n"
+                "  2                       200%%, pixel-exact (1 image pixel = 2x2 screen pixels)\n"
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
-                "  W                       window back to the image size (after a manual resize)\n"
+                "  W                       back to the image's own size (small images 100%%, window follows)\n"
                 "mouse:\n"
                 "  drag                    move a zoomed image\n"
                 "  scroll wheel            zoom around the cursor (trackpad: smooth, pinch too)\n"
