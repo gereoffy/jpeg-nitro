@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.webp" alt="NitroView – JPEG viewer for macOS" width="800"></p>
+
 # jpeg-nitro
 
 [English](README.md) | **Magyar**
