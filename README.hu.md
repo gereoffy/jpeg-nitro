@@ -29,6 +29,9 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 | egérhúzás | a nagyított kép mozgatása |
 | görgő | nagyítás a kurzor alatti pont körül (kattanásonként √2-es lépés; trackpaden folyamatos, csíptetés is) |
 | dupla kattintás | illesztett → 100% a kattintott ponton; újra → vissza illesztettre |
+| jobb kattintás / Shift + jobb kattintás | következő / előző kép |
+| Ctrl + görgő | előző (előre görgetve) / következő (hátra görgetve) kép; trackpaden 40 képpontonként egy kép |
+| egér oldalgombok (vissza / előre) | előző / következő kép |
 | F / Enter | teljes képernyő be/ki (`-f`: indításkor teljes képernyő) |
 | P | diavetítés szüneteltetése / folytatása |
 | Esc / Q | kilépés (Esc teljes képernyőn: vissza ablakba) |
@@ -50,7 +53,9 @@ a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
 egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A görgős nagyítás
 helyben tartja a kurzor alatti pontot, kivéve amíg a kép valamelyik irányban keskenyebb az
-ablaknál: abban az irányban addig középen marad, amíg ki nem tölti. A nagyító
+ablaknál: abban az irányban addig középen marad, amíg ki nem tölti. Ha a Ctrl + görgő a teljes képernyőt nagyítja, akkor a macOS
+kisegítő nagyítása van a Ctrl + görgetésre állítva (Rendszerbeállítások → Kisegítő lehetőségek →
+Nagyítás). A nagyító
 billentyűket a leütött karakter alapján ismeri fel, így bármilyen billentyűzetkiosztáson és a
 numerikus billentyűzeten is működnek; a címsor mutatja az aktuális nagyítást.
 
@@ -60,6 +65,8 @@ Egyéb módok:
 - `--zoomtest fájlok…`: a nagyítás/mozgatás billentyűsorozatait képernyőn kívül lejátssza, és
   ellenőrzi, hogy 100%-nál minden kirajzolt pixel egyezik a dekódolt képpel (a szélek és a
   nagyítási lépések igazítása is).
+- `--inputtest fájlok…`: mesterséges egér- és görgőeseményeket küld, és ellenőrzi a lapozást és a
+  nagyítást.
 - `--auto <ms>`: tesztelési mód: adott időközönként lapoz (akkor is, ha a kép még nem jelent
   meg), a végén kilép. Késleltetésméréshez.
 

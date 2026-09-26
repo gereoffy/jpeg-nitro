@@ -610,6 +610,7 @@ typedef struct {
     double _scale;            // image pixels -> drawable (device) pixels
     double _cx, _cy;          // image point (display orientation, pixels) at the view centre
     CGPoint _dragLast;        // last mouse position while dragging
+    double _pageAccum;        // Ctrl + trackpad scrolling: accumulated distance
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 
@@ -819,12 +820,33 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 
 - (void)mouseUp:(NSEvent *)e { [[NSCursor arrowCursor] set]; }
 
+// Right click: next image (Shift: previous). Side buttons: back / forward.
+- (void)rightMouseDown:(NSEvent *)e {
+    if (e.modifierFlags & NSEventModifierFlagShift) [self go:_index - 1 dir:-1];
+    else [self go:_index + 1 dir:1];
+}
+- (void)otherMouseDown:(NSEvent *)e {
+    if (e.buttonNumber == 3) [self go:_index - 1 dir:-1];
+    else if (e.buttonNumber == 4) [self go:_index + 1 dir:1];
+}
+
 - (void)scrollWheel:(NSEvent *)e {
-    Decoded *d = [_loader get:_index];
-    if (!d) return;
     double dy = e.scrollingDeltaY;
     if (e.isDirectionInvertedFromDevice) dy = -dy;   // physical direction: forward / up = zoom in
-    if (dy == 0) return;
+    if (e.modifierFlags & NSEventModifierFlagControl) {   // Ctrl + wheel: paging (back = next)
+        if (!e.hasPreciseScrollingDeltas) {
+            if (dy < 0) [self go:_index + 1 dir:1];
+            else if (dy > 0) [self go:_index - 1 dir:-1];
+            return;
+        }
+        _pageAccum += dy;                                 // trackpad: one image per 40 px
+        if (e.phase == NSEventPhaseBegan) _pageAccum = dy;
+        while (_pageAccum <= -40) { _pageAccum += 40; [self go:_index + 1 dir:1]; }
+        while (_pageAccum >= 40) { _pageAccum -= 40; [self go:_index - 1 dir:-1]; }
+        return;
+    }
+    Decoded *d = [_loader get:_index];
+    if (!d || dy == 0) return;
     double f = e.hasPreciseScrollingDeltas ? exp(dy * 0.01)          // trackpad: continuous
                                            : (dy > 0 ? M_SQRT2 : M_SQRT1_2);   // wheel: one step per notch
     [self zoomBy:f image:d view:self.drawableSize anchor:[self anchorForEvent:e]];
@@ -1226,9 +1248,74 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
     return bad != 0;
 }
 
+// Sends synthesized mouse / wheel events (as macOS would) to the viewer and
+// checks the resulting image index and zoom.
+static int run_inputtest(NSArray<NSString *> *files, GPU *gpu) {
+    if (files.count < 5) { fprintf(stderr, "--inputtest needs at least 5 files\n"); return 2; }
+    ViewerView *v = [[ViewerView alloc] initWithFrame:NSMakeRect(0, 0, 800, 500) device:gpu.device];
+    v.files = files;
+    v.gpu = gpu;
+    v.loader = [[Loader alloc] initWithFiles:files pool:gpu.pool align:gpu.align];
+    [v go:0 dir:1];
+    for (int i = 0; i < 400 && ![v.loader get:0]; i++) usleep(5000);   // wait for the first image
+    NSEvent * (^wheel)(double, CGEventFlags, BOOL) = ^NSEvent *(double dy, CGEventFlags fl, BOOL precise) {
+        CGEventRef ce = CGEventCreateScrollWheelEvent(NULL, precise ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine,
+                                                      1, (int32_t)dy);
+        CGEventSetFlags(ce, fl);
+        if (precise) CGEventSetIntegerValueField(ce, kCGScrollWheelEventIsContinuous, 1);
+        NSEvent *e = [NSEvent eventWithCGEvent:ce];
+        CFRelease(ce);
+        return e;
+    };
+    NSEvent * (^mouse)(CGEventType, int, CGEventFlags) = ^NSEvent *(CGEventType t, int button, CGEventFlags fl) {
+        CGEventRef ce = CGEventCreateMouseEvent(NULL, t, CGPointMake(100, 100), (CGMouseButton)button);
+        CGEventSetIntegerValueField(ce, kCGMouseEventButtonNumber, button);
+        CGEventSetFlags(ce, fl);
+        NSEvent *e = [NSEvent eventWithCGEvent:ce];
+        CFRelease(ce);
+        return e;
+    };
+    struct { const char *what; NSEvent *ev; long expect; } steps[] = {
+        {"Ctrl+wheel back",      wheel(-1, kCGEventFlagMaskControl, NO), 1},
+        {"Ctrl+wheel back",      wheel(-1, kCGEventFlagMaskControl, NO), 2},
+        {"Ctrl+wheel back",      wheel(-1, kCGEventFlagMaskControl, NO), 3},
+        {"Ctrl+wheel forward",   wheel(+1, kCGEventFlagMaskControl, NO), 2},
+        {"right click",          mouse(kCGEventRightMouseDown, 1, 0), 3},
+        {"Shift+right click",    mouse(kCGEventRightMouseDown, 1, kCGEventFlagMaskShift), 2},
+        {"side button forward",  mouse(kCGEventOtherMouseDown, 4, 0), 3},
+        {"side button back",     mouse(kCGEventOtherMouseDown, 3, 0), 2},
+        {"wheel without Ctrl",   wheel(+1, 0, NO), 2},                      // zooms, no paging
+        {"Ctrl+trackpad 3x15px", NULL, 2}, {"(+15px)", NULL, 2}, {"(+15px) -> 45px", NULL, 1},
+        {"Home: Ctrl+wheel fwd", NULL, 0},
+        {"at first: forward",    wheel(+1, kCGEventFlagMaskControl, NO), 0},   // no rollover
+    };
+    int n = (int)(sizeof steps / sizeof *steps), bad = 0;
+    for (int i = 0; i < n; i++) {
+        if (!strcmp(steps[i].what, "Ctrl+trackpad 3x15px") || !strcmp(steps[i].what, "(+15px)") ||
+            !strcmp(steps[i].what, "(+15px) -> 45px"))
+            [v scrollWheel:wheel(+15, kCGEventFlagMaskControl, YES)];
+        else if (!strcmp(steps[i].what, "Home: Ctrl+wheel fwd"))
+            for (int k = 0; k < 3; k++) [v scrollWheel:wheel(+1, kCGEventFlagMaskControl, NO)];
+        else if (steps[i].ev.type == NSEventTypeScrollWheel) {
+            if (i == 8)   // zooming needs the current image decoded
+                for (int k = 0; k < 400 && ![v.loader get:v.index]; k++) usleep(5000);
+            [v scrollWheel:steps[i].ev];
+        }
+        else if (steps[i].ev.type == NSEventTypeRightMouseDown) [v rightMouseDown:steps[i].ev];
+        else [v otherMouseDown:steps[i].ev];
+        BOOL ok = v.index == steps[i].expect;
+        if (i == 8) ok = ok && [v testZoomed];   // plain wheel must have zoomed in
+        printf("  %-22s -> image %ld (expected %ld)%s  %s\n", steps[i].what, (long)v.index + 1, steps[i].expect + 1,
+               i == 8 ? ([v testZoomed] ? ", zoomed in" : ", NOT zoomed") : "", ok ? "OK" : "FAIL");
+        if (!ok) bad++;
+    }
+    printf(bad ? "INPUTTEST: %d problem(s)\n" : "INPUTTEST OK\n", bad);
+    return bad != 0;
+}
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
-        BOOL full = NO, bench = NO, selftest = NO, zoomtest = NO;
+        BOOL full = NO, bench = NO, selftest = NO, zoomtest = NO, inputtest = NO;
         double auto_ms = 0, slide_ms = 0;
         NSMutableArray *args = [NSMutableArray array];
         for (int i = 1; i < argc; i++) {
@@ -1236,6 +1323,7 @@ int main(int argc, const char **argv) {
             else if (!strcmp(argv[i], "--bench")) bench = YES;
             else if (!strcmp(argv[i], "--selftest")) selftest = YES;
             else if (!strcmp(argv[i], "--zoomtest")) zoomtest = YES;
+            else if (!strcmp(argv[i], "--inputtest")) inputtest = YES;
             else if (!strcmp(argv[i], "--auto") && i + 1 < argc) auto_ms = atof(argv[++i]);   // page every N ms, then quit
             else if (!strcmp(argv[i], "-j") && i + 1 < argc) nj_set_max_workers(atoi(argv[++i]));   // decoder threads
             else if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--slideshow")) && i + 1 < argc) slide_ms = atof(argv[++i]);
@@ -1265,6 +1353,9 @@ int main(int argc, const char **argv) {
                 "  drag                    move a zoomed image\n"
                 "  scroll wheel            zoom around the cursor (trackpad: smooth, pinch too)\n"
                 "  double click            fit <-> 100%% at the clicked point\n"
+                "  right click             next image (Shift: previous)\n"
+                "  Ctrl + scroll wheel     previous / next image\n"
+                "  side buttons            previous / next image\n"
                 "  P                       pause/resume slideshow\n"
                 "  Esc                     leave full screen / quit                Q   quit\n",
 #ifdef NV_TURBOJPEG
@@ -1285,6 +1376,7 @@ int main(int argc, const char **argv) {
         if (bench) return run_bench(files, gpu);
         if (selftest) return run_selftest(files, gpu);
         if (zoomtest) return run_zoomtest(files, gpu);
+        if (inputtest) return run_inputtest(files, gpu);
 
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;

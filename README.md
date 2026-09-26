@@ -29,6 +29,9 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | mouse drag | move a zoomed image |
 | scroll wheel | zoom around the point under the cursor (one √2 step per notch; trackpad: smooth, pinch too) |
 | double click | fit → 100% at the clicked point; again → back to fit |
+| right click / Shift + right click | next / previous image |
+| Ctrl + scroll wheel | previous (forward) / next (back) image; trackpad: one image per 40 px |
+| mouse side buttons (back / forward) | previous / next image |
 | F / Enter | toggle full screen (`-f`: start in full screen) |
 | P | pause / resume the slideshow |
 | Esc / Q | quit (Esc in full screen: back to a window) |
@@ -36,7 +39,8 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
-than the window along an axis: it stays centred there until it fills the window. The zoom keys work by character, so they work on any keyboard layout and the
+than the window along an axis: it stays centred there until it fills the window. If Ctrl + scroll zooms the whole screen instead, macOS Accessibility zoom is set to use
+Ctrl with the scroll gesture (System Settings → Accessibility → Zoom). The zoom keys work by character, so they work on any keyboard layout and the
 numeric keypad; the title shows the current zoom. The window title shows the file name, size and
 decode time; stdout gets one line per image with read time, decode time and the
 key → on-screen latency. EXIF orientation is honoured.
@@ -56,6 +60,7 @@ Other modes:
 - `--selftest files…`: compare the GPU colour conversion with libjpeg-turbo's output.
 - `--zoomtest files…`: replays zoom/pan key sequences offscreen and checks that at 100% every
   drawn pixel equals the decoded image (plus edge clamping and zoom snapping).
+- `--inputtest files…`: sends synthesized mouse and wheel events and checks paging and zoom.
 - `--auto <ms>`: test mode: pages every `ms` (even if the image isn't shown yet) and quits
   at the end. For latency measurements.
 
