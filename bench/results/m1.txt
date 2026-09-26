@@ -52,10 +52,10 @@ nitrojpeg       1 thread -> YUV      total   4581.5 ms   avg  106.5 ms/img   wor
 nitrojpeg       parallel -> YUV      total    442.8 ms   avg   10.3 ms/img   worst   51.3 ms
 nitrojpeg       parallel -> BGRX     total   1179.3 ms   avg   27.4 ms/img   worst  105.6 ms
 
-# PNG: bench/pngbench on 6 RGB PNGs (~10 MP, 36 MB), ms/image
-# decoder                     M1      i9
-  ImageIO native buffer       124     126
-  ImageIO -> BGRA ctx         128     139
-  Wuffs -> BGRA               94      53
-  nitropng 1 thread -> rows   132     74
-  nitropng parallel -> rows   41      21
+# PNG: bench/pngbench samples_png/real/*.png (34 real PNGs, 938 MB, 805 Mpixel), ms/image
+# decoder                     M1              i9
+  ImageIO native buffer       363.5           345.4
+  ImageIO -> BGRA ctx         392.3           376.0
+  Wuffs -> BGRA               272.1           180.1
+  nitropng 1 thread -> rows   353.4 / 354.2   222.6
+  nitropng parallel -> rows   99.0 / 100.1 / 105.4 / 107.5   45.5

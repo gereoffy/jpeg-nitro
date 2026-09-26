@@ -174,18 +174,20 @@ work (154 vs 107 ms); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 o
 efficiency cores add roughly one performance core). The NEON IDCT brought 8 threads from 43 to
 31 ms. The default (one thread per core, 8) is the best setting there.
 
-PNG (`bench/pngbench`, 6 RGB PNGs of ~10 MP, ms/image):
+PNG (`bench/pngbench samples_png/real/*.png`: 34 real PNGs, 938 MB, 805 Mpixel — screenshots,
+scans, AI images, maps; ms/image):
 
 | decoder | M1 | i9 |
 |---|---|---|
-| Apple ImageIO, native buffer | 124 | 126 |
-| Wuffs → BGRA | 94 | 53 |
-| nitropng, 1 thread | 132 | 74 |
-| **nitropng, parallel** | **41** | **21** |
+| Apple ImageIO, native buffer | 364 | 345 |
+| Apple ImageIO → BGRA | 392 | 376 |
+| Wuffs → BGRA | 272 | 180 |
+| nitropng, 1 thread | 354 | 223 |
+| **nitropng, parallel** | **~100** | **45.5** |
 
 There is no hardware PNG decoder, so ImageIO is equally slow on both. nitropng runs its
 Adler-32 and back-reference resolving without SIMD on ARM (they use AVX2 on x86); in parallel it
-is still 2.3× faster than Wuffs and 3× faster than ImageIO on the M1.
+is still 2.7× faster than Wuffs and 3.6× faster than ImageIO on the M1.
 
 ### How nitrojpeg parallelises a single image
 
