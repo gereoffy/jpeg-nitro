@@ -601,6 +601,7 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
 @property(nonatomic) Loader *loader;
 @property(nonatomic) NSInteger index;
 - (void)startSlideshow:(double)ms;
+- (void)windowToImage;
 // used by --zoomtest
 - (void)testKey:(char)k image:(Decoded *)d view:(CGSize)ds;
 - (DrawParams)drawParams:(Decoded *)d view:(CGSize)ds;
@@ -628,6 +629,10 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
     double _cx, _cy;          // image point (display orientation, pixels) at the view centre
     CGPoint _dragLast;        // last mouse position while dragging
     double _pageAccum;        // Ctrl + trackpad scrolling: accumulated distance
+    // window sizing
+    BOOL _userSized;          // the user resized the window: stop following the image size
+    BOOL _selfResizing;       // our own setFrame in progress
+    BOOL _fsTransition;       // entering / leaving full screen
 }
 - (BOOL)acceptsFirstResponder { return YES; }
 
@@ -686,7 +691,7 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
 // centre, staying on screen). Not when zoomed in, and not in full screen.
 - (void)fitWindowTo:(Decoded *)d {
     NSWindow *w = self.window;
-    if (!w || !d || _zoomed || self.isFullScreen) return;
+    if (!w || !d || _zoomed || _userSized || _fsTransition || self.isFullScreen) return;
     double iw, ih;
     display_size(d, &iw, &ih);
     NSSize cs = window_content_size(iw, ih, w.styleMask, w.screen);
@@ -699,7 +704,37 @@ static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NS
     if (nf.origin.x < vis.origin.x) nf.origin.x = vis.origin.x;
     if (NSMaxY(nf) > NSMaxY(vis)) nf.origin.y = NSMaxY(vis) - nf.size.height;
     if (nf.origin.y < vis.origin.y) nf.origin.y = vis.origin.y;
+    _selfResizing = YES;
     [w setFrame:nf display:YES animate:NO];
+    _selfResizing = NO;
+}
+
+// Any resize we didn't do ourselves (dragging an edge, the green button,
+// window tiling) counts as the user's choice: keep that size from now on.
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc removeObserver:self];
+    NSWindow *w = self.window;
+    if (!w) return;
+    [nc addObserver:self selector:@selector(windowResized:) name:NSWindowDidResizeNotification object:w];
+    [nc addObserver:self selector:@selector(fsBegin:) name:NSWindowWillEnterFullScreenNotification object:w];
+    [nc addObserver:self selector:@selector(fsBegin:) name:NSWindowWillExitFullScreenNotification object:w];
+    [nc addObserver:self selector:@selector(fsEnd:) name:NSWindowDidEnterFullScreenNotification object:w];
+    [nc addObserver:self selector:@selector(fsEnd:) name:NSWindowDidExitFullScreenNotification object:w];
+}
+- (void)windowResized:(NSNotification *)n {
+    if (!_selfResizing && !_fsTransition && !self.isFullScreen) _userSized = YES;
+}
+- (void)fsBegin:(NSNotification *)n { _fsTransition = YES; }
+- (void)fsEnd:(NSNotification *)n { _fsTransition = NO; }
+
+// W: window back to the image size (fit), and follow the image size again.
+- (void)windowToImage {
+    _userSized = NO;
+    [self zoomFit];
+    Decoded *d = [_loader get:_index];
+    if (d) [self fitWindowTo:d];
 }
 
 - (void)imageDecoded:(NSInteger)i {
@@ -940,6 +975,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         case '-': case '_': if (cur) [self zoomBy:M_SQRT1_2 image:cur view:self.drawableSize]; return;
         case '0': [self zoomFit]; return;
         case '1': if (cur) [self zoomTo:1.0 image:cur view:self.drawableSize]; return;
+        case 'w': case 'W': [self windowToImage]; return;
         default: break;
         }
     }
@@ -1434,6 +1470,7 @@ int main(int argc, const char **argv) {
                 "  Home / End              first / last       F / Enter                full screen\n"
                 "  + / -                   zoom in / out      0 fit to window          1 actual size (1:1)\n"
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
+                "  W                       window back to the image size (after a manual resize)\n"
                 "mouse:\n"
                 "  drag                    move a zoomed image\n"
                 "  scroll wheel            zoom around the cursor (trackpad: smooth, pinch too)\n"
@@ -1505,6 +1542,10 @@ int main(int argc, const char **argv) {
             __block NSInteger shown = 1;
             [NSTimer scheduledTimerWithTimeInterval:auto_ms / 1000.0 repeats:YES block:^(NSTimer *t) {
                 if (shown++ >= (NSInteger)files.count) { [NSApp terminate:nil]; return; }
+                if (getenv("NV_TEST_RESIZE")) {   // test: "user" resize before image 2, W before image 4
+                    if (shown == 2) [win setFrame:[win frameRectForContentRect:NSMakeRect(200, 200, 1000, 700)] display:YES];
+                    if (shown == 4) [v windowToImage];
+                }
                 if (shown == 2 && getenv("NV_TEST_ZOOM")) {   // test: zoom to 100% before paging on
                     Decoded *d = [v.loader get:v.index];
                     if (d) [v testKey:'1' image:d view:v.drawableSize];

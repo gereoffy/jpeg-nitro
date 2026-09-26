@@ -26,6 +26,7 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | 0 | fit to window |
 | 1 | actual size: one image pixel = one screen pixel |
 | ← → ↑ ↓ | move a zoomed image (Shift: half a screen per step) |
+| W | window back to the image size, and follow image sizes again |
 | mouse drag | move a zoomed image |
 | scroll wheel | zoom around the point under the cursor (one √2 step per notch; trackpad: smooth, pinch too) |
 | double click | fit → 100% at the clicked point; again → back to fit |
@@ -39,7 +40,8 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
 with the image's aspect ratio as large as fits (no black bars). When paging, it follows each
 image's size (keeping its centre), except while zoomed in: then the window, zoom and position
-stay. The title shows the zoom level right after the file name. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
+stay. After you resize the window yourself (edge drag, green button, tiling) it keeps that
+size; W brings it back to the image size and turns the automatic sizing back on. The title shows the zoom level right after the file name. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
 than the window along an axis: it stays centred there until it fills the window. If Ctrl + scroll zooms the whole screen instead, macOS Accessibility zoom is set to use

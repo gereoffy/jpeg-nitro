@@ -26,6 +26,7 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 | 0 | képernyőhöz illesztés |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
+| W | ablak vissza a kép méretére, és újra kövesse a képek méretét |
 | egérhúzás | a nagyított kép mozgatása |
 | görgő | nagyítás a kurzor alatti pont körül (kattanásonként √2-es lépés; trackpaden folyamatos, csíptetés is) |
 | dupla kattintás | illesztett → 100% a kattintott ponton; újra → vissza illesztettre |
@@ -53,7 +54,8 @@ a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
 arányával, akkorára, amekkora kifér (fekete sávok nélkül). Lapozáskor minden képnél igazodik
 (a közepe helyben marad), kivéve ha bele van nagyítva: akkor az ablak, a nagyítás és a pozíció
-is marad. A címsorban a fájlnév után látszik a nagyítás mértéke.
+is marad. Ha kézzel átméretezed az ablakot (szél húzása, zöld gomb, ablakrendezés), azt a
+méretet megtartja; a W visszaállítja a kép méretére, és újra bekapcsolja az automatikus méretezést. A címsorban a fájlnév után látszik a nagyítás mértéke.
 
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
 egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A görgős nagyítás
