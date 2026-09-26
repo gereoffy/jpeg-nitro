@@ -49,8 +49,13 @@ Az utolsó képnél megáll. P szünetelteti, a lapozó gombok közben is műkö
 folytatja. Az időzítés a monitor frissítéséhez igazodik (60 Hz-en ±8 ms).
 Paraméterek nélkül (vagy `-h`) a program kiírja az összes kapcsolót.
 
-**Más formátumok:** a JPEG mellett a nitroview megnyitja a PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP
-és PSD (a lapított kép) fájlokat is. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
+**Más formátumok:** a JPEG mellett a nitroview megnyitja a PNG, PSD/PSB, HEIC/HEIF, TIFF, WebP, GIF
+és BMP fájlokat is. PSD/PSB-nél az összefésült (kompozit) kép jelenik meg: 8 bites RGB és
+szürkeárnyalatos fájloknál a **nitropsd** dekódolja (mind a négy tömörítéssel: nyers, RLE, ZIP, ZIP
+predikcióval), egyébként az Apple ImageIO – ami a ZIP-es PSD-ket egyáltalán nem tudja megnyitni. Egy
+24 MP-es RLE-s PSD ~5 ms (ImageIO: ~170 ms), a ZIP-es ~46 ms: az RLE sorhossz-táblájából minden sor
+helye kiszámolható, így a sorok párhuzamosan bonthatók ki; a ZIP a nitropng párhuzamos inflate-jét
+használja. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
 dekódolja (8 bites szürke / RGB / RGBA, nem interlaced: a legtöbb PNG), egyébként a
 [Wuffs](https://github.com/google/wuffs), ha elérhető (`scripts/get-deps.sh`), vagy az Apple ImageIO.
 Az átlátszó képek fekete háttéren jelennek meg. 38 valódi PNG-n (képernyőképek, szkennelések,
@@ -325,9 +330,12 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
   `bench/robust.c`: hibatűrési teszt, `bench/freqprobe.c`: órajelmérés,
   `bench/sustain.c`: tartós terhelés, `bench/ab.sh`: zajtűrő A/B összehasonlítás
 - `src/nitropng.c/.h`: önálló párhuzamos PNG-dekóder
+- `src/nitropsd.c/.h`: párhuzamos PSD/PSB-dekóder (összefésült kép)
 - `src/png_wuffs.c/.h`: opcionális Wuffs-os PNG-dekódolás a nézőhöz (a nitropng által kihagyott PNG-fajtákhoz)
 - `bench/pngbench.m`, `bench/pngsplit.c`: PNG-dekóderek összehasonlítása, időmegoszlás,
-  `bench/pngverify.c`: a nitropng bájtpontossága a zlib-hez képest, `bench/pngrobust.c`: sérült PNG-k (ASan)
+  `bench/pngverify.c`: a nitropng bájtpontossága a zlib-hez képest, `bench/pngrobust.c`: sérült PNG-k (ASan),
+  `bench/mkpsd.py`: teszt-PSD-író (minden tömörítéssel), `bench/psdverify.c`: minden tömörítés a
+  nyershez mérve, `bench/psdrobust.c`: sérült PSD-k (ASan)
 - `bench/results/`: mért eredmények (`results.txt`, `ab_results.txt`, `matrix.txt`, `bands.txt`, `sync.txt`)
 
 ## Licenc

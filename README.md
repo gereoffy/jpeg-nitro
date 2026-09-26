@@ -60,8 +60,12 @@ at the last image; P pauses; the paging keys keep working and the slideshow cont
 there. Timing follows the display refresh (±8 ms at 60 Hz). Run without arguments (or `-h`)
 for the full list of options.
 
-**Other formats:** besides JPEG, nitroview opens PNG, HEIC/HEIF, TIFF, WebP, GIF, BMP and PSD
-(the flattened composite). PNG is decoded by **nitropng**, our own parallel PNG decoder
+**Other formats:** besides JPEG, nitroview opens PNG, PSD/PSB, HEIC/HEIF, TIFF, WebP, GIF and BMP.
+PSD/PSB: the merged (composite) image is shown, decoded by **nitropsd** for 8-bit RGB and
+grayscale files (all four compressions: raw, RLE, ZIP, ZIP with prediction), otherwise by Apple
+ImageIO — which cannot read ZIP-compressed PSDs at all. A 24 MP RLE PSD decodes in ~5 ms
+(ImageIO: ~170 ms), ZIP in ~46 ms: the RLE row table gives every row's position, so all rows
+are unpacked in parallel; ZIP uses nitropng's parallel inflate. PNG is decoded by **nitropng**, our own parallel PNG decoder
 (8-bit gray / RGB / RGBA, non-interlaced: most PNGs), otherwise by
 [Wuffs](https://github.com/google/wuffs) when it is available (`scripts/get-deps.sh`) or by
 Apple ImageIO like the other formats. Transparent images are shown over black. On 38 real PNGs
@@ -330,9 +334,12 @@ symlink). The measurements above were made on 50 private photos that are not in 
   `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,
   `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
 - `src/nitropng.c/.h`: self-contained parallel PNG decoder
+- `src/nitropsd.c/.h`: parallel PSD/PSB merged-image decoder
 - `src/png_wuffs.c/.h`: optional Wuffs PNG decoding for the viewer (PNG types nitropng skips)
 - `bench/pngbench.m`, `bench/pngsplit.c`: PNG decoder comparison and time split,
-  `bench/pngverify.c`: nitropng byte-exactness vs zlib, `bench/pngrobust.c`: damaged PNGs (ASan)
+  `bench/pngverify.c`: nitropng byte-exactness vs zlib, `bench/pngrobust.c`: damaged PNGs (ASan),
+  `bench/mkpsd.py`: test PSD writer (every compression), `bench/psdverify.c`: all compressions
+  vs raw, `bench/psdrobust.c`: damaged PSDs (ASan)
 - `bench/results/`: measured results
 
 ## License

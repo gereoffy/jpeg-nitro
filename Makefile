@@ -44,6 +44,10 @@ build/nitrojpeg_ref.o: src/nitrojpeg.c src/nitrojpeg.h | deps
 	@mkdir -p build
 	$(CC) $(REF_CFLAGS) -c $< -o $@
 
+build/nitropsd.o: src/nitropsd.c src/nitropsd.h src/nitropng.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -c $< -o $@
+
 build/nitropng.o: src/nitropng.c src/nitropng.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -60,8 +64,8 @@ build/.config-$(CONFIG):
 	@rm -f build/.config-* nitroview
 	@touch $@
 
-nitroview: src/nitroview.m build/nitrojpeg.o build/nitropng.o $(VIEWER_OBJS) build/.config-$(CONFIG) Makefile
-	$(CC) $(CFLAGS) $(VIEWER_DEFS) -fobjc-arc src/nitroview.m build/nitrojpeg.o build/nitropng.o $(VIEWER_OBJS) $(VIEWER_LIBS) \
+nitroview: src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) build/.config-$(CONFIG) Makefile
+	$(CC) $(CFLAGS) $(VIEWER_DEFS) -fobjc-arc src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $(VIEWER_OBJS) $(VIEWER_LIBS) \
 	  $(FRAMEWORKS) -framework ImageIO -o $@
 	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no), Wuffs PNG: $(if $(filter 1,$(WUFFS)),yes,no), ImageIO: always)"
 
@@ -92,6 +96,13 @@ bench/pngverify: bench/pngverify.c build/nitropng.o
 bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer bench/pngrobust.c src/nitropng.c -o $@
 
+bench/psdverify: bench/psdverify.c build/nitropsd.o build/nitropng.o
+	$(CC) -O3 $(CPUFLAGS) -w $^ -o $@
+
+# nitropsd robustness test on damaged PSDs, with AddressSanitizer + UBSan
+bench/psdrobust: bench/psdrobust.c src/nitropsd.c src/nitropsd.h src/nitropng.c
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer bench/psdrobust.c src/nitropsd.c src/nitropng.c -o $@
+
 bench/pngsplit: bench/pngsplit.c
 	$(CC) -O3 $(CPUFLAGS) $< -lz -o $@
 
@@ -101,10 +112,11 @@ bench/freqprobe: bench/freqprobe.c
 bench/sustain: bench/sustain.c build/nitrojpeg.o
 	$(CC) -O2 $^ -o $@
 
-tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit bench/pngverify bench/pngrobust \
-       bench/pngverify bench/pngrobust
+tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust \
+       bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
 
 clean:
-	rm -rf build nitroview bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit
+	rm -rf build nitroview bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
 
 .PHONY: all tools clean deps

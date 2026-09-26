@@ -30,6 +30,7 @@
 
 #include "nitrojpeg.h"
 #include "nitropng.h"
+#include "nitropsd.h"
 #ifdef NV_WUFFS
 #include "png_wuffs.h"   // optional fast PNG decoder
 #endif
@@ -53,7 +54,7 @@ static BOOL g_use_textures = NO;
 // ---------------------------------------------------------------------------
 // decoded image
 
-typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2 } Kind;   // PNG: unfiltered rows as decoded
+typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;   // PNG: unfiltered rows; PLANAR: PSD planes
 
 @interface Decoded : NSObject
 @property(nonatomic) id<MTLBuffer> buffer;
@@ -155,7 +156,7 @@ static NSData *read_file(NSString *path) {
 }
 
 // Decode one file into a Metal buffer. Runs on the decoder thread.
-enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_NITROPNG = -4 };
+enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_NITROPNG = -4, MODE_NITROPSD = -5 };
 static int g_nthreads = 0;   // -j
 
 static const char *mode_name(int m) {
@@ -167,6 +168,7 @@ static const char *mode_name(int m) {
     case MODE_WUFFS: return "wuffs";
     case MODE_IMAGEIO: return "imageio";
     case MODE_NITROPNG: return "nitropng";
+    case MODE_NITROPSD: return "nitropsd";
     default: return "?";
     }
 }
@@ -334,6 +336,32 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
 #endif
         return decode_imageio(data, d, pool, align, t1);
     }
+    if (len >= 4 && !memcmp(bytes, "8BPS", 4)) {
+        // nitropsd (parallel): merged image of 8-bit RGB / grayscale PSD and PSB
+        ps_info pi;
+        if (!ps_read_info(bytes, len, &pi) && pi.supported && pi.width <= MAX_TEX && pi.height <= MAX_TEX) {
+            size_t P = (size_t)(pi.ncolor + pi.alpha);
+            id<MTLBuffer> buf = [pool get:pi.plane_size * P];
+            ps_stats ps;
+            if (buf && !ps_decode(bytes, len, &pi, buf.contents, g_nthreads, &ps)) {
+                d.kind = KIND_PLANAR;
+                d.width = pi.width;
+                d.height = pi.height;
+                d.ncomp = pi.ncolor;
+                d.h0 = pi.alpha;   // (reused field) 1: plane ncolor is the merged transparency
+                d.pitch[0] = (size_t)pi.width;
+                for (int c = 0; c < 3; c++) d.offset[c] = pi.ncolor == 3 ? c * pi.plane_size : 0;
+                d.bands = 1;
+                if (buf.storageMode == MTLStorageModeManaged) [buf didModifyRange:NSMakeRange(0, pi.plane_size * P)];
+                d.buffer = buf;
+                d.mode = MODE_NITROPSD;
+                d.decode_ms = now_ms() - t1;
+                return d;
+            }
+            if (buf) [pool put:buf];
+        }
+        return decode_imageio(data, d, pool, align, t1);   // 16-bit, CMYK, Lab ... (no ZIP support there)
+    }
     nj_info fi;
     int ok = !nj_read_info(bytes, len, &fi);
     d.orientation = ok ? fi.orientation : 1;
@@ -424,6 +452,8 @@ struct PlaneParams {
     uint off[3];
     uint pitch[3];
     uint kind;
+    uint aoff;         // PSD: offset of the transparency plane (hasa = 1)
+    uint hasa;
 };
 
 static inline float chroma(device const uchar *p, uint pitch, float2 c, int2 cmax) {
@@ -445,6 +475,11 @@ kernel void convert_buf(device const uchar *src [[buffer(1)]],
     if (p.kind == 2) {
         device const uchar *q = src + gid.y * p.pitch[0] + gid.x * 4;
         c = float4(q[2], q[1], q[0], 255) * (1.0 / 255.0);
+    } else if (p.kind == 4) {   // PSD planes (gray: all offsets equal)
+        uint i = gid.y * p.pitch[0] + gid.x;
+        float3 v = float3(src[p.off[0] + i], src[p.off[1] + i], src[p.off[2] + i]);
+        if (p.hasa) v = max(v + float(src[p.aoff + i]) - 255.0, 0.0);   // matted with white -> over black
+        c = float4(v * (1.0 / 255.0), 1.0);
     } else if (p.kind == 3) {   // PNG rows (after the filter byte), off[1] = channels; premultiplied over black
         // rows start at odd addresses: read through packed types (1-byte alignment), otherwise
         // the compiler merges the bytes into one aligned load that silently drops the low bits
@@ -523,6 +558,7 @@ typedef struct {
     uint32_t off[3];
     uint32_t pitch[3];
     uint32_t kind;
+    uint32_t aoff, hasa;   // PSD transparency plane
 } PlaneParams;
 
 
@@ -572,10 +608,15 @@ typedef struct {
 - (id<MTLTexture>)textureFor:(Decoded *)d commandBuffer:(id<MTLCommandBuffer>)cb {
     if (d.texture) return d.texture;
     id<MTLTexture> out = [_pool textureWidth:d.width height:d.height];
-    if (!g_use_textures || d.kind == KIND_PNG) {
-        PlaneParams pp = {{(uint32_t)d.width, (uint32_t)d.height}, {1, 1}, {0, 0}, {0}, {0}, 0};
+    if (!g_use_textures || d.kind == KIND_PNG || d.kind == KIND_PLANAR) {
+        PlaneParams pp = {{(uint32_t)d.width, (uint32_t)d.height}, {1, 1}, {0, 0}, {0}, {0}, 0, 0, 0};
         for (int c = 0; c < 3; c++) { pp.off[c] = (uint32_t)d.offset[c]; pp.pitch[c] = (uint32_t)d.pitch[c]; }
         if (d.kind == KIND_BGRA) pp.kind = 2;
+        else if (d.kind == KIND_PLANAR) {
+            pp.kind = 4;
+            pp.hasa = (uint32_t)d.h0;
+            pp.aoff = (uint32_t)((size_t)d.ncomp * d.width * d.height);
+        }
         else if (d.kind == KIND_PNG) {
             pp.kind = 3; pp.off[0] = 1; pp.off[1] = (uint32_t)d.ncomp;
             if (getenv("NV_DEBUG_DIFF")) {
@@ -1324,7 +1365,7 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args) {
             NSString *ext = f.pathExtension.lowercaseString;
             static NSSet *exts;
             if (!exts) exts = [NSSet setWithArray:@[@"jpg", @"jpeg", @"jpe", @"png", @"heic", @"heif", @"tif", @"tiff",
-                                                    @"webp", @"gif", @"bmp", @"psd"]];
+                                                    @"webp", @"gif", @"bmp", @"psd", @"psb"]];
             if ([exts containsObject:ext])
                 [out addObject:[a stringByAppendingPathComponent:f]];
         }
@@ -1383,6 +1424,7 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
             NSData *data = read_file(f);
             uint8_t *ref = malloc(rp * d.height);
             const uint8_t *fb = data.bytes;
+            int noref = 0;
             if (data.length > 2 && fb[0] == 0xFF && fb[1] == 0xD8) {   // JPEG: TurboJPEG as reference
                 tjhandle h = tj3Init(TJINIT_DECOMPRESS);
                 tj3Decompress8(h, data.bytes, data.length, ref, (int)rp, TJPF_RGBX);
@@ -1398,6 +1440,7 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
                     CGContextSetBlendMode(ctx, kCGBlendModeCopy);
                     CGContextDrawImage(ctx, CGRectMake(0, 0, d.width, d.height), img);
                 }
+                if (!img) noref = 1;   // e.g. ZIP-compressed PSD: ImageIO can't read it
                 if (ctx) CGContextRelease(ctx);
                 CGColorSpaceRelease(cs);
                 if (img) CGImageRelease(img);
@@ -1406,6 +1449,15 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
             const uint8_t *g = rb.contents;
             long hist[256] = {0};
             int maxd = 0, dbg_done = 0;
+            if (noref) {
+                printf("%-26.26s %-7s no ImageIO reference (ImageIO can't decode it)\n", f.lastPathComponent.UTF8String,
+                       mode_name(d.mode));
+                free(ref);
+                [pool putTexture:d.texture];
+                d.texture = nil;
+                [pool put:d.buffer];
+                continue;
+            }
             double sum = 0;
             size_t cnt = 0;
             for (size_t k = 0; k < rp * d.height; k++) {

@@ -10,6 +10,8 @@
 /bench/pngsplit
 /bench/pngverify
 /bench/pngrobust
+/bench/psdverify
+/bench/psdrobust
 *.o
 *.dSYM/
 
@@ -19,5 +21,6 @@
 # your own test images
 /samples
 /samples_png
+/samples_psd
 
 .DS_Store

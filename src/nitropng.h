@@ -47,6 +47,10 @@ int np_read_info(const uint8_t *data, size_t len, np_info *info);
 // 1: single-threaded. Returns 0 on success (checksum verified), -1 otherwise.
 int np_decode(const uint8_t *data, size_t len, const np_info *info, uint8_t *out, int nthreads, np_stats *stats);
 
+// Decompresses a complete zlib stream of known output size (parallel unless
+// nthreads == 1), verifying its Adler-32. Returns 0 on success.
+int np_zlib_decompress(const uint8_t *z, size_t zlen, uint8_t *out, size_t outlen, int nthreads);
+
 // Testing / tuning: number of parallel inflate chunks (0 = 2 x threads).
 void np_set_chunks(int n);
 

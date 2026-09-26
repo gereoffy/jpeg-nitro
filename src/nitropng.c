@@ -936,6 +936,38 @@ fail:
 }
 
 // ---------------------------------------------------------------------------
+// plain zlib streams (used by nitropsd): parallel inflate + Adler-32 check
+
+int np_zlib_decompress(const uint8_t *zin, size_t zlen, uint8_t *out, size_t outlen, int nthreads) {
+    init_fixed();
+    if (zlen < 6 || (zin[0] & 15) != 8 || (zin[0] >> 4) > 7 || ((zin[0] << 8) | zin[1]) % 31 || (zin[1] & 0x20))
+        return -1;
+    uint8_t *z = malloc(zlen + IN_PAD);   // the bit reader wants zero padding after the data
+    if (!z) return -1;
+    memcpy(z, zin, zlen);
+    memset(z + zlen, 0, IN_PAD);
+    np_stats st;
+    memset(&st, 0, sizeof st);
+    int rc = -1;
+    if (nthreads != 1) {
+        rc = inflate_parallel(z + 2, zlen - 2, z, zlen, out, outlen, nthreads, &st);
+    } else {
+        Tables *t = malloc(sizeof *t);
+        BR r;
+        br_init(&r, z + 2, zlen - 2, 0);
+        size_t pos = 0;
+        int final;
+        if (t && !inflate8(&r, out, &pos, outlen, t, UINT64_MAX, &final) && final && pos == outlen) {
+            size_t ai = (size_t)((br_pos(&r) + 7) / 8) + 2;
+            if (ai + 4 <= zlen && adler32(1, out, pos) == be32(z + ai)) rc = 0;
+        }
+        free(t);
+    }
+    free(z);
+    return rc;
+}
+
+// ---------------------------------------------------------------------------
 // driver
 
 int np_decode(const uint8_t *data, size_t len, const np_info *fi, uint8_t *out, int nthreads, np_stats *st) {
