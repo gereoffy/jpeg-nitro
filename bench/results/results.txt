@@ -1,0 +1,17 @@
+50 files, 856.6 MB, read in 263.9 ms
+
+libjpeg-turbo  full BGRX             total   6204.9 ms   avg  124.1 ms/img   worst  625.3 ms
+libjpeg-turbo  full, fastDCT+ups     total   5613.2 ms   avg  112.3 ms/img   worst  477.2 ms
+libjpeg-turbo  full -> YUV planes    total   5371.3 ms   avg  107.4 ms/img   worst  513.4 ms
+libjpeg-turbo  1/2 scale BGRX        total   4994.3 ms   avg   99.9 ms/img   worst  422.3 ms
+libjpeg-turbo  1/4 scale BGRX        total   4815.6 ms   avg   96.3 ms/img   worst  415.1 ms
+stb_image      full RGBA             total   8738.2 ms   avg  174.8 ms/img   worst  771.6 ms
+wuffs          full BGRA             total   7967.4 ms   avg  159.3 ms/img   worst  716.0 ms
+ImageIO        full -> BGRA ctx      total  13720.7 ms   avg  274.4 ms/img   worst 1078.7 ms
+ImageIO        full native buf       total  12449.7 ms   avg  249.0 ms/img   worst 1045.2 ms
+ImageIO        thumb 3000px          total   7953.2 ms   avg  159.1 ms/img   worst  372.7 ms
+VideoToolbox   JPEG -> BGRA          total   7831.9 ms   avg  156.6 ms/img   worst  608.9 ms
+nitrojpeg       1 thread -> YUV       total   5147.9 ms   avg  103.0 ms/img   worst  589.0 ms
+nitrojpeg       parallel -> YUV       total    587.2 ms   avg   11.7 ms/img   worst   52.4 ms
+nitrojpeg       parallel -> BGRX      total   1233.5 ms   avg   24.7 ms/img   worst  111.0 ms
+nitrojpeg (libjpeg-turbo bands)      total   1031.9 ms   avg   20.6 ms/img   worst  111.9 ms

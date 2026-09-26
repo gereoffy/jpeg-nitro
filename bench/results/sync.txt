@@ -1,0 +1,63 @@
+04--n2a.jpg               2960x3830  RST   128 bands  scan  4.0 sync  0.0 dec   9.1 ms | - | planes OK bgrx OK
+04--n2b.jpg               2960x3830  RST   128 bands  scan  6.0 sync  0.0 dec   7.5 ms | - | planes OK bgrx OK
+07--p1.jpg                2960x3830  RST   128 bands  scan  0.6 sync  0.0 dec   5.4 ms | - | planes OK bgrx OK
+08--ny1.jpg               2960x3830  RST   128 bands  scan  0.6 sync  0.0 dec   7.8 ms | - | planes OK bgrx OK
+09--b4.jpg                2960x3830  RST   128 bands  scan  0.5 sync  0.0 dec   6.6 ms | - | planes OK bgrx OK
+DSC00857.JPG              6000x4000  split 512 bands  scan  0.7 sync 21.0 dec   0.0 ms | sync 256 thr: avg  2.1 max  10 MCU, avg   772 max  2979 bit | planes OK bgrx OK
+DSC00931.JPG              6000x4000  split 512 bands  scan  0.7 sync  8.2 dec   0.0 ms | sync 256 thr: avg  2.1 max  12 MCU, avg   775 max  3832 bit | planes OK bgrx OK
+DSC01624.JPG              6000x4000  split 512 bands  scan  5.6 sync  8.3 dec   0.0 ms | sync 256 thr: avg  2.8 max  11 MCU, avg  1095 max  4817 bit | planes OK bgrx OK
+DSC01821.JPG              6000x4000  split 512 bands  scan  5.8 sync  8.5 dec   0.0 ms | sync 256 thr: avg  2.7 max  15 MCU, avg  1043 max  5146 bit | planes OK bgrx OK
+DSC02036.JPG              6000x4000  split 512 bands  scan  1.0 sync 11.8 dec   0.0 ms | sync 256 thr: avg  2.5 max  11 MCU, avg   962 max  3743 bit | planes OK bgrx OK
+DSC02274.JPG              6000x4000  split 512 bands  scan  0.9 sync  9.9 dec   0.0 ms | sync 256 thr: avg  2.6 max  12 MCU, avg  1018 max  4894 bit | planes OK bgrx OK
+DSC02384.JPG              6000x4000  split 512 bands  scan  0.8 sync  8.2 dec   0.0 ms | sync 256 thr: avg  2.5 max  11 MCU, avg   943 max  3575 bit | planes OK bgrx OK
+DSC02393.JPG              6000x4000  split 512 bands  scan  1.1 sync  9.6 dec   0.0 ms | sync 256 thr: avg  2.7 max  14 MCU, avg  1076 max  5600 bit | planes OK bgrx OK
+DSC02472.JPG              6000x4000  split 512 bands  scan  1.0 sync  9.3 dec   0.0 ms | sync 256 thr: avg  2.6 max  11 MCU, avg  1020 max  4606 bit | planes OK bgrx OK
+DSC02654.JPG              6000x4000  split 512 bands  scan  0.7 sync  7.7 dec   0.0 ms | sync 256 thr: avg  2.4 max  15 MCU, avg   897 max  5575 bit | planes OK bgrx OK
+DSC03411.JPG              6000x4000  split 512 bands  scan  0.9 sync  9.2 dec   0.0 ms | sync 256 thr: avg  1.9 max   6 MCU, avg   690 max  2540 bit | planes OK bgrx OK
+DSC03487.JPG              6000x4000  split 512 bands  scan  0.9 sync  9.1 dec   0.0 ms | sync 256 thr: avg  2.0 max  11 MCU, avg   762 max  3891 bit | planes OK bgrx OK
+DSC03508.JPG              6000x4000  split 512 bands  scan  0.8 sync  9.0 dec   0.0 ms | sync 256 thr: avg  2.3 max   8 MCU, avg   832 max  3218 bit | planes OK bgrx OK
+DSC03706.JPG              6000x4000  split 512 bands  scan  0.9 sync  8.6 dec   0.0 ms | sync 256 thr: avg  2.7 max  16 MCU, avg  1025 max  6578 bit | planes OK bgrx OK
+DSC03751.JPG              6000x4000  split 512 bands  scan  0.9 sync  8.0 dec   0.0 ms | sync 256 thr: avg  2.7 max  16 MCU, avg  1047 max  6883 bit | planes OK bgrx OK
+DSC03887.JPG              6000x4000  split 512 bands  scan  6.5 sync  9.5 dec   0.0 ms | sync 256 thr: avg  2.8 max  10 MCU, avg  1204 max  4387 bit | planes OK bgrx OK
+DSC03889.JPG              6000x4000  split 512 bands  scan  6.8 sync 10.4 dec   0.0 ms | sync 256 thr: avg  2.3 max  10 MCU, avg   958 max  5336 bit | planes OK bgrx OK
+DSC04271.JPG              6000x4000  split 512 bands  scan  7.2 sync  8.5 dec   0.0 ms | sync 256 thr: avg  3.3 max  18 MCU, avg  1507 max  7801 bit | planes OK bgrx OK
+DSC04679.JPG              6000x4000  split 512 bands  scan  0.8 sync  8.6 dec   0.0 ms | sync 256 thr: avg  2.1 max   9 MCU, avg   818 max  3252 bit | planes OK bgrx OK
+DSC04717.JPG              6000x4000  split 512 bands  scan  0.9 sync  9.6 dec   0.0 ms | sync 256 thr: avg  2.5 max  10 MCU, avg   986 max  4021 bit | planes OK bgrx OK
+DSC04962-edit.JPG        12000x8000  split 512 bands  scan  3.3 sync 58.0 dec   0.0 ms | sync 256 thr: avg  3.0 max  21 MCU, avg  1370 max  8754 bit | planes OK bgrx OK
+DSC05244.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.6 dec   0.0 ms | sync 256 thr: avg  2.2 max  15 MCU, avg   807 max  4727 bit | planes OK bgrx OK
+DSC05330.JPG              6000x4000  split 512 bands  scan  0.9 sync  8.0 dec   0.0 ms | sync 256 thr: avg  2.1 max   8 MCU, avg   803 max  3434 bit | planes OK bgrx OK
+DSC05337.JPG              6000x4000  split 512 bands  scan  0.9 sync  8.2 dec   0.0 ms | sync 256 thr: avg  2.3 max  19 MCU, avg   881 max  6597 bit | planes OK bgrx OK
+DSC05443.JPG              6000x4000  split 512 bands  scan  0.7 sync  7.2 dec   0.0 ms | sync 256 thr: avg  2.1 max  12 MCU, avg   772 max  3324 bit | planes OK bgrx OK
+DSC05533.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.1 dec   0.0 ms | sync 256 thr: avg  2.2 max  11 MCU, avg   853 max  4440 bit | planes OK bgrx OK
+DSC05700.JPG              6000x4000  RST   128 bands  scan  1.0 sync  0.0 dec   9.2 ms | - | planes OK bgrx OK
+DSC05946.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.8 dec   0.0 ms | sync 256 thr: avg  2.4 max  13 MCU, avg   915 max  4655 bit | planes OK bgrx OK
+DSC06441.JPG              6000x4000  split 512 bands  scan  0.7 sync  6.8 dec   0.0 ms | sync 256 thr: avg  2.6 max  16 MCU, avg   913 max  4507 bit | planes OK bgrx OK
+DSC07728.JPG              6000x4000  split 512 bands  scan  0.7 sync  7.2 dec   0.0 ms | sync 256 thr: avg  2.2 max   7 MCU, avg   798 max  2449 bit | planes OK bgrx OK
+DSC07859.JPG              6000x4000  split 512 bands  scan  1.0 sync 11.9 dec   0.0 ms | sync 256 thr: avg  2.5 max  14 MCU, avg   958 max  5923 bit | planes OK bgrx OK
+DSC07862.JPG              6000x4000  split 512 bands  scan  0.9 sync  8.1 dec   0.0 ms | sync 256 thr: avg  2.6 max  11 MCU, avg   994 max  4519 bit | planes OK bgrx OK
+DSC08567.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.0 dec   0.0 ms | sync 256 thr: avg  2.6 max  12 MCU, avg  1027 max  4643 bit | planes OK bgrx OK
+DSC08596.JPG              6000x4000  split 512 bands  scan  0.7 sync  7.4 dec   0.0 ms | sync 256 thr: avg  2.3 max  12 MCU, avg   829 max  3561 bit | planes OK bgrx OK
+DSC08748.JPG              6000x4000  RST   128 bands  scan  1.0 sync  0.0 dec   7.8 ms | - | planes OK bgrx OK
+DSC08755.JPG              6000x4000  RST   128 bands  scan  0.9 sync  0.0 dec  10.6 ms | - | planes OK bgrx OK
+DSC08862.JPG              6000x4000  split 512 bands  scan  0.8 sync  8.5 dec   0.0 ms | sync 256 thr: avg  2.2 max  10 MCU, avg   806 max  3896 bit | planes OK bgrx OK
+DSC08948.JPG              6000x4000  split 512 bands  scan  0.9 sync  7.6 dec   0.0 ms | sync 256 thr: avg  2.0 max  12 MCU, avg   718 max  3260 bit | planes OK bgrx OK
+DSC09075.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.4 dec   0.0 ms | sync 256 thr: avg  2.2 max  11 MCU, avg   843 max  4297 bit | planes OK bgrx OK
+DSC09094.JPG              6000x4000  split 512 bands  scan  0.9 sync  7.8 dec   0.0 ms | sync 256 thr: avg  2.3 max  10 MCU, avg   851 max  3526 bit | planes OK bgrx OK
+DSC09160.JPG              6000x4000  split 512 bands  scan  0.8 sync  7.1 dec   0.0 ms | sync 256 thr: avg  2.3 max  12 MCU, avg   821 max  3486 bit | planes OK bgrx OK
+DSC09571.JPG              6000x4000  split 512 bands  scan  1.0 sync  8.4 dec   0.0 ms | sync 256 thr: avg  2.1 max   9 MCU, avg   785 max  3590 bit | planes OK bgrx OK
+DSC09714.JPG              6000x4000  split 512 bands  scan  0.8 sync 10.4 dec   0.0 ms | sync 256 thr: avg  2.0 max   8 MCU, avg   702 max  2921 bit | planes OK bgrx OK
+boritoc.jpg               2960x3830  RST   128 bands  scan  0.9 sync  0.0 dec   6.6 ms | - | planes OK bgrx OK
+holiday-holidays-brown-christmas-6300.jpg  5000x3333  RST   128 bands  scan  0.7 sync  0.0 dec   9.7 ms | - | planes OK bgrx OK
+
+synchronisation over all images (10240 threads):
+  0      MCU:     16  (  0.2%)
+  1      MCU:   4147  ( 40.5%)
+  2      MCU:   2688  ( 26.2%)
+  3-4    MCU:   2253  ( 22.0%)
+  5-8    MCU:    967  (  9.4%)
+  9-16   MCU:    164  (  1.6%)
+  17+    MCU:      5  (  0.0%)
+  never  MCU:      0  (  0.0%)
+  avg 2.40 MCU / 922 bits, max 21 MCU / 8754 bits
+
+all OK

@@ -1,2 +1,251 @@
 # jpeg-nitro
-Ultrafast multithreaded jpeg viewer inspired by libjpeg-turbo
+
+**English** | [Magyar](README.hu.md)
+
+**nitroview** is a very fast image viewer for macOS, and **nitrojpeg** is a parallel
+baseline JPEG decoder that decodes a *single* image on all CPU cores. A 24 MP JPEG decodes
+in ~11 ms, where libjpeg-turbo needs ~107 ms on one core. Photo series such as timelapses
+can be "played back" at full resolution in real time, up to 60 images/s.
+(The name: racing cars boost the turbo with nitro.)
+
+Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
+Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
+
+```
+./nitroview [-f] [-s ms] [-j threads] image.jpg ... | directory/
+```
+
+| key | action |
+|---|---|
+| PgDn / Space / → / ↓ | next image |
+| PgUp / Backspace / ← / ↑ | previous image |
+| Home / End | first / last |
+| F / Enter | toggle full screen (`-f`: start in full screen) |
+| P | pause / resume the slideshow |
+| Esc / Q | quit (Esc in full screen: back to a window) |
+
+Paging stops at the first and last image. The window title shows the file name, size and
+decode time; stdout gets one line per image with read time, decode time and the
+key → on-screen latency. EXIF orientation is honoured.
+
+**Slideshow:** `-s <ms>` (or `--slideshow <ms>`): the next image comes when the current one
+has been on screen for `ms` milliseconds (`-s 2000` is a classic slideshow, `-s 40` is
+~25 images/s). If an image takes longer to load, it waits, so no image is skipped. It stops
+at the last image; P pauses; the paging keys keep working and the slideshow continues from
+there. Timing follows the display refresh (±8 ms at 60 Hz). Run without arguments (or `-h`)
+for the full list of options.
+
+`-j N` limits the decoder to N threads (default: all logical CPUs). With 8 threads decoding
+takes ~15.4 ms/image instead of 11.8, but heats the CPU less.
+
+Other modes:
+- `--bench files…`: load everything without a window (read, decode, GPU) and print timings.
+- `--selftest files…`: compare the GPU colour conversion with libjpeg-turbo's output.
+- `--auto <ms>`: test mode: pages every `ms` (even if the image isn't shown yet) and quits
+  at the end. For latency measurements.
+
+## Results (50 photos, mostly 6000×4000, 17 MB on average)
+
+**Full load in the viewer: ~23 ms/image** (file read 3.5 + decode 12 + GPU 7).
+When paging, a prefetched image reaches the screen in **7–20 ms** (one frame at 60 Hz).
+A folder of 24 MP images plays back continuously at **~60 images/s** (the display refresh
+rate), also from an SSD with nothing cached.
+
+### Decoder comparison (`bench/bench`, decode only, from memory)
+
+| decoder | ms/image |
+|---|---|
+| Apple ImageIO (CGImageSource) → BGRA | 274 |
+| Apple ImageIO, native buffer | 249 |
+| stb_image | 175 |
+| Wuffs | 159 |
+| ImageIO thumbnail 3000 px (DCT scaling) | 159 |
+| VideoToolbox (JPEG; no HW JPEG on this machine, runs in software) | 157 |
+| libjpeg-turbo 3.1.2 (AVX2), BGRX | 124 |
+| libjpeg-turbo, fast DCT + fast upsampling | 112 |
+| libjpeg-turbo → YUV planes (no colour conversion) | 107 |
+| libjpeg-turbo, 1/2 scale | 100 |
+| libjpeg-turbo, 1/4 scale | 96 |
+| nitrojpeg, own engine, **1 thread** → YUV | 103 |
+| nitrojpeg, old engine (libjpeg-turbo decodes the bands) → YUV | 20.6 |
+| **nitrojpeg, own engine, parallel → YUV planes** (used by the viewer) | **11.7** |
+
+1/4 scale barely helps, so most of the time goes into Huffman decoding, which is
+inherently sequential in JPEG. Most camera JPEGs have no restart markers, so libjpeg-turbo
+can't parallelise within one image. The RX 580 has no hardware JPEG decoder.
+
+### How nitrojpeg parallelises a single image
+
+The Huffman stream is decoded **once**, without libjpeg-turbo:
+
+1. **Preparation (parallel, ~1 ms):** find the end of the entropy-coded data, remove byte
+   stuffing (0xFF 0x00) and restart markers, giving a "clean" bit stream.
+2. **Files without restart markers: speculative full decoding.** The bit stream is cut into
+   ~512 chunks (`32 × CPUs`, ~200 KB of coefficients each, which fits in L2). Every chunk is
+   decoded by a thread that starts at an arbitrary byte offset, writing coefficients right
+   away. Huffman codes self-synchronise with the true decoding path after a few MCUs.
+3. **Stitching, in order, pipelined.** When the true path starts an MCU at a bit position
+   that the next chunk also recorded as an MCU start, both paths are identical from there.
+   This gives the chunk's MCU index and per-component DC offset; the few MCUs before the
+   sync point are discarded.
+4. **Dequantisation + IDCT** with AVX2. The algorithm is libjpeg's "ISLOW" IDCT (jidctint.c),
+   so the output is bit-identical. As soon as a chunk is stitched, the thread that decoded it
+   runs its IDCT while the coefficients are still in cache.
+5. **Files with restart markers:** no speculation; the intervals are decoded in parallel with
+   the IDCT done per MCU right away.
+6. The output is planar Y/Cb/Cr, written directly into a Metal (shared) buffer. Upsampling
+   and YCbCr→RGB run in a GPU compute kernel, the GPU builds mipmaps, and the image is drawn
+   with trilinear filtering.
+
+Measured synchronisation (`bench/verify`, 512 chunks, first 256 sync points per image,
+40 images = 10240 cases): on average a chunk joins the true path after 2.40 "garbage" MCUs
+(~922 bits, ~115 bytes). In 40% of the cases after 1 MCU; the worst case was 21 MCUs
+(8754 bits), and synchronisation never failed.
+
+**Accuracy:** the parallel output is **bit-identical** to single-threaded libjpeg-turbo on all
+50 test images (`bench/verify`, with both the scalar and the AVX2 IDCT). The GPU colour
+conversion differs by at most ±1 (rounding, `--selftest`). Unsupported files (progressive,
+CMYK, RGB, >16384 px) and damaged files fall back to TurboJPEG in the viewer.
+
+### How it got there (ms/image, 16 threads)
+
+| version | ms/image |
+|---|---|
+| libjpeg-turbo, 1 thread | 107 |
+| speculative skip pass + libjpeg-turbo decodes 128 re-emitted "band" JPEGs (Huffman twice) | 19.9 |
+| same, but a single-threaded Huffman pass instead of speculation (`NJ_SEQ=1`, old engine) | 67.2 |
+| own engine: Huffman once, coefficients kept in memory, then IDCT | 15.7 |
+| + single-lookup AC decoding, pipeline: IDCT while the chunk is in cache | **11.7** |
+
+The single-threaded Huffman pass is slow because it is a serial dependency chain: the length
+of each code must be known before the next one can be read (~12 cycles/symbol). Without the
+pipeline, the IDCT was memory-bound: writing and re-reading the 96 MB coefficient array
+saturated at ~45 GB/s and did not scale beyond 8 threads.
+
+Chunk count (`NJ_CHUNKS`), ms/image:
+
+| chunks | 64 | 128 | 256 | 512 | 1024 | 2048 |
+|---|---|---|---|---|---|---|
+| ms/image | 12.3 | 12.0 | 11.9 | **11.4** | 12.1 | 14.7 |
+
+Measurements of the old engine (libjpeg-turbo bands, `nj_set_engine(1)`, `NJ_ENGINE=1`) are in
+`bench/results/matrix.txt` (chunks × threads) and `bench/results/bands.txt` (band count).
+
+### Measurement method: clock speed and temperature
+
+The development machine's clock jumps between 4 and 5.5 GHz and the CPU passes 90 °C within
+seconds under 16-thread load, so a single measurement can be off by ±10%.
+
+- `bench/freqprobe [threads] [seconds]`: measures the real core clock without root (a chain
+  of dependent adds runs at one add per cycle). Measured: 4.48 GHz single-threaded from idle
+  (the scheduler raises the clock slowly), ~4.95 GHz with 16 threads, ~5.3 GHz with 8.
+- `bench/sustain SECONDS THREADS files…`: continuous decoding, speed + clock every 0.5 s.
+  Over 30 s with 16 threads there is no downward trend (10.1–11.9 ms/image), so the cooling
+  holds; the spread comes from clock jumps, not throttling.
+- `bench/ab.sh REPS PAUSE -- "name:ENV=value" …`: runs variants interleaved, with a cool-down
+  pause and a clock measurement before each run; prints median / min / max. This keeps the
+  min–max spread within about ±3%.
+
+Re-measured this way (5 repetitions, 3 s pause, ms/image, `bench/results/ab_results.txt`):
+
+| comparison | median (min–max) |
+|---|---|
+| own engine / old engine (libjpeg-turbo bands) | **11.8** (11.8–11.9) / 19.8 (19.5–20.8) |
+| 4 / 8 / 12 / 16 threads | 27.0 / 15.4 / 12.3 / **11.8** |
+| 256 / 512 / 1024 chunks | 11.9 / **11.7** / 12.2 (overlapping ranges: within noise) |
+
+### Damaged files
+
+When the decoder detects an error (invalid Huffman code, coefficient index overrun, the last
+MCU ends past the end of the data, wrong number of restart markers, …) it gives up, and the
+viewer falls back to TurboJPEG, which shows whatever is recoverable (e.g. the top part of a
+half-downloaded file). If that fails too (not a JPEG, broken header, empty file), the title
+shows `CANNOT DECODE` and paging continues.
+
+`make bench/robust && bench/robust samples/*` creates ~90 damaged variants of every image
+(truncation from 0 bytes to length−1, random byte and bit errors, zeroed or 0xFF-filled
+blocks, markers inserted into the data, header damage, cut or duplicated sections) plus
+garbage and text files, and runs them through the viewer's decode path built with
+AddressSanitizer and UBSan: 4372 cases, 0 errors. The pipeline's synchronisation was also
+checked with ThreadSanitizer (on valid and damaged files).
+
+### Display and prefetching
+
+- A background thread decodes 3 images ahead in the paging direction and 2 behind, and
+  uploads/converts the neighbours on the GPU in advance.
+- Metal buffers and textures are reused (allocating the 128 MB texture per image cost ~6 ms).
+- A shared (system memory) buffer read directly by the conversion kernel was the fastest
+  (8 ms vs 10 ms with managed buffers / textures).
+- The decoder's large buffers (clean bit stream, coefficients) are reused from image to image.
+
+## Using the decoder
+
+`src/nitrojpeg.c` + `src/nitrojpeg.h` are self-contained (C, pthreads, GCD, optional AVX2).
+They decode baseline JPEGs (8-bit, Huffman, 1 or 3 components, YCbCr/greyscale, any chroma
+subsampling, with or without restart markers) into planar Y/Cb/Cr:
+
+```c
+#include "nitrojpeg.h"
+
+nj_info info;
+if (nj_read_info(data, len, &info) == 0 && info.supported) {
+    uint8_t *planes[3];
+    size_t pitch[3];
+    for (int c = 0; c < info.ncomp; c++) {
+        pitch[c] = info.plane_w[c];                       // any pitch >= plane_w[c]
+        planes[c] = malloc(pitch[c] * info.plane_h[c]);   // padded to whole MCUs
+    }
+    if (nj_decode_planes(data, len, &info, planes, pitch, 0 /* all CPUs */, NULL) == 0) {
+        // info.width x info.height visible pixels; chroma subsampled by
+        // info.h[c] / info.hmax horizontally and info.v[c] / info.vmax vertically
+    } else {
+        // damaged or unsupported stream: use another decoder
+    }
+}
+```
+
+## Build
+
+Requirements: Xcode Command Line Tools.
+
+```
+make                 # nitroview; uses libjpeg-turbo as fallback if it is in third_party/
+make TURBOJPEG=0     # fully standalone viewer, no libjpeg-turbo (~110 KB)
+scripts/get-deps.sh  # download + build libjpeg-turbo, stb_image, Wuffs into third_party/ (~30 s)
+make tools           # bench/bench, verify, robust, freqprobe, sustain (needs get-deps.sh)
+```
+
+**libjpeg-turbo is optional.** nitrojpeg decodes baseline JPEGs on its own.
+
+- **`TURBOJPEG=1`** (default when `third_party/ljt` exists): progressive, CMYK, RGB, >16384 px
+  and damaged files are decoded by TurboJPEG, which also shows what is recoverable from
+  damaged images. `--selftest` is only available in this mode.
+- **`TURBOJPEG=0`**: those files show `CANNOT DECODE` and paging continues. Valid baseline
+  images are exactly as fast.
+
+The parts of nitrojpeg that need libjpeg-turbo are behind `#ifdef NJ_REFERENCE`: the old
+engine where libjpeg-turbo decodes the bands, the CPU BGRX output and the single-threaded
+pass experiment. Only the tests and benchmarks use them (`build/nitrojpeg_ref.o`). In the
+viewer, the fallback decoder is behind `#ifdef NV_TURBOJPEG`.
+
+The tests and benchmarks look for images in `samples/`: put your own JPEGs there (or a
+symlink). The measurements above were made on 50 private photos that are not in the repo.
+
+`-march=native` optimises the binary for the CPU it is built on.
+
+## Files
+
+- `src/nitrojpeg.c/.h`: self-contained parallel JPEG decoder (own Huffman + AVX2 IDCT);
+  with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
+- `src/nitroview.m`: Cocoa + Metal viewer; with `NV_TURBOJPEG` the TurboJPEG fallback
+- `scripts/get-deps.sh`: downloads and builds the optional dependencies
+- `bench/bench.m`: decoder benchmark, `bench/verify.c`: bit-exactness + sync statistics,
+  `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,
+  `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
+- `bench/results/`: measured results
+
+## License
+
+MIT, see [LICENSE](LICENSE). The inverse DCT implements the algorithm of jidctint.c from the
+Independent JPEG Group's libjpeg: this software is based in part on the work of the
+Independent JPEG Group.
