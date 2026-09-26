@@ -1,0 +1,988 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
+// nitropng: multi-threaded single-image PNG decoding. See nitropng.h.
+#include "nitropng.h"
+
+#include <dispatch/dispatch.h>
+#include <stdio.h>
+#include <mach/mach_time.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static double now_ms(void) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
+}
+
+static inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+#define IN_PAD 64   // zero bytes after the compressed data (branch-free bit reader)
+#define OUT_PAD 64  // slack after output buffers (8-byte-at-a-time match copies)
+
+// ---------------------------------------------------------------------------
+// PNG container
+
+int np_read_info(const uint8_t *d, size_t len, np_info *fi) {
+    memset(fi, 0, sizeof *fi);
+    if (len < 33 || memcmp(d, "\x89PNG\r\n\x1a\n", 8) || memcmp(d + 12, "IHDR", 4) || be32(d + 8) != 13) return -1;
+    fi->width = (int)be32(d + 16);
+    fi->height = (int)be32(d + 20);
+    fi->bit_depth = d[24];
+    fi->color_type = d[25];
+    fi->interlace = d[28];
+    if (fi->width <= 0 || fi->height <= 0) return -1;
+    static const int ch[7] = {1, 0, 3, 1, 2, 0, 4};
+    fi->channels = fi->color_type <= 6 ? ch[fi->color_type] : 0;
+    int bits = fi->channels * fi->bit_depth;
+    fi->stride = ((size_t)fi->width * bits + 7) / 8;
+    fi->raw_size = (size_t)fi->height * (fi->stride + 1);
+    for (size_t i = 8; i + 12 <= len;) {
+        uint32_t n = be32(d + i);
+        if (!memcmp(d + i + 4, "iCCP", 4)) fi->has_icc = 1;
+        if (!memcmp(d + i + 4, "IDAT", 4) || !memcmp(d + i + 4, "IEND", 4) || n > len) break;
+        i += 12 + (size_t)n;
+    }
+    fi->supported = fi->bit_depth == 8 && fi->color_type != 3 && fi->channels > 0 && fi->interlace == 0 &&
+                    fi->width < (1 << 24) && fi->height < (1 << 24);
+    return 0;
+}
+
+// Concatenates the IDAT chunks (the zlib stream), with IN_PAD zero bytes after it.
+static uint8_t *gather_idat(const uint8_t *d, size_t len, size_t *zlen) {
+    size_t total = 0;
+    for (size_t i = 8; i + 12 <= len;) {
+        uint32_t n = be32(d + i);
+        if (n > len - i - 12) return NULL;
+        if (!memcmp(d + i + 4, "IDAT", 4)) total += n;
+        if (!memcmp(d + i + 4, "IEND", 4)) break;
+        i += 12 + (size_t)n;
+    }
+    uint8_t *z = malloc(total + IN_PAD);
+    if (!z) return NULL;
+    size_t k = 0;
+    for (size_t i = 8; i + 12 <= len;) {
+        uint32_t n = be32(d + i);
+        if (!memcmp(d + i + 4, "IDAT", 4)) { memcpy(z + k, d + i + 8, n); k += n; }
+        if (!memcmp(d + i + 4, "IEND", 4)) break;
+        i += 12 + (size_t)n;
+    }
+    memset(z + k, 0, IN_PAD);
+    *zlen = k;
+    return z;
+}
+
+// ---------------------------------------------------------------------------
+// Huffman tables (deflate: LSB-first bit order, codes bit-reversed)
+
+enum { K_LIT = 0, K_LEN = 1, K_EOB = 2, K_SUB = 3, K_BAD = 4 };
+// entry: value << 16 | extra << 8 | kind << 5 | code length
+#define ENT(len, kind, extra, value) ((uint32_t)(value) << 16 | (uint32_t)(extra) << 8 | (uint32_t)(kind) << 5 | (uint32_t)(len))
+#define E_LEN(e) ((e) & 31)
+#define E_KIND(e) (((e) >> 5) & 7)
+#define E_EXTRA(e) (((e) >> 8) & 15)
+#define E_VAL(e) ((e) >> 16)
+
+#define LBITS 11                     // litlen primary table bits
+#define DBITS 8                      // distance primary table bits
+#define LSIZE ((1 << LBITS) + 288 * (1 << (15 - LBITS)))
+#define DSIZE ((1 << DBITS) + 32 * (1 << (15 - DBITS)))
+
+static const uint16_t len_base[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+                                      35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+static const uint8_t len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+static const uint16_t dist_base[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513,
+                                       769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+static const uint8_t dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+static inline uint32_t sym_info(int sym, int is_dist) {
+    if (is_dist) return sym < 30 ? ENT(0, K_LEN, dist_extra[sym], dist_base[sym]) : ENT(0, K_BAD, 0, 0);
+    if (sym < 256) return ENT(0, K_LIT, 0, sym);
+    if (sym == 256) return ENT(0, K_EOB, 0, 0);
+    if (sym < 286) return ENT(0, K_LEN, len_extra[sym - 257], len_base[sym - 257]);
+    return ENT(0, K_BAD, 0, 0);
+}
+
+static inline unsigned bitrev(unsigned code, int len) {
+    unsigned r = 0;
+    for (int i = 0; i < len; i++) { r = r << 1 | (code & 1); code >>= 1; }
+    return r;
+}
+
+// Builds a decode table. Code-set rules as in zlib: over-subscribed is an
+// error; incomplete only for a single code of length 1 (or no distance codes).
+// Returns 0 on success.
+static int build_table(const uint8_t *lens, int n, uint32_t *table, int tb, int is_dist) {
+    int count[16] = {0};
+    for (int s = 0; s < n; s++) count[lens[s]]++;
+    count[0] = 0;
+    int left = 1, max = 0, total = 0;
+    for (int l = 1; l <= 15; l++) {
+        left <<= 1;
+        left -= count[l];
+        if (left < 0) return -1;
+        if (count[l]) max = l;
+        total += count[l];
+    }
+    if (left > 0 && !(max == 1 && total == 1) && !(is_dist && total == 0)) return -1;
+    int size = 1 << tb, sub_size = 1 << (15 - tb), used = size;
+    for (int i = 0; i < size; i++) table[i] = ENT(0, K_BAD, 0, 0);
+    unsigned next[16];
+    unsigned code = 0;
+    for (int l = 1; l <= 15; l++) { code = (code + count[l - 1]) << 1; next[l] = code; }
+    for (int s = 0; s < n; s++) {
+        int l = lens[s];
+        if (!l) continue;
+        unsigned rev = bitrev(next[l]++, l);
+        uint32_t info = sym_info(s, is_dist) | (uint32_t)l;
+        if (l <= tb) {
+            for (unsigned i = rev; i < (unsigned)size; i += 1u << l) table[i] = info;
+        } else {
+            unsigned prefix = rev & (size - 1);
+            if (E_KIND(table[prefix]) != K_SUB) {
+                table[prefix] = ENT(0, K_SUB, 0, used);
+                for (int i = 0; i < sub_size; i++) table[used + i] = ENT(0, K_BAD, 0, 0);
+                used += sub_size;
+            }
+            uint32_t *sub = table + E_VAL(table[prefix]);
+            for (unsigned i = rev >> tb; i < (unsigned)sub_size; i += 1u << (l - tb)) sub[i] = info;
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// bit reader: LSB first, branch-free refill (bits past 'cnt' are zero or correct)
+
+typedef struct {
+    const uint8_t *p, *base, *end;   // end: first padding byte
+    uint64_t buf;
+    unsigned cnt;
+} BR;
+
+static inline void br_refill(BR *r) {
+    uint64_t v;
+    memcpy(&v, r->p, 8);
+    r->buf |= v << r->cnt;
+    r->p += (63 - r->cnt) >> 3;
+    r->cnt |= 56;
+}
+static inline void br_init(BR *r, const uint8_t *base, size_t len, uint64_t bitpos) {
+    r->base = base;
+    r->end = base + len;
+    r->p = base + (bitpos >> 3);
+    r->buf = 0;
+    r->cnt = 0;
+    br_refill(r);
+    r->buf >>= bitpos & 7;
+    r->cnt -= bitpos & 7;
+}
+static inline uint64_t br_pos(const BR *r) { return (uint64_t)(r->p - r->base) * 8 - r->cnt; }
+static inline unsigned br_peek(const BR *r, unsigned n) { return (unsigned)(r->buf & ((1ull << n) - 1)); }
+static inline void br_skip(BR *r, unsigned n) { r->buf >>= n; r->cnt -= n; }
+static inline int br_over(const BR *r) { return r->p > r->end + 16; }   // ran into the padding
+
+// ---------------------------------------------------------------------------
+// block headers
+
+typedef struct {
+    uint32_t lt[LSIZE];
+    uint32_t dt[DSIZE];
+} Tables;
+
+static Tables g_fixed;
+static int g_fixed_ready;
+
+static void init_fixed(void) {
+    if (g_fixed_ready) return;
+    uint8_t l[320];
+    for (int i = 0; i < 144; i++) l[i] = 8;
+    for (int i = 144; i < 256; i++) l[i] = 9;
+    for (int i = 256; i < 280; i++) l[i] = 7;
+    for (int i = 280; i < 288; i++) l[i] = 8;
+    build_table(l, 288, g_fixed.lt, LBITS, 0);
+    for (int i = 0; i < 30; i++) l[i] = 5;
+    build_table(l, 30, g_fixed.dt, DBITS, 1);
+    __sync_synchronize();
+    g_fixed_ready = 1;
+}
+
+// Reads a dynamic block header (after BFINAL/BTYPE) and builds its tables.
+static int read_dynamic(BR *r, Tables *t) {
+    static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+    br_refill(r);
+    unsigned hlit = br_peek(r, 5) + 257; br_skip(r, 5);
+    unsigned hdist = br_peek(r, 5) + 1; br_skip(r, 5);
+    unsigned hclen = br_peek(r, 4) + 4; br_skip(r, 4);
+    if (hlit > 286 || hdist > 30) return -1;
+    uint8_t cl[19] = {0};
+    for (unsigned i = 0; i < hclen; i++) {
+        if (i == 10) br_refill(r);
+        cl[order[i]] = (uint8_t)br_peek(r, 3);
+        br_skip(r, 3);
+    }
+    uint32_t clt[1 << 7];
+    // code-length code: 7-bit table, all codes <= 7 bits
+    {
+        int count[8] = {0}, left = 1, total = 0, max = 0;
+        for (int s = 0; s < 19; s++) count[cl[s]]++;
+        count[0] = 0;
+        for (int l = 1; l <= 7; l++) { left <<= 1; left -= count[l]; if (left < 0) return -1; total += count[l]; if (count[l]) max = l; }
+        if (left > 0 && !(max == 1 && total == 1)) return -1;
+        for (int i = 0; i < 128; i++) clt[i] = ENT(0, K_BAD, 0, 0);
+        unsigned next[8], code = 0;
+        for (int l = 1; l <= 7; l++) { code = (code + count[l - 1]) << 1; next[l] = code; }
+        for (int s = 0; s < 19; s++) {
+            int l = cl[s];
+            if (!l) continue;
+            unsigned rev = bitrev(next[l]++, l);
+            for (unsigned i = rev; i < 128; i += 1u << l) clt[i] = ENT(l, K_LIT, 0, s);
+        }
+    }
+    uint8_t lens[286 + 30];
+    unsigned n = 0, total = hlit + hdist;
+    while (n < total) {
+        br_refill(r);
+        uint32_t e = clt[br_peek(r, 7)];
+        if (E_KIND(e) == K_BAD) return -1;
+        br_skip(r, E_LEN(e));
+        unsigned sym = E_VAL(e);
+        if (sym < 16) { lens[n++] = (uint8_t)sym; continue; }
+        unsigned rep, val = 0;
+        if (sym == 16) {
+            if (!n) return -1;
+            val = lens[n - 1];
+            rep = 3 + br_peek(r, 2); br_skip(r, 2);
+        } else if (sym == 17) {
+            rep = 3 + br_peek(r, 3); br_skip(r, 3);
+        } else {
+            rep = 11 + br_peek(r, 7); br_skip(r, 7);
+        }
+        if (n + rep > total) return -1;
+        while (rep--) lens[n++] = (uint8_t)val;
+    }
+    if (!lens[256]) return -1;   // no end-of-block code
+    if (build_table(lens, (int)hlit, t->lt, LBITS, 0)) return -1;
+    if (build_table(lens + hlit, (int)hdist, t->dt, DBITS, 1)) return -1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// block decoding: 8-bit output (sequential / first chunk)
+
+// Decodes one block's symbols (tables ready) into out8 at *pos.
+// Returns 0 at end of block, -1 on error.
+static int decode_symbols8(BR *r, const Tables *t, uint8_t *out, size_t *ppos, size_t cap) {
+    size_t pos = *ppos;
+    for (;;) {
+        br_refill(r);
+        uint32_t e = t->lt[br_peek(r, LBITS)];
+        if (E_KIND(e) == K_SUB) e = t->lt[E_VAL(e) + ((r->buf >> LBITS) & ((1 << (15 - LBITS)) - 1))];
+        br_skip(r, E_LEN(e));
+        unsigned kind = E_KIND(e);
+        if (kind == K_LIT) {
+            if (pos >= cap) return -1;
+            out[pos++] = (uint8_t)E_VAL(e);
+            continue;
+        }
+        if (kind != K_LEN) {
+            if (kind == K_EOB) break;
+            return -1;
+        }
+        unsigned len = E_VAL(e) + br_peek(r, E_EXTRA(e));
+        br_skip(r, E_EXTRA(e));
+        uint32_t de = t->dt[br_peek(r, DBITS)];
+        if (E_KIND(de) == K_SUB) de = t->dt[E_VAL(de) + ((r->buf >> DBITS) & ((1 << (15 - DBITS)) - 1))];
+        if (E_KIND(de) != K_LEN) return -1;
+        br_skip(r, E_LEN(de));
+        br_refill(r);
+        size_t dist = E_VAL(de) + br_peek(r, E_EXTRA(de));
+        br_skip(r, E_EXTRA(de));
+        if (dist > pos || pos + len > cap) return -1;
+        uint8_t *dst = out + pos;
+        const uint8_t *src = dst - dist;
+        if (dist >= 8 && pos + len + 8 <= cap) {   // 8 bytes at a time (may write up to 7 past len)
+            for (unsigned k = 0; k < len; k += 8) { uint64_t v; memcpy(&v, src + k, 8); memcpy(dst + k, &v, 8); }
+        } else if (dist == 1) {
+            memset(dst, src[0], len);
+        } else {
+            for (unsigned k = 0; k < len; k++) dst[k] = src[k];
+        }
+        pos += len;
+        if (br_over(r)) return -1;
+    }
+    *ppos = pos;
+    return br_over(r) ? -1 : 0;
+}
+
+// Decodes one deflate block (header at the reader's position) into out.
+static int inflate8_one(BR *r, uint8_t *out, size_t *ppos, size_t cap, Tables *t, int *final) {
+    {
+        br_refill(r);
+        unsigned bfinal = br_peek(r, 1);
+        unsigned btype = (unsigned)(r->buf >> 1) & 3;
+        br_skip(r, 3);
+        if (btype == 0) {   // stored
+            unsigned drop = r->cnt & 7;
+            br_skip(r, drop);
+            br_refill(r);
+            unsigned slen = br_peek(r, 16), nlen = (unsigned)(r->buf >> 16) & 0xFFFF;
+            br_skip(r, 32);
+            if ((slen ^ 0xFFFF) != nlen || *ppos + slen > cap) return -1;
+            // the remaining buffered bits are whole bytes: read them, then the rest directly
+            for (; slen && r->cnt >= 8; slen--) { out[(*ppos)++] = (uint8_t)r->buf; br_skip(r, 8); }
+            const uint8_t *src = r->p - r->cnt / 8;   // cnt is 0 here, or we are still inside the buffer
+            if (slen) {
+                if (src + slen > r->end) return -1;
+                memcpy(out + *ppos, src, slen);
+                *ppos += slen;
+                uint64_t np = (uint64_t)(src + slen - r->base) * 8;
+                br_init(r, r->base, (size_t)(r->end - r->base), np);
+            }
+        } else if (btype == 1) {
+            if (decode_symbols8(r, &g_fixed, out, ppos, cap)) return -1;
+        } else if (btype == 2) {
+            if (read_dynamic(r, t) || decode_symbols8(r, t, out, ppos, cap)) return -1;
+        } else {
+            return -1;
+        }
+        *final = (int)bfinal;
+        return br_over(r) ? -1 : 0;
+    }
+}
+
+// Decodes deflate blocks until BFINAL (stop_at == UINT64_MAX) or until a block
+// boundary equals stop_at. Returns 0 on success.
+static int inflate8(BR *r, uint8_t *out, size_t *ppos, size_t cap, Tables *t, uint64_t stop_at, int *final) {
+    *final = 0;
+    while (!*final) {
+        if (br_pos(r) == stop_at) return 0;
+        if (inflate8_one(r, out, ppos, cap, t, final)) return -1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Adler-32
+
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
+static uint32_t adler32(uint32_t adler, const uint8_t *p, size_t n) {
+    uint32_t a = adler & 0xFFFF, b = adler >> 16;
+#ifdef __AVX2__
+    // 32 bytes per step: s1 += sum(bytes); s2 += 32 * s1_before + sum((32 - i) * byte_i)
+    const __m256i w = _mm256_setr_epi8(32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+                                       16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+    const __m256i ones = _mm256_set1_epi16(1), zero = _mm256_setzero_si256();
+    while (n >= 32) {
+        size_t blocks = n / 32 < 173 ? n / 32 : 173;   // keeps every lane sum far below overflow
+        __m256i vs1 = zero, vs1acc = zero, vs2 = zero;
+        for (size_t k = 0; k < blocks; k++) {
+            __m256i v = _mm256_loadu_si256((const __m256i *)(p + 32 * k));
+            vs1acc = _mm256_add_epi64(vs1acc, vs1);
+            vs1 = _mm256_add_epi64(vs1, _mm256_sad_epu8(v, zero));
+            vs2 = _mm256_add_epi32(vs2, _mm256_madd_epi16(_mm256_maddubs_epi16(v, w), ones));
+        }
+        uint64_t t1[4], t2[4];
+        uint32_t t3[8];
+        _mm256_storeu_si256((__m256i *)t1, vs1);
+        _mm256_storeu_si256((__m256i *)t2, vs1acc);
+        _mm256_storeu_si256((__m256i *)t3, vs2);
+        uint64_t s1 = t1[0] + t1[1] + t1[2] + t1[3], acc = t2[0] + t2[1] + t2[2] + t2[3], s2w = 0;
+        for (int i = 0; i < 8; i++) s2w += t3[i];
+        uint64_t bb = (uint64_t)b + (uint64_t)a * 32 * blocks + 32 * acc + s2w;
+        a = (uint32_t)(((uint64_t)a + s1) % 65521);
+        b = (uint32_t)(bb % 65521);
+        p += 32 * blocks;
+        n -= 32 * blocks;
+    }
+#endif
+    while (n) {
+        size_t k = n < 5552 ? n : 5552;
+        n -= k;
+        while (k--) { a += *p++; b += a; }
+        a %= 65521;
+        b %= 65521;
+    }
+    return b << 16 | a;
+}
+
+// ---------------------------------------------------------------------------
+// filters (sequential reference implementation; parallel version below)
+
+static int ncpu(void);
+
+static inline uint8_t paeth(int a, int b, int c) {
+    int p = a + b - c, pa = abs(p - a), pb = abs(p - b), pc = abs(p - c);
+    return (uint8_t)(pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+}
+
+static int unfilter_row(uint8_t *row, const uint8_t *prev, size_t stride, int bpp) {
+    uint8_t t = row[-1];
+    switch (t) {
+    case 0: break;
+    case 1: for (size_t x = bpp; x < stride; x++) row[x] += row[x - bpp]; break;
+    case 2: if (prev) for (size_t x = 0; x < stride; x++) row[x] += prev[x]; break;
+    case 3:
+        if (prev) {
+            for (int x = 0; x < bpp; x++) row[x] += prev[x] >> 1;
+            for (size_t x = bpp; x < stride; x++) row[x] += (row[x - bpp] + prev[x]) >> 1;
+        } else {
+            for (size_t x = bpp; x < stride; x++) row[x] += row[x - bpp] >> 1;
+        }
+        break;
+    case 4:
+        if (prev) {
+            for (int x = 0; x < bpp; x++) row[x] += prev[x];   // paeth(0, b, 0) = b
+            for (size_t x = bpp; x < stride; x++) row[x] += paeth(row[x - bpp], prev[x], prev[x - bpp]);
+        } else {
+            for (size_t x = bpp; x < stride; x++) row[x] += row[x - bpp];   // paeth(a, 0, 0) = a
+        }
+        break;
+    default: return -1;
+    }
+    return 0;
+}
+
+static int unfilter_seq(uint8_t *out, const np_info *fi) {
+    int bpp = fi->channels;
+    size_t rs = fi->stride + 1;
+    for (int y = 0; y < fi->height; y++)
+        if (unfilter_row(out + (size_t)y * rs + 1, y ? out + (size_t)(y - 1) * rs + 1 : NULL, fi->stride, bpp)) return -1;
+    return 0;
+}
+
+
+
+// Parallel filter reversal ("wavefront"). Up / Average / Paeth rows need the
+// previous row, but only the bytes at or left of the current position, so row
+// y can proceed segment by segment right behind row y-1. None / Sub rows don't
+// wait at all. Workers take rows in order; progress[y] = bytes done in row y.
+#define SEG 1024
+
+static inline void cpu_relax(void) {
+#if defined(__x86_64__)
+    __asm__ volatile("pause");
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
+#endif
+}
+
+// Reverses bytes [a, b) of a row (a, b multiples of bpp, except b = stride);
+// [0, a) is already done. Specialised per bpp so the left pixel stays in
+// registers: going through memory would add store-forwarding latency to the
+// (inherently serial) left-to-right dependency chain.
+static inline __attribute__((always_inline)) void unfilter_seg_bpp(uint8_t *row, const uint8_t *prev, size_t a,
+                                                                   size_t b, const int bpp, int t) {
+    int L[4] = {0, 0, 0, 0}, UL[4] = {0, 0, 0, 0};
+    size_t x = a;
+    if (a) for (int k = 0; k < bpp; k++) { L[k] = row[a - bpp + k]; if (prev) UL[k] = prev[a - bpp + k]; }
+    switch (t) {
+    case 1:   // Sub
+        for (; x < b; x += bpp)
+            for (int k = 0; k < bpp; k++) { L[k] = (uint8_t)(row[x + k] + L[k]); row[x + k] = (uint8_t)L[k]; }
+        break;
+    case 2:   // Up (vectorised by the compiler)
+        if (prev) for (; x < b; x++) row[x] += prev[x];
+        break;
+    case 3:   // Average
+        for (; x < b; x += bpp)
+            for (int k = 0; k < bpp; k++) {
+                int up = prev ? prev[x + k] : 0;
+                L[k] = (uint8_t)(row[x + k] + ((L[k] + up) >> 1));
+                row[x + k] = (uint8_t)L[k];
+            }
+        break;
+    case 4:   // Paeth
+        for (; x < b; x += bpp)
+            for (int k = 0; k < bpp; k++) {
+                int up = prev ? prev[x + k] : 0, l = L[k], ul = UL[k];
+                int pa = abs(up - ul), pb = abs(l - ul), pc = abs(l + up - 2 * ul);
+                int m1 = -((pa <= pb) & (pa <= pc)), m2 = -(pb <= pc);   // branch-free select
+                int pr = (l & m1) | (~m1 & ((up & m2) | (ul & ~m2)));
+                L[k] = (uint8_t)(row[x + k] + pr);
+                row[x + k] = (uint8_t)L[k];
+                UL[k] = up;
+            }
+        break;
+    }
+}
+
+static void unfilter_seg(uint8_t *row, const uint8_t *prev, size_t a, size_t b, int bpp, int t) {
+    switch (bpp) {
+    case 1: unfilter_seg_bpp(row, prev, a, b, 1, t); break;
+    case 2: unfilter_seg_bpp(row, prev, a, b, 2, t); break;
+    case 3: unfilter_seg_bpp(row, prev, a, b, 3, t); break;
+    default: unfilter_seg_bpp(row, prev, a, b, 4, t); break;
+    }
+}
+
+static int unfilter_parallel(uint8_t *out, const np_info *fi, int nthreads) {
+    const int H = fi->height, bpp = fi->channels;
+    const size_t stride = fi->stride, rs = stride + 1;
+    for (int y = 0; y < H; y++)
+        if (out[(size_t)y * rs] > 4) return -1;
+    uint32_t *progress = calloc((size_t)H, sizeof *progress);
+    if (!progress) return -1;
+    __block volatile long next = 0;
+    // not all hyper-threads: waiting ones would slow down their working siblings (measured: 12 of 16 best)
+    int W = nthreads > 0 ? nthreads : (ncpu() * 3 + 3) / 4;
+    if (getenv("NP_UW")) W = atoi(getenv("NP_UW"));
+    const size_t seg = (SEG / bpp) * bpp;
+    dispatch_apply((size_t)W, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t w) {
+        for (;;) {
+            long y = __sync_fetch_and_add(&next, 1);
+            if (y >= H) break;
+            uint8_t *row = out + (size_t)y * rs + 1;
+            const uint8_t *prev = y ? row - rs : NULL;
+            int t = row[-1];
+            int needs_prev = y > 0 && t >= 2;
+            for (size_t a = 0; a < stride; a += seg) {
+                size_t b = a + seg < stride ? a + seg : stride;
+                if (needs_prev) {
+                    unsigned spins = 0;
+                    while (__atomic_load_n(&progress[y - 1], __ATOMIC_ACQUIRE) < b) {
+                        cpu_relax();
+                        if (++spins > 4096) { sched_yield(); spins = 0; }
+                    }
+                }
+                unfilter_seg(row, prev, a, b, bpp, t);
+                __atomic_store_n(&progress[y], (uint32_t)b, __ATOMIC_RELEASE);
+            }
+        }
+    });
+    free(progress);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// speculative 16-bit decoding (all chunks but the first)
+//
+// Output symbols: v < 256 is a byte; v >= 256 is a placeholder for the byte
+// at (chunk start + v - 33024), i.e. inside the 32 KB before the chunk, still
+// unknown while decoding. In-chunk back-references copy symbols as they are,
+// so every symbol later resolves on its own once that window is known.
+
+#define PH_BASE 33024   // 256 + 32768
+
+static int grow16(uint16_t **o, size_t *cap, size_t need) {
+    if (need <= *cap) return 0;
+    size_t nc = need + need / 2 + 65536;
+    uint16_t *n = realloc(*o, (nc + OUT_PAD) * sizeof **o);
+    if (!n) return -1;
+    *o = n;
+    *cap = nc;
+    return 0;
+}
+
+static int decode_symbols16(BR *r, const Tables *t, uint16_t **pout, size_t *ppos, size_t *pcap, size_t limit) {
+    size_t pos = *ppos, cap = *pcap;
+    uint16_t *out = *pout;
+    for (;;) {
+        if (pos + 258 > cap) {
+            if (pos > limit) return -1;   // runaway (garbage) decoding
+            if (grow16(pout, pcap, pos + 258)) return -1;
+            out = *pout;
+            cap = *pcap;
+        }
+        br_refill(r);
+        uint32_t e = t->lt[br_peek(r, LBITS)];
+        if (E_KIND(e) == K_SUB) e = t->lt[E_VAL(e) + ((r->buf >> LBITS) & ((1 << (15 - LBITS)) - 1))];
+        br_skip(r, E_LEN(e));
+        unsigned kind = E_KIND(e);
+        if (kind == K_LIT) { out[pos++] = (uint16_t)E_VAL(e); continue; }
+        if (kind != K_LEN) {
+            if (kind == K_EOB) break;
+            return -1;
+        }
+        unsigned len = E_VAL(e) + br_peek(r, E_EXTRA(e));
+        br_skip(r, E_EXTRA(e));
+        uint32_t de = t->dt[br_peek(r, DBITS)];
+        if (E_KIND(de) == K_SUB) de = t->dt[E_VAL(de) + ((r->buf >> DBITS) & ((1 << (15 - DBITS)) - 1))];
+        if (E_KIND(de) != K_LEN) return -1;
+        br_skip(r, E_LEN(de));
+        br_refill(r);
+        long dist = (long)(E_VAL(de) + br_peek(r, E_EXTRA(de)));
+        br_skip(r, E_EXTRA(de));
+        long s0 = (long)pos - dist;
+        uint16_t *dst = out + pos;
+        if (s0 >= 0) {
+            const uint16_t *src = out + s0;
+            if (dist >= 4) {
+                for (unsigned k = 0; k < len; k += 4) { uint64_t v; memcpy(&v, src + k, 8); memcpy(dst + k, &v, 8); }
+            } else {
+                for (unsigned k = 0; k < len; k++) dst[k] = src[k];
+            }
+        } else {
+            if (s0 < -32768) return -1;
+            for (unsigned k = 0; k < len; k++) {
+                long sk = s0 + (long)k;
+                dst[k] = sk < 0 ? (uint16_t)(PH_BASE + sk) : out[sk];
+            }
+        }
+        pos += len;
+        if (br_over(r)) return -1;
+    }
+    *ppos = pos;
+    return br_over(r) ? -1 : 0;
+}
+
+// One block (header at the reader's position) into 16-bit output.
+// *boundary receives the bit position right after the block.
+static int decode_block16(BR *r, Tables *t, uint16_t **o, size_t *pos, size_t *cap, size_t limit, int *final) {
+    br_refill(r);
+    *final = (int)br_peek(r, 1);
+    unsigned btype = (unsigned)(r->buf >> 1) & 3;
+    br_skip(r, 3);
+    if (btype == 0) {
+        br_skip(r, r->cnt & 7);
+        br_refill(r);
+        unsigned slen = br_peek(r, 16), nlen = (unsigned)(r->buf >> 16) & 0xFFFF;
+        br_skip(r, 32);
+        if ((slen ^ 0xFFFF) != nlen) return -1;
+        if (grow16(o, cap, *pos + slen)) return -1;
+        uint16_t *out = *o;
+        for (; slen && r->cnt >= 8; slen--) { out[(*pos)++] = (uint8_t)r->buf; br_skip(r, 8); }
+        const uint8_t *src = r->p;
+        if (slen) {
+            if (src + slen > r->end) return -1;
+            for (unsigned k = 0; k < slen; k++) out[(*pos)++] = src[k];
+            br_init(r, r->base, (size_t)(r->end - r->base), (uint64_t)(src + slen - r->base) * 8);
+        }
+        return 0;
+    }
+    if (btype == 1) return decode_symbols16(r, &g_fixed, o, pos, cap, limit);
+    if (btype == 2) return read_dynamic(r, t) ? -1 : decode_symbols16(r, t, o, pos, cap, limit);
+    return -1;
+}
+
+// Cheap test whether a dynamic block header could start at bit b: BTYPE, HLIT,
+// HDIST and a valid (complete) code-length code. Most positions fail here.
+static inline int maybe_dynamic(const uint8_t *z, uint64_t b) {
+    uint64_t v;
+    memcpy(&v, z + (b >> 3), 8);
+    v >>= b & 7;   // >= 56 valid bits
+    if (((v >> 1) & 3) != 2) return 0;
+    if (((v >> 3) & 31) > 29 || ((v >> 8) & 31) > 29) return 0;
+    unsigned hclen = (unsigned)((v >> 13) & 15) + 4;
+    uint64_t w;
+    memcpy(&w, z + ((b + 17) >> 3), 8);
+    w >>= (b + 17) & 7;
+    int kraft = 0, n = 0;   // sum of 2^(7 - len), complete code = 128
+    for (unsigned i = 0; i < hclen; i++) {
+        unsigned l = (unsigned)(w >> (3 * i)) & 7;
+        if (l) { kraft += 128 >> l; n++; }
+    }
+    return kraft == 128 || (n == 1 && kraft == 64);
+}
+
+typedef struct {
+    uint64_t lo, hi;        // nominal bit range to search for the first block
+    uint64_t start;         // found block start (UINT64_MAX: none)
+    uint16_t *o;            // decoded symbols
+    size_t n, cap;
+    int stop;               // chunk index whose start we reached (-1: ended with BFINAL)
+    int final, err;
+    uint64_t endpos;        // bit position after the last decoded block
+    Tables *t;
+} PChunk;
+
+// Phase 1: find the first plausible block start in [lo, hi), confirmed by
+// decoding that block and finding a sane header after it.
+static void pc_find(const uint8_t *z, size_t zl, PChunk *c, size_t limit) {
+    c->start = UINT64_MAX;
+    for (uint64_t b = c->lo; b < c->hi; b++) {
+        if (!maybe_dynamic(z, b)) continue;
+        BR r;
+        br_init(&r, z, zl, b);
+        c->n = 0;
+        int final;
+        if (decode_block16(&r, c->t, &c->o, &c->n, &c->cap, limit, &final)) continue;
+        if (!final) {   // the next header must at least have a valid block type
+            br_refill(&r);
+            if (((r.buf >> 1) & 3) == 3) continue;
+        }
+        c->start = b;
+        c->endpos = br_pos(&r);
+        c->final = final;
+        return;
+    }
+    c->n = 0;
+}
+
+// Chunk 0: no window needed, decodes straight into the final 8-bit output.
+static void pc_decode0(const uint8_t *z, size_t zl, PChunk *ch, int N, uint8_t *out, size_t outlen) {
+    PChunk *c = &ch[0];
+    c->stop = -1;
+    BR r;
+    br_init(&r, z, zl, 0);
+    size_t pos = 0;
+    int j = 1;
+    for (;;) {
+        uint64_t bp = br_pos(&r);
+        while (j < N && (ch[j].start == UINT64_MAX || ch[j].start < bp)) j++;
+        if (j < N && ch[j].start == bp && bp) { c->stop = j; break; }
+        int final;
+        if (inflate8_one(&r, out, &pos, outlen, c->t, &final)) { c->err = 1; return; }
+        if (final) { c->final = 1; break; }
+    }
+    c->n = pos;
+    c->endpos = br_pos(&r);
+}
+
+// Phase 2: keep decoding until a block boundary equals another chunk's start.
+static void pc_decode(const uint8_t *z, size_t zl, PChunk *ch, int N, int i, size_t limit) {
+    PChunk *c = &ch[i];
+    c->stop = -1;
+    if (c->start == UINT64_MAX) return;
+    BR r;
+    br_init(&r, z, zl, c->endpos);
+    int j = i + 1;
+    while (!c->final) {
+        uint64_t pos = br_pos(&r);
+        while (j < N && (ch[j].start == UINT64_MAX || ch[j].start < pos)) j++;
+        if (j < N && ch[j].start == pos) { c->stop = j; c->endpos = pos; return; }
+        if (decode_block16(&r, c->t, &c->o, &c->n, &c->cap, limit, &c->final)) { c->err = 1; return; }
+    }
+    c->endpos = br_pos(&r);
+}
+
+static uint32_t adler32_combine(uint32_t a1, uint32_t a2, size_t len2) {
+    const uint64_t BASE = 65521;
+    uint64_t rem = len2 % BASE, sum1 = a1 & 0xFFFF, sum2 = (rem * sum1) % BASE;
+    sum1 += (a2 & 0xFFFF) + BASE - 1;
+    sum2 += ((a1 >> 16) & 0xFFFF) + ((a2 >> 16) & 0xFFFF) + BASE - rem;
+    if (sum1 >= BASE) sum1 -= BASE;
+    if (sum1 >= BASE) sum1 -= BASE;
+    if (sum2 >= BASE << 1) sum2 -= BASE << 1;
+    if (sum2 >= BASE) sum2 -= BASE;
+    return (uint32_t)(sum1 | sum2 << 16);
+}
+
+static int g_chunks = 0;
+void np_set_chunks(int n) { g_chunks = n; }
+
+// Writes symbols [i0, i1) of a chunk (at output offset o) as bytes, looking up
+// placeholders in the window before the chunk. Returns -1 on an impossible reference.
+static int resolve(uint8_t *out, size_t o, const uint16_t *sym, size_t i0, size_t i1) {
+    size_t i = i0;
+#ifdef __AVX2__
+    const __m256i lim = _mm256_set1_epi16(255);
+    for (; i + 16 <= i1; i += 16) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(sym + i));
+        if (!_mm256_testz_si256(v, _mm256_andnot_si256(lim, _mm256_set1_epi16(-1)))) {   // any >= 256
+            for (size_t k = i; k < i + 16; k++) {
+                uint16_t s = sym[k];
+                if (s < 256) { out[o + k] = (uint8_t)s; continue; }
+                long w = (long)o + ((long)s - PH_BASE);
+                if (w < 0) return -1;
+                out[o + k] = out[w];
+            }
+            continue;
+        }
+        __m128i lo = _mm256_castsi256_si128(v), hi = _mm256_extracti128_si256(v, 1);
+        _mm_storeu_si128((__m128i *)(out + o + i), _mm_packus_epi16(lo, hi));
+    }
+#endif
+    for (; i < i1; i++) {
+        uint16_t s = sym[i];
+        if (s < 256) { out[o + i] = (uint8_t)s; continue; }
+        long w = (long)o + ((long)s - PH_BASE);
+        if (w < 0) return -1;
+        out[o + i] = out[w];
+    }
+    return 0;
+}
+
+// --- buffer pool: symbol buffers and tables are reused between images ---
+typedef struct { void *p; size_t cap; } PoolBuf;
+static pthread_mutex_t g_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static PoolBuf g_pool[1024];
+static int g_pool_n;
+
+static void *pool_take(size_t need, size_t *cap) {
+    pthread_mutex_lock(&g_pool_mu);
+    int best = -1;
+    for (int i = 0; i < g_pool_n; i++)
+        if (g_pool[i].cap >= need && (best < 0 || g_pool[i].cap < g_pool[best].cap)) best = i;
+    if (best >= 0) {
+        void *p = g_pool[best].p;
+        *cap = g_pool[best].cap;
+        g_pool[best] = g_pool[--g_pool_n];
+        pthread_mutex_unlock(&g_pool_mu);
+        return p;
+    }
+    pthread_mutex_unlock(&g_pool_mu);
+    *cap = need;
+    return malloc(need);
+}
+
+static void pool_give(void *p, size_t cap) {
+    if (!p) return;
+    pthread_mutex_lock(&g_pool_mu);
+    if (g_pool_n == (int)(sizeof g_pool / sizeof *g_pool)) {
+        int s = 0;
+        for (int i = 1; i < g_pool_n; i++) if (g_pool[i].cap < g_pool[s].cap) s = i;
+        free(g_pool[s].p);
+        g_pool[s] = g_pool[--g_pool_n];
+    }
+    g_pool[g_pool_n].p = p;
+    g_pool[g_pool_n].cap = cap;
+    g_pool_n++;
+    pthread_mutex_unlock(&g_pool_mu);
+}
+
+static int ncpu(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 8;
+}
+
+// Parallel inflate of the raw deflate stream d (dl bytes, padded) into out.
+// Returns 0 if the result is complete and its Adler-32 matches.
+static int inflate_parallel(const uint8_t *d, size_t dl, const uint8_t *ztrail_base, size_t zlen, uint8_t *out,
+                            size_t outlen, int nthreads, np_stats *st) {
+    int N = g_chunks > 0 ? g_chunks : (nthreads > 0 ? nthreads : ncpu());
+    uint64_t bits = (uint64_t)dl * 8;
+    if ((uint64_t)N * 8 * 65536 > bits) N = (int)(bits / (8 * 65536)) + 1;   // >= 64 KB per chunk
+    PChunk *ch = calloc(N, sizeof *ch);
+    size_t *tcap = calloc(N, sizeof *tcap);
+    size_t limit = outlen + 65536;
+    size_t per = outlen / N * 2 + 65536;   // symbols; grows if a chunk expands more than average
+    for (int i = 0; i < N; i++) {
+        ch[i].lo = bits * i / N;
+        ch[i].hi = bits * (i + 1) / N;
+        ch[i].t = pool_take(sizeof(Tables), &tcap[i]);
+        if (i) {
+            size_t bytes;
+            ch[i].o = pool_take((per + OUT_PAD) * sizeof(uint16_t), &bytes);
+            ch[i].cap = bytes / sizeof(uint16_t) - OUT_PAD;
+        }
+    }
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
+    double tp0 = now_ms();
+    // phase 1: block starts (chunk 0 starts at bit 0 by definition)
+    ch[0].start = 0;
+    dispatch_apply((size_t)(N - 1), q, ^(size_t k) { pc_find(d, dl, &ch[k + 1], limit); });
+    double tp1 = now_ms();
+    // phase 2: decode until reaching the next chunk's start (chunk 0: straight into out)
+    dispatch_apply((size_t)N, q, ^(size_t i) {
+        if (i == 0) pc_decode0(d, dl, ch, N, out, outlen);
+        else if (!ch[i].err) pc_decode(d, dl, ch, N, (int)i, limit);
+    });
+    double tp2 = now_ms();
+    // stitch: follow the chain of chunks from the first one
+    int *chain = malloc(N * sizeof *chain), nc = 0, cur = 0, rc = -1;
+    size_t *off = calloc(N, sizeof *off), total = 0;
+    for (;;) {
+        if (ch[cur].err) goto fail;
+        chain[nc++] = cur;
+        off[cur] = total;
+        total += ch[cur].n;
+        if (total > outlen) goto fail;
+        if (ch[cur].final) break;
+        if (ch[cur].stop < 0) goto fail;
+        cur = ch[cur].stop;
+    }
+    if (total != outlen) goto fail;
+    st->chunks = nc;
+    // the last 32 KB of every chunk, in order (each needs the previous ones' tails)
+    for (int k = 1; k < nc; k++) {
+        PChunk *c = &ch[chain[k]];
+        size_t t0 = c->n > 32768 ? c->n - 32768 : 0;
+        if (resolve(out, off[chain[k]], c->o, t0, c->n)) goto fail;
+    }
+    {
+        // the rest in parallel, plus the Adler-32 of every chunk
+        uint32_t *ad = calloc(nc, sizeof *ad);
+        __block int bad = 0;
+        dispatch_apply((size_t)nc, q, ^(size_t k) {
+            PChunk *c = &ch[chain[k]];
+            size_t o = off[chain[k]], t0 = c->n > 32768 ? c->n - 32768 : 0;
+            if (k && resolve(out, o, c->o, 0, t0)) bad = 1;
+            ad[k] = adler32(1, out + o, c->n);
+        });
+        double tp3 = now_ms();
+        if (getenv("NP_DEBUG")) {
+            size_t ph = 0;
+            for (int k = 1; k < nc; k++) {
+                PChunk *c = &ch[chain[k]];
+                for (size_t i = 0; i < c->n; i++) ph += c->o[i] >= 256;
+            }
+            fprintf(stderr, "  find %.1f  decode %.1f  resolve+adler %.1f ms | placeholders %zu\n",
+                    tp1 - tp0, tp2 - tp1, tp3 - tp2, ph);
+        }
+        uint32_t a = ad[0];
+        for (int k = 1; k < nc; k++) a = adler32_combine(a, ad[k], ch[chain[k]].n);
+        free(ad);
+        // trailer after the final block (byte aligned)
+        size_t ai = (size_t)((ch[chain[nc - 1]].endpos + 7) / 8) + 2;
+        if (!bad && ai + 4 <= zlen && a == be32(ztrail_base + ai)) rc = 0;
+    }
+fail:
+    for (int i = 0; i < N; i++) {
+        pool_give(ch[i].t, tcap[i]);
+        if (ch[i].o) pool_give(ch[i].o, (ch[i].cap + OUT_PAD) * sizeof(uint16_t));
+    }
+    free(ch);
+    free(tcap);
+    free(chain);
+    free(off);
+    return rc;
+}
+
+// ---------------------------------------------------------------------------
+// driver
+
+int np_decode(const uint8_t *data, size_t len, const np_info *fi, uint8_t *out, int nthreads, np_stats *st) {
+    np_stats dummy;
+    if (!st) st = &dummy;
+    memset(st, 0, sizeof *st);
+    if (!fi->supported) return -1;
+    init_fixed();
+    double t0 = now_ms();
+    size_t zlen;
+    uint8_t *z = gather_idat(data, len, &zlen);
+    if (!z) return -1;
+    int rc = -1;
+    Tables *t = malloc(sizeof *t);
+    if (zlen < 6 || (z[0] & 15) != 8 || (z[0] >> 4) > 7 || ((z[0] << 8) | z[1]) % 31 || (z[1] & 0x20)) goto done;
+    st->parse_ms = now_ms() - t0;
+    if (nthreads != 1) {
+        double t1 = now_ms();
+        if (inflate_parallel(z + 2, zlen - 2, z, zlen, out, fi->raw_size, nthreads, st)) goto done;
+        st->inflate_ms = now_ms() - t1;
+        st->mode = 1;
+        double t2 = now_ms();
+        if (unfilter_parallel(out, fi, nthreads)) goto done;
+        st->unfilter_ms = now_ms() - t2;
+        rc = 0;
+        goto done;
+    }
+    {
+        double t1 = now_ms();
+        BR r;
+        br_init(&r, z + 2, zlen - 2, 0);
+        size_t pos = 0;
+        int final;
+        if (inflate8(&r, out, &pos, fi->raw_size, t, UINT64_MAX, &final) || !final || pos != fi->raw_size) goto done;
+        // Adler-32 trailer: byte-aligned after the last block
+        uint64_t bp = (br_pos(&r) + 7) & ~7ull;
+        size_t ai = (size_t)(bp / 8) + 2;
+        if (ai + 4 > zlen || adler32(1, out, pos) != be32(z + ai)) goto done;
+        st->inflate_ms = now_ms() - t1;
+        st->chunks = 1;
+        double t2 = now_ms();
+        if (unfilter_seq(out, fi)) goto done;
+        st->unfilter_ms = now_ms() - t2;
+        rc = 0;
+    }
+done:
+    free(t);
+    free(z);
+    return rc;
+}

@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "nitrojpeg.h"
+#include "nitropng.h"
 #ifdef NV_WUFFS
 #include "png_wuffs.h"   // optional fast PNG decoder
 #endif
@@ -52,7 +53,7 @@ static BOOL g_use_textures = NO;
 // ---------------------------------------------------------------------------
 // decoded image
 
-typedef enum { KIND_YUV = 0, KIND_BGRA = 1 } Kind;
+typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2 } Kind;   // PNG: unfiltered rows as decoded
 
 @interface Decoded : NSObject
 @property(nonatomic) id<MTLBuffer> buffer;
@@ -154,7 +155,8 @@ static NSData *read_file(NSString *path) {
 }
 
 // Decode one file into a Metal buffer. Runs on the decoder thread.
-enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3 };
+enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_NITROPNG = -4 };
+static int g_nthreads = 0;   // -j
 
 static const char *mode_name(int m) {
     switch (m) {
@@ -164,6 +166,7 @@ static const char *mode_name(int m) {
     case MODE_TURBOJPEG: return "tj";
     case MODE_WUFFS: return "wuffs";
     case MODE_IMAGEIO: return "imageio";
+    case MODE_NITROPNG: return "nitropng";
     default: return "?";
     }
 }
@@ -292,6 +295,29 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     size_t len = data.length;
     d.colorSpace = image_colorspace(data);   // tags the display layer (ICC profile or sRGB)
     if (is_png(bytes, len)) {
+        // nitropng (parallel): 8-bit gray / gray+alpha / RGB / RGBA, non-interlaced
+        np_info pi;
+        if (!np_read_info(bytes, len, &pi) && pi.supported && pi.width <= MAX_TEX && pi.height <= MAX_TEX) {
+            id<MTLBuffer> buf = [pool get:pi.raw_size];
+            np_stats ps;
+            if (buf && !np_decode(bytes, len, &pi, buf.contents, g_nthreads, &ps)) {
+                CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+                d.orientation = src ? imageio_orientation(src) : 1;   // eXIf chunk
+                if (src) CFRelease(src);
+                d.kind = KIND_PNG;
+                d.width = pi.width;
+                d.height = pi.height;
+                d.ncomp = pi.channels;
+                d.pitch[0] = pi.stride + 1;   // rows keep their filter-type byte
+                d.bands = ps.chunks;
+                if (buf.storageMode == MTLStorageModeManaged) [buf didModifyRange:NSMakeRange(0, pi.raw_size)];
+                d.buffer = buf;
+                d.mode = MODE_NITROPNG;
+                d.decode_ms = now_ms() - t1;
+                return d;
+            }
+            if (buf) [pool put:buf];
+        }
 #ifdef NV_WUFFS
         int w, h;
         if (!nv_png_size(bytes, len, &w, &h) && w <= MAX_TEX && h <= MAX_TEX) {
@@ -419,6 +445,18 @@ kernel void convert_buf(device const uchar *src [[buffer(1)]],
     if (p.kind == 2) {
         device const uchar *q = src + gid.y * p.pitch[0] + gid.x * 4;
         c = float4(q[2], q[1], q[0], 255) * (1.0 / 255.0);
+    } else if (p.kind == 3) {   // PNG rows (after the filter byte), off[1] = channels; premultiplied over black
+        // rows start at odd addresses: read through packed types (1-byte alignment), otherwise
+        // the compiler merges the bytes into one aligned load that silently drops the low bits
+        uint ch = p.off[1];
+        device const uchar *q = src + p.off[0] + gid.y * p.pitch[0] + gid.x * ch;
+        float4 v;
+        if (ch == 4) v = float4(uchar4(*(device const packed_uchar4 *)q));
+        else if (ch == 3) v = float4(float3(uchar3(*(device const packed_uchar3 *)q)), 255);
+        else if (ch == 2) { uchar2 t = uchar2(*(device const packed_uchar2 *)q); v = float4(t.x, t.x, t.x, t.y); }
+        else v = float4(q[0], q[0], q[0], 255);
+        v *= 1.0 / 255.0;
+        c = float4(v.rgb * v.a, 1.0);
     } else {
         float y = src[p.off[0] + gid.y * p.pitch[0] + gid.x] * (1.0 / 255.0);
         if (p.kind == 1) {
@@ -534,10 +572,19 @@ typedef struct {
 - (id<MTLTexture>)textureFor:(Decoded *)d commandBuffer:(id<MTLCommandBuffer>)cb {
     if (d.texture) return d.texture;
     id<MTLTexture> out = [_pool textureWidth:d.width height:d.height];
-    if (!g_use_textures) {
+    if (!g_use_textures || d.kind == KIND_PNG) {
         PlaneParams pp = {{(uint32_t)d.width, (uint32_t)d.height}, {1, 1}, {0, 0}, {0}, {0}, 0};
         for (int c = 0; c < 3; c++) { pp.off[c] = (uint32_t)d.offset[c]; pp.pitch[c] = (uint32_t)d.pitch[c]; }
         if (d.kind == KIND_BGRA) pp.kind = 2;
+        else if (d.kind == KIND_PNG) {
+            pp.kind = 3; pp.off[0] = 1; pp.off[1] = (uint32_t)d.ncomp;
+            if (getenv("NV_DEBUG_DIFF")) {
+                const uint8_t *b = d.buffer.contents;
+                fprintf(stderr, "   PNG params: off %u/%u pitch %u kind %u size %ux%u, buffer[0..8]: %d %d %d %d %d %d %d %d %d, len %lu\n",
+                        pp.off[0], pp.off[1], pp.pitch[0], pp.kind, pp.size[0], pp.size[1], b[0], b[1], b[2], b[3], b[4],
+                        b[5], b[6], b[7], b[8], (unsigned long)d.buffer.length);
+            }
+        }
         else if (d.ncomp == 1) pp.kind = 1;
         else {
             pp.cscale[0] = (float)d.h1 / d.hmax;
@@ -1342,7 +1389,7 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
             }
             const uint8_t *g = rb.contents;
             long hist[256] = {0};
-            int maxd = 0;
+            int maxd = 0, dbg_done = 0;
             double sum = 0;
             size_t cnt = 0;
             for (size_t k = 0; k < rp * d.height; k++) {
@@ -1352,6 +1399,13 @@ static int run_selftest(NSArray<NSString *> *files, GPU *gpu) {
                 sum += e;
                 cnt++;
                 if (e > maxd) maxd = e;
+                if (e > 8 && getenv("NV_DEBUG_DIFF") && !dbg_done) {
+                    dbg_done = 1;
+                    size_t px = (k % rp) / 4, py = k / rp;
+                    const uint8_t *gg = g + py * rp + px * 4, *rr = ref + py * rp + px * 4;
+                    printf("   first diff at (%zu,%zu): gpu %d %d %d %d  ref %d %d %d %d\n", px, py, gg[0], gg[1], gg[2], gg[3],
+                           rr[0], rr[1], rr[2], rr[3]);
+                }
             }
             NSString *csn = CFBridgingRelease(CGColorSpaceCopyName((__bridge CGColorSpaceRef)d.colorSpace));
             if (!csn) csn = @"(embedded ICC)";
@@ -1670,7 +1724,10 @@ int main(int argc, const char **argv) {
             else if (!strcmp(argv[i], "--zoomtest")) zoomtest = YES;
             else if (!strcmp(argv[i], "--inputtest")) inputtest = YES;
             else if (!strcmp(argv[i], "--auto") && i + 1 < argc) auto_ms = atof(argv[++i]);   // page every N ms, then quit
-            else if (!strcmp(argv[i], "-j") && i + 1 < argc) nj_set_max_workers(atoi(argv[++i]));   // decoder threads
+            else if (!strcmp(argv[i], "-j") && i + 1 < argc) {   // decoder threads
+                g_nthreads = atoi(argv[++i]);
+                nj_set_max_workers(g_nthreads);
+            }
             else if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--slideshow")) && i + 1 < argc) slide_ms = atof(argv[++i]);
             else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { args = nil; break; }
             else [args addObject:@(argv[i])];

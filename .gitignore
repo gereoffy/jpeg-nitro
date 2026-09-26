@@ -8,6 +8,8 @@
 /bench/sustain
 /bench/pngbench
 /bench/pngsplit
+/bench/pngverify
+/bench/pngrobust
 *.o
 *.dSYM/
 
