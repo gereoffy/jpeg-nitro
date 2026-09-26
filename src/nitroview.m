@@ -993,8 +993,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
     case '0': [self fitToScreen]; break;
-    case '1': [self zoomTo:1.0 image:d view:ds]; break;
-    case '2': [self zoomTo:2.0 image:d view:ds]; break;
+    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8':
+        [self zoomTo:k - '0' image:d view:ds];
+        break;
     case 'L': [self panX:-0.125 y:0 image:d view:ds]; break;
     case 'R': [self panX:0.125 y:0 image:d view:ds]; break;
     case 'U': [self panX:0 y:-0.125 image:d view:ds]; break;
@@ -1016,8 +1017,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
         case '+': case '=': if (cur) [self zoomBy:M_SQRT2 image:cur view:self.drawableSize]; return;
         case '-': case '_': if (cur) [self zoomBy:M_SQRT1_2 image:cur view:self.drawableSize]; return;
         case '0': [self fitToScreen]; return;
-        case '1': if (cur) [self zoomTo:1.0 image:cur view:self.drawableSize]; return;
-        case '2': if (cur) [self zoomTo:2.0 image:cur view:self.drawableSize]; return;
+        case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8':   // 100% .. 800%
+            if (cur) [self zoomTo:[ch characterAtIndex:0] - '0' image:cur view:self.drawableSize];
+            return;
         case 'w': case 'W': [self windowToImage]; return;
         default: break;
         }
@@ -1235,7 +1237,7 @@ static int run_zoomtest(NSArray<NSString *> *files, GPU *gpu) {
     id<MTLBuffer> out = [gpu.device newBufferWithLength:(size_t)W * H * 4 options:MTLResourceStorageModeShared];
     const char *scen[] = {"1", "1RRRDD", "1RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
                           "1UUUUUUUUUUUUUUUUUUUUUUUUUUUULLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "1+-", "1-+", "+", "++--", "0",
-                          "2", "2RRRDD", "1++", "1++++", "1+", NULL};
+                          "2", "2RRRDD", "1++", "1++++", "1+", "3", "5DDR", "8", "8LLU", NULL};
     int bad = 0;
     for (NSString *f in files) {
         @autoreleasepool {
@@ -1518,7 +1520,7 @@ int main(int argc, const char **argv) {
                 "  PgDn Space              next image         PgUp Backspace           previous\n"
                 "  Home / End              first / last       F / Enter                full screen\n"
                 "  + / -                   zoom in / out      0 fit to screen          1 actual size (1:1)\n"
-                "  2                       200%%, pixel-exact (1 image pixel = 2x2 screen pixels)\n"
+                "  2 .. 8                  200%% .. 800%%, pixel-exact (1 image pixel = NxN screen pixels)\n"
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
                 "  W                       back to the image's own size (small images 100%%, window follows)\n"
                 "mouse:\n"

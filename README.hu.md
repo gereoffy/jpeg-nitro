@@ -25,7 +25,7 @@ Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul)
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
-| 2 | 200%, pixelpontosan: egy képpixel = 2×2 képernyőpixel |
+| 2 … 8 | 200% … 800%, pixelpontosan: egy képpixel = N×N képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
 | W | vissza a kép saját méretére (kis képek 100%-on), az ablak újra követi a képek méretét |
 | egérhúzás | a nagyított kép mozgatása |

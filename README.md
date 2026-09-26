@@ -25,7 +25,7 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | + / − | zoom in / out (√2 steps, stops exactly at 100% and at fit) |
 | 0 | fit to the screen: small images are enlarged too (stays on while paging, until W) |
 | 1 | actual size: one image pixel = one screen pixel |
-| 2 | 200%, pixel-exact: one image pixel = 2×2 screen pixels |
+| 2 … 8 | 200% … 800%, pixel-exact: one image pixel = N×N screen pixels |
 | ← → ↑ ↓ | move a zoomed image (Shift: half a screen per step) |
 | W | back to the image's own size (small images at 100%), window follows image sizes again |
 | mouse drag | move a zoomed image |
