@@ -266,8 +266,9 @@ for what it became).
 When the decoder detects an error (invalid Huffman code, coefficient index overrun, the last
 MCU ends past the end of the data, wrong number of restart markers, …) it gives up, and the
 viewer falls back to TurboJPEG, which shows whatever is recoverable (e.g. the top part of a
-half-downloaded file). If that fails too (not a JPEG, broken header, empty file), the title
-shows `CANNOT DECODE` and paging continues.
+half-downloaded file), and then to Apple ImageIO (Wuffs is only used for PNG). If nothing can
+decode it (unknown format, broken header, empty file), the title shows `CANNOT DECODE` and
+paging continues.
 
 `make bench/robust && bench/robust samples/*` creates ~90 damaged variants of every image
 (truncation from 0 bytes to length−1, random byte and bit errors, zeroed or 0xFF-filled

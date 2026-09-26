@@ -277,8 +277,9 @@ szűrő-visszaállítás, ahol az r. sor az (r−1). mögött halad. Ez egy 24 M
 Ha a dekóder hibát lát (érvénytelen Huffman-kód, túlfutó együtthatóindex, az utolsó
 MCU a bitfolyam vége után ér véget, eltér a restart markerek száma stb.), nem próbálkozik
 tovább. Ilyenkor a néző a sima TurboJPEG-re vált, ami a sérült képből is megmutatja, ami
-menthető (pl. egy félig letöltött fájl felső részét). Ha az sem tudja dekódolni (nem JPEG,
-sérült fejléc, üres fájl), a címsorban `CANNOT DECODE` jelenik meg, és a lapozás folytatható.
+menthető (pl. egy félig letöltött fájl felső részét), ha az sem, akkor az Apple ImageIO-ra
+(a Wuffs csak PNG-hez kell). Ha egyik sem tudja dekódolni (ismeretlen formátum, sérült fejléc,
+üres fájl), a címsorban `CANNOT DECODE` jelenik meg, és a lapozás folytatható.
 
 `make bench/robust && bench/robust samples/*`: minden mintából ~90 rontott változatot
 készít (csonkítás 0 bájttól a teljes hossz −1-ig, véletlen bájt- és bithibák, nullázott vagy

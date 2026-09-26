@@ -1028,7 +1028,7 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args);
                                                  _zoomed ? @"" : @" (fit)", _index + 1, _files.count, d.width,
                                                  d.height, d.decode_ms]
                     : [NSString stringWithFormat:@"%@  (%ld/%lu)  %@", name, _index + 1, _files.count,
-                                                 [_loader failed:_index] ? @"CANNOT DECODE (not a JPEG or damaged)" : @"loading..."];
+                                                 [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
