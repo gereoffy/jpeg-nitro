@@ -807,6 +807,7 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args);
 - (void)testWheel:(double)f anchor:(CGPoint)a image:(Decoded *)d view:(CGSize)ds;
 - (void)testDragX:(double)dx y:(double)dy image:(Decoded *)d view:(CGSize)ds;
 - (void)testDoubleClick:(CGPoint)a image:(Decoded *)d view:(CGSize)ds;
+- (void)testPinch:(double)magnification image:(Decoded *)d view:(CGSize)ds;
 @end
 
 @implementation ViewerView {
@@ -1110,7 +1111,8 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     return _fitScreen ? s : MIN(s, 1.0);
 }
 
-- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
+// continuous: trackpad pinch / scroll, many small steps (no 2% snap, it would swallow them)
+- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a continuous:(BOOL)continuous {
     double fit = [self fitSnapScale:d view:ds];
     double cur = [self currentScale:d view:ds];
     double ns = cur * f;
@@ -1125,8 +1127,12 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     ns = MAX(MIN(fit, 1.0) / 4, MIN(ns, 32.0));
     double r = round(ns);                       // e.g. sqrt(2)^2 -> exactly 200%
     if (r >= 1 && fabs(ns - r) < 1e-6 * r) ns = r;
-    if (fabs(ns - fit) < 0.02 * fit) ns = fit;   // a step landing within 2% of fit is fit
+    if (!continuous && fabs(ns - fit) < 0.02 * fit) ns = fit;   // a step landing within 2% of fit is fit
     [self setScale:ns image:d view:ds anchor:a];
+}
+
+- (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
+    [self zoomBy:f image:d view:ds anchor:a continuous:NO];
 }
 
 - (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds {
@@ -1211,12 +1217,12 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     if (!d || dy == 0) return;
     double f = e.hasPreciseScrollingDeltas ? exp(dy * 0.01)          // trackpad: continuous
                                            : (dy > 0 ? M_SQRT2 : M_SQRT1_2);   // wheel: one step per notch
-    [self zoomBy:f image:d view:self.drawableSize anchor:[self anchorForEvent:e]];
+    [self zoomBy:f image:d view:self.drawableSize anchor:[self anchorForEvent:e] continuous:e.hasPreciseScrollingDeltas];
 }
 
 - (void)magnifyWithEvent:(NSEvent *)e {   // trackpad pinch
     Decoded *d = [_loader get:_index];
-    if (d) [self zoomBy:1 + e.magnification image:d view:self.drawableSize anchor:[self anchorForEvent:e]];
+    if (d) [self zoomBy:1 + e.magnification image:d view:self.drawableSize anchor:[self anchorForEvent:e] continuous:YES];
 }
 
 // Where to draw the image: NDC corner + extent (top-left snapped to device pixels).
@@ -1239,6 +1245,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
     case '0': [self fitToScreen]; break;
+    case 'F': [self zoomFit]; break;
     case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8':
         [self zoomTo:k - '0' image:d view:ds];
         break;
@@ -1252,6 +1259,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 - (void)testWheel:(double)f anchor:(CGPoint)a image:(Decoded *)d view:(CGSize)ds { [self zoomBy:f image:d view:ds anchor:a]; }
 - (void)testDragX:(double)dx y:(double)dy image:(Decoded *)d view:(CGSize)ds { [self panPixelsX:dx y:dy image:d view:ds]; }
 - (void)testDoubleClick:(CGPoint)a image:(Decoded *)d view:(CGSize)ds { [self toggleActualSize:d view:ds anchor:a]; }
+- (void)testPinch:(double)m image:(Decoded *)d view:(CGSize)ds {   // as magnifyWithEvent:
+    [self zoomBy:1 + m image:d view:ds anchor:CGPointZero continuous:YES];
+}
 - (BOOL)testZoomed { return _zoomed; }
 
 - (void)keyDown:(NSEvent *)e {
@@ -1819,6 +1829,23 @@ static int run_inputtest(NSArray<NSString *> *files, GPU *gpu) {
         if (i == 8) ok = ok && [v testZoomed];   // plain wheel must have zoomed in
         printf("  %-22s -> image %ld (expected %ld)%s  %s\n", steps[i].what, (long)v.index + 1, steps[i].expect + 1,
                i == 8 ? ([v testZoomed] ? ", zoomed in" : ", NOT zoomed") : "", ok ? "OK" : "FAIL");
+        if (!ok) bad++;
+    }
+    // trackpad: many tiny steps from fit (a pinch, a slow two-finger scroll) must zoom in,
+    // not be snapped back to fit one by one
+    Decoded *d = [v.loader get:v.index];
+    for (int k = 0; k < 400 && !d; k++) { usleep(5000); d = [v.loader get:v.index]; }
+    for (int t = 0; t < 2 && d; t++) {
+        CGSize ds = v.drawableSize;
+        [v testKey:'F' image:d view:ds];
+        double s0 = [v testScale:d view:ds];
+        for (int k = 0; k < 20; k++) {
+            if (t == 0) [v testPinch:0.01 image:d view:ds];
+            else [v scrollWheel:wheel(+1, 0, YES)];   // 1 px trackpad scroll
+        }
+        double r = [v testScale:d view:ds] / s0;
+        BOOL ok = [v testZoomed] && r > 1.15;
+        printf("  %-22s -> zoom x%.3f  %s\n", t == 0 ? "pinch 20 x 1%" : "trackpad 20 x 1px", r, ok ? "OK" : "FAIL");
         if (!ok) bad++;
     }
     printf(bad ? "INPUTTEST: %d problem(s)\n" : "INPUTTEST OK\n", bad);
