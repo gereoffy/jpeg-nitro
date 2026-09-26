@@ -38,6 +38,14 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | P | pause / resume the slideshow |
 | Esc / Q | quit (Esc in full screen: back to a window) |
 
+**One file given** (e.g. from Midnight Commander or the Finder): paging moves through the other
+images of its folder, in Finder order. The folder is listed only on the first paging key, so macOS
+asks for folder access only if you actually page.
+
+**Finder:** `make app` builds `nitroview.app`. Copy it to /Applications, then in the Finder: Get Info
+on an image → Open with → nitroview → Change All. Images can also be dropped on its Dock icon; a
+running viewer takes the new file(s).
+
 The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
 with the image's aspect ratio as large as fits (no black bars). When zooming in, the window grows with the image up to the screen
 size (and shrinks back when zooming out; 0 restores it). When paging, it follows each image's
@@ -312,6 +320,7 @@ make                 # nitroview; uses libjpeg-turbo as fallback if it is in thi
 make TURBOJPEG=0     # no libjpeg-turbo: other JPEGs go to Apple ImageIO
 make WUFFS=0         # no Wuffs: PNG via Apple ImageIO (~1.6x slower)
 scripts/get-deps.sh  # download + build libjpeg-turbo, stb_image, Wuffs into third_party/ (~30 s)
+make app             # nitroview.app for the Finder (ad-hoc signed)
 make tools           # bench/bench, verify, robust, freqprobe, sustain (needs get-deps.sh)
 ```
 

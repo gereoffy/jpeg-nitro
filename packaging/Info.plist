@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                 <string>nitroview</string>
+    <key>CFBundleDisplayName</key>          <string>nitroview</string>
+    <key>CFBundleIdentifier</key>           <string>com.github.gereoffy.nitroview</string>
+    <key>CFBundleExecutable</key>           <string>nitroview</string>
+    <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleShortVersionString</key>   <string>1.0</string>
+    <key>CFBundleVersion</key>              <string>1</string>
+    <key>LSMinimumSystemVersion</key>       <string>12.0</string>
+    <key>NSHighResolutionCapable</key>      <true/>
+    <key>NSPrincipalClass</key>             <string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>     <string>Image</string>
+            <key>CFBundleTypeRole</key>     <string>Viewer</string>
+            <!-- Alternate: offered in "Open With", never takes over a file type by itself -->
+            <key>LSHandlerRank</key>        <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.jpeg</string>
+                <string>public.png</string>
+                <string>com.adobe.photoshop-image</string>
+                <string>public.heic</string>
+                <string>public.heif</string>
+                <string>public.tiff</string>
+                <string>org.webmproject.webp</string>
+                <string>com.compuserve.gif</string>
+                <string>com.microsoft.bmp</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

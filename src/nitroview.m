@@ -759,6 +759,8 @@ typedef struct {
 - (Decoded *)get:(NSInteger)i;               // nil if not decoded yet
 - (BOOL)failed:(NSInteger)i;                 // could not be decoded at all
 - (void)focus:(NSInteger)cur direction:(int)dir;
+// New file list; the decoded image of oldIndex (if any) is kept as newIndex.
+- (void)replaceFiles:(NSArray<NSString *> *)files keep:(NSInteger)oldIndex as:(NSInteger)newIndex;
 @property(nonatomic, copy) void (^onDecoded)(NSInteger index);
 @end
 
@@ -771,6 +773,7 @@ typedef struct {
     NSInteger _cur;
     int _dir;
     NSCondition *_cond;
+    unsigned _gen;   // bumped when the file list changes: in-flight decodes are dropped
 }
 - (instancetype)initWithFiles:(NSArray<NSString *> *)files pool:(BufferPool *)pool align:(size_t)align {
     if (!(self = [super init])) return nil;
@@ -797,6 +800,30 @@ typedef struct {
     Decoded *d = _cache[@(i)];
     [_cond unlock];
     return d;
+}
+- (void)recycle:(Decoded *)old {   // buffers back to the pool (textures live on the main thread)
+    id<MTLBuffer> b = old.buffer;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self->_pool putTexture:old.texture];
+        old.texture = nil;
+        [self->_pool put:b];
+    });
+}
+- (void)replaceFiles:(NSArray<NSString *> *)files keep:(NSInteger)oldIndex as:(NSInteger)newIndex {
+    [_cond lock];
+    Decoded *keep = oldIndex >= 0 ? _cache[@(oldIndex)] : nil;
+    for (NSNumber *k in _cache.allKeys)
+        if (_cache[k] != keep) [self recycle:_cache[k]];
+    _cache = [NSMutableDictionary dictionary];
+    if (keep) _cache[@(newIndex)] = keep;
+    BOOL keepFailed = oldIndex >= 0 && [_failed containsObject:@(oldIndex)];
+    _failed = [NSMutableSet set];
+    if (keepFailed) [_failed addObject:@(newIndex)];
+    _files = [files copy];
+    _cur = newIndex;
+    _gen++;
+    [_cond signal];
+    [_cond unlock];
 }
 - (void)focus:(NSInteger)cur direction:(int)dir {
     [_cond lock];
@@ -834,24 +861,24 @@ typedef struct {
         // evict everything outside the window
         for (NSNumber *k in _cache.allKeys)
             if (![wanted containsObject:k]) {
-                Decoded *old = _cache[k];
+                [self recycle:_cache[k]];
                 [_cache removeObjectForKey:k];
-                id<MTLBuffer> b = old.buffer;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self->_pool putTexture:old.texture];
-                    old.texture = nil;
-                    [self->_pool put:b];
-                });
             }
+        NSString *path = _files[next.integerValue];
+        unsigned gen = _gen;
         [_cond unlock];
 
         Decoded *d;
-        @autoreleasepool { d = decode_file(_files[next.integerValue], _pool, _align); }
+        @autoreleasepool { d = decode_file(path, _pool, _align); }
 
         [_cond lock];
-        if (d) _cache[next] = d; else [_failed addObject:next];
+        BOOL stale = gen != _gen;   // the file list changed meanwhile: index no longer valid
+        if (stale) { if (d) [self recycle:d]; }
+        else if (d) _cache[next] = d;
+        else [_failed addObject:next];
         [_cond unlock];
-        if (!d) fprintf(stderr, "cannot decode %s\n", _files[next.integerValue].fileSystemRepresentation);
+        if (stale) continue;
+        if (!d) fprintf(stderr, "cannot decode %s\n", path.fileSystemRepresentation);
         void (^cb)(NSInteger) = self.onDecoded;
         if (cb) dispatch_async(dispatch_get_main_queue(), ^{ cb(next.integerValue); });
     }
@@ -887,12 +914,17 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
     return NSMakeSize(vis.size.width, vis.size.height - tb);
 }
 
+static NSArray<NSString *> *collect_files(NSArray<NSString *> *args);
+
 @interface ViewerView : MTKView <MTKViewDelegate>
 @property(nonatomic) NSArray<NSString *> *files;
 @property(nonatomic) GPU *gpu;
 @property(nonatomic) Loader *loader;
 @property(nonatomic) NSInteger index;
+@property(nonatomic) BOOL lazyDir;   // opened with one file: list its folder on the first paging
 - (void)startSlideshow:(double)ms;
+- (void)page:(NSInteger)delta;
+- (void)openFiles:(NSArray<NSString *> *)files lazyDir:(BOOL)lazy;
 - (void)windowToImage;
 // used by --zoomtest
 - (void)testKey:(char)k image:(Decoded *)d view:(CGSize)ds;
@@ -945,6 +977,49 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
     self.needsDisplay = YES;
 }
 
+// One file was given: now that the user pages, list its folder (only now, so macOS
+// asks for folder access only when it is really needed). The current image keeps
+// its decoded data and becomes its place in the folder.
+- (void)expandDirectory {
+    if (!_lazyDir) return;
+    _lazyDir = NO;
+    NSString *path = _files[_index];
+    NSString *dir = path.stringByDeletingLastPathComponent;
+    if (!dir.length) dir = @".";
+    NSArray<NSString *> *list = collect_files(@[dir]);
+    NSString *name = path.lastPathComponent;
+    NSUInteger k = [list indexOfObjectPassingTest:^BOOL(NSString *f, NSUInteger i, BOOL *stop) {
+        return [f.lastPathComponent isEqualToString:name];
+    }];
+    if (k == NSNotFound || list.count < 2) return;   // unreadable folder / nothing else there
+    NSMutableArray *files = [list mutableCopy];
+    files[k] = path;   // keep the path exactly as given
+    if (_shownIndex == _index) _shownIndex = (NSInteger)k;
+    [_loader replaceFiles:files keep:_index as:(NSInteger)k];
+    _files = files;
+    _index = (NSInteger)k;
+    [self updateTitle];
+}
+
+- (void)page:(NSInteger)delta {
+    [self expandDirectory];
+    [self go:_index + delta dir:delta >= 0 ? 1 : -1];
+}
+- (void)pageFirst { [self expandDirectory]; [self go:0 dir:1]; }
+- (void)pageLast { [self expandDirectory]; [self go:(NSInteger)_files.count - 1 dir:-1]; }
+
+// New files (e.g. opened from the Finder while running).
+- (void)openFiles:(NSArray<NSString *> *)files lazyDir:(BOOL)lazy {
+    if (!files.count) return;
+    _lazyDir = lazy;
+    _files = files;
+    _started = NO;
+    _index = 0;
+    _shownIndex = -1;
+    [_loader replaceFiles:files keep:-1 as:0];
+    [self go:0 dir:1];
+}
+
 - (void)updateTitle {
     Decoded *d = [_loader get:_index];
     NSString *name = _files[_index].lastPathComponent;
@@ -969,6 +1044,7 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
 }
 
 - (void)scheduleSlide {
+    if (_slideMs > 0 && !_paused) [self expandDirectory];
     if (_slideMs <= 0 || _paused || _index >= (NSInteger)_files.count - 1) return;   // stops at the last image
     unsigned gen = ++_slideGen;
     NSInteger idx = _index;
@@ -976,7 +1052,7 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
     __weak ViewerView *ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(wait, 0) * 1e6)), dispatch_get_main_queue(), ^{
         ViewerView *v = ws;
-        if (v && gen == v->_slideGen && idx == v->_index && !v->_paused) [v go:idx + 1 dir:1];
+        if (v && gen == v->_slideGen && idx == v->_index && !v->_paused) [v page:1];
     });
 }
 
@@ -1235,12 +1311,12 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 
 // Right click: next image (Shift: previous). Side buttons: back / forward.
 - (void)rightMouseDown:(NSEvent *)e {
-    if (e.modifierFlags & NSEventModifierFlagShift) [self go:_index - 1 dir:-1];
-    else [self go:_index + 1 dir:1];
+    if (e.modifierFlags & NSEventModifierFlagShift) [self page:-1];
+    else [self page:1];
 }
 - (void)otherMouseDown:(NSEvent *)e {
-    if (e.buttonNumber == 3) [self go:_index - 1 dir:-1];
-    else if (e.buttonNumber == 4) [self go:_index + 1 dir:1];
+    if (e.buttonNumber == 3) [self page:-1];
+    else if (e.buttonNumber == 4) [self page:1];
 }
 
 - (void)scrollWheel:(NSEvent *)e {
@@ -1248,14 +1324,14 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     if (e.isDirectionInvertedFromDevice) dy = -dy;   // physical direction: forward / up = zoom in
     if (e.modifierFlags & NSEventModifierFlagControl) {   // Ctrl + wheel: paging (back = next)
         if (!e.hasPreciseScrollingDeltas) {
-            if (dy < 0) [self go:_index + 1 dir:1];
-            else if (dy > 0) [self go:_index - 1 dir:-1];
+            if (dy < 0) [self page:1];
+            else if (dy > 0) [self page:-1];
             return;
         }
         _pageAccum += dy;                                 // trackpad: one image per 40 px
         if (e.phase == NSEventPhaseBegan) _pageAccum = dy;
-        while (_pageAccum <= -40) { _pageAccum += 40; [self go:_index + 1 dir:1]; }
-        while (_pageAccum >= 40) { _pageAccum -= 40; [self go:_index - 1 dir:-1]; }
+        while (_pageAccum <= -40) { _pageAccum += 40; [self page:1]; }
+        while (_pageAccum >= 40) { _pageAccum -= 40; [self page:-1]; }
         return;
     }
     Decoded *d = [_loader get:_index];
@@ -1328,10 +1404,10 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     case 124: if (cur) [self panX:step y:0 image:cur view:ds]; break;              // Right
     case 126: if (cur) [self panX:0 y:-step image:cur view:ds]; break;             // Up
     case 125: if (cur) [self panX:0 y:step image:cur view:ds]; break;              // Down
-    case 121: case 49: [self go:_index + 1 dir:1]; break;                           // PgDn Space
-    case 116: case 51: [self go:_index - 1 dir:-1]; break;                          // PgUp Backspace
-    case 115: [self go:0 dir:1]; break;                                            // Home
-    case 119: [self go:(NSInteger)_files.count - 1 dir:-1]; break;                // End
+    case 121: case 49: [self page:1]; break;                           // PgDn Space
+    case 116: case 51: [self page:-1]; break;                          // PgUp Backspace
+    case 115: [self pageFirst]; break;                                             // Home
+    case 119: [self pageLast]; break;                                              // End
     case 3: case 36: [self.window toggleFullScreen:nil]; break;                    // F Return
     case 53:                                                                       // Esc
         if (self.window.styleMask & NSWindowStyleMaskFullScreen) [self.window toggleFullScreen:nil];
@@ -1412,11 +1488,39 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 }
 @end
 
+static ViewerView *create_viewer(NSArray<NSString *> *files, BOOL lazy, GPU *gpu);
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property(nonatomic) NSWindow *window;
+@property(nonatomic) GPU *gpu;
+@property(nonatomic) ViewerView *viewer;
+@property(nonatomic) NSArray<NSString *> *argvFiles;   // opened from the command line already
+@property(nonatomic) NSWindow *hint;                   // "open an image" window (app started empty)
 @end
 @implementation AppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)s { return YES; }
+
+// Files opened from the Finder, the Dock icon or `open -a nitroview.app file`.
+- (void)application:(NSApplication *)app openURLs:(NSArray<NSURL *> *)urls {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSURL *u in urls) if (u.isFileURL) [paths addObject:u.path];
+    if (!paths.count) return;
+    if (self.argvFiles && [paths isEqualToArray:self.argvFiles]) { self.argvFiles = nil; return; }   // AppKit echoes argv
+    NSArray<NSString *> *files = collect_files(paths);
+    if (!files.count) return;
+    BOOL isDir = NO;
+    BOOL lazy = paths.count == 1 && [NSFileManager.defaultManager fileExistsAtPath:paths[0] isDirectory:&isDir] && !isDir;
+    if (self.viewer) {
+        [self.viewer openFiles:files lazyDir:lazy];
+        [self.viewer.window makeKeyAndOrderFront:nil];
+    } else {
+        [self.hint orderOut:nil];
+        self.hint = nil;
+        self.viewer = create_viewer(files, lazy, self.gpu);
+        self.window = self.viewer.window;
+    }
+    [app activateIgnoringOtherApps:YES];
+}
 @end
 
 // ---------------------------------------------------------------------------
@@ -1848,6 +1952,34 @@ static int run_inputtest(NSArray<NSString *> *files, GPU *gpu) {
     return bad != 0;
 }
 
+// Viewer window for a list of files (lazy: one file given, its folder is listed on paging).
+static ViewerView *create_viewer(NSArray<NSString *> *files, BOOL lazy, GPU *gpu) {
+    NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
+                             NSWindowStyleMaskMiniaturizable;
+    NSRect frame = initial_frame(files[0], mask);
+    NSWindow *win = [[NSWindow alloc] initWithContentRect:frame styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+    win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+    win.backgroundColor = NSColor.blackColor;
+    win.releasedWhenClosed = NO;
+    ViewerView *v = [[ViewerView alloc] initWithFrame:frame device:gpu.device];
+    v.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+    v.colorspace = (__bridge CGColorSpaceRef)srgb_space();   // untagged content is sRGB
+    v.paused = YES;
+    v.enableSetNeedsDisplay = YES;
+    v.delegate = v;
+    v.files = files;
+    v.gpu = gpu;
+    v.loader = [[Loader alloc] initWithFiles:files pool:gpu.pool align:gpu.align];
+    __weak ViewerView *wv = v;
+    v.loader.onDecoded = ^(NSInteger i) { [wv imageDecoded:i]; };
+    win.contentView = v;
+    [win makeFirstResponder:v];
+    [win makeKeyAndOrderFront:nil];
+    v.lazyDir = lazy;
+    [v go:0 dir:1];
+    return v;
+}
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
         BOOL full = NO, bench = NO, selftest = NO, zoomtest = NO, inputtest = NO;
@@ -1869,7 +2001,8 @@ int main(int argc, const char **argv) {
             else [args addObject:@(argv[i])];
         }
         NSArray *files = args ? collect_files(args) : @[];
-        if (!files.count) {
+        BOOL bundle = [NSBundle.mainBundle.bundlePath.pathExtension isEqualToString:@"app"];
+        if (!files.count && !(bundle && args && !args.count)) {
             fprintf(stderr,
                 "usage: nitroview [options] file.jpg|directory ...\n"
                 "\n"
@@ -1930,37 +2063,39 @@ int main(int argc, const char **argv) {
         item.submenu = appMenu;
         app.mainMenu = bar;
 
-        NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
-                                 NSWindowStyleMaskMiniaturizable;
-        NSRect frame = initial_frame(files[0], mask);
-        NSWindow *win = [[NSWindow alloc] initWithContentRect:frame styleMask:mask
-                                                      backing:NSBackingStoreBuffered defer:NO];
-        win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
-        win.backgroundColor = NSColor.blackColor;
+        del.gpu = gpu;
+        if (!files.count) {   // app started from the Finder / Dock without a file: wait for "open" events
+            NSWindow *hw = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 120)
+                                                       styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                                         backing:NSBackingStoreBuffered defer:NO];
+            hw.title = @"nitroview";
+            NSTextField *t = [NSTextField labelWithString:@"Open images with nitroview from the Finder,\nor drop them on its Dock icon."];
+            t.frame = NSMakeRect(20, 30, 380, 60);
+            [hw.contentView addSubview:t];
+            [hw center];
+            del.hint = hw;
+            // shown only if no file arrives right away (a Finder "open" follows the launch)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                if (!del.viewer) [del.hint makeKeyAndOrderFront:nil];
+            });
+            [app activateIgnoringOtherApps:YES];
+            [app run];
+            return 0;
+        }
+        del.argvFiles = args;
+        BOOL isDir = NO;
+        ViewerView *v = create_viewer(files, args.count == 1 && [NSFileManager.defaultManager fileExistsAtPath:args[0]
+                                                                                             isDirectory:&isDir] && !isDir, gpu);
+        del.viewer = v;
+        NSWindow *win = v.window;
         del.window = win;
-
-        ViewerView *v = [[ViewerView alloc] initWithFrame:frame device:dev];
-        v.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-        v.colorspace = (__bridge CGColorSpaceRef)srgb_space();   // untagged content is sRGB
-        v.paused = YES;
-        v.enableSetNeedsDisplay = YES;
-        v.delegate = v;
-        v.files = files;
-        v.gpu = gpu;
-        BufferPool *pool = gpu.pool;
-        v.loader = [[Loader alloc] initWithFiles:files pool:pool align:gpu.align];
-        __weak ViewerView *wv = v;
-        v.loader.onDecoded = ^(NSInteger i) { [wv imageDecoded:i]; };
-        win.contentView = v;
-        [win makeFirstResponder:v];
-        [win makeKeyAndOrderFront:nil];
-        [v go:0 dir:1];
         if (full) [win toggleFullScreen:nil];
         if (slide_ms > 0) [v startSlideshow:slide_ms];
         if (auto_ms > 0) {
             __block NSInteger shown = 1;
             [NSTimer scheduledTimerWithTimeInterval:auto_ms / 1000.0 repeats:YES block:^(NSTimer *t) {
-                if (shown++ >= (NSInteger)files.count) { [NSApp terminate:nil]; return; }
+                shown++;
+                if (!v.lazyDir && v.index >= (NSInteger)v.files.count - 1) { [NSApp terminate:nil]; return; }
                 const char *tk = getenv("NV_TEST_KEYS");   // test: "N:keys,..." at tick N press keys (no paging)
                 if (tk) {
                     char pat[16];
@@ -1983,7 +2118,7 @@ int main(int argc, const char **argv) {
                     Decoded *d = [v.loader get:v.index];
                     if (d) [v testKey:'1' image:d view:v.drawableSize];
                 }
-                [v go:v.index + 1 dir:1];
+                [v page:1];
             }];
         }
         [app activateIgnoringOtherApps:YES];

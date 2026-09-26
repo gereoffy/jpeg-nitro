@@ -4,6 +4,7 @@
 #                        in third_party/ljt (see scripts/get-deps.sh), standalone otherwise
 #   make TURBOJPEG=0     no libjpeg-turbo: JPEGs nitrojpeg can't decode go to Apple ImageIO
 #   make WUFFS=0         no Wuffs: PNG is decoded by Apple ImageIO (~1.8x slower)
+#   make app             nitroview.app bundle, so the Finder can open images with it
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
 
 LJT        := third_party/ljt
@@ -69,6 +70,15 @@ nitroview: src/nitroview.m build/nitrojpeg.o build/nitropng.o build/nitropsd.o $
 	  $(FRAMEWORKS) -framework ImageIO -o $@
 	@echo "built nitroview (libjpeg-turbo fallback: $(if $(filter 1,$(TURBOJPEG)),yes,no), Wuffs PNG: $(if $(filter 1,$(WUFFS)),yes,no), ImageIO: always)"
 
+# macOS app bundle (for the Finder: "Open With" / "Change All"), ad-hoc signed
+app: nitroview packaging/Info.plist
+	rm -rf nitroview.app
+	mkdir -p nitroview.app/Contents/MacOS
+	cp nitroview nitroview.app/Contents/MacOS/
+	cp packaging/Info.plist nitroview.app/Contents/
+	codesign --force --sign - nitroview.app
+	@echo "built nitroview.app (copy it to /Applications, then Finder: Get Info > Open with > nitroview > Change All)"
+
 deps:
 	@test -f $(LJT)/lib/libturbojpeg.a -a -f third_party/stb_image.h -a -f third_party/wuffs.c || \
 	  { echo "missing dependencies: run scripts/get-deps.sh first"; exit 1; }
@@ -116,7 +126,7 @@ tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench
        bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
 
 clean:
-	rm -rf build nitroview bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
+	rm -rf build nitroview nitroview.app bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
 	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
 
-.PHONY: all tools clean deps
+.PHONY: all app tools clean deps

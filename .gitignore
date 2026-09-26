@@ -1,6 +1,7 @@
 # build output
 /build/
 /nitroview
+/nitroview.app/
 /bench/bench
 /bench/verify
 /bench/robust

@@ -82,6 +82,14 @@ ImageIO-val ~310 ms, tehát a PNG jóval lassabb a JPEG-nél (lásd lent: „PNG
 A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai szál). 8 szálon
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
+**Egyetlen fájllal indítva** (pl. Midnight Commanderből vagy a Finderből): a lapozás a mappája többi
+képén halad végig, a Finder sorrendjében. A mappát csak az első lapozáskor olvassa be, így a macOS csak
+akkor kér hozzáférési engedélyt a mappához, ha tényleg lapozol.
+
+**Finder:** a `make app` elkészíti a `nitroview.app`-ot. Másold az Applications mappába, majd a Finderben
+egy képen: Információ → Megnyitás ezzel → nitroview → Az összes módosítása. A Dock-ikonra is rá lehet
+húzni képeket; a futó néző átveszi az új fájl(oka)t.
+
 Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
 arányával, akkorára, amekkora kifér (fekete sávok nélkül). Nagyításkor az ablak a képpel együtt nő, a
 képernyő méretéig (kicsinyítéskor visszamegy, a 0 visszaállítja). Lapozáskor minden képnél
@@ -298,6 +306,7 @@ Előfeltétel: Xcode Command Line Tools.
 make                 # néző; ha megvan a libjpeg-turbo, tartalék dekódernek beépíti
 make TURBOJPEG=0     # libjpeg-turbo nélkül: a többi JPEG-et az Apple ImageIO dekódolja
 make WUFFS=0         # Wuffs nélkül: PNG az Apple ImageIO-val (~1.6× lassabb)
+make app             # nitroview.app a Finderhez (ad-hoc aláírással)
 make tools           # bench/bench, bench/verify, bench/robust (referenciának kell a libjpeg-turbo)
 ```
 
