@@ -370,6 +370,8 @@ static int inflate8(BR *r, uint8_t *out, size_t *ppos, size_t cap, Tables *t, ui
 
 #ifdef __AVX2__
 #include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
 #endif
 
 static uint32_t adler32(uint32_t adler, const uint8_t *p, size_t n) {
@@ -395,6 +397,31 @@ static uint32_t adler32(uint32_t adler, const uint8_t *p, size_t n) {
         _mm256_storeu_si256((__m256i *)t3, vs2);
         uint64_t s1 = t1[0] + t1[1] + t1[2] + t1[3], acc = t2[0] + t2[1] + t2[2] + t2[3], s2w = 0;
         for (int i = 0; i < 8; i++) s2w += t3[i];
+        uint64_t bb = (uint64_t)b + (uint64_t)a * 32 * blocks + 32 * acc + s2w;
+        a = (uint32_t)(((uint64_t)a + s1) % 65521);
+        b = (uint32_t)(bb % 65521);
+        p += 32 * blocks;
+        n -= 32 * blocks;
+    }
+#elif defined(__ARM_NEON)
+    // same scheme as AVX2: 32 bytes per step, weights 32..1
+    static const uint8_t wt[32] = {32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+                                   16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+    const uint8x8_t w0 = vld1_u8(wt), w1 = vld1_u8(wt + 8), w2 = vld1_u8(wt + 16), w3 = vld1_u8(wt + 24);
+    while (n >= 32) {
+        size_t blocks = n / 32 < 173 ? n / 32 : 173;   // keeps every lane sum far below overflow
+        uint32x4_t vs1 = vdupq_n_u32(0), vs1acc = vs1, vs2 = vs1;
+        for (size_t k = 0; k < blocks; k++) {
+            uint8x16_t v0 = vld1q_u8(p + 32 * k), v1 = vld1q_u8(p + 32 * k + 16);
+            vs1acc = vaddq_u32(vs1acc, vs1);
+            vs1 = vpadalq_u16(vs1, vaddq_u16(vpaddlq_u8(v0), vpaddlq_u8(v1)));
+            uint16x8_t m = vmull_u8(vget_low_u8(v0), w0);
+            m = vmlal_u8(m, vget_high_u8(v0), w1);
+            m = vmlal_u8(m, vget_low_u8(v1), w2);
+            m = vmlal_u8(m, vget_high_u8(v1), w3);   // <= 8160 * 4 lanes-worth: fits 16 bits
+            vs2 = vpadalq_u16(vs2, m);
+        }
+        uint64_t s1 = vaddvq_u32(vs1), acc = vaddvq_u32(vs1acc), s2w = vaddvq_u32(vs2);
         uint64_t bb = (uint64_t)b + (uint64_t)a * 32 * blocks + 32 * acc + s2w;
         a = (uint32_t)(((uint64_t)a + s1) % 65521);
         b = (uint32_t)(bb % 65521);
@@ -787,6 +814,21 @@ static int resolve(uint8_t *out, size_t o, const uint16_t *sym, size_t i0, size_
         }
         __m128i lo = _mm256_castsi256_si128(v), hi = _mm256_extracti128_si256(v, 1);
         _mm_storeu_si128((__m128i *)(out + o + i), _mm_packus_epi16(lo, hi));
+    }
+#elif defined(__ARM_NEON)
+    for (; i + 16 <= i1; i += 16) {
+        uint16x8_t lo = vld1q_u16(sym + i), hi = vld1q_u16(sym + i + 8);
+        if (vmaxvq_u16(vorrq_u16(lo, hi)) > 255) {   // a placeholder among them
+            for (size_t k = i; k < i + 16; k++) {
+                uint16_t s = sym[k];
+                if (s < 256) { out[o + k] = (uint8_t)s; continue; }
+                long w = (long)o + ((long)s - PH_BASE);
+                if (w < 0) return -1;
+                out[o + k] = out[w];
+            }
+            continue;
+        }
+        vst1q_u8(out + o + i, vcombine_u8(vmovn_u16(lo), vmovn_u16(hi)));
     }
 #endif
     for (; i < i1; i++) {
