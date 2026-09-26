@@ -1,13 +1,22 @@
-<p align="center"><img src="docs/logo.webp" alt="NitroView – JPEG viewer for macOS" width="800"></p>
+<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS" width="800"></p>
 
 # jpeg-nitro
 
 [English](README.md) | **Magyar**
 
-**nitroview**: nagyon gyors képnéző macOS-re, és **nitrojpeg**: párhuzamos baseline
-JPEG-dekóder, ami egyetlen képet is az összes CPU-magon dekódol. Egy 24 MP-es JPEG-et
-~11 ms alatt dekódol, a libjpeg-turbo egy szálon ~107 ms. Így a 24 MP-es fotósorozatok
-(pl. timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal.
+**nitroview**: nagyon gyors képnéző macOS-re, három saját dekóderrel, amelyek egyetlen
+képet is az összes CPU-magon dekódolnak — pedig a JPEG, a PNG és a PSD tömörítése is
+eredendően soros:
+
+| dekóder | formátum | hogyan | idő | szokásos dekóderek |
+|---|---|---|---|---|
+| **nitrojpeg** | baseline JPEG | spekulatív párhuzamos Huffman-dekódolás, AVX2 IDCT; bitre egyezik a libjpeg-turbóval | 24 MP-es fotó: **~11 ms** | libjpeg-turbo ~107 ms (1 szálon) |
+| **nitropng** | PNG (8 bites, nem interlaced) | spekulatív párhuzamos inflate (a még ismeretlen adatra mutató visszahivatkozásokat utólag oldja fel, Adler-32-vel ellenőrizve) + „hullámfront” szűrővisszafejtés | 38 valódi PNG: átlag **~43 ms** | Wuffs ~171 ms, ImageIO ~318 ms |
+| **nitropsd** | Photoshop PSD/PSB (8 bites RGB / szürke) | összesített kép: RLE-sorok párhuzamosan, ZIP a nitropng inflate-jével; nagy, rétegekkel teli fájlból csak az összesített képet olvassa be | 24 MP RLE: **~5 ms** | ImageIO ~170 ms |
+
+A dekóderek függőség nélküli C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
+timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal. A HEIC, TIFF,
+WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg.
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
@@ -76,8 +85,7 @@ AI-képek, felskálázott textúrák, Photoshop-exportok) a nitropng átlag **~4
 iPhone-okról és a Mac-es képernyőképekből, Adobe RGB a szkennelésekből); a profil nélküli képeket
 sRGB-nek tekinti. A dekódolt képpontok változatlanok maradnak, a kirajzoló réteg kapja meg a kép
 színterét, így a monitor profiljára a macOS számol át, többletköltség nélkül, és a széles
-színtartomány is megmarad. Egy 24 MP-es fotó-PNG Wuffs-szal ~190 ms,
-ImageIO-val ~310 ms, tehát a PNG jóval lassabb a JPEG-nél (lásd lent: „PNG: miért nem párhuzamos”).
+színtartomány is megmarad.
 
 A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai szál). 8 szálon
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.

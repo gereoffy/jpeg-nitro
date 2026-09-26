@@ -1,14 +1,23 @@
-<p align="center"><img src="docs/logo.webp" alt="NitroView – JPEG viewer for macOS" width="800"></p>
+<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS" width="800"></p>
 
 # jpeg-nitro
 
 **English** | [Magyar](README.hu.md)
 
-**nitroview** is a very fast image viewer for macOS, and **nitrojpeg** is a parallel
-baseline JPEG decoder that decodes a *single* image on all CPU cores. A 24 MP JPEG decodes
-in ~11 ms, where libjpeg-turbo needs ~107 ms on one core. Photo series such as timelapses
-can be "played back" at full resolution in real time, up to 60 images/s.
-(The name: racing cars boost the turbo with nitro.)
+**nitroview** is a very fast image viewer for macOS, built on three decoders of our own that
+decode a *single* image on all CPU cores — although JPEG, PNG and PSD compression are all
+sequential by design:
+
+| decoder | format | how | time | usual decoders |
+|---|---|---|---|---|
+| **nitrojpeg** | baseline JPEG | speculative parallel Huffman decoding, AVX2 IDCT; bit-exact with libjpeg-turbo | 24 MP photo: **~11 ms** | libjpeg-turbo ~107 ms (1 thread) |
+| **nitropng** | PNG (8-bit, non-interlaced) | speculative parallel inflate (back-references into not yet known data resolved later, Adler-32 verified) + "wavefront" filter reversal | 38 real PNGs: **~43 ms** avg. | Wuffs ~171 ms, ImageIO ~318 ms |
+| **nitropsd** | Photoshop PSD/PSB (8-bit RGB / gray) | merged image: RLE rows in parallel, ZIP via nitropng's inflate; reads only the merged image of huge layered files | 24 MP RLE: **~5 ms** | ImageIO ~170 ms |
+
+The decoders are plain C files without dependencies and can be used on their own
+([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
+back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF and BMP open
+through Apple ImageIO. (The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
 Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
@@ -94,9 +103,7 @@ Apple ImageIO like the other formats. Transparent images are shown over black. O
 from iPhones and Mac screenshots, Adobe RGB scans); images without a profile are treated as
 sRGB. The decoded pixel values are left as they are and the display layer is tagged with the
 image's colour space, so macOS converts to the monitor's profile at no extra cost and wide-gamut
-colours are kept. A 24 MP photo PNG takes ~190 ms with
-Wuffs (~310 ms with ImageIO), so PNG is much slower than JPEG; see
-[PNG: why not parallel (yet)](#png-why-not-parallel-yet).
+colours are kept.
 
 `-j N` limits the decoder to N threads (default: all logical CPUs). With 8 threads decoding
 takes ~15.4 ms/image instead of 11.8, but heats the CPU less.
@@ -286,7 +293,7 @@ checked with ThreadSanitizer (on valid and damaged files).
   (8 ms vs 10 ms with managed buffers / textures).
 - The decoder's large buffers (clean bit stream, coefficients) are reused from image to image.
 
-## Using the decoder
+## Using the decoders
 
 `src/nitrojpeg.c` + `src/nitrojpeg.h` are self-contained (C, pthreads, GCD, optional AVX2).
 They decode baseline JPEGs (8-bit, Huffman, 1 or 3 components, YCbCr/greyscale, any chroma
@@ -311,6 +318,13 @@ if (nj_read_info(data, len, &info) == 0 && info.supported) {
     }
 }
 ```
+
+**nitropng** (`src/nitropng.c/.h`) works the same way: `np_read_info()`, then `np_decode()`
+into `info.raw_size` bytes — the unfiltered rows, each still preceded by its filter byte
+(row y at `out + y * (stride + 1) + 1`). `np_zlib_decompress()` is the parallel inflate on its
+own, for any zlib stream of known size. **nitropsd** (`src/nitropsd.c/.h`, needs nitropng):
+`ps_read_info()`, then `ps_decode()` writes the planes (R, G, B or gray, then transparency if
+`info.alpha`) one after the other.
 
 ## Build
 
