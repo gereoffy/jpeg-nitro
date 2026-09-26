@@ -1011,7 +1011,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 // Sets the zoom so that the image point under 'a' (device pixels from the view
 // centre, y down) stays under it. a = (0,0) zooms around the view centre.
 - (void)setScale:(double)ns image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
-    double fit = [self fitScale:d view:ds];
+    double fit = [self fitSnapScale:d view:ds];
     if (fabs(ns - fit) < 1e-9 && fabs(ns - 1.0) > 1e-9) { [self zoomFit]; return; }
     double iw, ih;
     display_size(d, &iw, &ih);
@@ -1036,8 +1036,24 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     [self setScale:ns image:d view:ds anchor:CGPointZero];
 }
 
+// The "fit" zoom level used for snapping. While the window follows the image, the
+// current window may have shrunk with a zoomed-out image, so its own fit would move
+// down with it (and zooming out would jump back to fit): use the scale of the
+// normal image-sized window instead.
+- (double)fitSnapScale:(Decoded *)d view:(CGSize)ds {
+    NSWindow *w = self.window;
+    if (!w || _userSized || _fsTransition || self.isFullScreen || !CGSizeEqualToSize(ds, self.drawableSize))
+        return [self fitScale:d view:ds];
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    NSSize cs = window_content_size(iw, ih, w.styleMask, w.screen, _fitScreen);
+    double bs = w.backingScaleFactor > 0 ? w.backingScaleFactor : 1;
+    double s = MIN(cs.width * bs / iw, cs.height * bs / ih);
+    return _fitScreen ? s : MIN(s, 1.0);
+}
+
 - (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
-    double fit = [self fitScale:d view:ds];
+    double fit = [self fitSnapScale:d view:ds];
     double cur = [self currentScale:d view:ds];
     double ns = cur * f;
     // stop exactly at 100% and at "fit" when a step crosses them
@@ -1051,7 +1067,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     ns = MAX(MIN(fit, 1.0) / 4, MIN(ns, 32.0));
     double r = round(ns);                       // e.g. sqrt(2)^2 -> exactly 200%
     if (r >= 1 && fabs(ns - r) < 1e-6 * r) ns = r;
-    if (fabs(ns - fit) < 1e-6 * fit) ns = fit;
+    if (fabs(ns - fit) < 0.02 * fit) ns = fit;   // a step landing within 2% of fit is fit
     [self setScale:ns image:d view:ds anchor:a];
 }
 
