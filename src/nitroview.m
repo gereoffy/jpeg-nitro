@@ -578,6 +578,23 @@ typedef struct {
 // ---------------------------------------------------------------------------
 // window
 
+// Window content size for an image of w x h pixels (after EXIF rotation):
+// smaller than the screen: exactly 100% (one image pixel per device pixel,
+// rounded up so it is never scaled down); larger: the image's aspect ratio,
+// as large as fits the visible screen area.
+static NSSize window_content_size(double w, double h, NSWindowStyleMask mask, NSScreen *scr) {
+    if (!scr) scr = NSScreen.mainScreen;
+    NSRect vis = scr.visibleFrame;
+    double bs = scr.backingScaleFactor > 0 ? scr.backingScaleFactor : 1;
+    double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
+    double maxW = vis.size.width, maxH = vis.size.height - tb;
+    double pw = w / bs, ph = h / bs;   // points at 100%
+    double k = MIN(1.0, MIN(maxW / pw, maxH / ph));
+    double cw = k >= 1 ? ceil(pw) : floor(pw * k);
+    double ch = k >= 1 ? ceil(ph) : floor(ph * k);
+    return NSMakeSize(MAX(cw, 320), MAX(ch, 200));
+}
+
 @interface ViewerView : MTKView <MTKViewDelegate>
 @property(nonatomic) NSArray<NSString *> *files;
 @property(nonatomic) GPU *gpu;
@@ -622,8 +639,10 @@ typedef struct {
     _index = i;
     _requestTime = now_ms();
     _reported = NO;
-    _wasReady = [_loader get:i] != nil;
+    Decoded *ready = [_loader get:i];
+    _wasReady = ready != nil;
     [_loader focus:i direction:dir];
+    if (ready) [self fitWindowTo:ready];
     [self updateTitle];
     self.needsDisplay = YES;
 }
@@ -631,12 +650,12 @@ typedef struct {
 - (void)updateTitle {
     Decoded *d = [_loader get:_index];
     NSString *name = _files[_index].lastPathComponent;
-    NSString *t = d ? [NSString stringWithFormat:@"%@  (%ld/%lu)  %dx%d  decode %.1f ms", name, _index + 1,
-                                                 _files.count, d.width, d.height, d.decode_ms]
+    NSString *t = d ? [NSString stringWithFormat:@"%@  %.0f%%%@  (%ld/%lu)  %dx%d  decode %.1f ms", name,
+                                                 100 * [self currentScale:d view:self.drawableSize],
+                                                 _zoomed ? @"" : @" (fit)", _index + 1, _files.count, d.width,
+                                                 d.height, d.decode_ms]
                     : [NSString stringWithFormat:@"%@  (%ld/%lu)  %@", name, _index + 1, _files.count,
                                                  [_loader failed:_index] ? @"CANNOT DECODE (not a JPEG or damaged)" : @"loading..."];
-    if (d)
-        t = [t stringByAppendingFormat:@"   %@ %.0f%%", _zoomed ? @"zoom" : @"fit", 100 * [self currentScale:d view:self.drawableSize]];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -663,6 +682,26 @@ typedef struct {
     });
 }
 
+// When paging in fit mode, the window follows the image size (keeping its
+// centre, staying on screen). Not when zoomed in, and not in full screen.
+- (void)fitWindowTo:(Decoded *)d {
+    NSWindow *w = self.window;
+    if (!w || !d || _zoomed || self.isFullScreen) return;
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    NSSize cs = window_content_size(iw, ih, w.styleMask, w.screen);
+    NSRect cur = [w contentRectForFrameRect:w.frame];
+    if (fabs(cur.size.width - cs.width) < 0.5 && fabs(cur.size.height - cs.height) < 0.5) return;
+    NSRect nf = [w frameRectForContentRect:NSMakeRect(floor(NSMidX(cur) - cs.width / 2),
+                                                      floor(NSMidY(cur) - cs.height / 2), cs.width, cs.height)];
+    NSRect vis = (w.screen ?: NSScreen.mainScreen).visibleFrame;
+    if (NSMaxX(nf) > NSMaxX(vis)) nf.origin.x = NSMaxX(vis) - nf.size.width;
+    if (nf.origin.x < vis.origin.x) nf.origin.x = vis.origin.x;
+    if (NSMaxY(nf) > NSMaxY(vis)) nf.origin.y = NSMaxY(vis) - nf.size.height;
+    if (nf.origin.y < vis.origin.y) nf.origin.y = vis.origin.y;
+    [w setFrame:nf display:YES animate:NO];
+}
+
 - (void)imageDecoded:(NSInteger)i {
     Decoded *d = [_loader get:i];
     if (!d) {
@@ -674,6 +713,7 @@ typedef struct {
         return;
     }
     if (i == _index) {
+        [self fitWindowTo:d];
         [self updateTitle];
         self.needsDisplay = YES;
     } else {
@@ -970,6 +1010,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
                     self.bounds.size.width, self.bounds.size.height, view.drawableSize.width, view.drawableSize.height,
                     vis.size.width, vis.size.height, NSScreen.mainScreen.backingScaleFactor, d.width, d.height,
                     _zoomed ? "zoom" : "fit", 100 * [self currentScale:d view:view.drawableSize]);
+            fprintf(stderr, "  title: %s\n", self.window.title.UTF8String);
         }
         double req = _requestTime;
         NSInteger idx = _index;
@@ -1279,29 +1320,17 @@ static BOOL header_size(NSString *path, double *w, double *h) {
     return YES;
 }
 
-// Initial window: sized to the first image. Smaller than the screen: exactly
-// 100% (one image pixel per screen pixel); larger: the image's aspect ratio,
-// as large as fits the visible screen area. Unknown size: 84% of the screen.
+// Initial window: sized to the first image (see window_content_size), centred
+// on the visible screen area. Unknown size: 84% of the screen.
 static NSRect initial_frame(NSString *first, NSWindowStyleMask mask) {
     NSScreen *scr = NSScreen.mainScreen;
     NSRect vis = scr.visibleFrame;
-    double bs = scr.backingScaleFactor > 0 ? scr.backingScaleFactor : 1;
     double tb = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:mask].size.height - 100;
-    double maxW = vis.size.width, maxH = vis.size.height - tb;
-    double w, h, cw, ch;
-    if (header_size(first, &w, &h)) {
-        double pw = w / bs, ph = h / bs;   // points at 100%
-        double k = MIN(1.0, MIN(maxW / pw, maxH / ph));
-        cw = k >= 1 ? ceil(pw) : floor(pw * k);   // ceil at 100%: never below one pixel per pixel
-        ch = k >= 1 ? ceil(ph) : floor(ph * k);
-        cw = MAX(cw, 320);
-        ch = MAX(ch, 200);
-    } else {
-        cw = floor(maxW * 0.84);
-        ch = floor(maxH * 0.84);
-    }
-    return NSMakeRect(vis.origin.x + floor((vis.size.width - cw) / 2),
-                      vis.origin.y + floor((maxH - ch) / 2), cw, ch);
+    double maxH = vis.size.height - tb, w, h;
+    NSSize cs = header_size(first, &w, &h) ? window_content_size(w, h, mask, scr)
+                                           : NSMakeSize(floor(vis.size.width * 0.84), floor(maxH * 0.84));
+    return NSMakeRect(vis.origin.x + floor((vis.size.width - cs.width) / 2),
+                      vis.origin.y + floor((maxH - cs.height) / 2), cs.width, cs.height);
 }
 
 // Sends synthesized mouse / wheel events (as macOS would) to the viewer and
@@ -1476,6 +1505,10 @@ int main(int argc, const char **argv) {
             __block NSInteger shown = 1;
             [NSTimer scheduledTimerWithTimeInterval:auto_ms / 1000.0 repeats:YES block:^(NSTimer *t) {
                 if (shown++ >= (NSInteger)files.count) { [NSApp terminate:nil]; return; }
+                if (shown == 2 && getenv("NV_TEST_ZOOM")) {   // test: zoom to 100% before paging on
+                    Decoded *d = [v.loader get:v.index];
+                    if (d) [v testKey:'1' image:d view:v.drawableSize];
+                }
                 [v go:v.index + 1 dir:1];
             }];
         }

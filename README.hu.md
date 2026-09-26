@@ -50,9 +50,10 @@ Paraméterek nélkül (vagy `-h`) a program kiírja az összes kapcsolót.
 A `-j N` a dekóder szálainak számát korlátozza (alapból mind a 16 logikai szál). 8 szálon
 a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 
-Az ablak az első képhez méretezve nyílik meg: ha a kép kisebb a képernyőnél, pontosan
-100%-on, egyébként a kép arányával, akkorára, amekkora kifér (fekete sávok nélkül). Lapozáskor
-az ablak mérete nem változik.
+Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
+arányával, akkorára, amekkora kifér (fekete sávok nélkül). Lapozáskor minden képnél igazodik
+(a közepe helyben marad), kivéve ha bele van nagyítva: akkor az ablak, a nagyítás és a pozíció
+is marad. A címsorban a fájlnév után látszik a nagyítás mértéke.
 
 **Lapozáskor a nagyítás és a pozíció megmarad**, így egy sorozatképnél bele lehet nagyítani
 egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legélesebb. A görgős nagyítás

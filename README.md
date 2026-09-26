@@ -36,9 +36,10 @@ Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
 | P | pause / resume the slideshow |
 | Esc / Q | quit (Esc in full screen: back to a window) |
 
-The window opens sized to the first image: at exactly 100% if it is smaller than the screen,
-otherwise with the image's aspect ratio as large as fits (no black bars). It keeps its size
-while paging. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
+The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
+with the image's aspect ratio as large as fits (no black bars). When paging, it follows each
+image's size (keeping its centre), except while zoomed in: then the window, zoom and position
+stay. The title shows the zoom level right after the file name. Paging stops at the first and last image. **Zoom and position are kept when paging**, so in
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
 than the window along an axis: it stays centred there until it fills the window. If Ctrl + scroll zooms the whole screen instead, macOS Accessibility zoom is set to use
