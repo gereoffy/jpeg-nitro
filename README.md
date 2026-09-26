@@ -68,7 +68,14 @@ ImageIO — which cannot read ZIP-compressed PSDs at all. A 24 MP RLE PSD decode
 are unpacked in parallel; ZIP uses nitropng's parallel inflate. Big layered PSDs are mostly layer
 data (the merged image is often only 13–23% of the file), so the viewer reads just the header,
 the image resources (ICC profile) and the merged image: a 482 MB PSD loads in ~20 ms instead of
-~155 ms. PNG is decoded by **nitropng**, our own parallel PNG decoder
+~155 ms.
+Merged transparency (negative layer count): Photoshop stores the colour matted with white — in a
+test file every partially transparent pixel had every channel ≥ 255 − alpha — so nitropsd shows it
+over black as max(0, colour + alpha − 255). ImageIO does not remove the matte (light fringes on
+soft edges). A 4th channel with a positive layer count is a saved selection, not transparency.
+Files saved without "Maximize Compatibility" contain only a white placeholder instead of the merged
+image; the layers are not composited, so they show white (as in ImageIO). On 55 real PSDs
+(Photoshop work, maps, architecture) the result matches ImageIO except for these two points. PNG is decoded by **nitropng**, our own parallel PNG decoder
 (8-bit gray / RGB / RGBA, non-interlaced: most PNGs), otherwise by
 [Wuffs](https://github.com/google/wuffs) when it is available (`scripts/get-deps.sh`) or by
 Apple ImageIO like the other formats. Transparent images are shown over black. On 38 real PNGs

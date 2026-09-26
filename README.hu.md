@@ -57,7 +57,15 @@ predikcióval), egyébként az Apple ImageIO – ami a ZIP-es PSD-ket egyáltal�
 helye kiszámolható, így a sorok párhuzamosan bonthatók ki; a ZIP a nitropng párhuzamos inflate-jét
 használja. A nagy, réteges PSD-k nagy része rétegadat (az összefésült kép sokszor a fájlnak csak
 13–23%-a), ezért a néző csak a fejlécet, az erőforrásokat (ICC-profil) és az összefésült képet olvassa
-be: egy 482 MB-os PSD beolvasása ~155 ms helyett ~20 ms. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
+be: egy 482 MB-os PSD beolvasása ~155 ms helyett ~20 ms.
+Átlátszó összefésült kép (negatív rétegszám): a Photoshop a színt fehér háttérre keverve tárolja – egy
+tesztfájlban minden részben átlátszó pixel minden csatornája ≥ 255 − alfa volt –, ezért a nitropsd
+fekete háttéren max(0, szín + alfa − 255)-ként mutatja. Az ImageIO ezt a fehér keverést nem veszi le
+(világos szegély a lágy széleken). Pozitív rétegszámnál a 4. csatorna mentett kijelölés, nem
+átlátszóság. A „Maximize Compatibility” nélkül mentett fájlokban az összefésült kép helyén csak fehér
+helykitöltő van; a rétegeket a néző nem fésüli össze, így ezek fehéren jelennek meg (mint az
+ImageIO-ban). 55 valódi PSD-n (Photoshop-munkák, térképek, építészet) az eredmény e két ponttól
+eltekintve egyezik az ImageIO-val. A PNG-t a **nitropng**, a saját párhuzamos PNG-dekóderünk
 dekódolja (8 bites szürke / RGB / RGBA, nem interlaced: a legtöbb PNG), egyébként a
 [Wuffs](https://github.com/google/wuffs), ha elérhető (`scripts/get-deps.sh`), vagy az Apple ImageIO.
 Az átlátszó képek fekete háttéren jelennek meg. 38 valódi PNG-n (képernyőképek, szkennelések,
