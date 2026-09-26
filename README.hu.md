@@ -20,7 +20,7 @@ WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg.
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
-Apple Silicon-on nincs kipróbálva (az AVX2 helyett ott a sima C-s IDCT fordul).
+Apple Siliconon is fut (M1-es MacBook Airen kipróbálva); ott az IDCT az AVX2 helyett NEON-t használ.
 
 ```
 ./nitroview [-f] [-s ms] [-j szálak] kep1.jpg kep2.jpg ... | konyvtar/

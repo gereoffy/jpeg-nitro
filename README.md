@@ -20,7 +20,7 @@ back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF 
 through Apple ImageIO. (The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
-Not tested on Apple Silicon (it builds the plain C IDCT there instead of AVX2).
+Also runs on Apple Silicon (tried on an M1 MacBook Air); there the IDCT uses NEON instead of AVX2.
 
 ```
 ./nitroview [-f] [-s ms] [-j threads] image.jpg ... | directory/
@@ -295,7 +295,7 @@ checked with ThreadSanitizer (on valid and damaged files).
 
 ## Using the decoders
 
-`src/nitrojpeg.c` + `src/nitrojpeg.h` are self-contained (C, pthreads, GCD, optional AVX2).
+`src/nitrojpeg.c` + `src/nitrojpeg.h` are self-contained (C, pthreads, GCD, optional AVX2 / NEON).
 They decode baseline JPEGs (8-bit, Huffman, 1 or 3 components, YCbCr/greyscale, any chroma
 subsampling, with or without restart markers) into planar Y/Cb/Cr:
 

@@ -1266,9 +1266,92 @@ static void idct_islow_avx2(const int16_t *in, const uint16_t *q, int dc, uint8_
 #undef MULK
 #endif
 
+#if defined(__ARM_NEON) && !defined(__AVX2__)
+#include <arm_neon.h>
+
+// Same as the AVX2 version with 4-wide vectors: every row is two halves,
+// lo = columns 0-3, hi = columns 4-7.
+
+#define ADD vaddq_s32
+#define SUB vsubq_s32
+#define MULK(a, k) vmulq_n_s32(a, k)
+
+// One 1-D ISLOW pass on 8 vectors (x[k] = frequency k, lanes independent).
+static inline __attribute__((always_inline)) void idct4_neon(int32x4_t *x, int shift) {
+    int32x4_t z2 = x[2], z3 = x[6];
+    int32x4_t z1 = MULK(ADD(z2, z3), FIX_0_541196100);
+    int32x4_t tmp2 = ADD(z1, MULK(z3, -FIX_1_847759065));
+    int32x4_t tmp3 = ADD(z1, MULK(z2, FIX_0_765366865));
+    int32x4_t tmp0 = vshlq_n_s32(ADD(x[0], x[4]), 13);
+    int32x4_t tmp1 = vshlq_n_s32(SUB(x[0], x[4]), 13);
+    int32x4_t tmp10 = ADD(tmp0, tmp3), tmp13 = SUB(tmp0, tmp3), tmp11 = ADD(tmp1, tmp2), tmp12 = SUB(tmp1, tmp2);
+    int32x4_t t0 = x[7], t1 = x[5], t2 = x[3], t3 = x[1];
+    z1 = ADD(t0, t3); z2 = ADD(t1, t2); z3 = ADD(t0, t2);
+    int32x4_t z4 = ADD(t1, t3);
+    int32x4_t z5 = MULK(ADD(z3, z4), FIX_1_175875602);
+    t0 = MULK(t0, FIX_0_298631336); t1 = MULK(t1, FIX_2_053119869);
+    t2 = MULK(t2, FIX_3_072711026); t3 = MULK(t3, FIX_1_501321110);
+    z1 = MULK(z1, -FIX_0_899976223); z2 = MULK(z2, -FIX_2_562915447);
+    z3 = ADD(MULK(z3, -FIX_1_961570560), z5); z4 = ADD(MULK(z4, -FIX_0_390180644), z5);
+    t0 = ADD(t0, ADD(z1, z3)); t1 = ADD(t1, ADD(z2, z4));
+    t2 = ADD(t2, ADD(z2, z3)); t3 = ADD(t3, ADD(z1, z4));
+    int32x4_t rnd = vdupq_n_s32(1 << (shift - 1)), sh = vdupq_n_s32(-shift);
+    tmp10 = ADD(tmp10, rnd); tmp11 = ADD(tmp11, rnd); tmp12 = ADD(tmp12, rnd); tmp13 = ADD(tmp13, rnd);
+    x[0] = vshlq_s32(ADD(tmp10, t3), sh); x[7] = vshlq_s32(SUB(tmp10, t3), sh);
+    x[1] = vshlq_s32(ADD(tmp11, t2), sh); x[6] = vshlq_s32(SUB(tmp11, t2), sh);
+    x[2] = vshlq_s32(ADD(tmp12, t1), sh); x[5] = vshlq_s32(SUB(tmp12, t1), sh);
+    x[3] = vshlq_s32(ADD(tmp13, t0), sh); x[4] = vshlq_s32(SUB(tmp13, t0), sh);
+}
+
+static inline __attribute__((always_inline)) void transpose4_neon(int32x4_t *a, int32x4_t *b, int32x4_t *c, int32x4_t *d) {
+    int32x4_t t0 = vtrn1q_s32(*a, *b), t1 = vtrn2q_s32(*a, *b);
+    int32x4_t t2 = vtrn1q_s32(*c, *d), t3 = vtrn2q_s32(*c, *d);
+    *a = vreinterpretq_s32_s64(vtrn1q_s64(vreinterpretq_s64_s32(t0), vreinterpretq_s64_s32(t2)));
+    *b = vreinterpretq_s32_s64(vtrn1q_s64(vreinterpretq_s64_s32(t1), vreinterpretq_s64_s32(t3)));
+    *c = vreinterpretq_s32_s64(vtrn2q_s64(vreinterpretq_s64_s32(t0), vreinterpretq_s64_s32(t2)));
+    *d = vreinterpretq_s32_s64(vtrn2q_s64(vreinterpretq_s64_s32(t1), vreinterpretq_s64_s32(t3)));
+}
+
+// lo[r] / hi[r]: columns 0-3 / 4-7 of row r. Transposes the 8x8 matrix.
+static inline __attribute__((always_inline)) void transpose8_neon(int32x4_t *lo, int32x4_t *hi) {
+    transpose4_neon(&lo[0], &lo[1], &lo[2], &lo[3]);
+    transpose4_neon(&hi[0], &hi[1], &hi[2], &hi[3]);
+    transpose4_neon(&lo[4], &lo[5], &lo[6], &lo[7]);
+    transpose4_neon(&hi[4], &hi[5], &hi[6], &hi[7]);
+    for (int i = 0; i < 4; i++) { int32x4_t t = hi[i]; hi[i] = lo[i + 4]; lo[i + 4] = t; }
+}
+
+static void idct_islow_neon(const int16_t *in, const uint16_t *q, int dc, uint8_t *out, size_t pitch) {
+    int32x4_t lo[8], hi[8];
+    for (int r = 0; r < 8; r++) {
+        int16x8_t c = vld1q_s16(in + 8 * r);
+        uint16x8_t k = vld1q_u16(q + 8 * r);
+        lo[r] = vmulq_s32(vmovl_s16(vget_low_s16(c)), vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(k))));
+        hi[r] = vmulq_s32(vmovl_s16(vget_high_s16(c)), vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(k))));
+    }
+    lo[0] = vsetq_lane_s32(dc * q[0], lo[0], 0);
+    idct4_neon(lo, 11);          // columns (lanes = columns)
+    idct4_neon(hi, 11);
+    transpose8_neon(lo, hi);
+    idct4_neon(lo, 18);          // rows (lanes = rows)
+    idct4_neon(hi, 18);
+    transpose8_neon(lo, hi);
+    int32x4_t c128 = vdupq_n_s32(128);
+    for (int r = 0; r < 8; r++) {
+        int16x8_t s = vcombine_s16(vqmovn_s32(ADD(lo[r], c128)), vqmovn_s32(ADD(hi[r], c128)));
+        vst1_u8(out + r * pitch, vqmovun_s16(s));
+    }
+}
+#undef ADD
+#undef SUB
+#undef MULK
+#endif
+
 static inline void idct_block(const int16_t *in, const uint16_t *q, int dc, uint8_t *out, size_t pitch) {
 #ifdef __AVX2__
     if (!g_scalar_idct) { idct_islow_avx2(in, q, dc, out, pitch); return; }
+#elif defined(__ARM_NEON)
+    if (!g_scalar_idct) { idct_islow_neon(in, q, dc, out, pitch); return; }
 #endif
     idct_islow_scalar(in, q, dc, out, pitch);
 }

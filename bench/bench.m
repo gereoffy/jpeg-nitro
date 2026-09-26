@@ -212,6 +212,7 @@ static Decoder decoders[] = {
 };
 
 int main(int argc, const char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: bench files.jpg...\n"); return 1; }
     @autoreleasepool {
         const char *only = getenv("ONLY");
         int nthreads = getenv("THREADS") ? atoi(getenv("THREADS")) : 0;

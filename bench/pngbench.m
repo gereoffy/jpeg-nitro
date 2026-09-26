@@ -82,6 +82,7 @@ static Decoder decoders[] = {
 };
 
 int main(int argc, const char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: pngbench files.png...\n"); return 1; }
     @autoreleasepool {
         NSMutableArray *files = [NSMutableArray array];
         size_t bytes = 0, pixels = 0;
