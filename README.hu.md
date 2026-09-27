@@ -203,6 +203,23 @@ nitropng 3×-osan gyorsabb a Wuffs-nál és 4×-esen az ImageIO-nál. Az Adler-3
 visszahivatkozások feloldása ott NEON-t használ (x86-on AVX2-t): ez ~100-ról 90 ms-ra gyorsított;
 az idő nagy része a Huffman-dekódolás és a sorszűrők visszafejtése, ezek mindkét gépen sima C-ben futnak.
 
+### Három gép, macOS és Linux
+
+`bench/nbench` (hordozható, minden rendszeren ugyanaz a kód), 5 dekódolásból a legjobb, ms/kép;
+JPEG: az 50 mintafotó, PNG: a fenti 34 valódi PNG. Az M1 sora a `bench/bench` / `bench/pngbench`
+méréséből van (JPEG: 43 fotó).
+
+| gép | JPEG, párhuzamos | JPEG, 1 szál | PNG, párhuzamos | PNG, 1 szál |
+|---|---|---|---|---|
+| Intel i9, 13. gen., 8 mag / 16 szál, macOS | **8.7** | 96 | **37.6** | 216 |
+| Apple M1, 4 + 4 mag, macOS | **30.4** | 154 | **90** | 326 |
+| Intel Xeon E3-1245 v5 (2015), 4 mag / 8 szál, Linux | **33.6** | 161 | **122** | 390 |
+
+Linuxon a dekóderek a `src/nitro_os.h` pthreads-es szálkészletén futnak, és ott is bitpontosak
+(`bench/verify`, `bench/pngverify`). Egy tízéves, 4 magos szerver egy 24 MP-es fotót ~34 ms alatt
+dekódol, nagyjából mint az M1; a hyper-threading JPEG-nél ~20%-ot ad (4 magon 4.8×), PNG-nél
+keveset (3.1×).
+
 ### nitrojpeg: hogyan párhuzamosít egyetlen képen belül?
 
 A saját motor (alapértelmezés) a Huffman-folyamot **egyszer** dekódolja, libjpeg-turbo nélkül:
@@ -360,7 +377,11 @@ A dekóderek nem függnek a macOS-től: amit a rendszerből használnak, az a `s
 van — párhuzamos ciklus (macOS-en Grand Central Dispatch, máshol egy kis pthreads-es
 szálkészlet), óra és a processzormagok száma. A ciklusmagok clang-blokkok (`^(size_t i) {…}`),
 ezért **clang kell `-fblocks`-szal** (a GCC nem ismeri a blokkokat); blokk-futásidejű könyvtár
-nem kell hozzá. Például:
+nem kell hozzá. Linuxon a `make` (= `make linux`) a hordozható eszközöket fordítja le:
+`bench/nbench`, `bench/pngverify`, `bench/psdverify`, az ASan-os robusztussági tesztek, valamint a
+`scripts/get-deps.sh` után a `bench/verify` és a `bench/robust` (a szkript a libjpeg-turbo 3-at a
+`third_party/`-be fordítja; a TurboJPEG 3 API kell, a régebbi rendszercsomagokban nincs meg). Kézzel
+például:
 
 ```
 clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
@@ -375,8 +396,8 @@ korlátozza.
 
 macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
 mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
-robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon és Windowson
-még nem futott.
+robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon kipróbálva (lásd:
+„Három gép, macOS és Linux”), Windowson még nem.
 
 ## Build
 

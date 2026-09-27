@@ -191,6 +191,22 @@ faster than Wuffs and 4× faster than ImageIO. Its Adler-32 and back-reference r
 there (AVX2 on x86): that took it from ~100 to 90 ms; most of the time is Huffman decoding
 and the row filters, which are plain C on both.
 
+### Three machines, macOS and Linux
+
+`bench/nbench` (portable, same code on every system), best of 5 decodes, ms/image; JPEG: the 50
+sample photos, PNG: the 34 real PNGs above. The M1 row is from `bench/bench` / `bench/pngbench`
+(JPEG: 43 of the photos).
+
+| machine | JPEG, parallel | JPEG, 1 thread | PNG, parallel | PNG, 1 thread |
+|---|---|---|---|---|
+| Intel i9 13th gen, 8 cores / 16 threads, macOS | **8.7** | 96 | **37.6** | 216 |
+| Apple M1, 4 + 4 cores, macOS | **30.4** | 154 | **90** | 326 |
+| Intel Xeon E3-1245 v5 (2015), 4 cores / 8 threads, Linux | **33.6** | 161 | **122** | 390 |
+
+On Linux the decoders run on the pthread pool of `src/nitro_os.h` and are bit-exact there too
+(`bench/verify`, `bench/pngverify`). A ten-year-old 4-core server decodes a 24 MP photo in
+~34 ms, like the M1; hyper-threading adds ~20% for JPEG (4.8× on 4 cores), little for PNG (3.1×).
+
 ### How nitrojpeg parallelises a single image
 
 The Huffman stream is decoded **once**, without libjpeg-turbo:
@@ -374,7 +390,10 @@ own, for any zlib stream of known size. **nitropsd** (`src/nitropsd.c/.h`, needs
 is in `src/nitro_os.h` — a parallel loop (Grand Central Dispatch on macOS, a small pthread
 pool elsewhere), a clock and the CPU count. The loop bodies are clang blocks (`^(size_t i) {…}`),
 so they need **clang with `-fblocks`** (GCC doesn't support blocks); no blocks runtime library is
-needed. For example:
+needed. On Linux, `make` (= `make linux`) builds the portable tools: `bench/nbench`,
+`bench/pngverify`, `bench/psdverify`, the ASan robustness tests, and `bench/verify` /
+`bench/robust` after `scripts/get-deps.sh` (which builds libjpeg-turbo 3 into `third_party/`;
+the TurboJPEG 3 API is needed, older system packages don't have it). By hand, for example:
 
 ```
 clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
@@ -389,7 +408,8 @@ threads.
 
 On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
 and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
-ThreadSanitizer with four threads decoding at once). It has not been run on Linux or Windows yet.
+ThreadSanitizer with four threads decoding at once). Tested on Linux (see
+[Three machines](#three-machines-macos-and-linux)); not yet on Windows.
 
 ## Build
 
