@@ -125,6 +125,10 @@ bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h
 bench/psdverify: bench/psdverify.c build/nitropsd.o build/nitropng.o
 	$(CC) -O3 $(CPUFLAGS) -w $^ -o $@
 
+# portable benchmark of the three decoders (also builds on Linux, see README)
+bench/nbench: bench/nbench.c build/nitrojpeg.o build/nitropng.o build/nitropsd.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 # nitropsd robustness test on damaged PSDs, with AddressSanitizer + UBSan
 bench/psdrobust: bench/psdrobust.c src/nitropsd.c src/nitropsd.h src/nitropng.c
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer bench/psdrobust.c src/nitropsd.c src/nitropng.c -o $@
@@ -139,10 +143,10 @@ bench/sustain: bench/sustain.c build/nitrojpeg.o
 	$(CC) -O2 $^ -o $@
 
 tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust \
-       bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
+       bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench
 
 clean:
 	rm -rf build nitroview nitroview.app bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench
 
 .PHONY: all app tools clean deps

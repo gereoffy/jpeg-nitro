@@ -13,6 +13,7 @@
 /bench/pngrobust
 /bench/psdverify
 /bench/psdrobust
+/bench/nbench
 *.o
 *.dSYM/
 

@@ -365,7 +365,13 @@ nem kell hozzá. Például:
 ```
 clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
 clang -O3 -fblocks bench/pngverify.c src/nitropng.c -lz -lpthread -o pngverify   # bájtpontos ellenőrzés a zlib-bel
+clang -O3 -march=native -fblocks bench/nbench.c src/nitrojpeg.c src/nitropng.c src/nitropsd.c -lpthread -o nbench
+./nbench -1 fotok/*.jpg kepek/*.png   # sebesség: fájlonként legjobb / átlagos idő, -1: egy szálon is
 ```
+
+A `bench/nbench` (macOS-en `make bench/nbench` is) a hordozható benchmark: minden JPEG-, PNG- vagy
+PSD-fájlt beolvas a memóriába, és többször dekódolja (`-r`, alapból 5); a `-j N` a szálak számát
+korlátozza.
 
 macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
 mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
@@ -420,7 +426,8 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
 - `src/nitroview.m`: Cocoa + Metal néző; `NV_TURBOJPEG`-gel TurboJPEG-tartalékkal
 - `src/shaders.metal`: a néző GPU-shaderei (színkonverzió, kirajzolás), fordításkor beágyazva
 - `scripts/get-deps.sh`: az opcionális függőségek letöltése és fordítása
-- `bench/bench.m`: dekóder-benchmark, `bench/verify.c`: bitpontosság + szinkronstatisztika,
+- `bench/bench.m`: dekóder-benchmark (macOS, az összes dekóder), `bench/nbench.c`: hordozható
+  benchmark a nitrojpeg / nitropng / nitropsd-hez, `bench/verify.c`: bitpontosság + szinkronstatisztika,
   `bench/robust.c`: hibatűrési teszt, `bench/freqprobe.c`: órajelmérés,
   `bench/sustain.c`: tartós terhelés, `bench/ab.sh`: zajtűrő A/B összehasonlítás
 - `src/nitropng.c/.h`: önálló párhuzamos PNG-dekóder

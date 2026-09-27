@@ -379,7 +379,13 @@ needed. For example:
 ```
 clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
 clang -O3 -fblocks bench/pngverify.c src/nitropng.c -lz -lpthread -o pngverify   # byte-exact check vs zlib
+clang -O3 -march=native -fblocks bench/nbench.c src/nitrojpeg.c src/nitropng.c src/nitropsd.c -lpthread -o nbench
+./nbench -1 photos/*.jpg images/*.png   # speed: best / average ms per file, -1 also single-threaded
 ```
+
+`bench/nbench` (also `make bench/nbench` on macOS) is the portable benchmark: it reads each JPEG,
+PNG or PSD file into memory and decodes it several times (`-r`, default 5), `-j N` limits the
+threads.
 
 On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
 and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
@@ -424,7 +430,8 @@ symlink). The measurements above were made on 50 private photos that are not in 
 - `src/nitroview.m`: Cocoa + Metal viewer; with `NV_TURBOJPEG` the TurboJPEG fallback
 - `src/shaders.metal`: the viewer's GPU shaders (colour conversion, drawing), embedded at build time
 - `scripts/get-deps.sh`: downloads and builds the optional dependencies
-- `bench/bench.m`: decoder benchmark, `bench/verify.c`: bit-exactness + sync statistics,
+- `bench/bench.m`: decoder benchmark (macOS, all decoders), `bench/nbench.c`: portable benchmark of
+  nitrojpeg / nitropng / nitropsd, `bench/verify.c`: bit-exactness + sync statistics,
   `bench/robust.c`: robustness test, `bench/freqprobe.c`: clock measurement,
   `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
 - `src/nitropng.c/.h`: self-contained parallel PNG decoder
