@@ -339,7 +339,7 @@ checked with ThreadSanitizer (on valid and damaged files).
 
 ## Using the decoders
 
-`src/nitrojpeg.c` + `src/nitrojpeg.h` are self-contained (C, pthreads, GCD, optional AVX2 / NEON).
+`src/nitrojpeg.c` + `src/nitrojpeg.h` (+ `src/nitro_os.h`) are self-contained (C, pthreads, optional AVX2 / NEON).
 They decode baseline JPEGs (8-bit, Huffman, 1 or 3 components, YCbCr/greyscale, any chroma
 subsampling, with or without restart markers) into planar Y/Cb/Cr:
 
@@ -369,6 +369,21 @@ into `info.raw_size` bytes — the unfiltered rows, each still preceded by its f
 own, for any zlib stream of known size. **nitropsd** (`src/nitropsd.c/.h`, needs nitropng):
 `ps_read_info()`, then `ps_decode()` writes the planes (R, G, B or gray, then transparency if
 `info.alpha`) one after the other.
+
+**Other systems (Linux, MinGW).** The decoders don't depend on macOS: all they need from the OS
+is in `src/nitro_os.h` — a parallel loop (Grand Central Dispatch on macOS, a small pthread
+pool elsewhere), a clock and the CPU count. The loop bodies are clang blocks (`^(size_t i) {…}`),
+so they need **clang with `-fblocks`** (GCC doesn't support blocks); no blocks runtime library is
+needed. For example:
+
+```
+clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
+clang -O3 -fblocks bench/pngverify.c src/nitropng.c -lz -lpthread -o pngverify   # byte-exact check vs zlib
+```
+
+On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
+and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
+ThreadSanitizer with four threads decoding at once). It has not been run on Linux or Windows yet.
 
 ## Build
 
@@ -414,6 +429,7 @@ symlink). The measurements above were made on 50 private photos that are not in 
   `bench/sustain.c`: sustained load, `bench/ab.sh`: noise-resistant A/B comparison
 - `src/nitropng.c/.h`: self-contained parallel PNG decoder
 - `src/nitropsd.c/.h`: parallel PSD/PSB merged-image decoder
+- `src/nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 - `src/png_wuffs.c/.h`: optional Wuffs PNG decoding for the viewer (PNG types nitropng skips)
 - `bench/pngbench.m`, `bench/pngsplit.c`: PNG decoder comparison and time split,
   `bench/pngverify.c`: nitropng byte-exactness vs zlib, `bench/pngrobust.c`: damaged PNGs (ASan),

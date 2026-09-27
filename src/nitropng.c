@@ -3,20 +3,15 @@
 // nitropng: multi-threaded single-image PNG decoding. See nitropng.h.
 #include "nitropng.h"
 
-#include <dispatch/dispatch.h>
+#include "nitro_os.h"   // parallel loop, clock, CPU count
 #include <stdio.h>
-#include <mach/mach_time.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 
 static inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 
@@ -508,7 +503,8 @@ static inline __attribute__((always_inline)) void unfilter_seg_bpp(uint8_t *row,
                                                                    size_t b, const int bpp, int t) {
     int L[4] = {0, 0, 0, 0}, UL[4] = {0, 0, 0, 0};
     size_t x = a;
-    if (a) for (int k = 0; k < bpp; k++) { L[k] = row[a - bpp + k]; if (prev) UL[k] = prev[a - bpp + k]; }
+    // UL only for Paeth: None / Sub rows don't wait for the row above, so must not read it
+    if (a) for (int k = 0; k < bpp; k++) { L[k] = row[a - bpp + k]; if (prev && t == 4) UL[k] = prev[a - bpp + k]; }
     switch (t) {
     case 1:   // Sub
         for (; x < b; x += bpp)
@@ -561,7 +557,7 @@ static int unfilter_parallel(uint8_t *out, const np_info *fi, int nthreads) {
     int W = nthreads > 0 ? nthreads : (ncpu() * 3 + 3) / 4;
     if (getenv("NP_UW")) W = atoi(getenv("NP_UW"));
     const size_t seg = (SEG / bpp) * bpp;
-    dispatch_apply((size_t)W, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t w) {
+    nitro_parallel((size_t)W, ^(size_t w) {
         for (;;) {
             long y = __sync_fetch_and_add(&next, 1);
             if (y >= H) break;
@@ -879,10 +875,7 @@ static void pool_give(void *p, size_t cap) {
     pthread_mutex_unlock(&g_pool_mu);
 }
 
-static int ncpu(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 8;
-}
+static int ncpu(void) { return nitro_ncpu(); }
 
 // Parallel inflate of the raw deflate stream d (dl bytes, padded) into out.
 // Returns 0 if the result is complete and its Adler-32 matches.
@@ -905,14 +898,13 @@ static int inflate_parallel(const uint8_t *d, size_t dl, const uint8_t *ztrail_b
             ch[i].cap = bytes / sizeof(uint16_t) - OUT_PAD;
         }
     }
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
     double tp0 = now_ms();
     // phase 1: block starts (chunk 0 starts at bit 0 by definition)
     ch[0].start = 0;
-    dispatch_apply((size_t)(N - 1), q, ^(size_t k) { pc_find(d, dl, &ch[k + 1], limit); });
+    nitro_parallel((size_t)(N - 1), ^(size_t k) { pc_find(d, dl, &ch[k + 1], limit); });
     double tp1 = now_ms();
     // phase 2: decode until reaching the next chunk's start (chunk 0: straight into out)
-    dispatch_apply((size_t)N, q, ^(size_t i) {
+    nitro_parallel((size_t)N, ^(size_t i) {
         if (i == 0) pc_decode0(d, dl, ch, N, out, outlen);
         else if (!ch[i].err) pc_decode(d, dl, ch, N, (int)i, limit);
     });
@@ -942,7 +934,7 @@ static int inflate_parallel(const uint8_t *d, size_t dl, const uint8_t *ztrail_b
         // the rest in parallel, plus the Adler-32 of every chunk
         uint32_t *ad = calloc(nc, sizeof *ad);
         __block int bad = 0;
-        dispatch_apply((size_t)nc, q, ^(size_t k) {
+        nitro_parallel((size_t)nc, ^(size_t k) {
             PChunk *c = &ch[chain[k]];
             size_t o = off[chain[k]], t0 = c->n > 32768 ? c->n - 32768 : 0;
             if (k && resolve(out, o, c->o, 0, t0)) bad = 1;

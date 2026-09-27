@@ -2,18 +2,14 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // Checks nitropng against zlib + a straightforward filter reversal (byte-exact),
 // and times both.   pngverify files.png...   (NP_THREADS=n to set threads)
-#include <mach/mach_time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
+#include "../src/nitro_os.h"   // nitro_now_ms
 #include "../src/nitropng.h"
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
 static int ref_decode(const uint8_t *d, size_t n, const np_info *fi, uint8_t *u) {

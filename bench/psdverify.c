@@ -4,17 +4,13 @@
 // compression variant must match the raw variant next to it (NAME_raw.psd).
 // Optionally dumps the planes (DUMP=dir) for an external comparison.
 //   psdverify files.psd...
-#include <mach/mach_time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../src/nitro_os.h"   // nitro_now_ms
 #include "../src/nitropsd.h"
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 static uint8_t *load(const char *fn, size_t *n) {
     FILE *f = fopen(fn, "rb"); if (!f) return NULL;
     fseek(f, 0, SEEK_END); *n = ftell(f); fseek(f, 0, SEEK_SET);

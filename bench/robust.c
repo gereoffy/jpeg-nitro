@@ -6,15 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <mach/mach_time.h>
 #include <turbojpeg.h>
+#include "../src/nitro_os.h"   // nitro_now_ms
 #include "../src/nitrojpeg.h"
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 
 static uint64_t rng = 0x9E3779B97F4A7C15ull;
 static uint64_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }

@@ -4,26 +4,18 @@
 #include "nitropsd.h"
 #include "nitropng.h"   // np_zlib_decompress
 
-#include <dispatch/dispatch.h>
-#include <mach/mach_time.h>
+#include "nitro_os.h"   // parallel loop, clock, CPU count
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 
 static inline uint32_t be16(const uint8_t *p) { return (uint32_t)p[0] << 8 | p[1]; }
 static inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static inline uint64_t be64(const uint8_t *p) { return (uint64_t)be32(p) << 32 | be32(p + 4); }
 
-static int ncpu(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 8;
-}
+static int ncpu(void) { return nitro_ncpu(); }
 
 int ps_read_info(const uint8_t *d, size_t len, ps_info *fi) {
     memset(fi, 0, sizeof *fi);
@@ -101,14 +93,13 @@ int ps_decode(const uint8_t *d, size_t len, const ps_info *fi, uint8_t *out, int
     const size_t W = (size_t)fi->width, rows = (size_t)P * H;
     const uint8_t *data = d + fi->data_off;
     const size_t avail = len - fi->data_off;
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
     const size_t tasks = (size_t)(nthreads > 0 ? nthreads : ncpu()) * 8;   // row ranges, for balance
     const size_t nt = tasks < rows ? tasks : rows;
     __block volatile int bad = 0;
     st->mode = fi->compression;
     if (fi->compression == 0) {
         if (fi->plane_size * P > avail) return -1;
-        dispatch_apply(nt, q, ^(size_t t) {   // planes are contiguous in the file
+        nitro_parallel(nt, ^(size_t t) {   // planes are contiguous in the file
             size_t a = fi->plane_size * P * t / nt, b = fi->plane_size * P * (t + 1) / nt;
             memcpy(out + a, data + a, b - a);
         });
@@ -125,7 +116,7 @@ int ps_decode(const uint8_t *d, size_t len, const ps_info *fi, uint8_t *out, int
         }
         off[rows] = o;
         if (o > avail) { free(off); return -1; }
-        dispatch_apply(nt, q, ^(size_t t) {
+        nitro_parallel(nt, ^(size_t t) {
             size_t r0 = rows * t / nt, r1 = rows * (t + 1) / nt;
             for (size_t r = r0; r < r1 && !bad; r++)
                 if (unpackbits(data + off[r], data + off[r + 1], out + r * W, W)) bad = 1;
@@ -138,7 +129,7 @@ int ps_decode(const uint8_t *d, size_t len, const ps_info *fi, uint8_t *out, int
         if (!buf) return -1;
         if (np_zlib_decompress(data, avail, buf, total, nthreads)) bad = 1;
         if (!bad && fi->compression == 3)   // prediction: each row stores differences of neighbours
-            dispatch_apply(nt, q, ^(size_t t) {
+            nitro_parallel(nt, ^(size_t t) {
                 size_t r0 = rows * t / nt, r1 = rows * (t + 1) / nt;
                 for (size_t r = r0; r < r1; r++) {
                     uint8_t *row = buf + r * W, acc = 0;

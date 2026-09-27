@@ -36,20 +36,20 @@ REF_LIBS   := $(LJT)/lib/libturbojpeg.a -Wl,-w
 all: nitroview
 
 # production decoder: no dependencies
-build/nitrojpeg.o: src/nitrojpeg.c src/nitrojpeg.h
+build/nitrojpeg.o: src/nitrojpeg.c src/nitrojpeg.h src/nitro_os.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # reference build: + old libjpeg-turbo engine and BGRX output (tests, benchmarks)
-build/nitrojpeg_ref.o: src/nitrojpeg.c src/nitrojpeg.h | deps
+build/nitrojpeg_ref.o: src/nitrojpeg.c src/nitrojpeg.h src/nitro_os.h | deps
 	@mkdir -p build
 	$(CC) $(REF_CFLAGS) -c $< -o $@
 
-build/nitropsd.o: src/nitropsd.c src/nitropsd.h src/nitropng.h
+build/nitropsd.o: src/nitropsd.c src/nitropsd.h src/nitropng.h src/nitro_os.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/nitropng.o: src/nitropng.c src/nitropng.h
+build/nitropng.o: src/nitropng.c src/nitropng.h src/nitro_os.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 

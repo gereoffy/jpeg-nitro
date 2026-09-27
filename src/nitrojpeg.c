@@ -10,8 +10,7 @@
 // in part on the work of the Independent JPEG Group.
 #include "nitrojpeg.h"
 
-#include <dispatch/dispatch.h>
-#include <mach/mach_time.h>
+#include "nitro_os.h"   // parallel loop, clock, CPU count
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
@@ -32,16 +31,9 @@
 // ---------------------------------------------------------------------------
 // utilities
 
-static double now_ms(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
-}
+static double now_ms(void) { return nitro_now_ms(); }
 
-static int ncpu(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 8;
-}
+static int ncpu(void) { return nitro_ncpu(); }
 
 static inline unsigned be16(const uint8_t *p) { return (unsigned)p[0] << 8 | p[1]; }
 
@@ -71,11 +63,11 @@ static __thread int t_workers = 0;   // per-call override (nj_decode_own with nt
 static void parallel_for(size_t n, void (^body)(size_t)) {
     int w = t_workers > 0 ? t_workers : g_max_workers > 0 ? g_max_workers : ncpu();
     if ((size_t)w >= n) {
-        dispatch_apply(n, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), body);
+        nitro_parallel(n, body);
         return;
     }
     __block volatile long next = 0;
-    dispatch_apply((size_t)w, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t t) {
+    nitro_parallel((size_t)w, ^(size_t t) {
         for (;;) {
             long i = __sync_fetch_and_add(&next, 1);
             if (i >= (long)n) break;

@@ -354,6 +354,24 @@ ThreadSanitizer is ellenőrizte (ép és sérült fájlokon).
 - A dekóder nagy pufferei (tiszta bitfolyam, együtthatók) képről képre újrahasznosulnak.
   Hideg készlettel (az első 50 kép) a dekódolás 11.9 ms/kép, bemelegedve 10.6–10.8 ms/kép.
 
+### A dekóderek más rendszeren (Linux, MinGW)
+
+A dekóderek nem függnek a macOS-től: amit a rendszerből használnak, az a `src/nitro_os.h`-ban
+van — párhuzamos ciklus (macOS-en Grand Central Dispatch, máshol egy kis pthreads-es
+szálkészlet), óra és a processzormagok száma. A ciklusmagok clang-blokkok (`^(size_t i) {…}`),
+ezért **clang kell `-fblocks`-szal** (a GCC nem ismeri a blokkokat); blokk-futásidejű könyvtár
+nem kell hozzá. Például:
+
+```
+clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
+clang -O3 -fblocks bench/pngverify.c src/nitropng.c -lz -lpthread -o pngverify   # bájtpontos ellenőrzés a zlib-bel
+```
+
+macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
+mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
+robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon és Windowson
+még nem futott.
+
 ## Build
 
 Előfeltétel: Xcode Command Line Tools.
@@ -407,6 +425,7 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
   `bench/sustain.c`: tartós terhelés, `bench/ab.sh`: zajtűrő A/B összehasonlítás
 - `src/nitropng.c/.h`: önálló párhuzamos PNG-dekóder
 - `src/nitropsd.c/.h`: párhuzamos PSD/PSB-dekóder (összefésült kép)
+- `src/nitro_os.h`: amit a dekóderek a rendszerből használnak (párhuzamos ciklus, óra, magok száma)
 - `src/png_wuffs.c/.h`: opcionális Wuffs-os PNG-dekódolás a nézőhöz (a nitropng által kihagyott PNG-fajtákhoz)
 - `bench/pngbench.m`, `bench/pngsplit.c`: PNG-dekóderek összehasonlítása, időmegoszlás,
   `bench/pngverify.c`: a nitropng bájtpontossága a zlib-hez képest, `bench/pngrobust.c`: sérült PNG-k (ASan),
