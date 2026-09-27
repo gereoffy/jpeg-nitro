@@ -1111,6 +1111,12 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     return _fitScreen ? s : MIN(s, 1.0);
 }
 
+static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and what they did
+    static int on = -1;
+    if (on < 0) on = getenv("NV_DEBUG_ZOOM") != NULL;
+    return on;
+}
+
 // continuous: trackpad pinch / scroll, many small steps (no 2% snap, it would swallow them)
 - (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a continuous:(BOOL)continuous {
     double fit = [self fitSnapScale:d view:ds];
@@ -1129,6 +1135,10 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     if (r >= 1 && fabs(ns - r) < 1e-6 * r) ns = r;
     if (!continuous && fabs(ns - fit) < 0.02 * fit) ns = fit;   // a step landing within 2% of fit is fit
     [self setScale:ns image:d view:ds anchor:a];
+    if (debug_zoom())
+        fprintf(stderr, "    zoomBy f %.4f%s: cur %.4f fit %.4f -> ns %.4f => scale %.4f %s  view %.0fx%.0f\n", f,
+                continuous ? " (cont)" : "", cur, fit, ns, [self currentScale:d view:self.drawableSize],
+                _zoomed ? "zoomed" : "FIT", self.drawableSize.width, self.drawableSize.height);
 }
 
 - (void)zoomBy:(double)f image:(Decoded *)d view:(CGSize)ds anchor:(CGPoint)a {
@@ -1200,6 +1210,9 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 
 - (void)scrollWheel:(NSEvent *)e {
     double dy = e.scrollingDeltaY;
+    if (debug_zoom())
+        fprintf(stderr, "scroll dy %.2f precise %d phase %lu momentum %lu ctrl %d\n", dy, e.hasPreciseScrollingDeltas,
+                (unsigned long)e.phase, (unsigned long)e.momentumPhase, !!(e.modifierFlags & NSEventModifierFlagControl));
     if (e.isDirectionInvertedFromDevice) dy = -dy;   // physical direction: forward / up = zoom in
     if (e.modifierFlags & NSEventModifierFlagControl) {   // Ctrl + wheel: paging (back = next)
         if (!e.hasPreciseScrollingDeltas) {
@@ -1221,6 +1234,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
 }
 
 - (void)magnifyWithEvent:(NSEvent *)e {   // trackpad pinch
+    if (debug_zoom()) fprintf(stderr, "pinch mag %.4f phase %lu\n", e.magnification, (unsigned long)e.phase);
     Decoded *d = [_loader get:_index];
     if (d) [self zoomBy:1 + e.magnification image:d view:self.drawableSize anchor:[self anchorForEvent:e] continuous:YES];
 }
@@ -1245,7 +1259,7 @@ static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF r
     case '+': [self zoomBy:M_SQRT2 image:d view:ds]; break;
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
     case '0': [self fitToScreen]; break;
-    case 'F': [self zoomFit]; break;
+    case 'Z': [self zoomFit]; break;   // (test code only, not the keyboard)
     case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8':
         [self zoomTo:k - '0' image:d view:ds];
         break;
@@ -1837,7 +1851,7 @@ static int run_inputtest(NSArray<NSString *> *files, GPU *gpu) {
     for (int k = 0; k < 400 && !d; k++) { usleep(5000); d = [v.loader get:v.index]; }
     for (int t = 0; t < 2 && d; t++) {
         CGSize ds = v.drawableSize;
-        [v testKey:'F' image:d view:ds];
+        [v testKey:'Z' image:d view:ds];
         double s0 = [v testScale:d view:ds];
         for (int k = 0; k < 20; k++) {
             if (t == 0) [v testPinch:0.01 image:d view:ds];
