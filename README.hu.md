@@ -402,8 +402,8 @@ robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Li
 **Windows:** a `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` az
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)-vel (clang + MinGW-w64; az MSYS2 CLANG64
 környezetében is megy) lefordítja a `bench/nbench.exe`-t és a `bench/psdverify.exe`-t: statikusan,
-csak rendszer-DLL-ekkel, AVX2-vel (`WINARCH=x86-64-v2`: anélkül). Hiba nélkül fordulnak és
-linkelődnek; Windowson még nem futottak.
+csak rendszer-DLL-ekkel, AVX2-vel (`WINARCH=x86-64-v2`: anélkül). Az `nbench.exe` Windows Serveren
+is fut; a `*.jpg`-t maga a program bontja ki, és könyvtárnevet is elfogad.
 
 ## Build
 
