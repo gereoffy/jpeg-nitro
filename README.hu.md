@@ -115,7 +115,8 @@ egy részletbe (pl. a szembe), és végiglapozva kiválasztható, melyik a legé
 helyben tartja a kurzor alatti pontot, kivéve amíg a kép valamelyik irányban keskenyebb az
 ablaknál: abban az irányban addig középen marad, amíg ki nem tölti. Ha a Ctrl + görgő a teljes képernyőt nagyítja, akkor a macOS
 kisegítő nagyítása van a Ctrl + görgetésre állítva (Rendszerbeállítások → Kisegítő lehetőségek →
-Nagyítás). A nagyító
+Nagyítás). Ha a csíptetés semmit nem csinál, a gesztus ki van kapcsolva (Rendszerbeállítások →
+Trackpad → Görgetés és nagyítás → Nagyítás és kicsinyítés). A nagyító
 billentyűket a leütött karakter alapján ismeri fel, így bármilyen billentyűzetkiosztáson és a
 numerikus billentyűzeten is működnek; a címsor mutatja az aktuális nagyítást.
 

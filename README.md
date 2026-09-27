@@ -67,7 +67,8 @@ other levels are smoothly interpolated. Paging stops at the first and last image
 a burst or series you can zoom into a detail (e.g. the eyes) and page through to find the
 sharpest shot. Wheel zoom keeps the point under the cursor in place, except while the image is narrower
 than the window along an axis: it stays centred there until it fills the window. If Ctrl + scroll zooms the whole screen instead, macOS Accessibility zoom is set to use
-Ctrl with the scroll gesture (System Settings → Accessibility → Zoom). The zoom keys work by character, so they work on any keyboard layout and the
+Ctrl with the scroll gesture (System Settings → Accessibility → Zoom). If pinching does nothing, the
+gesture is turned off (System Settings → Trackpad → Scroll & Zoom → Zoom in or out). The zoom keys work by character, so they work on any keyboard layout and the
 numeric keypad; the title shows the current zoom. The window title shows the file name, size and
 decode time; stdout gets one line per image with read time, decode time and the
 key → on-screen latency. EXIF orientation is honoured.
