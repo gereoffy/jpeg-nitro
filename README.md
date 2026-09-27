@@ -191,7 +191,7 @@ faster than Wuffs and 4× faster than ImageIO. Its Adler-32 and back-reference r
 there (AVX2 on x86): that took it from ~100 to 90 ms; most of the time is Huffman decoding
 and the row filters, which are plain C on both.
 
-### Four machines: macOS, Linux, Windows
+### Three machines, macOS and Linux
 
 `bench/nbench` (portable, same code on every system), best of 5 decodes, ms/image; JPEG: the 50
 sample photos, PNG: the 34 real PNGs above. The M1 row is from `bench/bench` / `bench/pngbench`
@@ -202,7 +202,6 @@ sample photos, PNG: the 34 real PNGs above. The M1 row is from `bench/bench` / `
 | Intel i9 13th gen, 8 cores / 16 threads, macOS | **8.7** | 96 | **37.6** | 216 |
 | Apple M1, 4 + 4 cores, macOS | **30.4** | 154 | **90** | 326 |
 | Intel Xeon E3-1245 v5 (2015), 4 cores / 8 threads, Linux | **33.6** | 161 | **122** | 390 |
-| Intel Core i5-9600K (2018), 6 cores / 6 threads, Windows (`nbench.exe`) | **27** | – | **93** | – |
 
 On Linux the decoders run on the pthread pool of `src/nitro_os.h` and are bit-exact there too
 (`bench/verify`, `bench/pngverify`). A ten-year-old 4-core server decodes a 24 MP photo in
@@ -410,7 +409,7 @@ threads.
 On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
 and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
 ThreadSanitizer with four threads decoding at once). Tested on Linux (see
-[Four machines](#four-machines-macos-linux-windows)).
+[Three machines](#three-machines-macos-and-linux)).
 
 **Windows:** `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` cross-compiles
 `bench/nbench.exe` and `bench/psdverify.exe` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)

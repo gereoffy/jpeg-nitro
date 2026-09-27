@@ -203,7 +203,7 @@ nitropng 3×-osan gyorsabb a Wuffs-nál és 4×-esen az ImageIO-nál. Az Adler-3
 visszahivatkozások feloldása ott NEON-t használ (x86-on AVX2-t): ez ~100-ról 90 ms-ra gyorsított;
 az idő nagy része a Huffman-dekódolás és a sorszűrők visszafejtése, ezek mindkét gépen sima C-ben futnak.
 
-### Négy gép: macOS, Linux, Windows
+### Három gép, macOS és Linux
 
 `bench/nbench` (hordozható, minden rendszeren ugyanaz a kód), 5 dekódolásból a legjobb, ms/kép;
 JPEG: az 50 mintafotó, PNG: a fenti 34 valódi PNG. Az M1 sora a `bench/bench` / `bench/pngbench`
@@ -214,7 +214,6 @@ méréséből van (JPEG: 43 fotó).
 | Intel i9, 13. gen., 8 mag / 16 szál, macOS | **8.7** | 96 | **37.6** | 216 |
 | Apple M1, 4 + 4 mag, macOS | **30.4** | 154 | **90** | 326 |
 | Intel Xeon E3-1245 v5 (2015), 4 mag / 8 szál, Linux | **33.6** | 161 | **122** | 390 |
-| Intel Core i5-9600K (2018), 6 mag / 6 szál, Windows (`nbench.exe`) | **27** | – | **93** | – |
 
 Linuxon a dekóderek a `src/nitro_os.h` pthreads-es szálkészletén futnak, és ott is bitpontosak
 (`bench/verify`, `bench/pngverify`). Egy tízéves, 4 magos szerver egy 24 MP-es fotót ~34 ms alatt
@@ -398,7 +397,7 @@ korlátozza.
 macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
 mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
 robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon kipróbálva (lásd:
-„Négy gép: macOS, Linux, Windows”).
+„Három gép, macOS és Linux”).
 
 **Windows:** a `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` az
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)-vel (clang + MinGW-w64; az MSYS2 CLANG64
