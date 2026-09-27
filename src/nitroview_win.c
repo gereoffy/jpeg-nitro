@@ -94,7 +94,7 @@ typedef struct {
     ID3D11ShaderResourceView *plsrv[4];
     ID3D11Texture2D *tex;              // converted RGBA + mips (main thread)
     ID3D11ShaderResourceView *texsrv;
-    double read_ms, decode_ms, upload_ms;
+    double read_ms, decode_ms, upload_ms, conv_ms;
     int mode, bands;
 } Decoded;
 
@@ -308,8 +308,10 @@ static void collect_files(FileList *out, wchar_t **args, int n) {
 static ID3D11Device *g_dev;
 static ID3D11DeviceContext *g_ctx;
 static ID3D11ComputeShader *g_cs, *g_cs_tex;
-static ID3D11VertexShader *g_vs;
-static ID3D11PixelShader *g_ps;
+static ID3D11VertexShader *g_vs, *g_conv_vs;
+static ID3D11PixelShader *g_ps, *g_conv_ps;
+static int g_convert_draw;   // NV_CONVERT=draw: planes -> RGBA as a draw instead of a compute shader
+static int g_bench_split;    // --bench: time the conversion and the mipmaps separately
 static ID3D11Buffer *g_cb_conv, *g_cb_draw;
 static ID3D11SamplerState *g_samp_lin, *g_samp_pt, *g_samp_bil;
 static ID3D11RasterizerState *g_rast;
@@ -376,10 +378,7 @@ static const char g_hlsl[] =
     "Texture2D<float> P2 : register(t4);\n"
     "Texture2D<float> P3 : register(t5);\n"
     "SamplerState sbil : register(s2);\n"
-    "[numthreads(16, 16, 1)]\n"
-    "void convert_tex(uint3 id : SV_DispatchThreadID) {\n"
-    "    uint2 g = id.xy;\n"
-    "    if (g.x >= A.x || g.y >= A.y) return;\n"
+    "float4 planes_rgb(uint2 g) {\n"
     "    float4 c;\n"
     "    int3 at = int3(g, 0);\n"
     "    if (A.z == 4) {             // PSD: R G B (gray: the same plane three times), transparency\n"
@@ -397,8 +396,18 @@ static const char g_hlsl[] =
     "            c = float4(y + 1.402 * cr, y - 0.344136 * cb - 0.714136 * cr, y + 1.772 * cb, 1.0);\n"
     "        }\n"
     "    }\n"
-    "    outt[g] = saturate(c);\n"
+    "    return saturate(c);\n"
     "}\n"
+    "[numthreads(16, 16, 1)]\n"
+    "void convert_tex(uint3 id : SV_DispatchThreadID) {\n"
+    "    if (id.x < A.x && id.y < A.y) outt[id.xy] = planes_rgb(id.xy);\n"
+    "}\n"
+    "// the same as a draw into the texture (render target writes: faster on some GPUs)\n"
+    "float4 conv_vs(uint vid : SV_VertexID) : SV_Position {   // one triangle over the whole target\n"
+    "    float2 p = float2((vid << 1) & 2, vid & 2);\n"
+    "    return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+    "}\n"
+    "float4 conv_ps(float4 pos : SV_Position) : SV_Target { return planes_rgb(uint2(pos.xy)); }\n"
     "cbuffer Draw : register(b1) { float2 origin; float2 size; uint orientation; uint nearest; uint2 pad; };\n"
     "struct VOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
     "VOut vmain(uint vid : SV_VertexID) {\n"
@@ -473,8 +482,12 @@ static int gpu_init(void) {
     }
     if (FAILED(hr)) { fprintf(stderr, "Direct3D 11 device: error 0x%08lx\n", (unsigned long)hr); return -1; }
     ID3DBlob *cs = compile("convert", "cs_5_0"), *ct = compile("convert_tex", "cs_5_0"), *vs = compile("vmain", "vs_5_0"),
-             *ps = compile("pmain", "ps_5_0");
-    if (!cs || !ct || !vs || !ps) return -1;
+             *ps = compile("pmain", "ps_5_0"), *cv = compile("conv_vs", "vs_5_0"), *cp = compile("conv_ps", "ps_5_0");
+    if (!cs || !ct || !vs || !ps || !cv || !cp) return -1;
+    ID3D11Device_CreateVertexShader(g_dev, ID3D10Blob_GetBufferPointer(cv), ID3D10Blob_GetBufferSize(cv), NULL, &g_conv_vs);
+    ID3D11Device_CreatePixelShader(g_dev, ID3D10Blob_GetBufferPointer(cp), ID3D10Blob_GetBufferSize(cp), NULL, &g_conv_ps);
+    ID3D10Blob_Release(cv);
+    ID3D10Blob_Release(cp);
     ID3D11Device_CreateComputeShader(g_dev, ID3D10Blob_GetBufferPointer(cs), ID3D10Blob_GetBufferSize(cs), NULL, &g_cs);
     ID3D11Device_CreateComputeShader(g_dev, ID3D10Blob_GetBufferPointer(ct), ID3D10Blob_GetBufferSize(ct), NULL, &g_cs_tex);
     ID3D10Blob_Release(ct);
@@ -589,6 +602,8 @@ static int tex_get(int w, int h, ID3D11Texture2D **t, ID3D11ShaderResourceView *
     return 0;
 }
 
+static void gpu_finish(void);
+
 // Convert + mipmaps on the GPU (asynchronous). Main thread.
 static ID3D11ShaderResourceView *texture_for(Decoded *d) {
     if (d->texsrv) return d->texsrv;
@@ -614,30 +629,55 @@ static ID3D11ShaderResourceView *texture_for(Decoded *d) {
         p.cs[3] = (float)d->ph[1];
     }
     int tex_path = d->plsrv[0] != NULL;
-    ID3D11UnorderedAccessView *uav = NULL;
-    D3D11_UNORDERED_ACCESS_VIEW_DESC ud = {0};
-    ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-    if (FAILED(ID3D11Device_CreateUnorderedAccessView(g_dev, (ID3D11Resource *)d->tex, &ud, &uav))) return NULL;
+    double t0 = now_ms();
     ID3D11DeviceContext_UpdateSubresource(g_ctx, (ID3D11Resource *)g_cb_conv, 0, NULL, &p, 0, 0);
-    ID3D11DeviceContext_CSSetShader(g_ctx, tex_path ? g_cs_tex : g_cs, NULL, 0);
-    ID3D11DeviceContext_CSSetConstantBuffers(g_ctx, 0, 1, &g_cb_conv);
-    if (tex_path) {
-        ID3D11ShaderResourceView *p0 = d->plsrv[0], *v[4] = {p0, p0, p0, p0};   // gray: plane 0 three times
+    ID3D11ShaderResourceView *p0 = d->plsrv[0], *v[4] = {p0, p0, p0, p0}, *ns[4] = {NULL, NULL, NULL, NULL};
+    if (tex_path) {   // gray: plane 0 three times
         if (d->ncomp == 3) { v[1] = d->plsrv[1]; v[2] = d->plsrv[2]; }
-        if (d->kind == KIND_PLANAR && d->hasa) v[3] = d->plsrv[d->ncomp];      // PSD transparency
-        ID3D11DeviceContext_CSSetShaderResources(g_ctx, 2, 4, v);
-        ID3D11DeviceContext_CSSetSamplers(g_ctx, 2, 1, &g_samp_bil);
-    } else {
-        ID3D11DeviceContext_CSSetShaderResources(g_ctx, 0, 1, &d->rawsrv);
+        if (d->kind == KIND_PLANAR && d->hasa) v[3] = d->plsrv[d->ncomp];   // PSD transparency
     }
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(g_ctx, 0, 1, &uav, NULL);
-    ID3D11DeviceContext_Dispatch(g_ctx, (UINT)(d->width + 15) / 16, (UINT)(d->height + 15) / 16, 1);
-    ID3D11UnorderedAccessView *nu = NULL;
-    ID3D11ShaderResourceView *ns[4] = {NULL, NULL, NULL, NULL};
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(g_ctx, 0, 1, &nu, NULL);
-    ID3D11DeviceContext_CSSetShaderResources(g_ctx, tex_path ? 2 : 0, tex_path ? 4 : 1, ns);
-    ID3D11UnorderedAccessView_Release(uav);
+    if (tex_path && g_convert_draw) {   // a draw into the texture (render target writes)
+        ID3D11RenderTargetView *rtv = NULL;
+        D3D11_RENDER_TARGET_VIEW_DESC rd = {0};
+        rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        if (FAILED(ID3D11Device_CreateRenderTargetView(g_dev, (ID3D11Resource *)d->tex, &rd, &rtv))) return NULL;
+        D3D11_VIEWPORT vp = {0, 0, (float)d->width, (float)d->height, 0, 1};
+        ID3D11DeviceContext_OMSetRenderTargets(g_ctx, 1, &rtv, NULL);
+        ID3D11DeviceContext_RSSetViewports(g_ctx, 1, &vp);
+        ID3D11DeviceContext_RSSetState(g_ctx, g_rast);
+        ID3D11DeviceContext_IASetInputLayout(g_ctx, NULL);
+        ID3D11DeviceContext_IASetPrimitiveTopology(g_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11DeviceContext_VSSetShader(g_ctx, g_conv_vs, NULL, 0);
+        ID3D11DeviceContext_PSSetShader(g_ctx, g_conv_ps, NULL, 0);
+        ID3D11DeviceContext_PSSetConstantBuffers(g_ctx, 0, 1, &g_cb_conv);
+        ID3D11DeviceContext_PSSetShaderResources(g_ctx, 2, 4, v);
+        ID3D11DeviceContext_PSSetSamplers(g_ctx, 2, 1, &g_samp_bil);
+        ID3D11DeviceContext_Draw(g_ctx, 3, 0);
+        ID3D11DeviceContext_OMSetRenderTargets(g_ctx, 0, NULL, NULL);
+        ID3D11DeviceContext_PSSetShaderResources(g_ctx, 2, 4, ns);
+        ID3D11RenderTargetView_Release(rtv);
+    } else {          // compute shader
+        ID3D11UnorderedAccessView *uav = NULL, *nu = NULL;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud = {0};
+        ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+        if (FAILED(ID3D11Device_CreateUnorderedAccessView(g_dev, (ID3D11Resource *)d->tex, &ud, &uav))) return NULL;
+        ID3D11DeviceContext_CSSetShader(g_ctx, tex_path ? g_cs_tex : g_cs, NULL, 0);
+        ID3D11DeviceContext_CSSetConstantBuffers(g_ctx, 0, 1, &g_cb_conv);
+        if (tex_path) {
+            ID3D11DeviceContext_CSSetShaderResources(g_ctx, 2, 4, v);
+            ID3D11DeviceContext_CSSetSamplers(g_ctx, 2, 1, &g_samp_bil);
+        } else {
+            ID3D11DeviceContext_CSSetShaderResources(g_ctx, 0, 1, &d->rawsrv);
+        }
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(g_ctx, 0, 1, &uav, NULL);
+        ID3D11DeviceContext_Dispatch(g_ctx, (UINT)(d->width + 15) / 16, (UINT)(d->height + 15) / 16, 1);
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(g_ctx, 0, 1, &nu, NULL);
+        ID3D11DeviceContext_CSSetShaderResources(g_ctx, tex_path ? 2 : 0, tex_path ? 4 : 1, ns);
+        ID3D11UnorderedAccessView_Release(uav);
+    }
+    if (g_bench_split) { gpu_finish(); d->conv_ms = now_ms() - t0; }
     ID3D11DeviceContext_GenerateMips(g_ctx, d->texsrv);
     // the decoded data is not needed any more
     if (d->rawsrv) ID3D11ShaderResourceView_Release(d->rawsrv);
@@ -1685,7 +1725,8 @@ static int create_window(const wchar_t *first) {
 // test modes
 
 static int run_bench(FileList *fl) {
-    double tr = 0, td = 0, tu = 0, tg = 0, t0 = now_ms();
+    double tr = 0, td = 0, tu = 0, tg = 0, tc = 0, t0 = now_ms();
+    g_bench_split = 1;
     for (int i = 0; i < fl->n; i++) {
         Decoded *d = decode_file(fl->v[i]);
         if (!d) { printf("FAILED %s\n", utf8(fl->v[i])); continue; }
@@ -1693,8 +1734,10 @@ static int run_bench(FileList *fl) {
         texture_for(d);
         gpu_finish();
         double g = now_ms() - g0;
-        printf("%-40.40s %5dx%-5d read %5.1f  decode %6.1f  upload %5.1f  gpu %5.1f ms  (%s)\n", utf8(base_name(fl->v[i])),
-               d->width, d->height, d->read_ms, d->decode_ms, d->upload_ms, g, mode_name(d->mode));
+        printf("%-36.36s %5dx%-5d read %5.1f  decode %6.1f  upload %5.1f  convert %5.1f  mips %5.1f ms  (%s)\n",
+               utf8(base_name(fl->v[i])), d->width, d->height, d->read_ms, d->decode_ms, d->upload_ms, d->conv_ms,
+               g - d->conv_ms, mode_name(d->mode));
+        tc += d->conv_ms;
         tr += d->read_ms;
         td += d->decode_ms;
         tu += d->upload_ms;
@@ -1702,9 +1745,10 @@ static int run_bench(FileList *fl) {
         decoded_free(d);
     }
     double n = fl->n;
-    printf("\n%d files, average ms/image: read %.1f, decode %.1f, upload to the GPU %.1f, gpu convert + mipmaps %.1f\n"
+    printf("\n%d files, average ms/image: read %.1f, decode %.1f, upload to the GPU %.1f, convert %.1f (%s), mipmaps %.1f\n"
            "total %.1f ms, avg %.1f ms/image\n",
-           fl->n, tr / n, td / n, tu / n, tg / n, now_ms() - t0, (now_ms() - t0) / n);
+           fl->n, tr / n, td / n, tu / n, tc / n, g_convert_draw ? "draw" : "compute", (tg - tc) / n, now_ms() - t0,
+           (now_ms() - t0) / n);
     return 0;
 }
 
@@ -1830,6 +1874,8 @@ int wmain(int argc, wchar_t **argv) {
         SetCtx f = (SetCtx)(void *)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
         if (f) f((HANDLE)-4);   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     }
+    const char *cv = getenv("NV_CONVERT");
+    g_convert_draw = cv && !strcmp(cv, "draw");
     if (gpu_init()) return 1;
     if (bench) return run_bench(&fl);
     if (selftest) return run_selftest(&fl);
