@@ -437,8 +437,9 @@ Requirements: Xcode Command Line Tools.
 make                 # nitroview; uses libjpeg-turbo as fallback if it is in third_party/
 make TURBOJPEG=0     # no libjpeg-turbo: other JPEGs go to Apple ImageIO
 make WUFFS=0         # no Wuffs: PNG via Apple ImageIO (~1.6x slower)
-scripts/get-deps.sh  # download + build libjpeg-turbo, stb_image, Wuffs into third_party/ (~30 s)
-make app             # nitroview.app for the Finder (ad-hoc signed, icon from packaging/icon.png)
+scripts/get-deps.sh  # download + build libjpeg-turbo (macOS: Intel + ARM), stb_image, Wuffs into third_party/ (~30 s)
+make app             # nitroview.app for the Finder: universal (Intel + Apple Silicon), macOS 12+,
+                     # ad-hoc signed, icon from packaging/icon.png
 make tools           # bench/bench, verify, robust, freqprobe, sustain (needs get-deps.sh)
 ```
 

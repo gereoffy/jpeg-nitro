@@ -1,7 +1,7 @@
 #!/bin/bash
 # Downloads and builds the optional dependencies into third_party/:
 #   - libjpeg-turbo 3.1.2 (static, with SIMD): fallback decoder for nitroview,
-#     reference for the tests and benchmarks
+#     reference for the tests and benchmarks (macOS: x86_64 + arm64 in one library)
 #   - nasm (needed to build libjpeg-turbo's SIMD code) and cmake (via pip), locally
 #   - stb_image.h and wuffs (only for the decoder comparison in bench/bench)
 # Nothing is installed system-wide.
@@ -32,16 +32,40 @@ if [ -z "$CMAKE" ]; then
   CMAKE=$(find "$TP/tools/py" -path '*data/bin/cmake' -type f | head -1)
 fi
 
-if [ ! -f ljt/lib/libturbojpeg.a ]; then
-  curl -fsSL -o ljt.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LJT_VER/libjpeg-turbo-$LJT_VER.tar.gz
-  tar xf ljt.tar.gz
-  cd libjpeg-turbo-$LJT_VER
-  CPU=$([ "$(uname -m)" = x86_64 ] && echo "-march=native" || echo "-mcpu=native")
-  "$CMAKE" -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF \
-    -DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm" -DCMAKE_INSTALL_PREFIX="$TP/ljt" -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_C_FLAGS="-O3 $CPU" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
-  "$CMAKE" --build build -j"$JOBS" >/dev/null
-  "$CMAKE" --install build >/dev/null
-  cd ..
+# libjpeg-turbo for one architecture into $TP/$2 (static, with its SIMD code)
+build_ljt() {   # arch prefix
+  local A=$1 P=$2 CPU PROC
+  case $A in
+    x86_64) PROC=x86_64; CPU=$([ "$(uname -s)" = Darwin ] && echo "-march=x86-64-v3" || echo "-march=native") ;;
+    arm64|aarch64) PROC=aarch64; CPU=$([ "$(uname -s)" = Darwin ] && echo "-mcpu=apple-m1" || echo "-mcpu=native") ;;
+    *) PROC=$A; CPU="" ;;
+  esac
+  local MAC=()
+  [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_ARCHITECTURES="$A" -DCMAKE_SYSTEM_PROCESSOR="$PROC" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
+  [ -d libjpeg-turbo-$LJT_VER ] || {
+    curl -fsSL -o ljt.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LJT_VER/libjpeg-turbo-$LJT_VER.tar.gz
+    tar xf ljt.tar.gz
+  }
+  (cd libjpeg-turbo-$LJT_VER &&
+   "$CMAKE" -S . -B build-$A -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF "${MAC[@]}" \
+     -DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm" -DCMAKE_INSTALL_PREFIX="$TP/$P" -DCMAKE_INSTALL_LIBDIR=lib \
+     -DCMAKE_C_FLAGS="-O3 $CPU" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null &&
+   "$CMAKE" --build build-$A -j"$JOBS" >/dev/null &&
+   "$CMAKE" --install build-$A >/dev/null)
+}
+
+if [ "$(uname -s)" = Darwin ]; then
+  # macOS: both architectures in one (universal) library, for the universal nitroview.app
+  if [ ! -f ljt/.universal-macos12 ]; then   # (older versions built only the host architecture)
+    build_ljt x86_64 ljt-x86_64
+    build_ljt arm64 ljt-arm64
+    rm -rf ljt && cp -R ljt-x86_64 ljt
+    for L in libturbojpeg.a libjpeg.a; do
+      lipo -create ljt-x86_64/lib/$L ljt-arm64/lib/$L -output ljt/lib/$L
+    done
+    touch ljt/.universal-macos12
+  fi
+elif [ ! -f ljt/lib/libturbojpeg.a ]; then
+  build_ljt "$(uname -m)" ljt
 fi
 echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs)"

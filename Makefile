@@ -4,7 +4,8 @@
 #                        in third_party/ljt (see scripts/get-deps.sh), standalone otherwise
 #   make TURBOJPEG=0     no libjpeg-turbo: JPEGs nitrojpeg can't decode go to Apple ImageIO
 #   make WUFFS=0         no Wuffs: PNG is decoded by Apple ImageIO (~1.8x slower)
-#   make app             nitroview.app bundle, so the Finder can open images with it
+#   make app             nitroview.app bundle, so the Finder can open images with it: universal
+#                        (x86_64 + arm64, macOS 12+); MAC_ARCHS=x86_64 for one architecture only
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
 #   make linux           Linux (also the default there): the portable tools - nbench,
 #                        pngverify, psdverify, the ASan robustness tests, and verify / robust
@@ -34,6 +35,8 @@ endif
 CFLAGS     := -O3 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter
 ASAN       := -O1 -g $(PORTFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer
 FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore
+DEC_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c
+DEC_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitro_os.h
 
 WUFFS      ?= $(if $(wildcard third_party/wuffs.c),1,0)
 
@@ -107,14 +110,35 @@ build/nitroview.icns: packaging/icon.png
 	iconutil -c icns build/nitroview.iconset -o $@
 
 # macOS app bundle (for the Finder: "Open With" / "Change All"), ad-hoc signed
-app: nitroview packaging/Info.plist build/nitroview.icns
+# The app is universal: the viewer is built once per architecture with portable CPU flags
+# (not -march=native: it runs on other Macs) and joined with lipo. The libjpeg-turbo fallback
+# goes into each slice whose architecture the library has (scripts/get-deps.sh builds both).
+MAC_ARCHS    ?= x86_64 arm64
+MAC_MIN      := -mmacosx-version-min=12.0
+APPCPU_x86_64 := -march=x86-64-v3
+APPCPU_arm64  := -mcpu=apple-m1
+ljt_has = $(filter $(1),$(shell lipo -archs $(LJT)/lib/libturbojpeg.a 2>/dev/null))
+build/app-%/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
+	@mkdir -p $(@D)
+	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) -w -c $< -o $@
+build/app-%/nitroview: src/nitroview.m build/shaders.inc $(DEC_SRC) $(DEC_HDR) $(if $(filter 1,$(WUFFS)),build/app-%/png_wuffs.o) \
+                       build/.config-$(CONFIG) Makefile
+	@mkdir -p $(@D)
+	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) -Wall -Wextra -Wno-unused-parameter -Ibuild \
+	  $(if $(call ljt_has,$*),-DNV_TURBOJPEG -I$(LJT)/include) $(if $(filter 1,$(WUFFS)),-DNV_WUFFS) \
+	  -fobjc-arc src/nitroview.m $(DEC_SRC) $(if $(filter 1,$(WUFFS)),$(@D)/png_wuffs.o) \
+	  $(if $(call ljt_has,$*),$(LJT)/lib/libturbojpeg.a -Wl$(COMMA)-w) $(FRAMEWORKS) -framework ImageIO -o $@
+build/nitroview-universal: $(foreach a,$(MAC_ARCHS),build/app-$(a)/nitroview)
+	lipo -create $^ -output $@
+
+app: build/nitroview-universal packaging/Info.plist build/nitroview.icns
 	rm -rf nitroview.app
 	mkdir -p nitroview.app/Contents/MacOS nitroview.app/Contents/Resources
-	cp nitroview nitroview.app/Contents/MacOS/
+	cp build/nitroview-universal nitroview.app/Contents/MacOS/nitroview
 	cp packaging/Info.plist nitroview.app/Contents/
 	cp build/nitroview.icns nitroview.app/Contents/Resources/
 	codesign --force --sign - nitroview.app
-	@echo "built nitroview.app (copy it to /Applications, then Finder: Get Info > Open with > nitroview > Change All)"
+	@echo "built nitroview.app ($(foreach a,$(MAC_ARCHS),$(a)$(if $(call ljt_has,$(a)),+turbojpeg)) ; copy it to /Applications, then Finder: Get Info > Open with > nitroview > Change All)"
 
 deps:
 	@test -f $(LJT)/lib/libturbojpeg.a -a -f third_party/stb_image.h -a -f third_party/wuffs.c || \
@@ -183,8 +207,6 @@ clean:
 WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
 WINFLAGS = -O3 -march=$(WINARCH) -fblocks -Wall -Wextra -Wno-unused-parameter -static
-DEC_SRC := src/nitrojpeg.c src/nitropng.c src/nitropsd.c
-DEC_HDR := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitro_os.h
 bench/nbench.exe: bench/nbench.c $(DEC_SRC) $(DEC_HDR)
 	$(WINCC) $(WINFLAGS) bench/nbench.c $(DEC_SRC) -lpthread -o $@
 bench/psdverify.exe: bench/psdverify.c src/nitropsd.c src/nitropng.c $(DEC_HDR)
