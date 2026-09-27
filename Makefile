@@ -9,6 +9,8 @@
 #   make linux           Linux (also the default there): the portable tools - nbench,
 #                        pngverify, psdverify, the ASan robustness tests, and verify / robust
 #                        once scripts/get-deps.sh has built libjpeg-turbo. Needs clang.
+#   make windows         cross-compile bench/nbench.exe and bench/psdverify.exe for Windows
+#                        (x64, static, AVX2) with llvm-mingw: WINCC=path/to/x86_64-w64-mingw32-clang
 
 LJT        := third_party/ljt
 TURBOJPEG  ?= $(if $(wildcard $(LJT)/lib/libturbojpeg.a),1,0)
@@ -173,6 +175,20 @@ linux: $(LINUX_TOOLS)
 
 clean:
 	rm -rf build nitroview nitroview.app bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
 
-.PHONY: all app tools linux clean deps ljt
+# Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
+# Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
+WINCC   ?= x86_64-w64-mingw32-clang
+WINARCH ?= x86-64-v3
+WINFLAGS = -O3 -march=$(WINARCH) -fblocks -Wall -Wextra -Wno-unused-parameter -static
+DEC_SRC := src/nitrojpeg.c src/nitropng.c src/nitropsd.c
+DEC_HDR := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitro_os.h
+bench/nbench.exe: bench/nbench.c $(DEC_SRC) $(DEC_HDR)
+	$(WINCC) $(WINFLAGS) bench/nbench.c $(DEC_SRC) -lpthread -o $@
+bench/psdverify.exe: bench/psdverify.c src/nitropsd.c src/nitropng.c $(DEC_HDR)
+	$(WINCC) $(WINFLAGS) -w bench/psdverify.c src/nitropsd.c src/nitropng.c -lpthread -o $@
+windows: bench/nbench.exe bench/psdverify.exe
+	@echo "built bench/nbench.exe bench/psdverify.exe (Windows x64, $(WINARCH))"
+
+.PHONY: all app tools linux windows clean deps ljt

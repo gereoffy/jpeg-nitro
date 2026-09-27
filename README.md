@@ -409,7 +409,12 @@ threads.
 On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
 and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
 ThreadSanitizer with four threads decoding at once). Tested on Linux (see
-[Three machines](#three-machines-macos-and-linux)); not yet on Windows.
+[Three machines](#three-machines-macos-and-linux)).
+
+**Windows:** `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` cross-compiles
+`bench/nbench.exe` and `bench/psdverify.exe` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+(clang + MinGW-w64; also works in MSYS2's CLANG64): static, only system DLLs, AVX2
+(`WINARCH=x86-64-v2` without). They build and link cleanly; not yet run on Windows.
 
 ## Build
 

@@ -10,7 +10,7 @@
 //
 // The loop bodies are blocks (^(size_t i) { ... }): compile with clang, and
 // outside macOS add -fblocks. The blocks are only called while nitro_parallel()
-// runs (never copied), so no blocks runtime library is needed.
+// runs (never copied), so no blocks runtime library is needed (see below).
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -50,16 +50,19 @@ static inline double nitro_now_ms(void) {
 #endif
 
 #if !defined(__APPLE__) || defined(NITRO_BLOCK_STUBS)
-// The few symbols clang's blocks refer to, normally in the blocks runtime. The
-// blocks here live on the stack and are never copied, so assign / dispose have
-// nothing to do (the real runtime does nothing for them either). Weak, so
-// linking with libBlocksRuntime (or libdispatch) still works.
-__attribute__((weak)) void *_NSConcreteStackBlock[32];
-__attribute__((weak)) void *_NSConcreteGlobalBlock[32];
-__attribute__((weak)) void _Block_object_assign(void *dst, const void *obj, const int flags) {
-    (void)dst; (void)obj; (void)flags;
-}
-__attribute__((weak)) void _Block_object_dispose(const void *obj, const int flags) { (void)obj; (void)flags; }
+// Stack / global blocks point to these, normally defined by the blocks runtime.
+// Nothing else of the runtime is needed as long as the decoders don't use
+// __block variables or blocks that capture blocks (those need
+// _Block_object_assign / _Block_object_dispose): a block changes a local
+// through a pointer instead. One definition per program: COMDAT on Windows,
+// weak elsewhere, so a real blocks runtime (libBlocksRuntime) still links.
+#ifdef _WIN32
+#define NITRO_ONE_DEF __attribute__((selectany))
+#else
+#define NITRO_ONE_DEF __attribute__((weak))
+#endif
+NITRO_ONE_DEF void *_NSConcreteStackBlock[32] = {0};
+NITRO_ONE_DEF void *_NSConcreteGlobalBlock[32] = {0};
 #endif
 
 // One pool per decoder file (static): workers sleep on a condition variable

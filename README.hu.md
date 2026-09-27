@@ -397,7 +397,13 @@ korlátozza.
 macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
 mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
 robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon kipróbálva (lásd:
-„Három gép, macOS és Linux”), Windowson még nem.
+„Három gép, macOS és Linux”).
+
+**Windows:** a `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` az
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw)-vel (clang + MinGW-w64; az MSYS2 CLANG64
+környezetében is megy) lefordítja a `bench/nbench.exe`-t és a `bench/psdverify.exe`-t: statikusan,
+csak rendszer-DLL-ekkel, AVX2-vel (`WINARCH=x86-64-v2`: anélkül). Hiba nélkül fordulnak és
+linkelődnek; Windowson még nem futottak.
 
 ## Build
 

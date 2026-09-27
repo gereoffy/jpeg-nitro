@@ -95,7 +95,7 @@ int ps_decode(const uint8_t *d, size_t len, const ps_info *fi, uint8_t *out, int
     const size_t avail = len - fi->data_off;
     const size_t tasks = (size_t)(nthreads > 0 ? nthreads : ncpu()) * 8;   // row ranges, for balance
     const size_t nt = tasks < rows ? tasks : rows;
-    __block volatile int bad = 0;
+    volatile int bad = 0, *const pbad = &bad;
     st->mode = fi->compression;
     if (fi->compression == 0) {
         if (fi->plane_size * P > avail) return -1;
@@ -118,8 +118,8 @@ int ps_decode(const uint8_t *d, size_t len, const ps_info *fi, uint8_t *out, int
         if (o > avail) { free(off); return -1; }
         nitro_parallel(nt, ^(size_t t) {
             size_t r0 = rows * t / nt, r1 = rows * (t + 1) / nt;
-            for (size_t r = r0; r < r1 && !bad; r++)
-                if (unpackbits(data + off[r], data + off[r + 1], out + r * W, W)) bad = 1;
+            for (size_t r = r0; r < r1 && !*pbad; r++)
+                if (unpackbits(data + off[r], data + off[r + 1], out + r * W, W)) *pbad = 1;
         });
         free(off);
     } else {

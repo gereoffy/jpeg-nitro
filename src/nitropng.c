@@ -552,14 +552,14 @@ static int unfilter_parallel(uint8_t *out, const np_info *fi, int nthreads) {
         if (out[(size_t)y * rs] > 4) return -1;
     uint32_t *progress = calloc((size_t)H, sizeof *progress);
     if (!progress) return -1;
-    __block volatile long next = 0;
+    volatile long next = 0, *const pnext = &next;
     // not all hyper-threads: waiting ones would slow down their working siblings (measured: 12 of 16 best)
     int W = nthreads > 0 ? nthreads : (ncpu() * 3 + 3) / 4;
     if (getenv("NP_UW")) W = atoi(getenv("NP_UW"));
     const size_t seg = (SEG / bpp) * bpp;
     nitro_parallel((size_t)W, ^(size_t w) {
         for (;;) {
-            long y = __sync_fetch_and_add(&next, 1);
+            long y = __sync_fetch_and_add(pnext, 1);
             if (y >= H) break;
             uint8_t *row = out + (size_t)y * rs + 1;
             const uint8_t *prev = y ? row - rs : NULL;
@@ -933,11 +933,11 @@ static int inflate_parallel(const uint8_t *d, size_t dl, const uint8_t *ztrail_b
     {
         // the rest in parallel, plus the Adler-32 of every chunk
         uint32_t *ad = calloc(nc, sizeof *ad);
-        __block int bad = 0;
+        int bad = 0, *const pbad = &bad;
         nitro_parallel((size_t)nc, ^(size_t k) {
             PChunk *c = &ch[chain[k]];
             size_t o = off[chain[k]], t0 = c->n > 32768 ? c->n - 32768 : 0;
-            if (k && resolve(out, o, c->o, 0, t0)) bad = 1;
+            if (k && resolve(out, o, c->o, 0, t0)) *pbad = 1;
             ad[k] = adler32(1, out + o, c->n);
         });
         double tp3 = now_ms();

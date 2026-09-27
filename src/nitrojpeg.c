@@ -66,12 +66,14 @@ static void parallel_for(size_t n, void (^body)(size_t)) {
         nitro_parallel(n, body);
         return;
     }
-    __block volatile long next = 0;
+    volatile long next = 0, *const pnext = &next;
+    // body via a pointer: a block capturing a block would need the blocks runtime (see nitro_os.h)
+    struct { void (^fn)(size_t); } b = {body}, *const pb = &b;
     nitro_parallel((size_t)w, ^(size_t t) {
         for (;;) {
-            long i = __sync_fetch_and_add(&next, 1);
+            long i = __sync_fetch_and_add(pnext, 1);
             if (i >= (long)n) break;
-            body((size_t)i);
+            pb->fn((size_t)i);
         }
     });
 }
@@ -835,7 +837,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
         bstart[nbands] = R;
         if (nbands < 2) { free(rst); goto single; }
         st->mode = 1;
-        __block int fail = 0;
+        int fail = 0, *const pfail = &fail;
         double t1 = now_ms();
         parallel_for(nbands, ^(size_t b) {
             int r0 = bstart[b], r1 = bstart[b + 1];
@@ -846,7 +848,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
             band_header(j, hdr, r0, r1);
             const uint8_t *seg[3] = {hdr, data + a, NULL};
             size_t sl[3] = {j->hdr_len, e - a, 0};
-            if (decode_band(j, o, seg, sl, r0, r0, r1)) __atomic_store_n(&fail, 1, __ATOMIC_RELAXED);
+            if (decode_band(j, o, seg, sl, r0, r0, r1)) __atomic_store_n(pfail, 1, __ATOMIC_RELAXED);
         });
         st->decode_ms = now_ms() - t1;
         st->bands = nbands;
@@ -991,14 +993,14 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
         for (int b = 0; b <= nbands; b++) bstart[b] = (int)((long)R * b / nbands);
         // context rows needed by fancy upsampling across band edges (BGRX, v>1)
         const int ctx = (!o->planes && fi->vmax > 1) ? 1 : 0;
-        __block int fail = 0;
+        int fail = 0, *const pfail = &fail;
         st->mode = 2;
         parallel_for(nbands, ^(size_t b) {
             int o0 = bstart[b], o1 = bstart[b + 1];
             int d0 = o0 - ctx < 0 ? 0 : o0 - ctx;
             int d1 = o1 + ctx > R ? R : o1 + ctx;
             uint64_t a = rows[d0].pos, e = d1 == R ? Lbits : rows[d1].pos;
-            if (e <= a) { __atomic_store_n(&fail, 1, __ATOMIC_RELAXED); return; }   // damaged stream
+            if (e <= a) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); return; }   // damaged stream
             size_t cap = (size_t)((e - a) / 8) * 2 + 1024;
             uint8_t *buf = malloc(cap);
             BW w = {buf, 0, 0};
@@ -1038,7 +1040,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
                     int nd = diff + rows[d0].dc[c];
                     int ns = 0;
                     for (unsigned m = (unsigned)(nd < 0 ? -nd : nd); m; m >>= 1) ns++;
-                    if (ns > 15 || !dt->ehufsi[ns]) { __atomic_store_n(&fail, 1, __ATOMIC_RELAXED); free(buf); return; }
+                    if (ns > 15 || !dt->ehufsi[ns]) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); free(buf); return; }
                     bw_put(&w, dt->ehufco[ns], dt->ehufsi[ns]);
                     if (ns) bw_put(&w, (uint32_t)(nd < 0 ? nd - 1 : nd), ns);
                     bw_copy(&w, clean, dcend, pos);
@@ -1046,14 +1048,14 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
                     bw_copy(&w, clean, bstartpos, pos);
                 }
             }
-            if (pos > e) { __atomic_store_n(&fail, 1, __ATOMIC_RELAXED); free(buf); return; }   // first MCU overran the band: damaged
+            if (pos > e) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); free(buf); return; }   // first MCU overran the band: damaged
             bw_copy(&w, clean, pos, e);
             bw_finish(&w);
             uint8_t hdr[4096];
             band_header(j, hdr, d0, d1);
             const uint8_t *seg[3] = {hdr, buf, NULL};
             size_t sl[3] = {j->hdr_len, (size_t)(w.p - buf), 0};
-            if (decode_band(j, o, seg, sl, d0, o0, o1)) __atomic_store_n(&fail, 1, __ATOMIC_RELAXED);
+            if (decode_band(j, o, seg, sl, d0, o0, o1)) __atomic_store_n(pfail, 1, __ATOMIC_RELAXED);
             free(buf);
         });
         st->decode_ms = now_ms() - t2;
@@ -1167,12 +1169,12 @@ static void idct_islow_scalar(const int16_t *in, const uint16_t *q, int dc, uint
         z1 *= -FIX_0_899976223; z2 *= -FIX_2_562915447; z3 *= -FIX_1_961570560; z4 *= -FIX_0_390180644;
         z3 += z5; z4 += z5;
         tmp0 += z1 + z3; tmp1 += z2 + z4; tmp2 += z2 + z3; tmp3 += z1 + z4;
-#define OUT(x) clamp_u8((((x) + (1 << 17)) >> 18) + 128)
-        op[0] = OUT(tmp10 + tmp3); op[7] = OUT(tmp10 - tmp3);
-        op[1] = OUT(tmp11 + tmp2); op[6] = OUT(tmp11 - tmp2);
-        op[2] = OUT(tmp12 + tmp1); op[5] = OUT(tmp12 - tmp1);
-        op[3] = OUT(tmp13 + tmp0); op[4] = OUT(tmp13 - tmp0);
-#undef OUT
+#define IDCT_OUT(x) clamp_u8((((x) + (1 << 17)) >> 18) + 128)
+        op[0] = IDCT_OUT(tmp10 + tmp3); op[7] = IDCT_OUT(tmp10 - tmp3);
+        op[1] = IDCT_OUT(tmp11 + tmp2); op[6] = IDCT_OUT(tmp11 - tmp2);
+        op[2] = IDCT_OUT(tmp12 + tmp1); op[5] = IDCT_OUT(tmp12 - tmp1);
+        op[3] = IDCT_OUT(tmp13 + tmp0); op[4] = IDCT_OUT(tmp13 - tmp0);
+#undef IDCT_OUT
     }
 }
 
@@ -1344,6 +1346,8 @@ static inline void idct_block(const int16_t *in, const uint16_t *q, int dc, uint
     if (!g_scalar_idct) { idct_islow_avx2(in, q, dc, out, pitch); return; }
 #elif defined(__ARM_NEON)
     if (!g_scalar_idct) { idct_islow_neon(in, q, dc, out, pitch); return; }
+#else
+    (void)g_scalar_idct;   // no SIMD IDCT in this build: always the plain C one
 #endif
     idct_islow_scalar(in, q, dc, out, pitch);
 }
@@ -1691,7 +1695,7 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
     free(coff);
     st->scan_ms = now_ms() - t0;
     const uint64_t Lbits = (uint64_t)clean_len * 8;
-    __block int fail = 0;
+    int fail = 0, *const pfail = &fail;
 
     if (fi->restart_interval) {
         // --- restart intervals: decode + IDCT fused, in parallel, no big buffers ---
@@ -1713,16 +1717,16 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
             size_t k0 = I * ti / tasks, k1 = I * (ti + 1) / tasks;
             int16_t coef[MAX_BLOCKS * 64];
             const int32_t zero[3] = {0, 0, 0};
-            for (size_t kk = k0; kk < k1 && !__atomic_load_n(&fail, __ATOMIC_RELAXED); kk++) {
+            for (size_t kk = k0; kk < k1 && !__atomic_load_n(pfail, __ATOMIC_RELAXED); kk++) {
                 BR br;
                 br_init(&br, clean, (uint64_t)istart[kk] * 8);
                 int32_t dc[3] = {0, 0, 0};
                 size_t m1 = (kk + 1) * Ri < total ? (kk + 1) * Ri : total;
                 for (size_t m = kk * Ri; m < m1; m++) {
-                    if (decode_mcu_coef(j, &br, dc, coef)) { __atomic_store_n(&fail, 1, __ATOMIC_RELAXED); break; }
+                    if (decode_mcu_coef(j, &br, dc, coef)) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); break; }
                     idct_mcu(j, o, m, coef, zero);
                 }
-                if (br_pos(&br, clean) > (uint64_t)istart[kk + 1] * 8) __atomic_store_n(&fail, 1, __ATOMIC_RELAXED);   // overran the interval
+                if (br_pos(&br, clean) > (uint64_t)istart[kk + 1] * 8) __atomic_store_n(pfail, 1, __ATOMIC_RELAXED);   // overran the interval
             }
         });
         st->decode_ms = now_ms() - t1;
@@ -1746,13 +1750,13 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
         }
         Stitch S = {.frontier = 0, .endpos = UINT64_MAX};
         pthread_mutex_init(&S.mu, NULL);
-        __block volatile long next = 0, finished = 0;
-        __block Stitch *Sp = &S;
+        volatile long next = 0, finished = 0, *const pnext = &next, *const pfinished = &finished;
+        Stitch *Sp = &S;
         const size_t est = total / C * 2 + 256;
         parallel_for((size_t)W, ^(size_t w) {
             int own[4096], nown = 0;
             for (;;) {
-                long i = __sync_fetch_and_add(&next, 1);
+                long i = __sync_fetch_and_add(pnext, 1);
                 if (i >= C) break;
                 Chunk *c = &ch[i];
                 c->rec = pool_take(est * sizeof(Rec), &c->rec_cap);
@@ -1762,13 +1766,13 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
                 if (nown < 4096) own[nown++] = (int)i;
                 stitch_advance(j, o, clean, Lbits, total, ch, C, Sp, st);
                 for (int k = 0; k < nown; k++)       // own stitched chunks: still in cache
-                    if (chunk_claim_idct(j, o, &ch[own[k]], msz)) __sync_fetch_and_add(&finished, 1);
+                    if (chunk_claim_idct(j, o, &ch[own[k]], msz)) __sync_fetch_and_add(pfinished, 1);
             }
-            while (__atomic_load_n(&finished, __ATOMIC_ACQUIRE) < C) {   // drain: help with anything
+            while (__atomic_load_n(pfinished, __ATOMIC_ACQUIRE) < C) {   // drain: help with anything
                 stitch_advance(j, o, clean, Lbits, total, ch, C, Sp, st);
                 int did = 0;
                 for (int k = 0; k < C; k++)
-                    if (chunk_claim_idct(j, o, &ch[k], msz)) { __sync_fetch_and_add(&finished, 1); did = 1; }
+                    if (chunk_claim_idct(j, o, &ch[k], msz)) { __sync_fetch_and_add(pfinished, 1); did = 1; }
                 if (!did) sched_yield();
             }
         });
