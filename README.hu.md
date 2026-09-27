@@ -98,6 +98,14 @@ a dekódolás ~15.4 ms/kép a 11.8 helyett, de kevésbé melegíti a CPU-t.
 képén halad végig, a Finder sorrendjében. A mappát csak az első lapozáskor olvassa be, így a macOS csak
 akkor kér hozzáférési engedélyt a mappához, ha tényleg lapozol.
 
+**Az app továbbadása:** `make zip` vagy `make dmg`. Az app csak ad-hoc aláírást kap, ezért egy másik
+Macen elsőre nem engedi megnyitni a rendszer: jobb klikk → Megnyitás (macOS 14-ig), Rendszerbeállítások
+→ Adatvédelem és biztonság → Megnyitás mindenképp (macOS 15), vagy `xattr -dr com.apple.quarantine
+nitroview.app`. Apple Developer ID-val figyelmeztetés nélkül nyílik: a `make dmg notarize
+SIGN_ID="Developer ID Application: Név (TEAMID)" NOTARY_PROFILE=név` aláírja (hardened runtime),
+hitelesítteti az Apple-lel a dmg-t, és hozzátűzi a jegyet (előtte egyszer: `xcrun notarytool
+store-credentials név`).
+
 **Finder:** a `make app` elkészíti a `nitroview.app`-ot. Másold az Applications mappába, majd a Finderben
 egy képen: Információ → Megnyitás ezzel → nitroview → Az összes módosítása. A Dock-ikonra is rá lehet
 húzni képeket; a futó néző átveszi az új fájl(oka)t.
@@ -429,6 +437,7 @@ make TURBOJPEG=0     # libjpeg-turbo nélkül: a többi JPEG-et az Apple ImageIO
 make WUFFS=0         # Wuffs nélkül: PNG az Apple ImageIO-val (~1.6× lassabb)
 make app             # nitroview.app a Finderhez: universal (Intel + Apple Silicon), macOS 12-től,
                      # ad-hoc aláírással, ikon: packaging/icon.png
+make zip / make dmg  # nitroview.zip / nitroview.dmg (Alkalmazások mappába húzható) továbbadáshoz
 make tools           # bench/bench, bench/verify, bench/robust (referenciának kell a libjpeg-turbo)
 ```
 

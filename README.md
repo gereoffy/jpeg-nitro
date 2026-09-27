@@ -54,6 +54,13 @@ Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); the
 images of its folder, in Finder order. The folder is listed only on the first paging key, so macOS
 asks for folder access only if you actually page.
 
+**Passing the app on:** `make zip` or `make dmg`. The app is only ad-hoc signed, so on another Mac
+macOS refuses it the first time: right-click → Open (up to macOS 14), or System Settings → Privacy &
+Security → Open Anyway (macOS 15), or `xattr -dr com.apple.quarantine nitroview.app`. With an Apple
+Developer ID it opens without that: `make dmg notarize SIGN_ID="Developer ID Application: Name
+(TEAMID)" NOTARY_PROFILE=name` signs it (hardened runtime), has Apple notarize the dmg and staples the
+ticket to it (once before: `xcrun notarytool store-credentials name`).
+
 **Finder:** `make app` builds `nitroview.app`. Copy it to /Applications, then in the Finder: Get Info
 on an image → Open with → nitroview → Change All. Images can also be dropped on its Dock icon; a
 running viewer takes the new file(s).
@@ -440,6 +447,7 @@ make WUFFS=0         # no Wuffs: PNG via Apple ImageIO (~1.6x slower)
 scripts/get-deps.sh  # download + build libjpeg-turbo (macOS: Intel + ARM), stb_image, Wuffs into third_party/ (~30 s)
 make app             # nitroview.app for the Finder: universal (Intel + Apple Silicon), macOS 12+,
                      # ad-hoc signed, icon from packaging/icon.png
+make zip / make dmg  # nitroview.zip / nitroview.dmg (drag to Applications) for passing it on
 make tools           # bench/bench, verify, robust, freqprobe, sustain (needs get-deps.sh)
 ```
 

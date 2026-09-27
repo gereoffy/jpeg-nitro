@@ -6,6 +6,10 @@
 #   make WUFFS=0         no Wuffs: PNG is decoded by Apple ImageIO (~1.8x slower)
 #   make app             nitroview.app bundle, so the Finder can open images with it: universal
 #                        (x86_64 + arm64, macOS 12+); MAC_ARCHS=x86_64 for one architecture only
+#   make zip / make dmg  nitroview.zip / nitroview.dmg (drag to Applications) of the app
+#   make dmg notarize SIGN_ID="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=name
+#                        signed with a Developer ID and notarized by Apple: opens without a
+#                        Gatekeeper warning (once: xcrun notarytool store-credentials name ...)
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
 #   make linux           Linux (also the default there): the portable tools - nbench,
 #                        pngverify, psdverify, the ASan robustness tests, and verify / robust
@@ -131,13 +135,18 @@ build/app-%/nitroview: src/nitroview.m build/shaders.inc $(DEC_SRC) $(DEC_HDR) $
 build/nitroview-universal: $(foreach a,$(MAC_ARCHS),build/app-$(a)/nitroview)
 	lipo -create $^ -output $@
 
+# Signing: ad-hoc by default ("-": runs here, other Macs ask once, see README). With a Developer
+# ID certificate: hardened runtime + secure timestamp, as notarization requires.
+SIGN_ID    ?= -
+SIGN_FLAGS := $(if $(filter -,$(SIGN_ID)),,--options runtime --timestamp)
+
 app: build/nitroview-universal packaging/Info.plist build/nitroview.icns
 	rm -rf nitroview.app
 	mkdir -p nitroview.app/Contents/MacOS nitroview.app/Contents/Resources
 	cp build/nitroview-universal nitroview.app/Contents/MacOS/nitroview
 	cp packaging/Info.plist nitroview.app/Contents/
 	cp build/nitroview.icns nitroview.app/Contents/Resources/
-	codesign --force --sign - nitroview.app
+	codesign --force $(SIGN_FLAGS) --sign "$(SIGN_ID)" nitroview.app
 	@echo "built nitroview.app ($(foreach a,$(MAC_ARCHS),$(a)$(if $(call ljt_has,$(a)),+turbojpeg)) ; copy it to /Applications, then Finder: Get Info > Open with > nitroview > Change All)"
 
 deps:
@@ -199,7 +208,7 @@ linux: $(LINUX_TOOLS)
 	@echo "built $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
 
 clean:
-	rm -rf build nitroview nitroview.app nitroview.exe bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
+	rm -rf build nitroview nitroview.app nitroview.exe nitroview.zip nitroview.dmg bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
 	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
@@ -222,4 +231,29 @@ nitroview.exe: src/nitroview_win.c $(DEC_SRC) $(DEC_HDR) build/nitroview_res.o
 windows: nitroview.exe bench/nbench.exe bench/psdverify.exe
 	@echo "built nitroview.exe bench/nbench.exe bench/psdverify.exe (Windows x64, $(WINARCH))"
 
-.PHONY: all app tools linux windows clean deps ljt
+# Distribution. zip: ditto keeps the signature and the bundle's attributes (like Finder > Compress).
+zip: app
+	rm -f nitroview.zip
+	ditto -c -k --keepParent nitroview.app nitroview.zip
+	@echo "built nitroview.zip"
+
+# dmg: the app + a link to /Applications, compressed
+dmg: app
+	rm -rf build/dmg nitroview.dmg
+	mkdir -p build/dmg
+	ditto nitroview.app build/dmg/nitroview.app
+	ln -s /Applications build/dmg/Applications
+	hdiutil create -volname NitroView -srcfolder build/dmg -ov -format UDZO -quiet nitroview.dmg
+	$(if $(filter -,$(SIGN_ID)),,codesign --force --timestamp --sign "$(SIGN_ID)" nitroview.dmg)
+	@echo "built nitroview.dmg"
+
+# Apple's notarization of the signed dmg, then the ticket stapled to it (works offline too).
+NOTARY_PROFILE ?=
+notarize:
+	@test "$(SIGN_ID)" != "-" -a -n "$(NOTARY_PROFILE)" || \
+	  { echo "needs SIGN_ID=\"Developer ID Application: ...\" and NOTARY_PROFILE=... (see the Makefile header)"; exit 1; }
+	xcrun notarytool submit nitroview.dmg --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple nitroview.dmg
+	@echo "nitroview.dmg is notarized"
+
+.PHONY: all app zip dmg notarize tools linux windows clean deps ljt
