@@ -62,8 +62,8 @@ Developer ID it opens without that: `make dmg notarize SIGN_ID="Developer ID App
 ticket to it (once before: `xcrun notarytool store-credentials name`).
 
 **Finder:** `make app` builds `nitroview.app`. Copy it to /Applications, then in the Finder: Get Info
-on an image → Open with → nitroview → Change All. Images can also be dropped on its Dock icon; a
-running viewer takes the new file(s).
+on an image → Open with → nitroview → Change All. Images or folders can also be dropped on its Dock
+icon or its window, or chosen with nitroview → Open… (⌘O); a running viewer takes the new file(s).
 
 **Windows:** `nitroview.exe` ([src/nitroview_win.c](src/nitroview_win.c), Win32 + Direct3D 11) is
 the same viewer: the same keys, mouse, zoom and window behaviour, full screen, slideshow, one file →

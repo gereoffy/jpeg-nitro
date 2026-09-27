@@ -38,7 +38,7 @@ THREADLIBS := -lpthread
 endif
 CFLAGS     := -O3 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter
 ASAN       := -O1 -g $(PORTFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer
-FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore
+FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore -framework UniformTypeIdentifiers
 DEC_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c
 DEC_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitro_os.h
 

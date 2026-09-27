@@ -35,6 +35,7 @@
 #include "png_wuffs.h"   // optional fast PNG decoder
 #endif
 #import <ImageIO/ImageIO.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static double now_ms(void) {
     static mach_timebase_info_data_t tb;
@@ -788,6 +789,10 @@ static NSSize max_content_size(NSWindowStyleMask mask, NSScreen *scr) {
 }
 
 static NSArray<NSString *> *collect_files(NSArray<NSString *> *args);
+static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
+@protocol NVOpener   // the app delegate: opens files / folders from anywhere
+- (void)openPaths:(NSArray<NSString *> *)paths;
+@end
 
 @interface ViewerView : MTKView <MTKViewDelegate>
 @property(nonatomic) NSArray<NSString *> *files;
@@ -834,6 +839,13 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args);
     BOOL _fsTransition;       // entering / leaving full screen
 }
 - (BOOL)acceptsFirstResponder { return YES; }
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return NSDragOperationCopy; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)info {
+    NSArray *p = dropped_paths(info);
+    dispatch_async(dispatch_get_main_queue(), ^{ [(id<NVOpener>)NSApp.delegate openPaths:p]; });
+    return p.count > 0;
+}
 
 - (void)go:(NSInteger)i dir:(int)dir {
     NSInteger n = (NSInteger)_files.count;
@@ -1387,7 +1399,26 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
 
 static ViewerView *create_viewer(NSArray<NSString *> *files, BOOL lazy, GPU *gpu);
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+// Accepts files / folders dragged onto a window (the viewer and the "open an image" window).
+static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info) {
+    NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[NSURL.class]
+                                                                   options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSURL *u in urls) [paths addObject:u.path];
+    return paths;
+}
+@interface DropView : NSView
+@end
+@implementation DropView
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return NSDragOperationCopy; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)info {
+    NSArray *p = dropped_paths(info);
+    dispatch_async(dispatch_get_main_queue(), ^{ [(id<NVOpener>)NSApp.delegate openPaths:p]; });   // after the drag has ended
+    return p.count > 0;
+}
+@end
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NVOpener>
 @property(nonatomic) NSWindow *window;
 @property(nonatomic) GPU *gpu;
 @property(nonatomic) ViewerView *viewer;
@@ -1403,6 +1434,27 @@ static ViewerView *create_viewer(NSArray<NSString *> *files, BOOL lazy, GPU *gpu
     for (NSURL *u in urls) if (u.isFileURL) [paths addObject:u.path];
     if (!paths.count) return;
     if (self.argvFiles && [paths isEqualToArray:self.argvFiles]) { self.argvFiles = nil; return; }   // AppKit echoes argv
+    [self openPaths:paths];
+}
+
+// File > Open... (Cmd-O): images and / or folders.
+- (void)openDocument:(id)sender {
+    NSOpenPanel *op = [NSOpenPanel openPanel];
+    op.canChooseFiles = YES;
+    op.canChooseDirectories = YES;
+    op.allowsMultipleSelection = YES;
+    op.allowedContentTypes = @[UTTypeImage, UTTypeFolder];
+    op.message = @"Images or folders to view";
+    if ([op runModal] != NSModalResponseOK) return;
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSURL *u in op.URLs) if (u.isFileURL) [paths addObject:u.path];
+    [self openPaths:paths];
+}
+
+// Paths from the Finder, the Dock, a drop on a window or the Open panel: files and folders.
+- (void)openPaths:(NSArray<NSString *> *)paths {
+    if (!paths.count) return;
+    NSApplication *app = NSApp;
     NSArray<NSString *> *files = collect_files(paths);
     if (!files.count) return;
     BOOL isDir = NO;
@@ -1887,6 +1939,7 @@ static ViewerView *create_viewer(NSArray<NSString *> *files, BOOL lazy, GPU *gpu
     __weak ViewerView *wv = v;
     v.loader.onDecoded = ^(NSInteger i) { [wv imageDecoded:i]; };
     win.contentView = v;
+    [v registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     [win makeFirstResponder:v];
     [win makeKeyAndOrderFront:nil];
     v.lazyDir = lazy;
@@ -1973,6 +2026,9 @@ int main(int argc, const char **argv) {
         NSMenu *bar = [NSMenu new], *appMenu = [NSMenu new];
         NSMenuItem *item = [NSMenuItem new];
         [bar addItem:item];
+        NSMenuItem *open = [appMenu addItemWithTitle:@"Open..." action:@selector(openDocument:) keyEquivalent:@"o"];
+        open.target = del;
+        [appMenu addItem:NSMenuItem.separatorItem];
         [appMenu addItemWithTitle:@"Quit nitroview" action:@selector(terminate:) keyEquivalent:@"q"];
         item.submenu = appMenu;
         app.mainMenu = bar;
@@ -1983,9 +2039,13 @@ int main(int argc, const char **argv) {
                                                        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                          backing:NSBackingStoreBuffered defer:NO];
             hw.title = @"nitroview";
-            NSTextField *t = [NSTextField labelWithString:@"Open images with nitroview from the Finder,\nor drop them on its Dock icon."];
+            DropView *dv = [[DropView alloc] initWithFrame:NSMakeRect(0, 0, 420, 120)];
+            [dv registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+            hw.contentView = dv;
+            NSTextField *t = [NSTextField labelWithString:@"Drop images or a folder here or on the Dock icon,\n"
+                                                           "choose Open... (\u2318O), or open images from the Finder."];
             t.frame = NSMakeRect(20, 30, 380, 60);
-            [hw.contentView addSubview:t];
+            [dv addSubview:t];
             [hw center];
             del.hint = hw;
             // shown only if no file arrives right away (a Finder "open" follows the launch)

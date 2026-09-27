@@ -107,8 +107,9 @@ hitelesítteti az Apple-lel a dmg-t, és hozzátűzi a jegyet (előtte egyszer: 
 store-credentials név`).
 
 **Finder:** a `make app` elkészíti a `nitroview.app`-ot. Másold az Applications mappába, majd a Finderben
-egy képen: Információ → Megnyitás ezzel → nitroview → Az összes módosítása. A Dock-ikonra is rá lehet
-húzni képeket; a futó néző átveszi az új fájl(oka)t.
+egy képen: Információ → Megnyitás ezzel → nitroview → Az összes módosítása. Képeket vagy mappát a
+Dock-ikonra vagy az ablakra is rá lehet húzni, vagy a nitroview → Open… (⌘O) menüvel kiválasztani;
+a futó néző átveszi az új fájl(oka)t.
 
 **Windows:** a `nitroview.exe` ([src/nitroview_win.c](src/nitroview_win.c), Win32 + Direct3D 11)
 ugyanez a néző: ugyanazok a billentyűk, egérfunkciók, nagyítás és ablakméretezés, teljes képernyő,
