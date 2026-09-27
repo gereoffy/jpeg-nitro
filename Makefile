@@ -191,7 +191,7 @@ bench/psdverify.exe: bench/psdverify.c src/nitropsd.c src/nitropng.c $(DEC_HDR)
 	$(WINCC) $(WINFLAGS) -w bench/psdverify.c src/nitropsd.c src/nitropng.c -lpthread -o $@
 WINRES  ?= $(patsubst %clang,%windres,$(WINCC))
 WINLIBS := -ld3d11 -ldxgi -ld3dcompiler -lwindowscodecs -lole32 -loleaut32 -lshlwapi -lshell32 -luser32 \
-           -lgdi32 -luuid -ldxguid -lwinmm -lpthread
+           -lgdi32 -ladvapi32 -luuid -ldxguid -lwinmm -lpthread
 build/nitroview_res.o: packaging/nitroview.rc packaging/nitroview.ico
 	@mkdir -p build
 	$(WINRES) -I packaging $< -O coff -o $@

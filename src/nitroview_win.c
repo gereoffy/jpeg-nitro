@@ -23,6 +23,7 @@
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shlwapi.h>
 #include <wincodec.h>
 #include <mmsystem.h>
@@ -1397,11 +1398,11 @@ static void make_rtv(void) {
 static void render(void) {
     if (!V.swap || !V.rtv || V.vw <= 0 || V.vh <= 0) return;
     loader_reap();
+    Decoded *d = loader_get(V.index);
+    ID3D11ShaderResourceView *srv = d ? texture_for(d) : NULL;   // first: it may use the render target itself
     float black[4] = {0, 0, 0, 1};
     ID3D11DeviceContext_OMSetRenderTargets(g_ctx, 1, &V.rtv, NULL);
     ID3D11DeviceContext_ClearRenderTargetView(g_ctx, V.rtv, black);
-    Decoded *d = loader_get(V.index);
-    ID3D11ShaderResourceView *srv = d ? texture_for(d) : NULL;
     if (srv) {
         if (V.shown_index != V.index) {
             V.shown_index = V.index;
@@ -1535,6 +1536,19 @@ static void on_wheel(WPARAM wp, LPARAM lp) {
     zoom_by(pow(M_SQRT2, delta / 120.0), d, ax, ay, delta % 120 != 0);   // one sqrt(2) step per notch
 }
 
+// Files dropped on the window or sent by a second nitroview (opened from Explorer).
+static void open_paths(wchar_t **args, int n) {
+    FileList l = {0};
+    collect_files(&l, args, n);
+    int lazy = n == 1 && !wcspbrk(args[0], L"*?") && !(GetFileAttributesW(args[0]) & FILE_ATTRIBUTE_DIRECTORY);
+    if (l.n) {
+        if (IsIconic(V.hwnd)) ShowWindow(V.hwnd, SW_RESTORE);
+        open_files(&l, lazy);
+        SetForegroundWindow(V.hwnd);
+    }
+    fl_free(&l);
+}
+
 static void on_drop(HDROP drop) {
     UINT n = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
     wchar_t **args = calloc(n ? n : 1, sizeof *args);
@@ -1544,16 +1558,25 @@ static void on_drop(HDROP drop) {
         DragQueryFileW(drop, i, args[i], l + 1);
     }
     DragFinish(drop);
-    FileList l = {0};
-    collect_files(&l, args, (int)n);
-    int lazy = n == 1 && !(GetFileAttributesW(args[0]) & FILE_ATTRIBUTE_DIRECTORY);
+    if (n) open_paths(args, (int)n);
     for (UINT i = 0; i < n; i++) free(args[i]);
     free(args);
-    if (l.n) {
-        open_files(&l, lazy);
-        SetForegroundWindow(V.hwnd);
+}
+
+#define COPYDATA_OPEN 0x4E56   // "NV": full paths, each 0-terminated, then an empty one
+
+static void on_copydata(const COPYDATASTRUCT *cd) {
+    if (cd->dwData != COPYDATA_OPEN || !cd->lpData || cd->cbData < 2 * sizeof(wchar_t)) return;
+    const wchar_t *p = cd->lpData, *end = p + cd->cbData / sizeof(wchar_t);
+    wchar_t *args[256];
+    int n = 0;
+    while (p < end && *p && n < 256) {
+        size_t l = wcsnlen(p, (size_t)(end - p));
+        if (p + l >= end) break;
+        args[n++] = (wchar_t *)p;
+        p += l + 1;
     }
-    fl_free(&l);
+    if (n) open_paths(args, n);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1632,6 +1655,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_XBUTTONDOWN: page(GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? -1 : 1); return TRUE;   // back / forward
     case WM_MOUSEWHEEL: on_wheel(wp, lp); return 0;
     case WM_DROPFILES: on_drop((HDROP)wp); return 0;
+    case WM_COPYDATA: on_copydata((const COPYDATASTRUCT *)lp); return TRUE;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);
@@ -1719,6 +1743,87 @@ static int create_window(const wchar_t *first) {
     IDXGIDevice_Release(xd);
     make_rtv();
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// file association (--register / --unregister): for the current user, no admin rights
+
+static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
+                                              L".heif", L".tif", L".tiff", L".webp", L".gif", L".bmp", NULL};
+#define PROGID L"NitroView.Image"
+
+static int reg_str(const wchar_t *key, const wchar_t *name, const wchar_t *val) {
+    return RegSetKeyValueW(HKEY_CURRENT_USER, key, name, REG_SZ, val, (DWORD)((wcslen(val) + 1) * sizeof(wchar_t))) != ERROR_SUCCESS;
+}
+
+static int do_register(void) {
+    wchar_t exe[MAX_PATH], cmd[MAX_PATH + 16], icon[MAX_PATH + 8], k[256];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    _snwprintf(cmd, MAX_PATH + 16, L"\"%ls\" \"%%1\"", exe);
+    _snwprintf(icon, MAX_PATH + 8, L"\"%ls\",0", exe);
+    int bad = 0;
+    bad |= reg_str(L"Software\\Classes\\" PROGID, NULL, L"NitroView image");
+    bad |= reg_str(L"Software\\Classes\\" PROGID L"\\DefaultIcon", NULL, icon);
+    bad |= reg_str(L"Software\\Classes\\" PROGID L"\\shell\\open\\command", NULL, cmd);
+    bad |= reg_str(L"Software\\Classes\\Applications\\nitroview.exe", L"FriendlyAppName", L"NitroView");
+    bad |= reg_str(L"Software\\Classes\\Applications\\nitroview.exe\\shell\\open\\command", NULL, cmd);
+    bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationName", L"NitroView");
+    bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationDescription", L"Very fast image viewer (JPEG, PNG, PSD)");
+    bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationIcon", icon);
+    for (int i = 0; g_assoc_exts[i]; i++) {
+        const wchar_t *e = g_assoc_exts[i];
+        _snwprintf(k, 256, L"Software\\Classes\\%ls\\OpenWithProgids", e);   // "Open with" list
+        bad |= RegSetKeyValueW(HKEY_CURRENT_USER, k, PROGID, REG_NONE, NULL, 0) != ERROR_SUCCESS;
+        bad |= reg_str(L"Software\\Classes\\Applications\\nitroview.exe\\SupportedTypes", e, L"");
+        bad |= reg_str(L"Software\\NitroView\\Capabilities\\FileAssociations", e, PROGID);
+    }
+    bad |= reg_str(L"Software\\RegisteredApplications", L"NitroView", L"Software\\NitroView\\Capabilities");
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+    if (bad) { fprintf(stderr, "could not write the registry\n"); return 1; }
+    printf("NitroView is registered for JPEG, PNG, PSD, HEIC, TIFF, WebP, GIF and BMP (%s).\n"
+           "Windows lets only you choose the default app: in the Settings page that opens now, pick NitroView\n"
+           "(or right-click an image > Open with > Choose another app > NitroView, \"Always\").\n"
+           "After moving nitroview.exe, run --register again; --unregister removes all of it.\n", utf8(exe));
+    ShellExecuteW(NULL, L"open", L"ms-settings:defaultapps?registeredAppUser=NitroView", NULL, NULL, SW_SHOWNORMAL);
+    return 0;
+}
+
+static int do_unregister(void) {
+    wchar_t k[256];
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\" PROGID);
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\nitroview.exe");
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\NitroView");
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", L"NitroView");
+    for (int i = 0; g_assoc_exts[i]; i++) {
+        _snwprintf(k, 256, L"Software\\Classes\\%ls\\OpenWithProgids", g_assoc_exts[i]);
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, k, PROGID);
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+    printf("NitroView is unregistered.\n");
+    return 0;
+}
+
+// Opened from Explorer while a viewer is running: the running one shows the file.
+static int send_to_running(wchar_t **args, int n) {
+    HWND w = FindWindowW(L"nitroview", NULL);
+    if (!w || !n) return 0;
+    size_t cap = 1, len = 0;
+    for (int i = 0; i < n; i++) cap += MAX_PATH * 2 + 1;
+    wchar_t *buf = calloc(cap, sizeof(wchar_t));
+    for (int i = 0; i < n; i++) {   // full paths: the running viewer has another current directory
+        DWORD l = GetFullPathNameW(args[i], MAX_PATH * 2, buf + len, NULL);
+        if (!l || l >= MAX_PATH * 2) continue;
+        len += l + 1;
+    }
+    buf[len++] = 0;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    AllowSetForegroundWindow(pid);
+    COPYDATASTRUCT cd = {COPYDATA_OPEN, (DWORD)(len * sizeof(wchar_t)), buf};
+    DWORD_PTR res = 0;
+    int ok = SendMessageTimeoutW(w, WM_COPYDATA, 0, (LPARAM)&cd, SMTO_ABORTIFHUNG, 3000, &res) != 0;
+    free(buf);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -1825,6 +1930,9 @@ static void usage(void) {
         "  -j N                  use N decoder threads (default: all logical CPUs)\n"
         "  --bench               load all files without a window, print timings\n"
         "  --selftest            compare the GPU output with Windows' own decoding (WIC)\n"
+        "  -n, --new-window      don't pass the files to a running nitroview\n"
+        "  --register            offer nitroview for JPEG, PNG, PSD ... in Explorer (current user)\n"
+        "  --unregister          remove that again\n"
         "  -h, --help            this help\n"
         "\n"
         "keys:\n"
@@ -1846,7 +1954,7 @@ static void usage(void) {
 }
 
 int wmain(int argc, wchar_t **argv) {
-    int full = 0, bench = 0, selftest = 0, help = 0;
+    int full = 0, bench = 0, selftest = 0, help = 0, newwin = 0;
     double slide_ms = 0;
     wchar_t **args = calloc((size_t)argc + 1, sizeof *args);
     int nargs = 0;
@@ -1858,10 +1966,14 @@ int wmain(int argc, wchar_t **argv) {
         else if (!wcscmp(a, L"-j") && i + 1 < argc) { g_nthreads = _wtoi(argv[++i]); nj_set_max_workers(g_nthreads); }
         else if ((!wcscmp(a, L"-s") || !wcscmp(a, L"--slideshow")) && i + 1 < argc) slide_ms = _wtof(argv[++i]);
         else if (!wcscmp(a, L"-h") || !wcscmp(a, L"--help") || !wcscmp(a, L"/?")) help = 1;
+        else if (!wcscmp(a, L"-n") || !wcscmp(a, L"--new-window")) newwin = 1;
+        else if (!wcscmp(a, L"--register")) { SetConsoleOutputCP(CP_UTF8); return do_register(); }
+        else if (!wcscmp(a, L"--unregister")) { SetConsoleOutputCP(CP_UTF8); return do_unregister(); }
         else args[nargs++] = argv[i];
     }
     SetConsoleOutputCP(CP_UTF8);
     if (help) { usage(); return 1; }
+    if (nargs && !newwin && !bench && !selftest && !full && slide_ms <= 0 && send_to_running(args, nargs)) return 0;
     FileList fl = {0};
     collect_files(&fl, args, nargs);
     if ((bench || selftest) && !fl.n) { usage(); return 1; }
