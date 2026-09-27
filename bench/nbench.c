@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
     char thr[16];
     snprintf(thr, sizeof thr, "%d", nthreads);
     printf("%d CPUs, %s threads, %d runs per file%s\n\n", nitro_ncpu(), nthreads > 0 ? thr : "all", runs,
-           single ? " (+ single-threaded)" : "");
+           single ? " (+ single-threaded)" : "");   // (-q: this blank line separates the totals)
     double sum_best[T_N] = {0}, sum_avg[T_N] = {0}, sum_best1[T_N] = {0}, mpix[T_N] = {0};
     int count[T_N] = {0}, skipped = 0, failed = 0;
     for (int i = first; i < argc; i++) {
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
         free(j.out);
         free(d);
     }
-    printf("\n");
+    if (!quiet) printf("\n");
     for (int t = 0; t < T_N; t++) {
         if (!count[t]) continue;
         printf("%-4s %3d files  best %7.1f  avg %7.1f ms/image  (%.0f Mpixel/s)", tname[t], count[t],
