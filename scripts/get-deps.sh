@@ -11,7 +11,7 @@ mkdir -p third_party && cd third_party
 TP=$PWD
 LJT_VER=3.1.2
 NASM_VER=2.16.03
-JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+JOBS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)
 
 if [ ! -f stb_image.h ]; then
   curl -fsSL -o stb_image.h https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
@@ -38,7 +38,7 @@ if [ ! -f ljt/lib/libturbojpeg.a ]; then
   cd libjpeg-turbo-$LJT_VER
   CPU=$([ "$(uname -m)" = x86_64 ] && echo "-march=native" || echo "-mcpu=native")
   "$CMAKE" -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF \
-    -DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm" -DCMAKE_INSTALL_PREFIX="$TP/ljt" \
+    -DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm" -DCMAKE_INSTALL_PREFIX="$TP/ljt" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_C_FLAGS="-O3 $CPU" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
   "$CMAKE" --build build -j"$JOBS" >/dev/null
   "$CMAKE" --install build >/dev/null
