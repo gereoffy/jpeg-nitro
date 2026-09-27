@@ -3,7 +3,7 @@
 // Portable benchmark of the three decoders (macOS, Linux, ...): JPEG, PNG and
 // PSD/PSB files by content, each read into memory first, then decoded RUNS
 // times into the same output buffer; best and average per file.
-//   nbench [-r runs] [-j threads] [-1] [-q] files...
+//   nbench [-r runs] [-j threads] [-1] [-q] files or directories...
 //     -r  decodes per file (default 5)
 //     -j  threads (default: all CPUs)
 //     -1  also measure single-threaded
@@ -14,9 +14,42 @@
 #include "../src/nitrojpeg.h"
 #include "../src/nitropng.h"
 #include "../src/nitropsd.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+int _dowildcard = -1;   // MinGW: the C runtime expands *.jpg in the arguments (cmd.exe doesn't)
+#endif
+
+static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+// The files to measure: arguments as they are, directories replaced by the files in them (sorted).
+static char **g_files;
+static int g_nfiles, g_cap;
+static void add_file(char *path) {
+    if (g_nfiles == g_cap) g_files = realloc(g_files, (g_cap = g_cap ? g_cap * 2 : 256) * sizeof *g_files);
+    g_files[g_nfiles++] = path;
+}
+static void add_arg(const char *arg) {
+    struct stat st;
+    DIR *dir = stat(arg, &st) == 0 && S_ISDIR(st.st_mode) ? opendir(arg) : NULL;
+    if (!dir) { add_file(strdup(arg)); return; }
+    int first = g_nfiles;
+    size_t al = strlen(arg);
+    int sep = al && (arg[al - 1] == '/' || arg[al - 1] == '\\');
+    for (struct dirent *e; (e = readdir(dir));) {
+        if (e->d_name[0] == '.') continue;
+        char *p = malloc(al + strlen(e->d_name) + 2);
+        sprintf(p, "%s%s%s", arg, sep ? "" : "/", e->d_name);
+        if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) add_file(p);
+        else free(p);
+    }
+    closedir(dir);
+    qsort(g_files + first, (size_t)(g_nfiles - first), sizeof *g_files, cmp_str);
+}
 
 enum { T_JPEG, T_PNG, T_PSD, T_N };
 static const char *tname[T_N] = {"JPEG", "PNG", "PSD"};
@@ -123,7 +156,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "unknown option %s\n", argv[first]); return 2; }
     }
     if (first >= argc) {
-        fprintf(stderr, "usage: nbench [-r runs] [-j threads] [-1] [-q] files...   (JPEG, PNG, PSD/PSB)\n");
+        fprintf(stderr, "usage: nbench [-r runs] [-j threads] [-1] [-q] files or directories...   (JPEG, PNG, PSD/PSB)\n");
         return 2;
     }
     if (runs < 1) runs = 1;
@@ -134,10 +167,13 @@ int main(int argc, char **argv) {
            single ? " (+ single-threaded)" : "");   // (-q: this blank line separates the totals)
     double sum_best[T_N] = {0}, sum_avg[T_N] = {0}, sum_best1[T_N] = {0}, mpix[T_N] = {0};
     int count[T_N] = {0}, skipped = 0, failed = 0;
-    for (int i = first; i < argc; i++) {
+    for (int i = first; i < argc; i++) add_arg(argv[i]);
+    for (int i = 0; i < g_nfiles; i++) {
+        const char *path = g_files[i], *name = path;
+        for (const char *c = path; *c; c++)
+            if (*c == '/' || *c == '\\') name = c + 1;
         size_t len;
-        uint8_t *d = read_all(argv[i], &len);
-        const char *name = strrchr(argv[i], '/') ? strrchr(argv[i], '/') + 1 : argv[i];
+        uint8_t *d = read_all(path, &len);
         Job j;
         int w = 0, h = 0;
         if (!d || prepare(&j, d, len, &w, &h)) {

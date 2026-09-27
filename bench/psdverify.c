@@ -10,6 +10,10 @@
 #include "../src/nitro_os.h"   // nitro_now_ms
 #include "../src/nitropsd.h"
 
+#ifdef _WIN32
+int _dowildcard = -1;   // MinGW: the C runtime expands *.psd in the arguments (cmd.exe doesn't)
+#endif
+
 static double now_ms(void) { return nitro_now_ms(); }
 static uint8_t *load(const char *fn, size_t *n) {
     FILE *f = fopen(fn, "rb"); if (!f) return NULL;
