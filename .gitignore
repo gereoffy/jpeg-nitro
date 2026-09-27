@@ -2,6 +2,7 @@
 /build/
 /nitroview
 /nitroview.app/
+/nitroview.exe
 /bench/bench
 /bench/verify
 /bench/robust

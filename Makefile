@@ -9,8 +9,9 @@
 #   make linux           Linux (also the default there): the portable tools - nbench,
 #                        pngverify, psdverify, the ASan robustness tests, and verify / robust
 #                        once scripts/get-deps.sh has built libjpeg-turbo. Needs clang.
-#   make windows         cross-compile bench/nbench.exe and bench/psdverify.exe for Windows
-#                        (x64, static, AVX2) with llvm-mingw: WINCC=path/to/x86_64-w64-mingw32-clang
+#   make windows         cross-compile nitroview.exe (the viewer), bench/nbench.exe and
+#                        bench/psdverify.exe for Windows (x64, static, AVX2) with llvm-mingw:
+#                        WINCC=path/to/x86_64-w64-mingw32-clang
 
 LJT        := third_party/ljt
 TURBOJPEG  ?= $(if $(wildcard $(LJT)/lib/libturbojpeg.a),1,0)
@@ -174,7 +175,7 @@ linux: $(LINUX_TOOLS)
 	@echo "built $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
 
 clean:
-	rm -rf build nitroview nitroview.app bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
+	rm -rf build nitroview nitroview.app nitroview.exe bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
 	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
@@ -188,7 +189,15 @@ bench/nbench.exe: bench/nbench.c $(DEC_SRC) $(DEC_HDR)
 	$(WINCC) $(WINFLAGS) bench/nbench.c $(DEC_SRC) -lpthread -o $@
 bench/psdverify.exe: bench/psdverify.c src/nitropsd.c src/nitropng.c $(DEC_HDR)
 	$(WINCC) $(WINFLAGS) -w bench/psdverify.c src/nitropsd.c src/nitropng.c -lpthread -o $@
-windows: bench/nbench.exe bench/psdverify.exe
-	@echo "built bench/nbench.exe bench/psdverify.exe (Windows x64, $(WINARCH))"
+WINRES  ?= $(patsubst %clang,%windres,$(WINCC))
+WINLIBS := -ld3d11 -ldxgi -ld3dcompiler -lwindowscodecs -lole32 -loleaut32 -lshlwapi -lshell32 -luser32 \
+           -lgdi32 -luuid -ldxguid -lwinmm -lpthread
+build/nitroview_res.o: packaging/nitroview.rc packaging/nitroview.ico
+	@mkdir -p build
+	$(WINRES) -I packaging $< -O coff -o $@
+nitroview.exe: src/nitroview_win.c $(DEC_SRC) $(DEC_HDR) build/nitroview_res.o
+	$(WINCC) $(WINFLAGS) -municode src/nitroview_win.c $(DEC_SRC) build/nitroview_res.o $(WINLIBS) -o $@
+windows: nitroview.exe bench/nbench.exe bench/psdverify.exe
+	@echo "built nitroview.exe bench/nbench.exe bench/psdverify.exe (Windows x64, $(WINARCH))"
 
 .PHONY: all app tools linux windows clean deps ljt
