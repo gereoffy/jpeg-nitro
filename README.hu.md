@@ -19,7 +19,8 @@ Airen egy 24 MP-es JPEG ~30 ms alatt dekódolódik, ~3×-osan gyorsabban, mint u
 Apple hardveres JPEG-dekódere (lásd lent: „Apple Silicon (M1)”). A dekóderek függőség nélküli
 C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
 timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal. A HEIC, TIFF,
-WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg.
+WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg. A nézőnek Windowsos változata is van
+(lásd lent: „Windows”).
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
@@ -100,6 +101,18 @@ akkor kér hozzáférési engedélyt a mappához, ha tényleg lapozol.
 **Finder:** a `make app` elkészíti a `nitroview.app`-ot. Másold az Applications mappába, majd a Finderben
 egy képen: Információ → Megnyitás ezzel → nitroview → Az összes módosítása. A Dock-ikonra is rá lehet
 húzni képeket; a futó néző átveszi az új fájl(oka)t.
+
+**Windows:** a `nitroview.exe` ([src/nitroview_win.c](src/nitroview_win.c), Win32 + Direct3D 11)
+ugyanez a néző: ugyanazok a billentyűk, egérfunkciók, nagyítás és ablakméretezés, teljes képernyő,
+diavetítés, egy fájlból a mappája, ráhúzás. A JPEG / PNG / PSD a három dekóderrel és egy compute
+shaderrel megy, minden más (progresszív JPEG, HEIC, TIFF, WebP, GIF, BMP) a Windows saját WIC-
+kodekjeivel. Egyetlen önálló .exe (csak rendszer-DLL-ek, Windows 10-től), Macen vagy Linuxon
+fordítható a `make windows`-szal (lásd lent: „A dekóderek más rendszeren”). A `nitroview.exe --register`
+felajánlja az összes ilyen típushoz az Intézőben (az aktuális felhasználónak, rendszergazdai jog
+nélkül), és megnyitja a Beállítások → Alapértelmezett alkalmazások oldalt, ahol ki kell választani
+(az alapértelmezést a Windowsban csak a felhasználó választhatja); a `--unregister` visszavonja.
+Ha fut, a megnyitott fájlok a futó ablakban jelennek meg (`-n`: új ablakban). Még nincs benne:
+színkezelés (a képek sRGB-ként jelennek meg); az érintőpados gesztusok nincsenek kipróbálva.
 
 Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
 arányával, akkorára, amekkora kifér (fekete sávok nélkül). Nagyításkor az ablak a képpel együtt nő, a
@@ -401,7 +414,8 @@ robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Li
 
 **Windows:** a `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` az
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)-vel (clang + MinGW-w64; az MSYS2 CLANG64
-környezetében is megy) lefordítja a `bench/nbench.exe`-t és a `bench/psdverify.exe`-t: statikusan,
+környezetében is megy) lefordítja a `nitroview.exe`-t (a nézőt, ikonnal), a `bench/nbench.exe`-t és a
+`bench/psdverify.exe`-t: statikusan,
 csak rendszer-DLL-ekkel, AVX2-vel (`WINARCH=x86-64-v2`: anélkül). Az `nbench.exe` Windows Serveren
 is fut; a `*.jpg`-t maga a program bontja ki, és könyvtárnevet is elfogad.
 
@@ -451,6 +465,7 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
 - `src/nitrojpeg.c/.h`: önálló párhuzamos JPEG-dekóder (saját Huffman + AVX2 IDCT);
   `NJ_REFERENCE`-szel a libjpeg-turbós összehasonlító részek is
 - `src/nitroview.m`: Cocoa + Metal néző; `NV_TURBOJPEG`-gel TurboJPEG-tartalékkal
+- `src/nitroview_win.c`: a néző Windowsra (Win32 + Direct3D 11 + WIC); `packaging/nitroview.ico/.rc`: az ikonja
 - `src/shaders.metal`: a néző GPU-shaderei (színkonverzió, kirajzolás), fordításkor beágyazva
 - `scripts/get-deps.sh`: az opcionális függőségek letöltése és fordítása
 - `bench/bench.m`: dekóder-benchmark (macOS, az összes dekóder), `bench/nbench.c`: hordozható

@@ -19,7 +19,8 @@ Times on an Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacB
 ([Apple Silicon](#apple-silicon-m1)). They are plain C files without dependencies and can be
 used on their own ([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
 back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF and BMP open
-through Apple ImageIO. (The name: racing cars boost the turbo with nitro.)
+through Apple ImageIO. There is a Windows version of the viewer too (see **Windows** below).
+(The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
 Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); there the IDCT uses NEON instead of AVX2.
@@ -56,6 +57,17 @@ asks for folder access only if you actually page.
 **Finder:** `make app` builds `nitroview.app`. Copy it to /Applications, then in the Finder: Get Info
 on an image → Open with → nitroview → Change All. Images can also be dropped on its Dock icon; a
 running viewer takes the new file(s).
+
+**Windows:** `nitroview.exe` ([src/nitroview_win.c](src/nitroview_win.c), Win32 + Direct3D 11) is
+the same viewer: the same keys, mouse, zoom and window behaviour, full screen, slideshow, one file →
+its folder, drag & drop. JPEG / PNG / PSD go through the three decoders and a compute shader,
+everything else (progressive JPEG, HEIC, TIFF, WebP, GIF, BMP) through Windows' own WIC codecs.
+One self-contained .exe (only system DLLs, Windows 10 or later), built on the Mac or on Linux with
+`make windows` (see [Other systems](#using-the-decoders)). `nitroview.exe --register` offers it for
+all these types in Explorer (current user, no admin rights) and opens Settings → Default apps, where
+you pick it (Windows lets only the user choose the default); `--unregister` removes it again.
+Opening files while it runs shows them in the running window (`-n`: a new one). Not there yet:
+colour management (images are shown as sRGB); touchpad gestures are untested.
 
 The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
 with the image's aspect ratio as large as fits (no black bars). When zooming in, the window grows with the image up to the screen
@@ -412,7 +424,7 @@ ThreadSanitizer with four threads decoding at once). Tested on Linux (see
 [Three machines](#three-machines-macos-and-linux)).
 
 **Windows:** `make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang` cross-compiles
-`bench/nbench.exe` and `bench/psdverify.exe` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+`nitroview.exe` (the viewer, with its icon), `bench/nbench.exe` and `bench/psdverify.exe` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
 (clang + MinGW-w64; also works in MSYS2's CLANG64): static, only system DLLs, AVX2
 (`WINARCH=x86-64-v2` without). `nbench.exe` runs on Windows Server with the same results;
 wildcards (`*.jpg`) are expanded by the program, directories work as arguments too.
@@ -454,6 +466,7 @@ symlink). The measurements above were made on 50 private photos that are not in 
 - `src/nitrojpeg.c/.h`: self-contained parallel JPEG decoder (own Huffman + AVX2 IDCT);
   with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
 - `src/nitroview.m`: Cocoa + Metal viewer; with `NV_TURBOJPEG` the TurboJPEG fallback
+- `src/nitroview_win.c`: the viewer for Windows (Win32 + Direct3D 11 + WIC); `packaging/nitroview.ico/.rc`: its icon
 - `src/shaders.metal`: the viewer's GPU shaders (colour conversion, drawing), embedded at build time
 - `scripts/get-deps.sh`: downloads and builds the optional dependencies
 - `bench/bench.m`: decoder benchmark (macOS, all decoders), `bench/nbench.c`: portable benchmark of
