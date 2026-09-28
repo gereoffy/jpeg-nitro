@@ -20,7 +20,7 @@ Apple hardveres JPEG-dekódere (lásd lent: „Apple Silicon (M1)”). A dekóde
 C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
 timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal. A HEIC, TIFF,
 WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg. A nézőnek Windowsos változata is van
-(lásd lent: „Windows”).
+(lásd lent: „Windows”), valamint natív GTK4/libadwaita változata GNOME/Linuxra.
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
@@ -242,6 +242,22 @@ Linuxon a dekóderek a `src/nitro_os.h` pthreads-es szálkészletén futnak, és
 dekódol, nagyjából mint az M1; a hyper-threading JPEG-nél ~20%-ot ad (4 magon 4.8×), PNG-nél
 keveset (3.1×).
 
+Intel Core i7-1260P (4 P + 8 E mag / 16 szál, Arch Linux, 64 GB RAM), `bench/nbench`,
+5 dekódolásból a legjobb, másik képkészleten (4 JPEG, 5 PNG): JPEG **5.4 ms** párhuzamosan /
+32.3 ms 1 szálon; PNG **13.4 ms** / 35.4 ms. Egy 12000×12000-es (144 MP) RLE PSD:
+**68.2 ms** / 112.4 ms 1 szálon. A képkészlet eltér a fenti tábláétól, ezért ezek az értékek
+nem hasonlíthatók közvetlenül annak három sorához.
+
+Ugyanezen a gépen, 5 futás legjobb értékével, egy 6000×6000-es JPEG és egy 2000×1970-es PNG:
+
+| dekóder | JPEG | PNG |
+|---|---:|---:|
+| **Nitro** | **14.8 ms** | **12.9 ms** |
+| Glycin 2.1.0 betöltés + frame | 184.5 ms | 37.6 ms |
+
+Ez JPEG-nél **12.5×**, PNG-nél **2.9×**. A Nitro érték a `bench/nbench` dekódolási ideje;
+a Glycin érték a `gly_loader_load()` + `gly_image_next_frame()` idejét tartalmazza.
+
 ### nitrojpeg: hogyan párhuzamosít egyetlen képen belül?
 
 A saját motor (alapértelmezés) a Huffman-folyamot **egyszer** dekódolja, libjpeg-turbo nélkül:
@@ -399,8 +415,9 @@ A dekóderek nem függnek a macOS-től: amit a rendszerből használnak, az a `s
 van — párhuzamos ciklus (macOS-en Grand Central Dispatch, máshol egy kis pthreads-es
 szálkészlet), óra és a processzormagok száma. A ciklusmagok clang-blokkok (`^(size_t i) {…}`),
 ezért **clang kell `-fblocks`-szal** (a GCC nem ismeri a blokkokat); blokk-futásidejű könyvtár
-nem kell hozzá. Linuxon a `make` (= `make linux`) a hordozható eszközöket fordítja le:
-`bench/nbench`, `bench/pngverify`, `bench/psdverify`, az ASan-os robusztussági tesztek, valamint a
+nem kell hozzá. Linuxon a `make` (= `make linux`) a `build/lib/libnitro.so`,
+`build/lib/libnitro.a` könyvtárakat és a hordozható eszközöket fordítja le: `bench/nbench`,
+`bench/pngverify`, `bench/psdverify`, az ASan-os robusztussági tesztek, valamint a
 `scripts/get-deps.sh` után a `bench/verify` és a `bench/robust` (a szkript a libjpeg-turbo 3-at a
 `third_party/`-be fordítja; a TurboJPEG 3 API kell, a régebbi rendszercsomagokban nincs meg). Kézzel
 például:
@@ -416,6 +433,11 @@ A `bench/nbench` (macOS-en `make bench/nbench` is) a hordozható benchmark: mind
 PSD-fájlt beolvas a memóriába, és többször dekódolja (`-r`, alapból 5); a `-j N` a szálak számát
 korlátozza.
 
+A `make gnome` a `build/lib/libnitro.so`-hoz linkelve fordítja le a `nitroview-gnome`-ot
+(GTK4 + libadwaita). A JPEG-, PNG- és PSD/PSB-fájlokat a Nitro dekóderekkel nyitja meg;
+fájl nyitható parancssorból, az asztali környezetből vagy a natív Megnyitás párbeszédablakkal.
+A `make gnome-register` az aktuális felhasználónak telepíti a desktop fájlt és az ikont.
+
 macOS-en a szálkészlet a `-DNITRO_PTHREAD_POOL` kapcsolóval kipróbálható: ott ugyanolyan gyors,
 mint a GCD, és minden ellenőrzésen átmegy (`verify`, `pngverify`, `psdverify`, az ASan-os
 robusztussági tesztek, ThreadSanitizer négy egyszerre dekódoló szállal). Linuxon kipróbálva (lásd:
@@ -430,7 +452,11 @@ is fut; a `*.jpg`-t maga a program bontja ki, és könyvtárnevet is elfogad.
 
 ## Build
 
-Előfeltétel: Xcode Command Line Tools.
+Linuxon a `make linux` a megosztott/statikus dekóderkönyvtárat és a hordozható eszközöket, a
+`make gnome` a GTK4/libadwaita nézőt fordítja; a `make gnome-register` az aktuális felhasználónak
+regisztrálja.
+
+macOS-en előfeltétel: Xcode Command Line Tools.
 
 ```
 make                 # néző; ha megvan a libjpeg-turbo, tartalék dekódernek beépíti
@@ -477,6 +503,8 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
   `NJ_REFERENCE`-szel a libjpeg-turbós összehasonlító részek is
 - `src/nitroview.m`: Cocoa + Metal néző; `NV_TURBOJPEG`-gel TurboJPEG-tartalékkal
 - `src/nitroview_win.c`: a néző Windowsra (Win32 + Direct3D 11 + WIC); `packaging/nitroview.ico/.rc`: az ikonja
+- `src/gnome/`: GTK4/libadwaita néző GNOME/Linuxra; `packaging/gnome/`: asztali integráció
+- `src/libnitro.map`: a Linux megosztott könyvtár exportált API-ja
 - `src/shaders.metal`: a néző GPU-shaderei (színkonverzió, kirajzolás), fordításkor beágyazva
 - `scripts/get-deps.sh`: az opcionális függőségek letöltése és fordítása
 - `bench/bench.m`: dekóder-benchmark (macOS, az összes dekóder), `bench/nbench.c`: hordozható

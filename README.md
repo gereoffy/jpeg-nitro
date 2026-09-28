@@ -19,7 +19,8 @@ Times on an Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacB
 ([Apple Silicon](#apple-silicon-m1)). They are plain C files without dependencies and can be
 used on their own ([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
 back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF and BMP open
-through Apple ImageIO. There is a Windows version of the viewer too (see **Windows** below).
+through Apple ImageIO. There is a Windows version of the viewer too (see **Windows** below), and a
+native GTK4/libadwaita version for GNOME/Linux.
 (The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
@@ -226,6 +227,22 @@ On Linux the decoders run on the pthread pool of `src/nitro_os.h` and are bit-ex
 (`bench/verify`, `bench/pngverify`). A ten-year-old 4-core server decodes a 24 MP photo in
 ~34 ms, like the M1; hyper-threading adds ~20% for JPEG (4.8× on 4 cores), little for PNG (3.1×).
 
+Intel Core i7-1260P (4 P + 8 E cores / 16 threads, Arch Linux, 64 GB RAM), `bench/nbench`,
+best of 5 decodes on a different image set (4 JPEGs, 5 PNGs): JPEG **5.4 ms** parallel /
+32.3 ms on 1 thread; PNG **13.4 ms** / 35.4 ms. A 12000×12000 (144 MP) RLE PSD:
+**68.2 ms** / 112.4 ms on 1 thread. The image set differs from the table above, so these
+numbers are not directly comparable with its three rows.
+
+On the same machine, best of 5 on one 6000×6000 JPEG and one 2000×1970 PNG:
+
+| decoder | JPEG | PNG |
+|---|---:|---:|
+| **Nitro** | **14.8 ms** | **12.9 ms** |
+| Glycin 2.1.0 load + frame | 184.5 ms | 37.6 ms |
+
+That is **12.5×** for JPEG and **2.9×** for PNG. Nitro is `bench/nbench` decode time;
+the Glycin number includes `gly_loader_load()` + `gly_image_next_frame()`.
+
 ### How nitrojpeg parallelises a single image
 
 The Huffman stream is decoded **once**, without libjpeg-turbo:
@@ -409,10 +426,11 @@ own, for any zlib stream of known size. **nitropsd** (`src/nitropsd.c/.h`, needs
 is in `src/nitro_os.h` — a parallel loop (Grand Central Dispatch on macOS, a small pthread
 pool elsewhere), a clock and the CPU count. The loop bodies are clang blocks (`^(size_t i) {…}`),
 so they need **clang with `-fblocks`** (GCC doesn't support blocks); no blocks runtime library is
-needed. On Linux, `make` (= `make linux`) builds the portable tools: `bench/nbench`,
-`bench/pngverify`, `bench/psdverify`, the ASan robustness tests, and `bench/verify` /
-`bench/robust` after `scripts/get-deps.sh` (which builds libjpeg-turbo 3 into `third_party/`;
-the TurboJPEG 3 API is needed, older system packages don't have it). By hand, for example:
+needed. On Linux, `make` (= `make linux`) builds `build/lib/libnitro.so`,
+`build/lib/libnitro.a` and the portable tools: `bench/nbench`, `bench/pngverify`,
+`bench/psdverify`, the ASan robustness tests, and `bench/verify` / `bench/robust` after
+`scripts/get-deps.sh` (which builds libjpeg-turbo 3 into `third_party/`; the TurboJPEG 3 API
+is needed, older system packages don't have it). By hand, for example:
 
 ```
 clang -O3 -march=native -fblocks -c src/nitrojpeg.c src/nitropng.c src/nitropsd.c
@@ -424,6 +442,11 @@ clang -O3 -march=native -fblocks bench/nbench.c src/nitrojpeg.c src/nitropng.c s
 `bench/nbench` (also `make bench/nbench` on macOS) is the portable benchmark: it reads each JPEG,
 PNG or PSD file into memory and decodes it several times (`-r`, default 5), `-j N` limits the
 threads.
+
+`make gnome` builds `nitroview-gnome` against `build/lib/libnitro.so` (GTK4 + libadwaita).
+It opens JPEG, PNG and PSD/PSB through the Nitro decoders; files can be opened from the command
+line, the desktop or the native Open dialog. `make gnome-register` installs the desktop file
+and icon for the current user.
 
 On macOS the pthread pool can be tried with `-DNITRO_PTHREAD_POOL`: there it is as fast as GCD
 and passes all checks (`verify`, `pngverify`, `psdverify`, the ASan robustness tests,
@@ -438,7 +461,10 @@ wildcards (`*.jpg`) are expanded by the program, directories work as arguments t
 
 ## Build
 
-Requirements: Xcode Command Line Tools.
+Linux: `make linux` builds the shared/static decoder library and portable tools; `make gnome`
+builds the GTK4/libadwaita viewer, and `make gnome-register` registers it for the current user.
+
+Requirements on macOS: Xcode Command Line Tools.
 
 ```
 make                 # nitroview; uses libjpeg-turbo as fallback if it is in third_party/
@@ -476,6 +502,8 @@ symlink). The measurements above were made on 50 private photos that are not in 
   with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
 - `src/nitroview.m`: Cocoa + Metal viewer; with `NV_TURBOJPEG` the TurboJPEG fallback
 - `src/nitroview_win.c`: the viewer for Windows (Win32 + Direct3D 11 + WIC); `packaging/nitroview.ico/.rc`: its icon
+- `src/gnome/`: GTK4/libadwaita viewer for GNOME/Linux; `packaging/gnome/`: desktop integration
+- `src/libnitro.map`: exported API of the Linux shared library
 - `src/shaders.metal`: the viewer's GPU shaders (colour conversion, drawing), embedded at build time
 - `scripts/get-deps.sh`: downloads and builds the optional dependencies
 - `bench/bench.m`: decoder benchmark (macOS, all decoders), `bench/nbench.c`: portable benchmark of

@@ -1,0 +1,17 @@
+{
+    global:
+        nj_read_info;
+        nj_decode_planes;
+        nj_set_max_workers;
+        nj_set_bands;
+        nj_set_scalar_idct;
+        nj_set_chunks;
+        np_read_info;
+        np_decode;
+        np_zlib_decompress;
+        np_set_chunks;
+        ps_read_info;
+        ps_decode;
+    local:
+        *;
+};

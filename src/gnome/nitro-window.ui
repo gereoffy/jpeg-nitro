@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.10"/>
+  <requires lib="Adw" version="1.4"/>
+
+  <template class="NitroWindow" parent="AdwApplicationWindow">
+    <property name="title">NitroView</property>
+    <property name="default-width">960</property>
+    <property name="default-height">720</property>
+    <property name="content">
+      <object class="AdwToolbarView" id="toolbar_view">
+        <child type="top">
+          <object class="AdwHeaderBar" id="header_bar">
+            <child type="start">
+              <object class="GtkButton">
+                <property name="icon-name">document-open-symbolic</property>
+                <property name="tooltip-text">Open Images</property>
+                <property name="action-name">app.open</property>
+              </object>
+            </child>
+            <child type="end">
+              <object class="GtkButton">
+                <property name="icon-name">application-exit-symbolic</property>
+                <property name="tooltip-text">Quit</property>
+                <property name="action-name">app.quit</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <property name="content">
+          <object class="GtkStack" id="stack">
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+            <property name="visible-child">status_page</property>
+            <child>
+              <object class="NitroView" id="view">
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+                <property name="focusable">true</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwStatusPage" id="status_page">
+                <property name="icon-name">image-x-generic-symbolic</property>
+                <property name="title">NitroView</property>
+                <property name="description">Open images or pass files and folders on the command line.</property>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </property>
+  </template>
+</interface>
