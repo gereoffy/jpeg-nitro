@@ -25,9 +25,9 @@
 /third_party/
 
 # your own test images
-/samples
-/samples_png
-/samples_psd
+/samples*
+/err/
+*.log
 /KICSI
 /samples_m1
 
