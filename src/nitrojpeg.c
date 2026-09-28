@@ -994,6 +994,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
         // context rows needed by fancy upsampling across band edges (BGRX, v>1)
         const int ctx = (!o->planes && fi->vmax > 1) ? 1 : 0;
         int fail = 0, *const pfail = &fail;
+        int noenc = 0, *const pnoenc = &noenc;   // a band's first DC can't be re-encoded (see below)
         st->mode = 2;
         parallel_for(nbands, ^(size_t b) {
             int o0 = bstart[b], o1 = bstart[b + 1];
@@ -1040,7 +1041,9 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
                     int nd = diff + rows[d0].dc[c];
                     int ns = 0;
                     for (unsigned m = (unsigned)(nd < 0 ? -nd : nd); m; m >>= 1) ns++;
-                    if (ns > 15 || !dt->ehufsi[ns]) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); free(buf); return; }
+                    // optimised Huffman tables only have codes for the sizes the image used:
+                    // this band can't be built (the stream is fine) -> single-threaded decode
+                    if (ns > 15 || !dt->ehufsi[ns]) { __atomic_store_n(pnoenc, 1, __ATOMIC_RELAXED); free(buf); return; }
                     bw_put(&w, dt->ehufco[ns], dt->ehufsi[ns]);
                     if (ns) bw_put(&w, (uint32_t)(nd < 0 ? nd - 1 : nd), ns);
                     bw_copy(&w, clean, dcend, pos);
@@ -1061,6 +1064,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
         st->decode_ms = now_ms() - t2;
         st->bands = nbands;
         if (fail) goto failed;
+        if (noenc) goto single;
         rc = 0;
         goto done;
     }
