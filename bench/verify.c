@@ -57,7 +57,14 @@ int main(int argc, char **argv) {
         nj_set_engine(1);   // reference: libjpeg-turbo, single thread
         int r2 = nj_decode_planes(d, n, &fi, pb, pitch, 1, NULL);
         nj_set_engine(engine);
-        int planes_ok = !r1 && !r2 && !memcmp(A, B, tot);
+        // compare the visible part of each plane: blocks entirely outside the image (partial
+        // last MCU row / column) are left undecoded by libjpeg-turbo, their content is undefined
+        int planes_ok = !r1 && !r2;
+        for (int c = 0; c < fi.ncomp && planes_ok; c++) {
+            int vw = (fi.width * fi.h[c] + fi.hmax - 1) / fi.hmax, vh = (fi.height * fi.v[c] + fi.vmax - 1) / fi.vmax;
+            for (int y = 0; y < vh && planes_ok; y++)
+                if (memcmp(pa[c] + (size_t)y * pitch[c], pb[c] + (size_t)y * pitch[c], (size_t)vw)) planes_ok = 0;
+        }
         // BGRX: parallel vs TurboJPEG
         size_t sz = (size_t)fi.width * fi.height * 4;
         uint8_t *C = malloc(sz), *D = malloc(sz);
