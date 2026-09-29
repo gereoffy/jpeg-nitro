@@ -1,12 +1,20 @@
-<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS" width="800"></p>
+<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS, Windows and Linux" width="800"></p>
 
 # jpeg-nitro
 
 **English** | [Magyar](README.hu.md)
 
-**nitroview** is a very fast image viewer for macOS, built on three decoders of our own that
-decode a *single* image on all CPU cores — although JPEG, PNG and PSD compression are all
-sequential by design:
+**nitroview** is a very fast image viewer for **macOS (Intel and Apple Silicon), Windows and
+GNOME/Linux**:
+
+| platform | viewer | build |
+|---|---|---|
+| macOS 12+, Intel and Apple Silicon | Cocoa + Metal: a universal `nitroview.app` | `make app` / `make dmg` |
+| Windows 10+ | Win32 + Direct3D 11: one self-contained `nitroview.exe` | `make windows` (llvm-mingw) |
+| Linux with GNOME | GTK 4 + libadwaita: `nitroview-gnome`, also as a Flatpak | `make gnome` / `make flatpak` |
+
+All three are built on three decoders of our own that decode a *single* image on all CPU cores —
+although JPEG, PNG and PSD compression are all sequential by design:
 
 | decoder | format | how | time | usual decoders |
 |---|---|---|---|---|
@@ -19,9 +27,8 @@ Times on an Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacB
 ([Apple Silicon](#apple-silicon-m1)). They are plain C files without dependencies and can be
 used on their own ([Using the decoders](#using-the-decoders)). Photo series such as timelapses can be "played
 back" at full resolution in real time, up to 60 images/s. HEIC, TIFF, WebP, GIF and BMP open
-through Apple ImageIO. There is a Windows version of the viewer too (see **Windows** below), and a
-native GTK4/libadwaita version for GNOME/Linux.
-(The name: racing cars boost the turbo with nitro.)
+through Apple ImageIO on macOS, WIC on Windows and GTK's loaders on Linux (see **Windows** and
+**GNOME / Linux** below). (The name: racing cars boost the turbo with nitro.)
 
 Developed and measured on an Intel x86-64 Mac (i9 13th gen, 8 cores / 16 threads, AMD RX 580).
 Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); there the IDCT uses NEON instead of AVX2.
@@ -76,6 +83,18 @@ all these types in Explorer (current user, no admin rights) and opens Settings �
 you pick it (Windows lets only the user choose the default); `--unregister` removes it again.
 Opening files while it runs shows them in the running window (`-n`: a new one). Not there yet:
 colour management (images are shown as sRGB); touchpad gestures are untested.
+
+**GNOME / Linux:** `nitroview-gnome` ([src/gnome/](src/gnome), GTK 4 + libadwaita, contributed by
+Ferenc Czirok) has the same keys, mouse and trackpad gestures, zoom and pan, full screen, slideshow
+(`-s`), one file → its folder, drag & drop and an Open dialog. JPEG / PNG / PSD go through the three
+decoders (as `libnitro.so`); the JPEG colour conversion is multi-threaded and gives exactly
+libjpeg-turbo's RGB (`bench/rgbverify`), PNG rows go to GTK without a copy, and the EXIF
+orientation is applied when drawing. Images are decoded on a background thread with the same
+prefetch as on macOS / Windows (3 ahead, 2 behind). Everything else (progressive JPEG, TIFF, GIF,
+WebP ...) is opened by GTK's own loaders. The window keeps its size while paging (under Wayland an
+application doesn't resize its own window freely). `make gnome` needs GTK 4.10+ and libadwaita 1.4+;
+`make gnome-register` adds it to the desktop for the current user; `make flatpak` builds
+`nitroview-gnome.flatpak` on the GNOME 50 runtime.
 
 The window is sized to the image: at exactly 100% if it is smaller than the screen, otherwise
 with the image's aspect ratio as large as fits (no black bars). When zooming in, the window grows with the image up to the screen

@@ -1,12 +1,20 @@
-<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS" width="800"></p>
+<p align="center"><img src="docs/logo.webp" alt="NitroView – fast image viewer for macOS, Windows and Linux" width="800"></p>
 
 # jpeg-nitro
 
 [English](README.md) | **Magyar**
 
-**nitroview**: nagyon gyors képnéző macOS-re, három saját dekóderrel, amelyek egyetlen
-képet is az összes CPU-magon dekódolnak — pedig a JPEG, a PNG és a PSD tömörítése is
-eredendően soros:
+**nitroview**: nagyon gyors képnéző **macOS-re (Intel és Apple Silicon), Windowsra és GNOME-os
+Linuxra**:
+
+| platform | néző | fordítás |
+|---|---|---|
+| macOS 12-től, Intel és Apple Silicon | Cocoa + Metal: universal `nitroview.app` | `make app` / `make dmg` |
+| Windows 10-től | Win32 + Direct3D 11: egyetlen önálló `nitroview.exe` | `make windows` (llvm-mingw) |
+| Linux, GNOME | GTK 4 + libadwaita: `nitroview-gnome`, Flatpakként is | `make gnome` / `make flatpak` |
+
+Mindhárom ugyanarra a három saját dekóderre épül, amelyek egyetlen képet is az összes CPU-magon
+dekódolnak — pedig a JPEG, a PNG és a PSD tömörítése is eredendően soros:
 
 | dekóder | formátum | hogyan | idő | szokásos dekóderek |
 |---|---|---|---|---|
@@ -19,8 +27,8 @@ Airen egy 24 MP-es JPEG ~30 ms alatt dekódolódik, ~3×-osan gyorsabban, mint u
 Apple hardveres JPEG-dekódere (lásd lent: „Apple Silicon (M1)”). A dekóderek függőség nélküli
 C-fájlok, önállóan is használhatók. A fotósorozatok (pl.
 timelapse) teljes felbontásban, valós időben „lejátszhatók”, akár 60 kép/s-mal. A HEIC, TIFF,
-WebP, GIF és BMP az Apple ImageIO-n keresztül nyílik meg. A nézőnek Windowsos változata is van
-(lásd lent: „Windows”), valamint natív GTK4/libadwaita változata GNOME/Linuxra.
+WebP, GIF és BMP macOS-en az Apple ImageIO-val, Windowson a WIC-kel, Linuxon a GTK betöltőivel nyílik
+meg (lásd lent: „Windows” és „GNOME / Linux”).
 A név utalás: versenyautókban a turbót nitróval gyorsítják tovább.
 
 Intel x86-64 Macen (i9, 13. gen., 8 mag / 16 szál, AMD RX 580) fejlesztve és mérve.
@@ -122,6 +130,18 @@ nélkül), és megnyitja a Beállítások → Alapértelmezett alkalmazások old
 (az alapértelmezést a Windowsban csak a felhasználó választhatja); a `--unregister` visszavonja.
 Ha fut, a megnyitott fájlok a futó ablakban jelennek meg (`-n`: új ablakban). Még nincs benne:
 színkezelés (a képek sRGB-ként jelennek meg); az érintőpados gesztusok nincsenek kipróbálva.
+
+**GNOME / Linux:** a `nitroview-gnome` ([src/gnome/](src/gnome), GTK 4 + libadwaita, Czirok Ferenc
+munkája) ugyanazokat a billentyűket, egér- és érintőpados gesztusokat, nagyítást és mozgatást, teljes
+képernyőt, diavetítést (`-s`), egy fájlból a mappája lapozását, ráhúzást és Megnyitás-ablakot tudja.
+A JPEG / PNG / PSD a három dekóderrel megy (`libnitro.so`-ként); a JPEG színkonverziója többszálú,
+és pontosan a libjpeg-turbo RGB-kimenetét adja (`bench/rgbverify`), a PNG-sorok másolás nélkül kerülnek
+a GTK-hoz, az EXIF-forgatást a rajzolás végzi. A képek háttérszálon dekódolódnak, ugyanazzal az
+előtöltéssel, mint macOS-en és Windowson (3 előre, 2 hátra). Minden mást (progresszív JPEG, TIFF, GIF,
+WebP ...) a GTK saját betöltői nyitnak meg. Lapozáskor az ablak mérete nem változik (Wayland alatt egy
+program nem méretezheti át szabadon a saját ablakát). A `make gnome`-hoz GTK 4.10+ és libadwaita 1.4+
+kell; a `make gnome-register` az aktuális felhasználónak felveszi az asztalra; a `make flatpak` a
+GNOME 50 runtime-ra fordítja a `nitroview-gnome.flatpak`-ot.
 
 Az ablak a képhez igazodik: ha a kép kisebb a képernyőnél, pontosan 100%-on, egyébként a kép
 arányával, akkorára, amekkora kifér (fekete sávok nélkül). Nagyításkor az ablak a képpel együtt nő, a
