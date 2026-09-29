@@ -204,27 +204,27 @@ Az RX 580-hoz nincs hardveres JPEG-dekóder.
 
 ### Apple Silicon (M1)
 
-Ugyanaz a 43 fotó (`samples/*.JPG`, 765 MB), `bench/bench`, ms/kép: egy 2020-as M1-es MacBook Air
-(4 nagy teljesítményű + 4 energiatakarékos mag, ventilátor nélkül) és az i9. A nyers kimenet:
-`bench/results/m1.txt`.
+Egy 2020-as M1-es MacBook Air (4 nagy teljesítményű + 4 energiatakarékos mag, ventilátor nélkül),
+`bench/bench` a fotók közül 43-on (`samples/*.JPG`, 765 MB), ms/kép. A nyers kimenet, az i9-cel is
+ugyanerre a 43 fájlra: `bench/results/m1.txt`.
 
-| dekóder | M1 | i9 |
-|---|---|---|
-| libjpeg-turbo → YUV síkok | 168 | 115 |
-| libjpeg-turbo, BGRX | 185 | 121 |
-| Wuffs | 217 | 161 |
-| stb_image | 384 | 176 |
-| Apple ImageIO → BGRA | 108 | 287 |
-| Apple ImageIO, saját puffer | 89 | 260 |
-| ImageIO thumbnail 3000 px | 67 | 147 |
-| VideoToolbox | 88 | 161 |
-| nitrojpeg, **1 szál** → YUV | 154 | 107 |
-| **nitrojpeg, párhuzamos → YUV** | **30.4** | **10.3** |
+| dekóder | ms/kép |
+|---|---|
+| stb_image | 384 |
+| Wuffs | 217 |
+| libjpeg-turbo, BGRX | 185 |
+| libjpeg-turbo → YUV síkok | 168 |
+| Apple ImageIO → BGRA | 108 |
+| Apple ImageIO, saját puffer | 89 |
+| VideoToolbox | 88 |
+| ImageIO thumbnail 3000 px | 67 |
+| nitrojpeg, **1 szál** → YUV | 154 |
+| **nitrojpeg, párhuzamos → YUV** | **30.4** |
 
 Az M1-en az ImageIO és a VideoToolbox hardveresen dekódolja a JPEG-et: 2.5–3×-osan gyorsabban,
-mint az i9-en a szoftveres út. A nitrojpeg (NEON IDCT, 8 szál) teljes méretben ennél a
-hardvernél is ~3×-osan, a libjpeg-turbónál 5.5×-ösen gyorsabb. Ebben a munkában egy M1-es mag
-~1.45×-ösen lassabb egy i9-es magnál (154 és 107 ms); a szálak jól skálázódnak: 2 szálon 81 ms,
+mint az i9-en a szoftveres út (fenti táblázat). A nitrojpeg (NEON IDCT, 8 szál) teljes méretben
+ennél a hardvernél is ~3×-osan, a libjpeg-turbónál 5.5×-ösen gyorsabb. Ebben a munkában egy M1-es
+mag ~1.5×-ösen lassabb egy i9-es magnál (1 szálon 154 ms, az i9-en ~105 ms); a szálak jól skálázódnak: 2 szálon 81 ms,
 4-en 46 ms, 6-tól 33–36 ms (a négy energiatakarékos mag együtt nagyjából egy nagy magnyit ad).
 A NEON-os IDCT 8 szálon 43-ról 31 ms-ra gyorsított. Ott az alapbeállítás (magonként egy szál, 8)
 a legjobb.

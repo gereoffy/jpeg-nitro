@@ -191,26 +191,27 @@ can't parallelise within one image. The RX 580 has no hardware JPEG decoder.
 
 ### Apple Silicon (M1)
 
-The same 43 photos (`samples/*.JPG`, 765 MB), `bench/bench`, ms/image: a 2020 M1 MacBook Air
-(4 performance + 4 efficiency cores, no fan) and the i9. Raw output: `bench/results/m1.txt`.
+A 2020 M1 MacBook Air (4 performance + 4 efficiency cores, no fan), `bench/bench` on 43 of the
+photos (`samples/*.JPG`, 765 MB), ms/image. Raw output, also with the i9 on the same 43 files:
+`bench/results/m1.txt`.
 
-| decoder | M1 | i9 |
-|---|---|---|
-| libjpeg-turbo → YUV planes | 168 | 115 |
-| libjpeg-turbo, BGRX | 185 | 121 |
-| Wuffs | 217 | 161 |
-| stb_image | 384 | 176 |
-| Apple ImageIO → BGRA | 108 | 287 |
-| Apple ImageIO, native buffer | 89 | 260 |
-| ImageIO thumbnail 3000 px | 67 | 147 |
-| VideoToolbox | 88 | 161 |
-| nitrojpeg, **1 thread** → YUV | 154 | 107 |
-| **nitrojpeg, parallel → YUV** | **30.4** | **10.3** |
+| decoder | ms/image |
+|---|---|
+| stb_image | 384 |
+| Wuffs | 217 |
+| libjpeg-turbo, BGRX | 185 |
+| libjpeg-turbo → YUV planes | 168 |
+| Apple ImageIO → BGRA | 108 |
+| Apple ImageIO, native buffer | 89 |
+| VideoToolbox | 88 |
+| ImageIO thumbnail 3000 px | 67 |
+| nitrojpeg, **1 thread** → YUV | 154 |
+| **nitrojpeg, parallel → YUV** | **30.4** |
 
 On the M1, ImageIO and VideoToolbox decode JPEG in hardware: 2.5–3× faster than the software
-path on the i9. nitrojpeg (NEON IDCT, 8 threads) is still ~3× faster than that hardware at full
-size and 5.5× faster than libjpeg-turbo. One M1 core is ~1.45× slower than an i9 core on this
-work (154 vs 107 ms); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 on 33–36 ms (the four
+path on the i9 (table above). nitrojpeg (NEON IDCT, 8 threads) is still ~3× faster than that
+hardware at full size and 5.5× faster than libjpeg-turbo. One M1 core is ~1.5× slower than an i9
+core on this work (1 thread: 154 ms vs ~105 ms on the i9); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 on 33–36 ms (the four
 efficiency cores add roughly one performance core). The NEON IDCT brought 8 threads from 43 to
 31 ms. The default (one thread per core, 8) is the best setting there.
 
