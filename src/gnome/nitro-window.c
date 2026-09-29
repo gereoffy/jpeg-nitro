@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "nitro-window.h"
 #include "nitro-image.h"
+#include "nitro-loader.h"
 #include "nitro-view.h"
 
 #include <math.h>
@@ -22,7 +23,9 @@ struct _NitroWindow {
     gint index;
     gboolean started;
     gboolean lazy_directory;
-    NitroImage *image;
+    NitroImage *image;             // the image on screen (NULL: loading or failed)
+    NitroLoader *loader;           // decodes in the background, with prefetch
+    gboolean loading;              // the current image is not decoded yet (the old one stays visible)
 
     guint slideshow_source;
     int slideshow_ms;
@@ -158,8 +161,8 @@ static void update_title(NitroWindow *self) {
                                 self->image->source_width, self->image->source_height,
                                 self->image->decode_ms);
     } else {
-        title = g_strdup_printf("%s  (%d/%u)  CANNOT DECODE (unsupported or damaged)",
-                                name, self->index + 1, self->files->len);
+        title = g_strdup_printf("%s  (%d/%u)  %s", name, self->index + 1, self->files->len,
+                                self->loading ? "loading..." : "CANNOT DECODE (unsupported or damaged)");
     }
 
     if (self->slideshow_ms > 0) {
@@ -205,6 +208,7 @@ static void expand_directory(NitroWindow *self) {
         return;
     }
 
+    nitro_loader_set_files(self->loader, list, self->index, found);   // the decoded image stays
     g_ptr_array_unref(self->files);
     self->files = list;
     self->index = found;
@@ -232,20 +236,29 @@ static void schedule_slideshow(NitroWindow *self) {
     self->slideshow_source = g_timeout_add(delay, slideshow_step, self);
 }
 
-static void open_current(NitroWindow *self) {
+// Shows the current image if the loader has it; otherwise the previous one stays on screen
+// (title: loading...) until image_ready() comes.
+static void show_current(NitroWindow *self) {
     if (!self->files || self->files->len == 0) return;
 
-    cancel_slideshow(self);
-    GFile *file = g_ptr_array_index(self->files, self->index);
-    GError *error = NULL;
-    NitroImage *image = nitro_image_load(file, &error);
+    NitroImage *image = nitro_loader_get(self->loader, self->index);
+    char *message = NULL;
+    if (!image && !nitro_loader_failed(self->loader, self->index, &message)) {
+        nitro_image_free(self->image);
+        self->image = NULL;
+        self->loading = TRUE;
+        update_title(self);
+        return;
+    }
 
+    cancel_slideshow(self);
     nitro_image_free(self->image);
     self->image = image;
+    self->loading = FALSE;
 
     if (!image) {
-        set_status(self, "Unable to open image", error ? error->message : "Unknown decode error");
-        g_clear_error(&error);
+        set_status(self, "Unable to open image", message ? message : "Unknown decode error");
+        g_free(message);
         update_title(self);
         self->shown_time = g_get_monotonic_time();
         schedule_slideshow(self);
@@ -259,28 +272,34 @@ static void open_current(NitroWindow *self) {
     schedule_slideshow(self);
 }
 
-static void go_to(NitroWindow *self, gint index) {
+static void image_ready(gpointer user_data, int index) {   // from the loader, main thread
+    NitroWindow *self = NITRO_WINDOW(user_data);
+    if (index == self->index && !self->image) show_current(self);
+}
+
+static void go_to(NitroWindow *self, gint index, gint direction) {
     if (!self->files || self->files->len == 0) return;
     index = CLAMP(index, 0, (gint)self->files->len - 1);
     if (self->started && index == self->index) return;
     self->started = TRUE;
     self->index = index;
-    open_current(self);
+    nitro_loader_focus(self->loader, index, direction);   // decode this one next, then its neighbours
+    show_current(self);
 }
 
 static void page(NitroWindow *self, gint delta) {
     expand_directory(self);
-    go_to(self, self->index + delta);
+    go_to(self, self->index + delta, delta >= 0 ? 1 : -1);
 }
 
 static void page_first(NitroWindow *self) {
     expand_directory(self);
-    go_to(self, 0);
+    go_to(self, 0, 1);
 }
 
 static void page_last(NitroWindow *self) {
     expand_directory(self);
-    if (self->files && self->files->len) go_to(self, (gint)self->files->len - 1);
+    if (self->files && self->files->len) go_to(self, (gint)self->files->len - 1, -1);
 }
 
 static void set_files(NitroWindow *self, GPtrArray *files, gboolean lazy_directory) {
@@ -291,12 +310,13 @@ static void set_files(NitroWindow *self, GPtrArray *files, gboolean lazy_directo
     }
 
     cancel_slideshow(self);
+    nitro_loader_set_files(self->loader, files, -1, 0);
     if (self->files) g_ptr_array_unref(self->files);
     self->files = files;
     self->index = 0;
     self->started = FALSE;
     self->lazy_directory = lazy_directory;
-    go_to(self, 0);
+    go_to(self, 0, 1);
 }
 
 static void toggle_fullscreen(NitroWindow *self) {
@@ -532,6 +552,7 @@ static void open_dialog_done(GObject *source, GAsyncResult *result, gpointer use
 static void nitro_window_dispose(GObject *object) {
     NitroWindow *self = NITRO_WINDOW(object);
     cancel_slideshow(self);
+    g_clear_pointer(&self->loader, nitro_loader_free);   // first: no more image_ready() calls
     nitro_image_free(self->image);
     self->image = NULL;
     g_clear_pointer(&self->files, g_ptr_array_unref);
@@ -558,6 +579,7 @@ static void nitro_window_init(NitroWindow *self) {
     gtk_widget_init_template(GTK_WIDGET(self));
 
     self->index = -1;
+    self->loader = nitro_loader_new(image_ready, self);
     self->pointer_x = 0.0;
     self->pointer_y = 0.0;
     self->pointer_valid = FALSE;

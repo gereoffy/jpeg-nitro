@@ -62,8 +62,9 @@ GNOME_LIBS      = $(shell pkg-config --libs $(GNOME_PKGS) 2>/dev/null)
 GNOME_DIR      := src/gnome
 GNOME_RES      := build/gnome/nitroview-resources.c
 GNOME_SRC      := $(GNOME_DIR)/main.c $(GNOME_DIR)/nitro-window.c $(GNOME_DIR)/nitro-view.c $(GNOME_DIR)/nitro-image.c \
-                  $(GNOME_DIR)/nitro-convert.c $(GNOME_RES)
+                  $(GNOME_DIR)/nitro-convert.c $(GNOME_DIR)/nitro-loader.c $(GNOME_RES)
 GNOME_HDR      := $(GNOME_DIR)/nitro-window.h $(GNOME_DIR)/nitro-view.h $(GNOME_DIR)/nitro-image.h $(GNOME_DIR)/nitro-convert.h \
+                  $(GNOME_DIR)/nitro-loader.h \
                   src/nitro_os.h
 GNOME_BIN      := nitroview-gnome
 GNOME_APP_ID   := com.github.gereoffy.nitroview
