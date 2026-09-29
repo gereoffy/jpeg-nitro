@@ -272,24 +272,50 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     g_free(contents);
 
     DecodedPixels pixels = {0};
-    gboolean ok;
+    GError *nitro_error = NULL;
+    gboolean ok = FALSE;
     if (len >= 3 && data[0] == 0xff && data[1] == 0xd8)
-        ok = decode_jpeg(data, len, &pixels, error);
+        ok = decode_jpeg(data, len, &pixels, &nitro_error);
     else if (len >= 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0)
-        ok = decode_png(data, len, &pixels, error);
+        ok = decode_png(data, len, &pixels, &nitro_error);
     else if (len >= 4 && memcmp(data, "8BPS", 4) == 0)
-        ok = decode_psd(data, len, &pixels, error);
-    else {
-        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                            "Not a supported JPEG, PNG, PSD or PSB image");
-        ok = FALSE;
-    }
-    g_free(data);
-    if (!ok) return NULL;
+        ok = decode_psd(data, len, &pixels, &nitro_error);
 
-    GdkTexture *texture = gdk_memory_texture_new(pixels.width, pixels.height, pixels.format,
-                                                 pixels.bytes, pixels.stride);
-    g_bytes_unref(pixels.bytes);
+    GdkTexture *texture = NULL;
+    if (ok) {
+        texture = gdk_memory_texture_new(pixels.width, pixels.height, pixels.format, pixels.bytes, pixels.stride);
+        g_bytes_unref(pixels.bytes);
+        g_clear_error(&nitro_error);
+        g_free(data);
+    } else {
+        // Fallback: GTK's own loaders (progressive / CMYK JPEG, palette / 16-bit / interlaced
+        // PNG, TIFF, and what the installed gdk-pixbuf loaders read: GIF, BMP, WebP ...).
+        // The EXIF orientation still comes from the file header where we can read it.
+        pixels.orientation = 1;
+        if (len >= 3 && data[0] == 0xff && data[1] == 0xd8) {
+            nj_info ji;
+            if (nj_read_info(data, len, &ji) == 0) pixels.orientation = ji.orientation;
+        } else if (len >= 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) {
+            pixels.orientation = png_orientation(data, len);
+        }
+        GBytes *file_bytes = g_bytes_new_take(data, len);   // (the padding is not part of it)
+        GError *gdk_error = NULL;
+        texture = gdk_texture_new_from_bytes(file_bytes, &gdk_error);
+        g_bytes_unref(file_bytes);
+        if (!texture) {
+            // report why our decoder refused it if it is one of ours, else GTK's reason
+            if (nitro_error) {
+                g_propagate_error(error, nitro_error);
+                g_clear_error(&gdk_error);
+            } else {
+                g_propagate_error(error, gdk_error);
+            }
+            return NULL;
+        }
+        g_clear_error(&nitro_error);
+        pixels.width = gdk_texture_get_width(texture);
+        pixels.height = gdk_texture_get_height(texture);
+    }
 
     int orientation = pixels.orientation >= 1 && pixels.orientation <= 8 ? pixels.orientation : 1;
     int swap = orientation >= 5;   // EXIF 5..8: rotated by 90 degrees

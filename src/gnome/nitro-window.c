@@ -48,12 +48,12 @@ static gboolean supported_extension(const char *name) {
     const char *dot = name ? strrchr(name, '.') : NULL;
     if (!dot || !dot[1]) return FALSE;
     dot++;
-    return g_ascii_strcasecmp(dot, "jpg") == 0 ||
-           g_ascii_strcasecmp(dot, "jpeg") == 0 ||
-           g_ascii_strcasecmp(dot, "jpe") == 0 ||
-           g_ascii_strcasecmp(dot, "png") == 0 ||
-           g_ascii_strcasecmp(dot, "psd") == 0 ||
-           g_ascii_strcasecmp(dot, "psb") == 0;
+    // our decoders (JPEG, PNG, PSD/PSB) and GTK's fallback loaders (see nitro-image.c)
+    static const char *const exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "psd", "psb",
+                                       "tif", "tiff", "gif", "bmp", "webp", NULL};
+    for (int i = 0; exts[i]; i++)
+        if (g_ascii_strcasecmp(dot, exts[i]) == 0) return TRUE;
+    return FALSE;
 }
 
 static gint compare_files(gconstpointer a, gconstpointer b) {

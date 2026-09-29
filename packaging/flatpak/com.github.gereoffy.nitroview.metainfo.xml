@@ -13,6 +13,10 @@
     <mediatype>image/jpeg</mediatype>
     <mediatype>image/png</mediatype>
     <mediatype>image/vnd.adobe.photoshop</mediatype>
+    <mediatype>image/tiff</mediatype>
+    <mediatype>image/gif</mediatype>
+    <mediatype>image/bmp</mediatype>
+    <mediatype>image/webp</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
 </component>
