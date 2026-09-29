@@ -540,6 +540,53 @@ symlink). The measurements above were made on 50 private photos that are not in 
   vs raw, `bench/psdrobust.c`: damaged PSDs (ASan)
 - `bench/results/`: measured results
 
+## Further optimisation ideas (measured)
+
+**Huffman tables are mostly the same.** Cameras and phones use the example tables of the JPEG
+standard (Annex K): all 43 Sony A6300 photos, all 92 iPhone photos and 168 of the 178 Canon 50D
+photos (the other 10 were re-saved in Photoshop, which writes optimised tables); of 2341 JPEGs
+from the web, 1506 (~2/3) too, the rest mostly have their own optimised tables. Caching the
+decoding tables would gain nothing, though: building them takes ~8 µs per image, 0.1–0.4% of the
+decode. The time goes into *using* them.
+
+**Multi-symbol tables** (possible with fixed tables, built once): single-threaded Huffman decoding
+of 27 Sony photos, ms/image, all outputs identical:
+
+| lookup table | table size | ms/image |
+|---|---|---|
+| **one symbol, 11 bits (nitrojpeg)** | 8 KB | **104.7** |
+| one symbol, 12–16 bits | 16–256 KB | 105–141 |
+| up to 3 symbols, 11–16 bits | 32 KB – 1 MB | 110–120 |
+| two value symbols, 11–14 bits, else one | 16–128 KB | 103–105 (±1%) |
+
+A 16-bit multi-symbol table yields 2.3 AC symbols per lookup, but it is not faster: the serial
+chain (the next code starts where the previous one ended) stays, and the bigger table misses the
+L1 cache. AC coefficients are 95.6% of the bits (29.7 non-zero per block in these photos).
+
+**Lookup size in nitrojpeg** (`LOOK`, 8 bytes per entry, 4 tables per image), 43 Sony photos,
+average of two interleaved runs, ms/image:
+
+| `LOOK` | tables | parallel (16 threads) | 1 thread |
+|---|---|---|---|
+| 8 | 8 KB | 11.0 | 110.0 |
+| 9 | 16 KB | 10.6 | 106.5 |
+| 10 | 32 KB | 10.0 | 98.9 |
+| **11** | **64 KB** | **10.0** | **98.3** |
+| 12 | 128 KB | 10.1 | 99.4 |
+| 13 | 256 KB | 10.5 | 101.0 |
+| 14 | 512 KB | 11.2 | 112.4 |
+| 15 | 1 MB | 12.4 | 122.4 |
+| 16 | 2 MB | 14.4 | 140.4 |
+
+11 bits is the optimum (10–12 is flat): with fewer bits more codes (and code + value pairs) miss
+the lookup and take the slow path; with more, the two tables a block uses (DC + AC) no longer
+fit the i9's 48 KB L1 cache. The output is bit-exact at every size.
+
+**Progressive JPEG** (not supported, decoded by libjpeg-turbo / WIC / GTK): in 82 progressive
+files (6 MP on average) the Y AC refinement scans are ~52% of the bytes and the chain of Y scans
+that depend on each other ~80%, so decoding scans / components in parallel would gain only
+~1.2–1.3×.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). The optional dependencies downloaded by `scripts/get-deps.sh`

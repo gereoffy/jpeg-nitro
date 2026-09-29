@@ -541,6 +541,53 @@ A `-march=native` miatt a bináris a fordító gép CPU-jára optimalizált.
   nyershez mérve, `bench/psdrobust.c`: sérült PSD-k (ASan)
 - `bench/results/`: mért eredmények (`results.txt`, `ab_results.txt`, `matrix.txt`, `bands.txt`, `sync.txt`)
 
+## További optimalizálási lehetőségek (mérve)
+
+**A Huffman-táblák többnyire ugyanazok.** A fényképezőgépek és a telefonok a JPEG-szabvány
+mintatábláit (Annex K) használják: mind a 43 Sony A6300-as és mind a 92 iPhone-os fotó, és a 178
+Canon 50D-s fotóból 168 (a másik 10-et Photoshopban mentették újra, az optimalizált táblákat ír);
+a webről származó 2341 JPEG-ből is 1506 (~2/3), a többinek többnyire saját, optimalizált táblája van.
+A dekódolótáblák gyorsítótárazásával mégsem nyernénk semmit: a felépítésük képenként ~8 µs, a
+dekódolás 0.1–0.4%-a. Az idő a táblák *használatában* megy el.
+
+**Többszimbólumos táblák** (fix táblákkal megengedhetők, egyszer kell felépíteni): egyszálas
+Huffman-dekódolás 27 Sony-fotón, ms/kép, minden kimenet azonos:
+
+| keresőtábla | táblaméret | ms/kép |
+|---|---|---|
+| **1 szimbólum, 11 bit (nitrojpeg)** | 8 KB | **104.7** |
+| 1 szimbólum, 12–16 bit | 16–256 KB | 105–141 |
+| legfeljebb 3 szimbólum, 11–16 bit | 32 KB – 1 MB | 110–120 |
+| 2 értékszimbólum, 11–14 bit, egyébként 1 | 16–128 KB | 103–105 (±1%) |
+
+A 16 bites többszimbólumos tábla keresésenként 2.3 AC-szimbólumot ad, mégsem gyorsabb: a soros lánc
+(a következő kód ott kezdődik, ahol az előző véget ért) megmarad, a nagyobb tábla pedig kiesik az L1
+gyorsítótárból. Az AC-együtthatók adják a bitek 95.6%-át (ezekben a fotókban blokkonként 29.7 nem
+nulla).
+
+**A keresőtábla mérete a nitrojpeg-ben** (`LOOK`, bejegyzésenként 8 bájt, képenként 4 tábla), 43
+Sony-fotó, két váltakozó futás átlaga, ms/kép:
+
+| `LOOK` | táblák | párhuzamos (16 szál) | 1 szál |
+|---|---|---|---|
+| 8 | 8 KB | 11.0 | 110.0 |
+| 9 | 16 KB | 10.6 | 106.5 |
+| 10 | 32 KB | 10.0 | 98.9 |
+| **11** | **64 KB** | **10.0** | **98.3** |
+| 12 | 128 KB | 10.1 | 99.4 |
+| 13 | 256 KB | 10.5 | 101.0 |
+| 14 | 512 KB | 11.2 | 112.4 |
+| 15 | 1 MB | 12.4 | 122.4 |
+| 16 | 2 MB | 14.4 | 140.4 |
+
+A 11 bit az optimum (10 és 12 között lapos): kevesebb bittel több kód (és kód + érték pár) nem fér
+a keresésbe, és a lassú útra kerül; többel a blokkonként használt két tábla (DC + AC) nem fér el az
+i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos.
+
+**Progresszív JPEG** (nem támogatott, a libjpeg-turbo / WIC / GTK dekódolja): 82 progresszív fájlban
+(átlagosan 6 MP) a Y AC-finomító menetek a bájtok ~52%-át, az egymásra épülő Y-menetek lánca ~80%-át
+adják, így a menetek / komponensek párhuzamos dekódolása csak ~1.2–1.3×-ot hozna.
+
 ## Licenc
 
 MIT, lásd [LICENSE](LICENSE). A `scripts/get-deps.sh` által letöltött opcionális függőségeknek
