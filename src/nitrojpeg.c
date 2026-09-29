@@ -24,7 +24,12 @@
 #include <setjmp.h>
 #endif
 
-#define LOOK 11                 // Huffman lookahead bits
+#ifndef LOOK
+#define LOOK 11                 // Huffman lookahead bits (-DLOOK=8..16, see README)
+#endif
+#if LOOK < 8 || LOOK > 16
+#error "LOOK must be 8..16"
+#endif
 #define MAX_BLOCKS 10           // blocks per MCU (JPEG limit)
 #define PAD_BYTES 8192          // zero padding after the unstuffed stream
 

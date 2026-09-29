@@ -586,6 +586,22 @@ i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos. Ki
 (Xeon E3-1245 v5, Skylake, 32 KB, Linux) a 10, 11 és 12 bit a mérési zajon belül egyforma (1 szálon
 ~174, ~171, ~173 ms/kép), így marad a 11.
 
+Csapda ezen a Xeonon: néhány, a Huffman-kódot nem érintő módosítás után a párhuzamos dekódolás
+34-ről 40–43 ms-ra lassult, és a 13 bit 18%-kal gyorsabbnak látszott. A kód elrendezése okozta,
+nem a tábla: a Skylake-család processzorai (JCC-hiba miatti mikrokód) kiveszik a dekódolt uop-ok
+gyorsítótárából azt a kódot, ahol egy ugrás átlóg egy 32 bájtos határon vagy ott végződik. A clang
+`-mbranches-within-32B-boundaries` kapcsolójával (x86-on már benne van a Makefile-ban) minden
+változat 34 ms 11 bittel (13 bittel 33, de az i9-en 3%-kal lassabb, ott a kapcsoló nem számít).
+
+A legjobb méret a processzortól függ (L1 gyorsítótár, az ugrások elrendezése), ezért a saját
+gépeden, főleg régebbin, érdemes a 11-es alapérték helyett 8-tól 16-ig végigmérni. A méret
+fordításkor állítható, a kimenet mindegyikkel bitre azonos:
+
+```sh
+for L in 8 9 10 11 12 13 14 15 16; do make -B DEFS=-DLOOK=$L bench/nbench >/dev/null && printf "LOOK=$L " && bench/nbench -q -r 3 samples/*.jpg | tail -1; done
+make -B DEFS=-DLOOK=13       # utána a nyertessel fordíts (a DEFS minden célba bekerül)
+```
+
 **A keresőtábla mérete a nitropng-ben** (literál/hossz-tábla: `LBITS`, távolságtábla: `DBITS`,
 bejegyzésenként 4 bájt, a hosszabb kódok altáblákban), 34 valódi PNG, két váltakozó futás átlaga,
 ms/kép:

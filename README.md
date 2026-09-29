@@ -584,6 +584,22 @@ fit the i9's 48 KB L1 cache. The output is bit-exact at every size. With a small
 (Xeon E3-1245 v5, Skylake, 32 KB, Linux) 10, 11 and 12 bits are equal within the noise (1 thread:
 ~174, ~171, ~173 ms/image), so 11 stays.
 
+A trap on that Xeon: after a few edits that did not touch the Huffman code the parallel decode went from 34 to 40–43 ms,
+and 13 bits looked 18% faster. It was code layout, not the table: Skylake-family CPUs (JCC
+erratum microcode) drop code from the decoded-uop cache when a jump crosses or ends at a 32-byte
+boundary. With clang's `-mbranches-within-32B-boundaries` (now in the Makefile for x86) every
+version measures 34 ms at 11 bits (13 bits: 33, but 3% slower on the i9, where the flag changes
+nothing).
+
+The best size depends on the CPU (L1 cache, branch layout), so on your machine, especially an
+older one, it is worth measuring 8 to 16 instead of the default 11. The size is a compile-time
+option; each build stays bit-exact:
+
+```sh
+for L in 8 9 10 11 12 13 14 15 16; do make -B DEFS=-DLOOK=$L bench/nbench >/dev/null && printf "LOOK=$L " && bench/nbench -q -r 3 samples/*.jpg | tail -1; done
+make -B DEFS=-DLOOK=13       # then build with the winner (DEFS goes into every target)
+```
+
 **Lookup size in nitropng** (literal/length table `LBITS`, distance table `DBITS`, 4 bytes per
 entry, longer codes in sub-tables), 34 real PNGs, average of two interleaved runs, ms/image:
 

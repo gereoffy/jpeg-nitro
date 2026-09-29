@@ -26,11 +26,18 @@ TURBOJPEG  ?= $(if $(wildcard $(LJT)/lib/libturbojpeg.a),1,0)
 CC         := clang
 AR         ?= ar
 ARCH       := $(shell uname -m)
+# Skylake-family Intel CPUs lose their decoded-uop cache for code where a jump crosses or ends
+# at a 32-byte boundary (JCC erratum microcode): the Huffman loops became up to 25% slower
+# after edits elsewhere on a Xeon E3-1245 v5. This keeps branches clear; no effect elsewhere.
+X86JCC     := -mbranches-within-32B-boundaries
 ifeq ($(ARCH),x86_64)
-CPUFLAGS   := -march=native
+CPUFLAGS   := -march=native $(X86JCC)
 else
 CPUFLAGS   := -mcpu=native
 endif
+# extra compiler flags for every build (decoders, viewers, benchmarks), e.g. make -B DEFS=-DLOOK=13
+DEFS       ?=
+CPUFLAGS   += $(DEFS)
 UNAME_S    ?= $(shell uname -s)
 COMMA      := ,
 ifeq ($(UNAME_S),Darwin)
@@ -224,8 +231,8 @@ build/nitroview.icns: packaging/icon.png
 # goes into each slice whose architecture the library has (scripts/get-deps.sh builds both).
 MAC_ARCHS    ?= x86_64 arm64
 MAC_MIN      := -mmacosx-version-min=12.0
-APPCPU_x86_64 := -march=x86-64-v3
-APPCPU_arm64  := -mcpu=apple-m1
+APPCPU_x86_64 := -march=x86-64-v3 $(X86JCC) $(DEFS)
+APPCPU_arm64  := -mcpu=apple-m1 $(DEFS)
 ljt_has = $(filter $(1),$(shell lipo -archs $(LJT)/lib/libturbojpeg.a 2>/dev/null))
 build/app-%/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
 	@mkdir -p $(@D)
@@ -326,7 +333,7 @@ clean:
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
 WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
-WINFLAGS = -O3 -march=$(WINARCH) -fblocks -Wall -Wextra -Wno-unused-parameter -static
+WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks -Wall -Wextra -Wno-unused-parameter -static
 bench/nbench.exe: bench/nbench.c $(DEC_SRC) $(DEC_HDR)
 	$(WINCC) $(WINFLAGS) bench/nbench.c $(DEC_SRC) -lpthread -o $@
 bench/psdverify.exe: bench/psdverify.c src/nitropsd.c src/nitropng.c $(DEC_HDR)
