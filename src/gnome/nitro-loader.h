@@ -26,7 +26,7 @@ void nitro_loader_set_files(NitroLoader *loader, GPtrArray *files, int keep_inde
 // The image shown now and the paging direction (+1 / -1): decides what is decoded next.
 void nitro_loader_focus(NitroLoader *loader, int index, int direction);
 
-// A new NitroImage (own texture reference, free with nitro_image_free) or NULL if not
+// A new NitroImage (own raster/SVG references, free with nitro_image_free) or NULL if not
 // decoded yet. Main thread.
 NitroImage *nitro_loader_get(NitroLoader *loader, int index);
 

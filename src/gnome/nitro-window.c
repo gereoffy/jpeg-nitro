@@ -51,9 +51,9 @@ static gboolean supported_extension(const char *name) {
     const char *dot = name ? strrchr(name, '.') : NULL;
     if (!dot || !dot[1]) return FALSE;
     dot++;
-    // our decoders (JPEG, PNG, PSD/PSB) and GTK's fallback loaders (see nitro-image.c)
+    // our decoders (JPEG, PNG, PSD/PSB), native GtkSvg, and GTK fallback loaders (see nitro-image.c)
     static const char *const exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "psd", "psb",
-                                       "tif", "tiff", "gif", "bmp", "webp", NULL};
+                                       "tif", "tiff", "gif", "bmp", "webp", "svg", NULL};
     for (int i = 0; exts[i]; i++)
         if (g_ascii_strcasecmp(dot, exts[i]) == 0) return TRUE;
     return FALSE;
@@ -265,7 +265,11 @@ static void show_current(NitroWindow *self) {
         return;
     }
 
-    nitro_view_set_texture(self->view, image->texture, image->orientation);
+    nitro_view_set_image(self->view, image->texture, image->svg_bytes, image->orientation);
+    if (image->svg_bytes) {
+        image->source_width = image->width = nitro_view_get_image_width(self->view);
+        image->source_height = image->height = nitro_view_get_image_height(self->view);
+    }
     gtk_stack_set_visible_child(self->stack, GTK_WIDGET(self->view));
     update_title(self);
     self->shown_time = g_get_monotonic_time();
