@@ -224,7 +224,7 @@ ugyanerre a 43 fájlra: `bench/results/m1.txt`.
 Az M1-en az ImageIO és a VideoToolbox hardveresen dekódolja a JPEG-et: 2.5–3×-osan gyorsabban,
 mint az i9-en a szoftveres út (fenti táblázat). A nitrojpeg (NEON IDCT, 8 szál) teljes méretben
 ennél a hardvernél is ~3×-osan, a libjpeg-turbónál 5.5×-ösen gyorsabb. Ebben a munkában egy M1-es
-mag ~1.5×-ösen lassabb egy i9-es magnál (1 szálon 154 ms, az i9-en ~105 ms); a szálak jól skálázódnak: 2 szálon 81 ms,
+mag ~1.5×-ösen lassabb egy i9-es magnál (1 szálon 154 ms, az i9-en 103 ms a fenti táblázatban); a szálak jól skálázódnak: 2 szálon 81 ms,
 4-en 46 ms, 6-tól 33–36 ms (a négy energiatakarékos mag együtt nagyjából egy nagy magnyit ad).
 A NEON-os IDCT 8 szálon 43-ról 31 ms-ra gyorsított. Ott az alapbeállítás (magonként egy szál, 8)
 a legjobb.

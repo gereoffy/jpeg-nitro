@@ -211,7 +211,7 @@ photos (`samples/*.JPG`, 765 MB), ms/image. Raw output, also with the i9 on the 
 On the M1, ImageIO and VideoToolbox decode JPEG in hardware: 2.5–3× faster than the software
 path on the i9 (table above). nitrojpeg (NEON IDCT, 8 threads) is still ~3× faster than that
 hardware at full size and 5.5× faster than libjpeg-turbo. One M1 core is ~1.5× slower than an i9
-core on this work (1 thread: 154 ms vs ~105 ms on the i9); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 on 33–36 ms (the four
+core on this work (1 thread: 154 ms, the i9 103 ms in the table above); the threads scale well: 2 → 81 ms, 4 → 46 ms, from 6 on 33–36 ms (the four
 efficiency cores add roughly one performance core). The NEON IDCT brought 8 threads from 43 to
 31 ms. The default (one thread per core, 8) is the best setting there.
 
