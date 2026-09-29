@@ -252,7 +252,7 @@ static void open_current(NitroWindow *self) {
         return;
     }
 
-    nitro_view_set_texture(self->view, image->texture);
+    nitro_view_set_texture(self->view, image->texture, image->orientation);
     gtk_stack_set_visible_child(self->stack, GTK_WIDGET(self->view));
     update_title(self);
     self->shown_time = g_get_monotonic_time();

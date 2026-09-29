@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: MIT
 #include "nitro-image.h"
+#include "nitro-convert.h"
+
+#include <gtk/gtk.h>   // GTK_CHECK_VERSION
 
 #include "../nitrojpeg.h"
 #include "../nitropng.h"
 #include "../nitropsd.h"
 
-#include <math.h>
 #include <string.h>
 
 #define NITRO_READ_PADDING 64
 
 static int decode_threads;
 
+// Decoded pixels in a format GdkMemoryTexture takes as it is (no RGBA copy); the EXIF
+// orientation is applied when drawing (nitro-view.c), not by moving pixels.
 typedef struct {
-    guint8 *rgba;
+    GBytes *bytes;
+    GdkMemoryFormat format;
+    gsize stride;
     int width;
     int height;
     int orientation;
@@ -84,46 +90,15 @@ static int png_orientation(const guint8 *data, gsize len) {
     return 1;
 }
 
-static gboolean checked_rgba_size(int width, int height, gsize *stride, gsize *size, GError **error) {
-    if (width <= 0 || height <= 0 || (gsize)width > G_MAXSIZE / 4 ||
-        (gsize)height > G_MAXSIZE / ((gsize)width * 4)) {
+static gboolean checked_size(int width, int height, gsize bpp, gsize *stride, gsize *size, GError **error) {
+    if (width <= 0 || height <= 0 || (gsize)width > G_MAXSIZE / bpp ||
+        (gsize)height > G_MAXSIZE / ((gsize)width * bpp)) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid image dimensions");
         return FALSE;
     }
-
-    *stride = (gsize)width * 4;
+    *stride = (gsize)width * bpp;
     *size = *stride * (gsize)height;
     return TRUE;
-}
-
-static guint8 clamp_u8(float value) {
-    if (value <= 0.0f) return 0;
-    if (value >= 255.0f) return 255;
-    return (guint8)(value + 0.5f);
-}
-
-static float sample_plane(const guint8 *plane, gsize pitch, int width, int height, float x, float y) {
-    float fx = x - 0.5f;
-    float fy = y - 0.5f;
-    int x0 = (int)floorf(fx);
-    int y0 = (int)floorf(fy);
-    float wx = fx - (float)x0;
-    float wy = fy - (float)y0;
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
-
-    x0 = CLAMP(x0, 0, width - 1);
-    x1 = CLAMP(x1, 0, width - 1);
-    y0 = CLAMP(y0, 0, height - 1);
-    y1 = CLAMP(y1, 0, height - 1);
-
-    float a = plane[(gsize)y0 * pitch + (gsize)x0];
-    float b = plane[(gsize)y0 * pitch + (gsize)x1];
-    float c = plane[(gsize)y1 * pitch + (gsize)x0];
-    float d = plane[(gsize)y1 * pitch + (gsize)x1];
-    float top = a + (b - a) * wx;
-    float bottom = c + (d - c) * wx;
-    return top + (bottom - top) * wy;
 }
 
 static gboolean decode_jpeg(const guint8 *data, gsize len, DecodedPixels *out, GError **error) {
@@ -135,62 +110,42 @@ static gboolean decode_jpeg(const guint8 *data, gsize len, DecodedPixels *out, G
 
     guint8 *planes[3] = {NULL, NULL, NULL};
     gsize pitch[3] = {0, 0, 0};
+    gboolean ok = FALSE;
 
     for (int c = 0; c < info.ncomp; c++) {
         if (info.plane_w[c] <= 0 || info.plane_h[c] <= 0 ||
             (gsize)info.plane_h[c] > G_MAXSIZE / (gsize)info.plane_w[c]) {
             g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid JPEG plane dimensions");
-            goto fail;
+            goto done;
         }
         pitch[c] = (gsize)info.plane_w[c];
         planes[c] = g_malloc(pitch[c] * (gsize)info.plane_h[c]);
     }
 
+    // nthreads 0: nitrojpeg picks its piece count itself; -j limits the workers
+    // (nj_set_max_workers in nitro_image_set_threads)
     nj_stats stats;
-    if (nj_decode_planes(data, len, &info, planes, pitch, decode_threads, &stats) != 0) {
+    if (nj_decode_planes(data, len, &info, planes, pitch, 0, &stats) != 0) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "JPEG decode failed");
-        goto fail;
+        goto done;
     }
 
     gsize stride, size;
-    if (!checked_rgba_size(info.width, info.height, &stride, &size, error)) goto fail;
-    guint8 *rgba = g_malloc(size);
+    if (!checked_size(info.width, info.height, 3, &stride, &size, error)) goto done;
+    guint8 *rgb = g_malloc(size);
+    nc_jpeg_to_rgb(&info, planes, pitch, rgb, stride);   // multi-threaded, identical to libjpeg-turbo
 
-    for (int y = 0; y < info.height; y++) {
-        guint8 *dst = rgba + (gsize)y * stride;
-        for (int x = 0; x < info.width; x++) {
-            float yy = planes[0][(gsize)y * pitch[0] + (gsize)x];
-            float r = yy, g = yy, b = yy;
-
-            if (info.ncomp == 3) {
-                float cbx = ((float)x + 0.5f) * (float)info.h[1] / (float)info.hmax;
-                float cby = ((float)y + 0.5f) * (float)info.v[1] / (float)info.vmax;
-                float crx = ((float)x + 0.5f) * (float)info.h[2] / (float)info.hmax;
-                float cry = ((float)y + 0.5f) * (float)info.v[2] / (float)info.vmax;
-                float cb = sample_plane(planes[1], pitch[1], info.plane_w[1], info.plane_h[1], cbx, cby) - 128.0f;
-                float cr = sample_plane(planes[2], pitch[2], info.plane_w[2], info.plane_h[2], crx, cry) - 128.0f;
-                r = yy + 1.402f * cr;
-                g = yy - 0.344136f * cb - 0.714136f * cr;
-                b = yy + 1.772f * cb;
-            }
-
-            dst[(gsize)x * 4 + 0] = clamp_u8(r);
-            dst[(gsize)x * 4 + 1] = clamp_u8(g);
-            dst[(gsize)x * 4 + 2] = clamp_u8(b);
-            dst[(gsize)x * 4 + 3] = 255;
-        }
-    }
-
-    for (int c = 0; c < info.ncomp; c++) g_free(planes[c]);
-    out->rgba = rgba;
+    out->bytes = g_bytes_new_take(rgb, size);
+    out->format = GDK_MEMORY_R8G8B8;
+    out->stride = stride;
     out->width = info.width;
     out->height = info.height;
     out->orientation = info.orientation;
-    return TRUE;
+    ok = TRUE;
 
-fail:
+done:
     for (int c = 0; c < 3; c++) g_free(planes[c]);
-    return FALSE;
+    return ok;
 }
 
 static gboolean decode_png(const guint8 *data, gsize len, DecodedPixels *out, GError **error) {
@@ -208,32 +163,45 @@ static gboolean decode_png(const guint8 *data, gsize len, DecodedPixels *out, GE
         return FALSE;
     }
 
-    gsize stride, size;
-    if (!checked_rgba_size(info.width, info.height, &stride, &size, error)) {
-        g_free(raw);
-        return FALSE;
-    }
-    guint8 *rgba = g_malloc(size);
-
-    for (int y = 0; y < info.height; y++) {
-        const guint8 *src = raw + (gsize)y * (info.stride + 1) + 1;
-        guint8 *dst = rgba + (gsize)y * stride;
-        for (int x = 0; x < info.width; x++) {
-            const guint8 *p = src + (gsize)x * (gsize)info.channels;
-            guint8 r, g, b, a = 255;
-            if (info.channels == 4) { r = p[0]; g = p[1]; b = p[2]; a = p[3]; }
-            else if (info.channels == 3) { r = p[0]; g = p[1]; b = p[2]; }
-            else if (info.channels == 2) { r = g = b = p[0]; a = p[1]; }
-            else { r = g = b = p[0]; }
-            dst[(gsize)x * 4 + 0] = r;
-            dst[(gsize)x * 4 + 1] = g;
-            dst[(gsize)x * 4 + 2] = b;
-            dst[(gsize)x * 4 + 3] = a;
+    // The unfiltered rows are already in a texture format: row y at raw + y * (stride + 1) + 1
+    // (after its filter-type byte), so GTK gets them as they are, without a copy.
+    GdkMemoryFormat format;
+    switch (info.channels) {
+    case 4: format = GDK_MEMORY_R8G8B8A8; break;
+    case 3: format = GDK_MEMORY_R8G8B8; break;
+#if GTK_CHECK_VERSION(4, 12, 0)
+    case 2: format = GDK_MEMORY_G8A8; break;
+    default: format = GDK_MEMORY_G8; break;
+#else
+    default: {   // gray (+ alpha) without GTK 4.12's gray formats: expand to RGBA
+        gsize stride, size;
+        if (!checked_size(info.width, info.height, 4, &stride, &size, error)) { g_free(raw); return FALSE; }
+        guint8 *rgba = g_malloc(size);
+        for (int y = 0; y < info.height; y++) {
+            const guint8 *src = raw + (gsize)y * (info.stride + 1) + 1;
+            guint8 *dst = rgba + (gsize)y * stride;
+            for (int x = 0; x < info.width; x++) {
+                guint8 v = src[x * info.channels];
+                dst[4 * x] = dst[4 * x + 1] = dst[4 * x + 2] = v;
+                dst[4 * x + 3] = info.channels == 2 ? src[x * 2 + 1] : 255;
+            }
         }
+        g_free(raw);
+        out->bytes = g_bytes_new_take(rgba, size);
+        out->format = GDK_MEMORY_R8G8B8A8;
+        out->stride = stride;
+        out->width = info.width;
+        out->height = info.height;
+        out->orientation = png_orientation(data, len);
+        return TRUE;
     }
-
-    g_free(raw);
-    out->rgba = rgba;
+#endif
+    }
+    GBytes *all = g_bytes_new_take(raw, info.raw_size);
+    out->bytes = g_bytes_new_from_bytes(all, 1, info.raw_size - 1);   // skips row 0's filter byte
+    g_bytes_unref(all);
+    out->format = format;
+    out->stride = info.stride + 1;
     out->width = info.width;
     out->height = info.height;
     out->orientation = png_orientation(data, len);
@@ -262,78 +230,21 @@ static gboolean decode_psd(const guint8 *data, gsize len, DecodedPixels *out, GE
     }
 
     gsize stride, size;
-    if (!checked_rgba_size(info.width, info.height, &stride, &size, error)) {
+    if (!checked_size(info.width, info.height, 3, &stride, &size, error)) {
         g_free(raw);
         return FALSE;
     }
-    guint8 *rgba = g_malloc(size);
-
-    const guint8 *p0 = raw;
-    const guint8 *p1 = info.ncolor == 3 ? raw + info.plane_size : p0;
-    const guint8 *p2 = info.ncolor == 3 ? raw + info.plane_size * 2 : p0;
-    const guint8 *pa = info.alpha ? raw + info.plane_size * (gsize)info.ncolor : NULL;
-
-    for (gsize i = 0; i < info.plane_size; i++) {
-        int r = p0[i], g = p1[i], b = p2[i];
-        if (pa) {
-            int a = pa[i];
-            r = MAX(r + a - 255, 0);
-            g = MAX(g + a - 255, 0);
-            b = MAX(b + a - 255, 0);
-        }
-        rgba[i * 4 + 0] = (guint8)r;
-        rgba[i * 4 + 1] = (guint8)g;
-        rgba[i * 4 + 2] = (guint8)b;
-        rgba[i * 4 + 3] = 255;
-    }
-
+    guint8 *rgb = g_malloc(size);
+    nc_psd_to_rgb(&info, raw, rgb, stride);   // multi-threaded; transparency over black
     g_free(raw);
-    out->rgba = rgba;
+
+    out->bytes = g_bytes_new_take(rgb, size);
+    out->format = GDK_MEMORY_R8G8B8;
+    out->stride = stride;
     out->width = info.width;
     out->height = info.height;
     out->orientation = 1;
     return TRUE;
-}
-
-static guint8 *apply_orientation(guint8 *src, int width, int height, int orientation,
-                                 int *out_width, int *out_height, GError **error) {
-    if (orientation < 2 || orientation > 8) {
-        *out_width = width;
-        *out_height = height;
-        return src;
-    }
-
-    int dw = orientation >= 5 ? height : width;
-    int dh = orientation >= 5 ? width : height;
-    gsize stride, size;
-    if (!checked_rgba_size(dw, dh, &stride, &size, error)) {
-        g_free(src);
-        return NULL;
-    }
-
-    guint8 *dst = g_malloc(size);
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int dx = x, dy = y;
-            switch (orientation) {
-            case 2: dx = width - 1 - x; dy = y; break;
-            case 3: dx = width - 1 - x; dy = height - 1 - y; break;
-            case 4: dx = x; dy = height - 1 - y; break;
-            case 5: dx = y; dy = x; break;
-            case 6: dx = height - 1 - y; dy = x; break;
-            case 7: dx = height - 1 - y; dy = width - 1 - x; break;
-            case 8: dx = y; dy = width - 1 - x; break;
-            default: break;
-            }
-            memcpy(dst + ((gsize)dy * dw + dx) * 4,
-                   src + ((gsize)y * width + x) * 4, 4);
-        }
-    }
-
-    g_free(src);
-    *out_width = dw;
-    *out_height = dh;
-    return dst;
 }
 
 void nitro_image_set_threads(int threads) {
@@ -376,26 +287,17 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     g_free(data);
     if (!ok) return NULL;
 
-    int display_width, display_height;
-    guint8 *rgba = apply_orientation(pixels.rgba, pixels.width, pixels.height, pixels.orientation,
-                                     &display_width, &display_height, error);
-    if (!rgba) return NULL;
+    GdkTexture *texture = gdk_memory_texture_new(pixels.width, pixels.height, pixels.format,
+                                                 pixels.bytes, pixels.stride);
+    g_bytes_unref(pixels.bytes);
 
-    gsize stride, size;
-    if (!checked_rgba_size(display_width, display_height, &stride, &size, error)) {
-        g_free(rgba);
-        return NULL;
-    }
-
-    GBytes *bytes = g_bytes_new_take(rgba, size);
-    GdkTexture *texture = gdk_memory_texture_new(display_width, display_height,
-                                                 GDK_MEMORY_R8G8B8A8, bytes, stride);
-    g_bytes_unref(bytes);
-
+    int orientation = pixels.orientation >= 1 && pixels.orientation <= 8 ? pixels.orientation : 1;
+    int swap = orientation >= 5;   // EXIF 5..8: rotated by 90 degrees
     NitroImage *image = g_new0(NitroImage, 1);
     image->texture = texture;
-    image->width = display_width;
-    image->height = display_height;
+    image->orientation = orientation;
+    image->width = swap ? pixels.height : pixels.width;
+    image->height = swap ? pixels.width : pixels.height;
     image->source_width = pixels.width;
     image->source_height = pixels.height;
     image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;

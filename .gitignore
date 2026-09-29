@@ -17,6 +17,7 @@
 /bench/psdverify
 /bench/psdrobust
 /bench/nbench
+/bench/rgbverify
 /bench/*.exe
 *.o
 *.dSYM/

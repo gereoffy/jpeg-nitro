@@ -61,8 +61,10 @@ GNOME_CFLAGS    = $(shell pkg-config --cflags $(GNOME_PKGS) 2>/dev/null)
 GNOME_LIBS      = $(shell pkg-config --libs $(GNOME_PKGS) 2>/dev/null)
 GNOME_DIR      := src/gnome
 GNOME_RES      := build/gnome/nitroview-resources.c
-GNOME_SRC      := $(GNOME_DIR)/main.c $(GNOME_DIR)/nitro-window.c $(GNOME_DIR)/nitro-view.c $(GNOME_DIR)/nitro-image.c $(GNOME_RES)
-GNOME_HDR      := $(GNOME_DIR)/nitro-window.h $(GNOME_DIR)/nitro-view.h $(GNOME_DIR)/nitro-image.h
+GNOME_SRC      := $(GNOME_DIR)/main.c $(GNOME_DIR)/nitro-window.c $(GNOME_DIR)/nitro-view.c $(GNOME_DIR)/nitro-image.c \
+                  $(GNOME_DIR)/nitro-convert.c $(GNOME_RES)
+GNOME_HDR      := $(GNOME_DIR)/nitro-window.h $(GNOME_DIR)/nitro-view.h $(GNOME_DIR)/nitro-image.h $(GNOME_DIR)/nitro-convert.h \
+                  src/nitro_os.h
 GNOME_BIN      := nitroview-gnome
 GNOME_APP_ID   := com.github.gereoffy.nitroview
 GNOME_RPATH    ?= $$ORIGIN/build/lib
@@ -143,8 +145,8 @@ $(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) $(LIB_SHARED)
 	@pkg-config --exists $(GNOME_PKGS) || { echo "missing GNOME development packages: gtk4 libadwaita-1"; exit 1; }
 	@pkg-config --atleast-version=4.10 gtk4 || { echo "GNOME frontend requires GTK 4.10 or newer"; exit 1; }
 	@pkg-config --atleast-version=1.4 libadwaita-1 || { echo "GNOME frontend requires libadwaita 1.4 or newer"; exit 1; }
-	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
-	  $(GNOME_SRC) -L$(LIBDIR) -lnitro -Wl,-rpath,'$(GNOME_RPATH)' $(GNOME_LIBS) -lm -o $@
+	$(CC) -std=gnu11 -O2 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
+	  $(GNOME_SRC) -L$(LIBDIR) -lnitro -Wl,-rpath,'$(GNOME_RPATH)' $(GNOME_LIBS) $(THREADLIBS) -lm -o $@
 
 # GNOME viewer: command-line open plus a native Open/Quit application shell.
 gnome: $(GNOME_BIN)
@@ -261,6 +263,11 @@ bench/bench: bench/bench.m build/nitrojpeg_ref.o | deps
 	$(CC) $(REF_CFLAGS) -w -fobjc-arc $^ $(REF_LIBS) -framework Foundation -framework ImageIO \
 	  -framework CoreGraphics -framework VideoToolbox -framework CoreMedia -framework CoreVideo -o $@
 
+# the GNOME viewer's JPEG -> RGB conversion vs libjpeg-turbo (no GTK needed)
+bench/rgbverify: bench/rgbverify.c src/gnome/nitro-convert.c src/gnome/nitro-convert.h build/nitrojpeg.o | ljt
+	$(CC) $(CFLAGS) -I$(LJT)/include bench/rgbverify.c src/gnome/nitro-convert.c build/nitrojpeg.o $(LJT)/lib/libturbojpeg.a \
+	  $(LDQUIET) $(THREADLIBS) -o $@
+
 bench/verify: bench/verify.c build/nitrojpeg_ref.o | ljt
 	$(CC) $(REF_CFLAGS) -w $^ $(REF_LIBS) $(THREADLIBS) -o $@
 
@@ -300,19 +307,19 @@ bench/sustain: bench/sustain.c build/nitrojpeg.o
 	$(CC) -O2 $^ -o $@
 
 tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust \
-       bench/nbench
+       bench/nbench bench/rgbverify
 
 # Linux (or any clang + pthreads system): the tools without macOS APIs; verify and robust
 # only once scripts/get-deps.sh has built libjpeg-turbo
 LINUX_TOOLS := bench/nbench bench/pngverify bench/psdverify bench/pngrobust bench/psdrobust \
-               $(if $(wildcard $(LJT)/lib/libturbojpeg.a),bench/verify bench/robust)
+               $(if $(wildcard $(LJT)/lib/libturbojpeg.a),bench/verify bench/robust bench/rgbverify)
 linux: linux-lib $(LINUX_TOOLS)
 	@echo "built $(LIB_SHARED) $(LIB_STATIC) $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
 
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/*.exe
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.

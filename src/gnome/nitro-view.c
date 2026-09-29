@@ -7,6 +7,7 @@ struct _NitroView {
     GtkWidget parent_instance;
 
     GdkTexture *texture;
+    int orientation;          // EXIF orientation of the texture (1..8), applied when drawing
     gboolean zoomed;
     gboolean fit_screen;
     gboolean fullscreen;
@@ -26,6 +27,14 @@ enum {
 
 static guint signals[N_SIGNALS];
 
+// Image size as displayed: EXIF orientations 5..8 turn the texture by 90 degrees.
+static double image_w(NitroView *self) {
+    return self->orientation >= 5 ? gdk_texture_get_height(self->texture) : gdk_texture_get_width(self->texture);
+}
+static double image_h(NitroView *self) {
+    return self->orientation >= 5 ? gdk_texture_get_width(self->texture) : gdk_texture_get_height(self->texture);
+}
+
 static int view_scale_factor(NitroView *self) {
     int scale = gtk_widget_get_scale_factor(GTK_WIDGET(self));
     return scale > 0 ? scale : 1;
@@ -36,8 +45,8 @@ static double fit_scale(NitroView *self) {
 
     int width = gtk_widget_get_width(GTK_WIDGET(self));
     int height = gtk_widget_get_height(GTK_WIDGET(self));
-    int image_width = gdk_texture_get_width(self->texture);
-    int image_height = gdk_texture_get_height(self->texture);
+    double image_width = image_w(self);
+    double image_height = image_h(self);
     int factor = view_scale_factor(self);
 
     if (width <= 0 || height <= 0 || image_width <= 0 || image_height <= 0) return 1.0;
@@ -56,8 +65,8 @@ static void clamp_center(NitroView *self, double scale) {
     if (!self->texture || scale <= 0.0) return;
 
     int factor = view_scale_factor(self);
-    double image_width = gdk_texture_get_width(self->texture);
-    double image_height = gdk_texture_get_height(self->texture);
+    double image_width = image_w(self);
+    double image_height = image_h(self);
     double visible_width = (double)gtk_widget_get_width(GTK_WIDGET(self)) * factor / scale;
     double visible_height = (double)gtk_widget_get_height(GTK_WIDGET(self)) * factor / scale;
 
@@ -87,8 +96,8 @@ static void nitro_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
 
     int factor = view_scale_factor(self);
     double scale = current_scale(self);
-    double image_width = gdk_texture_get_width(self->texture);
-    double image_height = gdk_texture_get_height(self->texture);
+    double image_width = image_w(self);
+    double image_height = image_h(self);
 
     if (self->zoomed) clamp_center(self, scale);
 
@@ -99,14 +108,34 @@ static void nitro_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     double x = round(width / 2.0 - center_x * scale / factor);
     double y = round(height / 2.0 - center_y * scale / factor);
 
-    graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)x, (float)y,
-                                                 (float)draw_width, (float)draw_height);
     double rounded = round(scale);
     gboolean integer_zoom = scale >= 2.0 && fabs(scale - rounded) < 1e-9;
-    gtk_snapshot_append_scaled_texture(snapshot, self->texture,
-                                       integer_zoom ? GSK_SCALING_FILTER_NEAREST
-                                                    : GSK_SCALING_FILTER_LINEAR,
-                                       &bounds);
+    // integer zoom >= 200%: exact pixel blocks; smaller than 100%: mipmaps (a plain linear
+    // filter would skip most pixels of a big photo and shimmer); otherwise linear
+    GskScalingFilter filter = integer_zoom ? GSK_SCALING_FILTER_NEAREST
+                            : scale < 1.0  ? GSK_SCALING_FILTER_TRILINEAR
+                                           : GSK_SCALING_FILTER_LINEAR;
+    if (self->orientation <= 1) {
+        graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)x, (float)y, (float)draw_width, (float)draw_height);
+        gtk_snapshot_append_scaled_texture(snapshot, self->texture, filter, &bounds);
+        return;
+    }
+    // EXIF orientation: rotate / mirror the texture around the centre of its place on screen
+    //   2 mirror   3 180    4 flip   5 transpose   6 90 cw   7 transverse   8 90 ccw
+    static const float rot[9] = {0, 0, 0, 180, 0, 90, 90, 90, 270};
+    static const float sx[9] = {1, 1, -1, 1, 1, 1, 1, -1, 1};
+    static const float sy[9] = {1, 1, 1, 1, -1, -1, 1, 1, 1};
+    int o = self->orientation;
+    double tex_width = gdk_texture_get_width(self->texture) * scale / factor;
+    double tex_height = gdk_texture_get_height(self->texture) * scale / factor;
+    gtk_snapshot_save(snapshot);
+    gtk_snapshot_translate(snapshot, &GRAPHENE_POINT_INIT((float)(x + draw_width / 2), (float)(y + draw_height / 2)));
+    if (rot[o] != 0) gtk_snapshot_rotate(snapshot, rot[o]);
+    if (sx[o] != 1 || sy[o] != 1) gtk_snapshot_scale(snapshot, sx[o], sy[o]);
+    graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)(-tex_width / 2), (float)(-tex_height / 2),
+                                                 (float)tex_width, (float)tex_height);
+    gtk_snapshot_append_scaled_texture(snapshot, self->texture, filter, &bounds);
+    gtk_snapshot_restore(snapshot);
 }
 
 static void nitro_view_size_allocate(GtkWidget *widget, int width, int height, int baseline) {
@@ -155,17 +184,18 @@ NitroView *nitro_view_new(void) {
     return g_object_new(NITRO_TYPE_VIEW, NULL);
 }
 
-void nitro_view_set_texture(NitroView *self, GdkTexture *texture) {
+void nitro_view_set_texture(NitroView *self, GdkTexture *texture, int orientation) {
     g_return_if_fail(NITRO_IS_VIEW(self));
     g_return_if_fail(texture == NULL || GDK_IS_TEXTURE(texture));
 
     gboolean keep_position = self->zoomed;
     g_set_object(&self->texture, texture);
+    self->orientation = orientation >= 1 && orientation <= 8 ? orientation : 1;
 
     if (self->texture) {
         if (!keep_position) {
-            self->center_x = gdk_texture_get_width(self->texture) / 2.0;
-            self->center_y = gdk_texture_get_height(self->texture) / 2.0;
+            self->center_x = image_w(self) / 2.0;
+            self->center_y = image_h(self) / 2.0;
         } else {
             clamp_center(self, self->scale);
         }
@@ -208,8 +238,8 @@ static void set_scale(NitroView *self, double new_scale, double x, double y) {
 
     int factor = view_scale_factor(self);
     double current = current_scale(self);
-    double image_width = gdk_texture_get_width(self->texture);
-    double image_height = gdk_texture_get_height(self->texture);
+    double image_width = image_w(self);
+    double image_height = image_h(self);
     double center_x = self->zoomed ? self->center_x : image_width / 2.0;
     double center_y = self->zoomed ? self->center_y : image_height / 2.0;
 
@@ -318,10 +348,10 @@ double nitro_view_get_scale(NitroView *self) {
 
 int nitro_view_get_image_width(NitroView *self) {
     g_return_val_if_fail(NITRO_IS_VIEW(self), 0);
-    return self->texture ? gdk_texture_get_width(self->texture) : 0;
+    return self->texture ? (int)image_w(self) : 0;
 }
 
 int nitro_view_get_image_height(NitroView *self) {
     g_return_val_if_fail(NITRO_IS_VIEW(self), 0);
-    return self->texture ? gdk_texture_get_height(self->texture) : 0;
+    return self->texture ? (int)image_h(self) : 0;
 }

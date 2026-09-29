@@ -5,8 +5,9 @@
 #include <gdk/gdk.h>
 
 typedef struct {
-    GdkTexture *texture;
-    int width;
+    GdkTexture *texture;   // the pixels as stored in the file
+    int orientation;       // EXIF orientation (1..8), applied when drawing
+    int width;             // display size (after the orientation)
     int height;
     int source_width;
     int source_height;
