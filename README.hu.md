@@ -582,7 +582,29 @@ Sony-fotó, két váltakozó futás átlaga, ms/kép:
 
 A 11 bit az optimum (10 és 12 között lapos): kevesebb bittel több kód (és kód + érték pár) nem fér
 a keresésbe, és a lassú útra kerül; többel a blokkonként használt két tábla (DC + AC) nem fér el az
-i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos.
+i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos. Kisebb L1-es processzoron
+(32 KB, pl. Skylake) a 10 bit lehet a jobb.
+
+**A keresőtábla mérete a nitropng-ben** (literál/hossz-tábla: `LBITS`, távolságtábla: `DBITS`,
+bejegyzésenként 4 bájt, a hosszabb kódok altáblákban), 34 valódi PNG, két váltakozó futás átlaga,
+ms/kép:
+
+| `LBITS` | `DBITS` | párhuzamos (16 szál) | 1 szál |
+|---|---|---|---|
+| 9 | 8 | 39.0 | 217.5 |
+| 10 | 8 | 38.7 | 215.6 |
+| **11** | **8** | **39.1** | **214.7** |
+| 12 | 8 | 38.9 | 214.2 |
+| 13 | 8 | 40.3 | 217.7 |
+| 11 | 6 | 38.7 | 214.9 |
+| 11 | 7 | 38.8 | 214.4 |
+| 11 | 9 | 38.6 | 215.2 |
+| 11 | 10 | 38.7 | 215.3 |
+
+Mind a mérési zajon belül (±1.5%), csak a 13 bit kicsit lassabb; a kimenet minden méretnél bájtra
+azonos. A JPEG-gel ellentétben itt a méret alig számít: a táblák kicsik (a 11 bites literál-tábla
+8 KB), a gyakori deflate-kódok 11 bitnél rövidebbek, és az idő jó része a visszahivatkozások
+másolására és a sorszűrők visszafejtésére megy el, amelyek nem függnek a tábláktól.
 
 **Progresszív JPEG** (nem támogatott, a libjpeg-turbo / WIC / GTK dekódolja): 82 progresszív fájlban
 (átlagosan 6 MP) a Y AC-finomító menetek a bájtok ~52%-át, az egymásra épülő Y-menetek lánca ~80%-át

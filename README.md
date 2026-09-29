@@ -580,7 +580,28 @@ average of two interleaved runs, ms/image:
 
 11 bits is the optimum (10–12 is flat): with fewer bits more codes (and code + value pairs) miss
 the lookup and take the slow path; with more, the two tables a block uses (DC + AC) no longer
-fit the i9's 48 KB L1 cache. The output is bit-exact at every size.
+fit the i9's 48 KB L1 cache. The output is bit-exact at every size. A CPU with a smaller L1
+cache (32 KB, e.g. Skylake) may prefer 10 bits.
+
+**Lookup size in nitropng** (literal/length table `LBITS`, distance table `DBITS`, 4 bytes per
+entry, longer codes in sub-tables), 34 real PNGs, average of two interleaved runs, ms/image:
+
+| `LBITS` | `DBITS` | parallel (16 threads) | 1 thread |
+|---|---|---|---|
+| 9 | 8 | 39.0 | 217.5 |
+| 10 | 8 | 38.7 | 215.6 |
+| **11** | **8** | **39.1** | **214.7** |
+| 12 | 8 | 38.9 | 214.2 |
+| 13 | 8 | 40.3 | 217.7 |
+| 11 | 6 | 38.7 | 214.9 |
+| 11 | 7 | 38.8 | 214.4 |
+| 11 | 9 | 38.6 | 215.2 |
+| 11 | 10 | 38.7 | 215.3 |
+
+All within the noise (±1.5%), only 13 bits is slightly slower; the output is byte-exact at every
+size. Unlike JPEG, the size hardly matters: the tables are small (the 11-bit literal table is 8 KB),
+the common deflate codes are shorter than 11 bits, and much of the time goes into copying
+back-references and reversing the row filters, which don't depend on the tables.
 
 **Progressive JPEG** (not supported, decoded by libjpeg-turbo / WIC / GTK): in 82 progressive
 files (6 MP on average) the Y AC refinement scans are ~52% of the bytes and the chain of Y scans
