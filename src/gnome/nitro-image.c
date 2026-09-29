@@ -14,6 +14,14 @@
 
 static int decode_threads;
 
+static gboolean is_svg_file(GFile *file) {
+    char *name = g_file_get_basename(file);
+    const char *dot = name ? strrchr(name, '.') : NULL;
+    gboolean svg = dot && g_ascii_strcasecmp(dot, ".svg") == 0;
+    g_free(name);
+    return svg;
+}
+
 // Decoded pixels in a format GdkMemoryTexture takes as it is (no RGBA copy); the EXIF
 // orientation is applied when drawing (nitro-view.c), not by moving pixels.
 typedef struct {
@@ -271,6 +279,14 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     memset(data + len, 0, NITRO_READ_PADDING);
     g_free(contents);
 
+    if (is_svg_file(file)) {
+        NitroImage *image = g_new0(NitroImage, 1);
+        image->svg_bytes = g_bytes_new_take(data, len);
+        image->orientation = 1;
+        image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;
+        return image;
+    }
+
     DecodedPixels pixels = {0};
     GError *nitro_error = NULL;
     gboolean ok = FALSE;
@@ -333,5 +349,6 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
 void nitro_image_free(NitroImage *image) {
     if (!image) return;
     g_clear_object(&image->texture);
+    g_clear_pointer(&image->svg_bytes, g_bytes_unref);
     g_free(image);
 }

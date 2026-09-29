@@ -215,7 +215,8 @@ NitroImage *nitro_loader_get(NitroLoader *l, int index) {
         if (l->cache[i].index == index) {
             copy = g_new(NitroImage, 1);
             *copy = *l->cache[i].image;
-            g_object_ref(copy->texture);
+            if (copy->texture) g_object_ref(copy->texture);
+            if (copy->svg_bytes) g_bytes_ref(copy->svg_bytes);
             break;
         }
     g_mutex_unlock(&l->lock);

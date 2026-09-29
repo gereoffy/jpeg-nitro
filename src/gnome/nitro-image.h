@@ -5,7 +5,8 @@
 #include <gdk/gdk.h>
 
 typedef struct {
-    GdkTexture *texture;   // the pixels as stored in the file
+    GdkTexture *texture;   // raster pixels; NULL for native SVG
+    GBytes *svg_bytes;     // SVG source kept vector for GtkSvg on the main thread
     int orientation;       // EXIF orientation (1..8), applied when drawing
     int width;             // display size (after the orientation)
     int height;

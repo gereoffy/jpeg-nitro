@@ -7,6 +7,9 @@ struct _NitroView {
     GtkWidget parent_instance;
 
     GdkTexture *texture;
+    GtkSvg *svg;
+    double source_width;
+    double source_height;
     int orientation;          // EXIF orientation of the texture (1..8), applied when drawing
     gboolean zoomed;
     gboolean fit_screen;
@@ -27,12 +30,16 @@ enum {
 
 static guint signals[N_SIGNALS];
 
-// Image size as displayed: EXIF orientations 5..8 turn the texture by 90 degrees.
+static gboolean has_image(NitroView *self) {
+    return self->texture != NULL || self->svg != NULL;
+}
+
+// Image size as displayed: EXIF orientations 5..8 turn the raster source by 90 degrees.
 static double image_w(NitroView *self) {
-    return self->orientation >= 5 ? gdk_texture_get_height(self->texture) : gdk_texture_get_width(self->texture);
+    return self->orientation >= 5 ? self->source_height : self->source_width;
 }
 static double image_h(NitroView *self) {
-    return self->orientation >= 5 ? gdk_texture_get_width(self->texture) : gdk_texture_get_height(self->texture);
+    return self->orientation >= 5 ? self->source_width : self->source_height;
 }
 
 static int view_scale_factor(NitroView *self) {
@@ -41,7 +48,7 @@ static int view_scale_factor(NitroView *self) {
 }
 
 static double fit_scale(NitroView *self) {
-    if (!self->texture) return 1.0;
+    if (!has_image(self)) return 1.0;
 
     int width = gtk_widget_get_width(GTK_WIDGET(self));
     int height = gtk_widget_get_height(GTK_WIDGET(self));
@@ -62,7 +69,7 @@ static double current_scale(NitroView *self) {
 }
 
 static void clamp_center(NitroView *self, double scale) {
-    if (!self->texture || scale <= 0.0) return;
+    if (!has_image(self) || scale <= 0.0) return;
 
     int factor = view_scale_factor(self);
     double image_width = image_w(self);
@@ -92,7 +99,7 @@ static void nitro_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     graphene_rect_t background = GRAPHENE_RECT_INIT(0, 0, width, height);
     gtk_snapshot_append_color(snapshot, &black, &background);
 
-    if (!self->texture || width <= 0 || height <= 0) return;
+    if (!has_image(self) || width <= 0 || height <= 0) return;
 
     int factor = view_scale_factor(self);
     double scale = current_scale(self);
@@ -107,6 +114,14 @@ static void nitro_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     double draw_height = image_height * scale / factor;
     double x = round(width / 2.0 - center_x * scale / factor);
     double y = round(height / 2.0 - center_y * scale / factor);
+
+    if (self->svg) {
+        gtk_snapshot_save(snapshot);
+        gtk_snapshot_translate(snapshot, &GRAPHENE_POINT_INIT((float)x, (float)y));
+        gdk_paintable_snapshot(GDK_PAINTABLE(self->svg), GDK_SNAPSHOT(snapshot), draw_width, draw_height);
+        gtk_snapshot_restore(snapshot);
+        return;
+    }
 
     double rounded = round(scale);
     gboolean integer_zoom = scale >= 2.0 && fabs(scale - rounded) < 1e-9;
@@ -144,7 +159,7 @@ static void nitro_view_size_allocate(GtkWidget *widget, int width, int height, i
     (void)height;
     (void)baseline;
 
-    if (!self->texture) return;
+    if (!has_image(self)) return;
     if (self->zoomed) clamp_center(self, self->scale);
     else self->fit_reference = fit_scale(self);
 }
@@ -152,6 +167,7 @@ static void nitro_view_size_allocate(GtkWidget *widget, int width, int height, i
 static void nitro_view_dispose(GObject *object) {
     NitroView *self = NITRO_VIEW(object);
     g_clear_object(&self->texture);
+    g_clear_object(&self->svg);
     G_OBJECT_CLASS(nitro_view_parent_class)->dispose(object);
 }
 
@@ -184,15 +200,33 @@ NitroView *nitro_view_new(void) {
     return g_object_new(NITRO_TYPE_VIEW, NULL);
 }
 
-void nitro_view_set_texture(NitroView *self, GdkTexture *texture, int orientation) {
+void nitro_view_set_image(NitroView *self, GdkTexture *texture, GBytes *svg_bytes, int orientation) {
     g_return_if_fail(NITRO_IS_VIEW(self));
     g_return_if_fail(texture == NULL || GDK_IS_TEXTURE(texture));
+    g_return_if_fail(svg_bytes == NULL || texture == NULL);
 
     gboolean keep_position = self->zoomed;
-    g_set_object(&self->texture, texture);
+    g_clear_object(&self->texture);
+    g_clear_object(&self->svg);
+    self->source_width = 0.0;
+    self->source_height = 0.0;
     self->orientation = orientation >= 1 && orientation <= 8 ? orientation : 1;
 
-    if (self->texture) {
+    if (svg_bytes) {
+        self->svg = gtk_svg_new_from_bytes(svg_bytes);
+        gdk_paintable_compute_concrete_size(GDK_PAINTABLE(self->svg),
+                                            0.0, 0.0, 300.0, 150.0,
+                                            &self->source_width, &self->source_height);
+        self->source_width = MAX(self->source_width, 1.0);
+        self->source_height = MAX(self->source_height, 1.0);
+        self->orientation = 1;
+    } else if (texture) {
+        self->texture = g_object_ref(texture);
+        self->source_width = gdk_texture_get_width(texture);
+        self->source_height = gdk_texture_get_height(texture);
+    }
+
+    if (has_image(self)) {
         if (!keep_position) {
             self->center_x = image_w(self) / 2.0;
             self->center_y = image_h(self) / 2.0;
@@ -208,6 +242,9 @@ void nitro_view_set_texture(NitroView *self, GdkTexture *texture, int orientatio
 void nitro_view_clear(NitroView *self) {
     g_return_if_fail(NITRO_IS_VIEW(self));
     g_clear_object(&self->texture);
+    g_clear_object(&self->svg);
+    self->source_width = 0.0;
+    self->source_height = 0.0;
     gtk_widget_queue_draw(GTK_WIDGET(self));
 }
 
@@ -220,14 +257,14 @@ void nitro_view_fit(NitroView *self, gboolean fit_screen) {
 }
 
 static double fit_snap_scale(NitroView *self) {
-    if (!self->texture) return 1.0;
+    if (!has_image(self)) return 1.0;
     if (self->fullscreen || self->user_sized) return fit_scale(self);
     if (self->fit_reference > 0.0) return self->fit_reference;
     return fit_scale(self);
 }
 
 static void set_scale(NitroView *self, double new_scale, double x, double y) {
-    if (!self->texture || new_scale <= 0.0) return;
+    if (!has_image(self) || new_scale <= 0.0) return;
 
     double fit = fit_snap_scale(self);
     if (fabs(new_scale - fit) < 1e-9 && fabs(new_scale - 1.0) > 1e-9) {
@@ -281,7 +318,7 @@ void nitro_view_zoom_to(NitroView *self, double scale, double x, double y) {
 
 void nitro_view_zoom_by(NitroView *self, double factor, double x, double y, gboolean continuous) {
     g_return_if_fail(NITRO_IS_VIEW(self));
-    if (!self->texture || factor <= 0.0) return;
+    if (!has_image(self) || factor <= 0.0) return;
 
     double fit = fit_snap_scale(self);
     double current = current_scale(self);
@@ -307,14 +344,14 @@ void nitro_view_zoom_by(NitroView *self, double factor, double x, double y, gboo
 
 void nitro_view_toggle_actual_size(NitroView *self, double x, double y) {
     g_return_if_fail(NITRO_IS_VIEW(self));
-    if (!self->texture) return;
+    if (!has_image(self)) return;
     if (self->zoomed) nitro_view_fit(self, self->fit_screen);
     else set_scale(self, 1.0, x, y);
 }
 
 void nitro_view_pan_pixels(NitroView *self, double dx, double dy) {
     g_return_if_fail(NITRO_IS_VIEW(self));
-    if (!self->texture || !self->zoomed) return;
+    if (!has_image(self) || !self->zoomed) return;
 
     int factor = view_scale_factor(self);
     clamp_center(self, self->scale);
@@ -348,10 +385,10 @@ double nitro_view_get_scale(NitroView *self) {
 
 int nitro_view_get_image_width(NitroView *self) {
     g_return_val_if_fail(NITRO_IS_VIEW(self), 0);
-    return self->texture ? (int)image_w(self) : 0;
+    return has_image(self) ? (int)round(image_w(self)) : 0;
 }
 
 int nitro_view_get_image_height(NitroView *self) {
     g_return_val_if_fail(NITRO_IS_VIEW(self), 0);
-    return self->texture ? (int)image_h(self) : 0;
+    return has_image(self) ? (int)round(image_h(self)) : 0;
 }
