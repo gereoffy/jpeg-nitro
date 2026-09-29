@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.gereoffy.nitroview</id>
+  <name>NitroView</name>
+  <summary>Fast image viewer</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">com.github.gereoffy.nitroview.desktop</launchable>
+  <description>
+    <p>NitroView is a fast image viewer with parallel JPEG, PNG and PSD/PSB decoders.</p>
+  </description>
+  <provides>
+    <mediatype>image/jpeg</mediatype>
+    <mediatype>image/png</mediatype>
+    <mediatype>image/vnd.adobe.photoshop</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

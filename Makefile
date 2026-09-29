@@ -11,7 +11,10 @@
 #                        signed with a Developer ID and notarized by Apple: opens without a
 #                        Gatekeeper warning (once: xcrun notarytool store-credentials name ...)
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
-#   make linux           Linux (also the default there): the portable tools - nbench,
+#   make linux-lib       Linux shared + static decoder library: build/lib/libnitro.so/.a
+#   make gnome           GNOME/libadwaita viewer: nitroview-gnome (uses libnitro.so)
+#   make flatpak         GNOME 50 Flatpak bundle: nitroview-gnome.flatpak
+#   make linux           Linux (also the default there): library + portable tools - nbench,
 #                        pngverify, psdverify, the ASan robustness tests, and verify / robust
 #                        once scripts/get-deps.sh has built libjpeg-turbo. Needs clang.
 #   make windows         cross-compile nitroview.exe (the viewer), bench/nbench.exe and
@@ -21,6 +24,7 @@
 LJT        := third_party/ljt
 TURBOJPEG  ?= $(if $(wildcard $(LJT)/lib/libturbojpeg.a),1,0)
 CC         := clang
+AR         ?= ar
 ARCH       := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
 CPUFLAGS   := -march=native
@@ -41,6 +45,34 @@ ASAN       := -O1 -g $(PORTFLAGS) -fsanitize=address,undefined -fno-omit-frame-p
 FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore -framework UniformTypeIdentifiers
 DEC_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c
 DEC_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitro_os.h
+
+# Linux library: the three production decoders in one native C library.
+# Keep dedicated PIC objects so the existing benchmark/test objects stay unchanged.
+LIBDIR     := build/lib
+LIB_OBJS   := $(LIBDIR)/nitrojpeg.o $(LIBDIR)/nitropng.o $(LIBDIR)/nitropsd.o
+LIB_SHARED := $(LIBDIR)/libnitro.so
+LIB_STATIC := $(LIBDIR)/libnitro.a
+LIB_CFLAGS := $(CFLAGS) -fPIC
+
+# GNOME frontend: GtkBuilder template + libadwaita, linked against the Linux shared library.
+GNOME_PKGS     := gtk4 libadwaita-1
+GNOME_CFLAGS   := $(shell pkg-config --cflags $(GNOME_PKGS) 2>/dev/null)
+GNOME_LIBS     := $(shell pkg-config --libs $(GNOME_PKGS) 2>/dev/null)
+GNOME_DIR      := src/gnome
+GNOME_RES      := build/gnome/nitroview-resources.c
+GNOME_SRC      := $(GNOME_DIR)/main.c $(GNOME_DIR)/nitro-window.c $(GNOME_DIR)/nitro-view.c $(GNOME_DIR)/nitro-image.c $(GNOME_RES)
+GNOME_HDR      := $(GNOME_DIR)/nitro-window.h $(GNOME_DIR)/nitro-view.h $(GNOME_DIR)/nitro-image.h
+GNOME_BIN      := nitroview-gnome
+GNOME_APP_ID   := com.github.gereoffy.nitroview
+GNOME_RPATH    ?= $$ORIGIN/build/lib
+GNOME_DESKTOP  := build/gnome/$(GNOME_APP_ID).desktop
+GNOME_DESKTOP_SOURCE := packaging/gnome/$(GNOME_APP_ID).desktop
+GNOME_USER_DATA := $(HOME)/.local/share
+
+FLATPAK_MANIFEST := packaging/flatpak/$(GNOME_APP_ID).json
+FLATPAK_BUILD    := build/flatpak
+FLATPAK_REPO     := build/flatpak-repo
+FLATPAK_BUNDLE   := nitroview-gnome.flatpak
 
 WUFFS      ?= $(if $(wildcard third_party/wuffs.c),1,0)
 
@@ -80,6 +112,75 @@ build/nitropsd.o: src/nitropsd.c src/nitropsd.h src/nitropng.h src/nitro_os.h
 build/nitropng.o: src/nitropng.c src/nitropng.h src/nitro_os.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(LIBDIR)/nitrojpeg.o: src/nitrojpeg.c src/nitrojpeg.h src/nitro_os.h
+	@mkdir -p $(LIBDIR)
+	$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+$(LIBDIR)/nitropng.o: src/nitropng.c src/nitropng.h src/nitro_os.h
+	@mkdir -p $(LIBDIR)
+	$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+$(LIBDIR)/nitropsd.o: src/nitropsd.c src/nitropsd.h src/nitropng.h src/nitro_os.h
+	@mkdir -p $(LIBDIR)
+	$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+$(LIB_SHARED): $(LIB_OBJS) src/libnitro.map
+	$(CC) -shared -Wl,-soname,libnitro.so -Wl,--version-script=src/libnitro.map -o $@ $(LIB_OBJS) $(THREADLIBS)
+
+$(LIB_STATIC): $(LIB_OBJS)
+	$(AR) rcs $@ $^
+
+linux-lib: $(LIB_SHARED) $(LIB_STATIC)
+	@echo "built $(LIB_SHARED) $(LIB_STATIC)"
+
+$(GNOME_RES): $(GNOME_DIR)/nitroview.gresource.xml $(GNOME_DIR)/nitro-window.ui packaging/icon.png
+	@mkdir -p $(@D)
+	glib-compile-resources $< --sourcedir=$(GNOME_DIR) --sourcedir=. --target=$@ --generate-source
+
+$(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) $(LIB_SHARED)
+	@pkg-config --exists $(GNOME_PKGS) || { echo "missing GNOME development packages: gtk4 libadwaita-1"; exit 1; }
+	@pkg-config --atleast-version=4.10 gtk4 || { echo "GNOME frontend requires GTK 4.10 or newer"; exit 1; }
+	@pkg-config --atleast-version=1.4 libadwaita-1 || { echo "GNOME frontend requires libadwaita 1.4 or newer"; exit 1; }
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
+	  $(GNOME_SRC) -L$(LIBDIR) -lnitro -Wl,-rpath,'$(GNOME_RPATH)' $(GNOME_LIBS) -lm -o $@
+
+# GNOME viewer: command-line open plus a native Open/Quit application shell.
+gnome: $(GNOME_BIN)
+	@echo "built $(GNOME_BIN)"
+
+# Development desktop registration for GNOME Shell. The generated desktop entry uses
+# the absolute path of this source-tree binary so it also works without installing it.
+$(GNOME_DESKTOP): $(GNOME_DESKTOP_SOURCE) $(GNOME_BIN)
+	@mkdir -p $(@D)
+	sed 's|^Exec=.*|Exec=$(abspath $(GNOME_BIN)) %F|' $< > $@
+
+# Register the development build for the current user so GNOME Shell can resolve the
+# Wayland application id to the matching desktop entry and application icon.
+gnome-register: $(GNOME_DESKTOP) packaging/icon.png
+	install -Dm644 $(GNOME_DESKTOP) $(GNOME_USER_DATA)/applications/$(GNOME_APP_ID).desktop
+	install -Dm644 packaging/icon.png $(GNOME_USER_DATA)/icons/hicolor/512x512/apps/$(GNOME_APP_ID).png
+	@command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database $(GNOME_USER_DATA)/applications || true
+	@command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t $(GNOME_USER_DATA)/icons/hicolor >/dev/null 2>&1 || true
+	@echo "registered $(GNOME_APP_ID) for the current user"
+
+# Self-contained Flatpak bundle built against the GNOME 50 runtime.
+flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GNOME_DESKTOP_SOURCE) packaging/icon.png
+	@command -v flatpak >/dev/null 2>&1 || { echo "missing flatpak"; exit 1; }
+	@command -v flatpak-builder >/dev/null 2>&1 || { echo "missing flatpak-builder"; exit 1; }
+	rm -rf $(FLATPAK_BUILD) $(FLATPAK_REPO) $(FLATPAK_BUNDLE)
+	@if flatpak remote-list --user --columns=name | grep -qx flathub; then \
+		scope=--user; \
+	elif flatpak remote-list --system --columns=name | grep -qx flathub; then \
+		scope=--system; \
+	else \
+		echo "missing Flathub remote; add it with:"; \
+		echo "  flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo"; \
+		exit 1; \
+	fi; \
+	flatpak-builder $$scope --install-deps-from=flathub --force-clean --repo=$(FLATPAK_REPO) $(FLATPAK_BUILD) $(FLATPAK_MANIFEST)
+	flatpak build-bundle $(FLATPAK_REPO) $(FLATPAK_BUNDLE) $(GNOME_APP_ID) stable
+	@echo "built $(FLATPAK_BUNDLE)"
 
 # optional Wuffs PNG decoder (third_party/wuffs.c, Apache-2.0), compiled once
 build/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
@@ -204,12 +305,14 @@ tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench
 # only once scripts/get-deps.sh has built libjpeg-turbo
 LINUX_TOOLS := bench/nbench bench/pngverify bench/psdverify bench/pngrobust bench/psdrobust \
                $(if $(wildcard $(LJT)/lib/libturbojpeg.a),bench/verify bench/robust)
-linux: $(LINUX_TOOLS)
-	@echo "built $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
+linux: linux-lib $(LINUX_TOOLS)
+	@echo "built $(LIB_SHARED) $(LIB_STATIC) $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
 
 clean:
-	rm -rf build nitroview nitroview.app nitroview.exe nitroview.zip nitroview.dmg bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
+	rm -rf build nitroview nitroview-gnome nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
+	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/nbench-lib \
+	  bench/glycinbench bench/glycinbench.c bench/*.exe
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
@@ -256,4 +359,4 @@ notarize:
 	xcrun stapler staple nitroview.dmg
 	@echo "nitroview.dmg is notarized"
 
-.PHONY: all app zip dmg notarize tools linux windows clean deps ljt
+.PHONY: all app zip dmg notarize tools linux linux-lib gnome gnome-register flatpak windows clean deps ljt

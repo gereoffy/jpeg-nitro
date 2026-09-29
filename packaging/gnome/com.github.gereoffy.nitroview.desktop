@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NitroView
+Comment=Fast image viewer
+Exec=nitroview-gnome %F
+Icon=com.github.gereoffy.nitroview
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/vnd.adobe.photoshop;
+StartupNotify=true

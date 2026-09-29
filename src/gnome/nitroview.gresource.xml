@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/github/gereoffy/nitroview">
+    <file preprocess="xml-stripblanks">nitro-window.ui</file>
+    <file alias="icons/512x512/apps/com.github.gereoffy.nitroview.png">packaging/icon.png</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,59 @@
+{
+  "id": "com.github.gereoffy.nitroview",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.llvm21"
+  ],
+  "default-branch": "stable",
+  "command": "nitroview-gnome",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--filesystem=host:ro",
+    "--talk-name=org.gtk.vfs.*",
+    "--filesystem=xdg-run/gvfs:ro",
+    "--filesystem=xdg-run/gvfsd"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/llvm21/bin"
+  },
+  "modules": [
+    {
+      "name": "nitroview",
+      "buildsystem": "simple",
+      "build-commands": [
+        "make clean",
+        "case \"$FLATPAK_ARCH\" in x86_64) cpu='-march=x86-64-v3' ;; aarch64) cpu='-mcpu=generic' ;; *) cpu='' ;; esac; make CPUFLAGS=\"$cpu\" GNOME_RPATH='$$ORIGIN/../lib' linux-lib gnome",
+        "install -Dm755 nitroview-gnome /app/bin/nitroview-gnome",
+        "install -Dm755 build/lib/libnitro.so /app/lib/libnitro.so",
+        "install -Dm644 packaging/gnome/com.github.gereoffy.nitroview.desktop /app/share/applications/com.github.gereoffy.nitroview.desktop",
+        "install -Dm644 packaging/icon.png /app/share/icons/hicolor/512x512/apps/com.github.gereoffy.nitroview.png",
+        "install -Dm644 packaging/flatpak/com.github.gereoffy.nitroview.metainfo.xml /app/share/metainfo/com.github.gereoffy.nitroview.metainfo.xml",
+        "install -Dm644 LICENSE /app/share/licenses/com.github.gereoffy.nitroview/LICENSE"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [
+            ".git",
+            "build",
+            "third_party",
+            "nitroview",
+            "nitroview-gnome",
+            "nitroview.app",
+            "nitroview.exe",
+            "nitroview.zip",
+            "nitroview.dmg",
+            "nitroview-gnome.flatpak",
+            "*.dSYM"
+          ]
+        }
+      ]
+    }
+  ]
+}
