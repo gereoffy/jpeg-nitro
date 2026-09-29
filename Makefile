@@ -56,8 +56,9 @@ LIB_CFLAGS := $(CFLAGS) -fPIC
 
 # GNOME frontend: GtkBuilder template + libadwaita, linked against the Linux shared library.
 GNOME_PKGS     := gtk4 libadwaita-1
-GNOME_CFLAGS   := $(shell pkg-config --cflags $(GNOME_PKGS) 2>/dev/null)
-GNOME_LIBS     := $(shell pkg-config --libs $(GNOME_PKGS) 2>/dev/null)
+# (= not :=: pkg-config runs only when the GNOME viewer is built, not on every make)
+GNOME_CFLAGS    = $(shell pkg-config --cflags $(GNOME_PKGS) 2>/dev/null)
+GNOME_LIBS      = $(shell pkg-config --libs $(GNOME_PKGS) 2>/dev/null)
 GNOME_DIR      := src/gnome
 GNOME_RES      := build/gnome/nitroview-resources.c
 GNOME_SRC      := $(GNOME_DIR)/main.c $(GNOME_DIR)/nitro-window.c $(GNOME_DIR)/nitro-view.c $(GNOME_DIR)/nitro-image.c $(GNOME_RES)
@@ -311,8 +312,7 @@ linux: linux-lib $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/nbench-lib \
-	  bench/glycinbench bench/glycinbench.c bench/*.exe
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/*.exe
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.

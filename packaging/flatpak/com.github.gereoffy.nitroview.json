@@ -37,21 +37,8 @@
       ],
       "sources": [
         {
-          "type": "dir",
-          "path": "../..",
-          "skip": [
-            ".git",
-            "build",
-            "third_party",
-            "nitroview",
-            "nitroview-gnome",
-            "nitroview.app",
-            "nitroview.exe",
-            "nitroview.zip",
-            "nitroview.dmg",
-            "nitroview-gnome.flatpak",
-            "*.dSYM"
-          ]
+          "type": "git",
+          "path": "../.."
         }
       ]
     }
