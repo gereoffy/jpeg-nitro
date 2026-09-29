@@ -582,8 +582,9 @@ Sony-fotó, két váltakozó futás átlaga, ms/kép:
 
 A 11 bit az optimum (10 és 12 között lapos): kevesebb bittel több kód (és kód + érték pár) nem fér
 a keresésbe, és a lassú útra kerül; többel a blokkonként használt két tábla (DC + AC) nem fér el az
-i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos. Kisebb L1-es processzoron
-(32 KB, pl. Skylake) a 10 bit lehet a jobb.
+i9 48 KB-os L1 gyorsítótárában. A kimenet minden méretnél bitre azonos. Kisebb L1 gyorsítótárral
+(Xeon E3-1245 v5, Skylake, 32 KB, Linux) a 10, 11 és 12 bit a mérési zajon belül egyforma (1 szálon
+~174, ~171, ~173 ms/kép), így marad a 11.
 
 **A keresőtábla mérete a nitropng-ben** (literál/hossz-tábla: `LBITS`, távolságtábla: `DBITS`,
 bejegyzésenként 4 bájt, a hosszabb kódok altáblákban), 34 valódi PNG, két váltakozó futás átlaga,

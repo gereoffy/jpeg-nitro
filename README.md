@@ -580,8 +580,9 @@ average of two interleaved runs, ms/image:
 
 11 bits is the optimum (10–12 is flat): with fewer bits more codes (and code + value pairs) miss
 the lookup and take the slow path; with more, the two tables a block uses (DC + AC) no longer
-fit the i9's 48 KB L1 cache. The output is bit-exact at every size. A CPU with a smaller L1
-cache (32 KB, e.g. Skylake) may prefer 10 bits.
+fit the i9's 48 KB L1 cache. The output is bit-exact at every size. With a smaller L1 cache
+(Xeon E3-1245 v5, Skylake, 32 KB, Linux) 10, 11 and 12 bits are equal within the noise (1 thread:
+~174, ~171, ~173 ms/image), so 11 stays.
 
 **Lookup size in nitropng** (literal/length table `LBITS`, distance table `DBITS`, 4 bytes per
 entry, longer codes in sub-tables), 34 real PNGs, average of two interleaved runs, ms/image:
