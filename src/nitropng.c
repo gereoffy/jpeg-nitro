@@ -199,8 +199,10 @@ static void init_fixed(void) {
     for (int i = 256; i < 280; i++) l[i] = 7;
     for (int i = 280; i < 288; i++) l[i] = 8;
     build_table(l, 288, g_fixed.lt, LBITS, 0);
-    for (int i = 0; i < 30; i++) l[i] = 5;
-    build_table(l, 30, g_fixed.dt, DBITS, 1);
+    // 32 codes of 5 bits (a complete code; 30 and 31 are invalid symbols): with only 30 the
+    // code is incomplete, build_table refused it and every fixed block with a match failed
+    for (int i = 0; i < 32; i++) l[i] = 5;
+    build_table(l, 32, g_fixed.dt, DBITS, 1);
     __sync_synchronize();
     g_fixed_ready = 1;
 }
