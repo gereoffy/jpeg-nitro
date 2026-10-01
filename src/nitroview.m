@@ -267,11 +267,38 @@ static id srgb_space(void) {
     return cs;
 }
 
+// A JPEG's header segments up to and including SOS, without Extended XMP (some phones
+// store megabytes in it: ImageIO parses it all, ~50 ms) and without the image data.
+// nil if it is not a JPEG (or the headers are damaged): then ImageIO gets the whole file.
+static NSData *jpeg_header_only(NSData *data) {
+    static const char xmpext[] = "http://ns.adobe.com/xmp/extension/";
+    const uint8_t *b = data.bytes;
+    size_t n = data.length, p = 2;
+    if (n < 4 || b[0] != 0xFF || b[1] != 0xD8) return nil;
+    NSMutableData *out = [NSMutableData dataWithBytes:b length:2];
+    while (p + 4 <= n && b[p] == 0xFF) {
+        unsigned m = b[p + 1];
+        if (m == 0xFF) { p++; continue; }   // fill byte
+        size_t sl = 2 + ((size_t)b[p + 2] << 8 | b[p + 3]);
+        if (sl < 4 || p + sl > n) return nil;
+        int skip = m == 0xE1 && sl >= 4 + sizeof xmpext && !memcmp(b + p + 4, xmpext, sizeof xmpext);
+        if (!skip) [out appendBytes:b + p length:sl];
+        p += sl;
+        if (m == 0xDA) {
+            [out appendBytes:"\xFF\xD9" length:2];
+            return out;
+        }
+    }
+    return nil;
+}
+
 // The RGB colour space the file's pixel values are in: its embedded ICC profile
 // (Display P3, Adobe RGB, a screen profile ...), or sRGB when it has none.
 // Only the header is parsed: the CGImage is created lazily and never drawn.
 static id image_colorspace(NSData *data) {
     id result = nil;
+    NSData *hdr = jpeg_header_only(data);
+    if (hdr) data = hdr;
     CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
     CGImageRef img = src ? CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)@{
                                (id)kCGImageSourceShouldCache: @NO}) : NULL;
