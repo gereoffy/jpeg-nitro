@@ -245,6 +245,7 @@ typedef struct {
     uint8_t *buf;                      // the decoded data (host memory, pool buffer) until converted
     size_t cap;
     GLuint tex;                        // converted RGBA + mips (main thread)
+    int noconv;                        // the conversion failed: not tried again
     double read_ms, decode_ms, upload_ms, conv_ms;
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
@@ -1006,7 +1007,7 @@ static Decoded *decode_file(const char *path, char **error) {
 // ---------------------------------------------------------------------------
 // events from other threads
 
-enum { EV_DECODED, EV_DNG, EV_DETAIL, EV_PAGE, EV_SLIDE, EV_DETAIL_TIMER, EV_OPEN, EV_COUNT };
+enum { EV_DECODED, EV_DNG, EV_DETAIL, EV_PAGE, EV_SLIDE, EV_DETAIL_TIMER, EV_OPEN, EV_CONVERT, EV_COUNT };
 static Uint32 g_ev_base;
 
 static void post(int ev, int code, void *data) {
@@ -1109,6 +1110,7 @@ typedef struct {
     int vw, vh;                   // drawable size (device pixels)
     char **files;                 // (owned by the loader; same list)
     int nfiles, index, started, lazy_dir;
+    int dir;                      // paging direction (+1 / -1): the neighbour converted first
     double request_time;
     int reported, was_ready, dirty, quit;
     // slideshow
@@ -1366,6 +1368,7 @@ static void go(int i, int dir) {
     if (i == V.index && V.started) return;
     V.started = 1;
     V.index = i;
+    V.dir = dir;
     V.request_time = now_ms();
     V.reported = 0;
     Decoded *ready = loader_get(i);
@@ -1552,10 +1555,32 @@ static void image_decoded(int i) {
         fit_window_to(d);
         update_title();
         redraw();
-    } else if (abs(i - V.index) <= 1 && !d->tex) {
-        texture_for(d);   // convert neighbours ahead of time, so paging only has to draw
-        glFlush();
+    } else if (abs(i - V.index) <= 1) {
+        post(EV_CONVERT, 0, NULL);   // a neighbour: converted ahead of time (convert_ahead)
     }
+}
+
+// The neighbours of the current image, decoded but not yet on the GPU: one is converted after
+// each draw (the one ahead in the paging direction first), the other after the events that
+// came in meanwhile, so a key press waits for one conversion at most. Paging then only has to
+// draw. (Converting at decode time alone misses most images: the loader decodes three ahead,
+// so the next image is usually finished while a farther one is current.)
+static Decoded *next_to_convert(void) {
+    int k[2] = {V.index + V.dir, V.index - V.dir};
+    for (int i = 0; i < 2; i++) {
+        if (k[i] < 0 || k[i] >= V.nfiles) continue;
+        Decoded *d = loader_get(k[i]);
+        if (d && !d->tex && d->buf && !d->noconv) return d;
+    }
+    return NULL;
+}
+
+static void convert_ahead(void) {   // main thread: after a draw, and on EV_CONVERT
+    Decoded *d = next_to_convert();
+    if (!d) return;
+    if (!texture_for(d)) d->noconv = 1;
+    glFlush();
+    if (next_to_convert()) post(EV_CONVERT, 0, NULL);
 }
 
 typedef struct { float origin[2], size[2]; int orientation, nearest; } DrawParams;
@@ -1793,6 +1818,7 @@ static void render(void) {
                mode_name(d->mode), d->bands, now_ms() - V.request_time, V.was_ready ? "  (prefetched)" : "");
         fflush(stdout);
     }
+    convert_ahead();
 }
 
 static void toggle_fullscreen(void) {
@@ -1965,6 +1991,7 @@ static void handle(const SDL_Event *e) {
             V.slide_timer = 0;
             if (!V.paused) page(1);
             break;
+        case EV_CONVERT: if (V.nfiles) convert_ahead(); break;
         case EV_OPEN: {
             FileList *l = e->user.data1;
             open_paths(l->v, l->n);
