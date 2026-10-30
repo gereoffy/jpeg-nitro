@@ -1033,11 +1033,11 @@ static void *ld_path_dup(void *path, void *ctx) { return SDL_strdup(path); }
 static void ld_path_free(void *path, void *ctx) { SDL_free(path); }
 static const char *ld_path_name(void *path, void *ctx) { return path; }
 static void ld_notify(int index, void *ctx) { post(EV_DECODED, index, NULL); }
-static void ld_thread_started(void *ctx) { SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH); }
 
 static int loader_start(char **files, int n) {   // (the loader owns the list from now on)
-    static const NvLoaderOps ops = {ld_decode, ld_free, ld_stale, ld_path_dup, ld_path_free, ld_path_name, ld_notify,
-                                    ld_thread_started, NULL};
+    // (the decoder thread at normal priority: raised, its workers would push the main thread's
+    // upload and drawing behind the images decoded ahead; on Linux SDL's "high" is nice -10)
+    static const NvLoaderOps ops = {ld_decode, ld_free, ld_stale, ld_path_dup, ld_path_free, ld_path_name, ld_notify, NULL, NULL};
     L = nv_loader_new(&ops, (void **)files, n);
     return L ? 0 : -1;
 }
