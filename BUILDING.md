@@ -83,7 +83,7 @@ AVIF needs dav1d built for Windows first: `WINCC=… scripts/get-deps.sh` with t
 ## Linux
 
 ```
-make                 # = make linux: build/lib/libnitro.so + libnitro.a, and the portable tools
+make                 # = make linux: build/libnitro.a and the portable tools
 make gnome           # nitroview-gnome (GTK 4 + libadwaita), the decoders linked in statically
 make gnome-register  # its desktop file and icon for the current user
 make flatpak         # nitroview-gnome.flatpak on the GNOME 50 runtime
@@ -107,9 +107,9 @@ there OpenGL is slow, the Metal viewer is the one to use.
 
 ## Using the decoders in your own program
 
-`make lib` builds `build/libnitro.a` (on Linux `make linux-lib`: `build/lib/libnitro.a` and
-`libnitro.so`, exports in `src/libnitro.map`; the viewers' builds make their own copy per target):
-all the decoders and `nitro_load`, the viewers' common path from a file to a decoded image.
+`make lib` builds `build/libnitro.a` on every platform (the app's universal build, the Windows
+build and the portable Linux build make their own copy per target): all the decoders and
+`nitro_load`, the viewers' common path from a file to a decoded image.
 
 - `nv_read_image()` reads what is needed of the file: a PSD's merged image only, a camera raw's
   embedded JPEG only, otherwise the whole file.
@@ -213,7 +213,6 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 
 **The library**
 - `src/nitro_load.c/.h`: file → decoded image with the decoders above (the library's face, what the viewers use); `src/nitro_convert.c/.h`: its planes → RGB
-- `src/libnitro.map`: the exported API of the Linux shared library
 - `examples/nitroconvert.c`: the example program on the library, any image → BMP
 - `src/nitro_prefetch.c/.h`, `src/nitro_view.h`: the viewers' shared prefetching loader and zoom arithmetic
 

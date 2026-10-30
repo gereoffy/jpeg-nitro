@@ -28,7 +28,6 @@
 #                        Linux build); any other program can too, with nitro_os.h's blocks runtime
 #   make examples/nitroconvert
 #                        the example program on the library: any image it decodes -> a 24-bit BMP
-#   make linux-lib       Linux: build/lib/libnitro.so (exports: src/libnitro.map) and a PIC libnitro.a
 #   make gnome           GNOME/libadwaita viewer: nitroview-gnome (the decoders linked in statically)
 #   make sdl             SDL3 + OpenGL viewer for Linux: nitroview-sdl (SDL3 from scripts/get-deps.sh;
 #                        builds on macOS too, for testing)
@@ -77,7 +76,7 @@ FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework Q
               $(VT_FW)
 # libnitro: the decoders and nitro_load as one static library, built per target into <dir>/libnitro.a
 # (from <dir>/libobj/): build/ for this machine, build/app-<arch>/ for the app, build/dist/ for the
-# portable Linux build, build/win/ for Windows, build/lib/ as PIC for the Linux shared library. With
+# portable Linux build, build/win/ for Windows. With
 # dav1d (DAV1D=1) nitroavif is in it, compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
 NITROHEVC  ?= 0
 LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/nitrodng.c src/nitrowebp.c \
@@ -98,9 +97,6 @@ endef
 # what the four viewers share beside the library (compiled into each)
 VIEWER_SRC := src/nitro_prefetch.c
 VIEWER_HDR := src/nitro_prefetch.h src/nitro_view.h
-LIBDIR     := build/lib
-LIB_SHARED := $(LIBDIR)/libnitro.so
-LIB_STATIC := $(LIBDIR)/libnitro.a
 
 # GNOME frontend: GtkBuilder template + libadwaita, with the decoders from the static library
 # (one self-contained binary: nothing to find at run time).
@@ -201,38 +197,23 @@ build/nitrojpeg_ref.o: src/nitrojpeg.c src/nitrojpeg.h src/nitro_os.h src/tiff.h
 	@mkdir -p build
 	$(CC) $(REF_CFLAGS) -c $< -o $@
 
-# Linux: the shared library (its exports: src/libnitro.map) and a PIC static one (the GNOME and
-# SDL viewers link that)
-$(LIB_STATIC): $(LIB_SRC) $(LIB_AVIF) $(LIB_HDR) build/.config-$(CONFIG)
-	$(call nitro_lib,$(CFLAGS) -fPIC)
-$(LIB_SHARED): $(LIB_STATIC) src/libnitro.map
-	$(CC) -shared -Wl,-soname,libnitro.so -Wl,--version-script=src/libnitro.map -o $@ $(LIBDIR)/libobj/*.o \
-	  $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB)) $(THREADLIBS)
-
-linux-lib: $(LIB_SHARED) $(LIB_STATIC)
-	@echo "built $(LIB_SHARED) $(LIB_STATIC) (AVIF: $(if $(filter 1,$(DAV1D)),dav1d,no), HEIC: $(HEVC_NAME))"
-
 $(GNOME_RES): $(GNOME_DIR)/nitroview.gresource.xml $(GNOME_DIR)/nitro-window.ui packaging/icon.png
 	@mkdir -p $(@D)
 	glib-compile-resources $< --sourcedir=$(GNOME_DIR) --sourcedir=. --target=$@ --generate-source
 
-# SVG in the GNOME viewer: the same nitrosvg (lunasvg) as on macOS / Windows, as PIC objects
-GNOME_SVG := $(if $(filter 1,$(SVG)),$(LIBDIR)/libnitrosvg.a)
-$(LIBDIR)/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
-	$(call svg_lib,$(CPUFLAGS) -fPIC)
-# ... and CorelDRAW: nitrocdr (libcdr + librevenge + lcms2, drawn with the plutovg of nitrosvg)
-GNOME_CDR := $(if $(and $(GNOME_SVG),$(filter 1,$(CDR))),$(LIBDIR)/libnitrocdr.a)
-$(LIBDIR)/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
-	$(call cdr_lib,$(CPUFLAGS) -fPIC)
+# SVG and CorelDRAW in the GNOME viewer: the same nitrosvg (lunasvg) and nitrocdr (libcdr +
+# librevenge + lcms2, drawn with the plutovg of nitrosvg) libraries as on macOS, from build/
+GNOME_SVG := $(if $(filter 1,$(SVG)),build/libnitrosvg.a)
+GNOME_CDR := $(if $(and $(GNOME_SVG),$(filter 1,$(CDR))),build/libnitrocdr.a)
 
 GNOME_AVIF := $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB))
-$(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) $(LIB_STATIC) $(GNOME_SVG) $(GNOME_CDR) $(GNOME_AVIF)
+$(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) build/libnitro.a $(GNOME_SVG) $(GNOME_CDR) $(GNOME_AVIF)
 	@pkg-config --exists $(GNOME_PKGS) || { echo "missing GNOME development packages: gtk4 libadwaita-1"; exit 1; }
 	@pkg-config --atleast-version=4.6 gtk4 || { echo "GNOME frontend requires GTK 4.6 or newer"; exit 1; }
 	@pkg-config --atleast-version=1.1 libadwaita-1 || { echo "GNOME frontend requires libadwaita 1.1 or newer"; exit 1; }
 	$(CC) -std=gnu11 -O2 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
 	  $(if $(GNOME_SVG),-DNV_SVG) $(if $(GNOME_CDR),-DNV_CDR) $(if $(GNOME_AVIF),-DNV_DAV1D) $(GNOME_SRC) $(GNOME_CDR) $(GNOME_SVG) \
-	  $(LIB_STATIC) $(GNOME_AVIF) \
+	  build/libnitro.a $(GNOME_AVIF) \
 	  $(GNOME_LIBS) $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lstdc++) $(THREADLIBS) -lm -o $@
 
 # GNOME viewer: command-line open plus a native Open/Quit application shell.
@@ -244,12 +225,11 @@ gnome: $(GNOME_BIN)
 SDL3_DIR  := third_party/sdl3
 SDL_BIN   := nitroview-sdl
 SDL_LIBS   = $(SDL3_DIR)/lib/libSDL3.a $(shell sed -n 's/^Libs:.*-lSDL3//p' $(SDL3_DIR)/lib/pkgconfig/sdl3.pc 2>/dev/null)
-ifeq ($(UNAME_S),Darwin)
 SDL_DEC   := build/libnitro.a
+ifeq ($(UNAME_S),Darwin)
 SDL_VEC   := $(if $(filter 1,$(CDR)),build/libnitrocdr.a) $(if $(filter 1,$(SVG)),build/libnitrosvg.a)
 SDL_VLIBS := $(if $(filter 1,$(CDR)),-liconv -lz) $(if $(filter 1,$(SVG)),-lc++) -framework CoreFoundation $(VT_FW)   # (HEIC)
 else
-SDL_DEC   := $(LIB_STATIC)
 SDL_VEC   := $(GNOME_CDR) $(GNOME_SVG) $(if $(and $(GNOME_SVG),$(filter 1,$(MIMALLOC))),build/mimalloc.o build/nitroalloc.o)
 SDL_VLIBS := $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lstdc++)
 endif
@@ -551,8 +531,8 @@ tools: bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench
 # only once scripts/get-deps.sh has built libjpeg-turbo
 LINUX_TOOLS := bench/nbench bench/pngverify bench/psdverify bench/pngrobust bench/psdrobust examples/nitroconvert \
                $(if $(wildcard $(LJT)/lib/libturbojpeg.a),bench/verify bench/robust bench/rgbverify)
-linux: linux-lib $(LINUX_TOOLS)
-	@echo "built $(LIB_SHARED) $(LIB_STATIC) $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
+linux: build/libnitro.a $(LINUX_TOOLS)
+	@echo "built build/libnitro.a $(LINUX_TOOLS)$(if $(wildcard $(LJT)/lib/libturbojpeg.a),, (verify / robust: run scripts/get-deps.sh first))"
 
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
@@ -650,4 +630,4 @@ notarize:
 	xcrun stapler staple nitroview.dmg
 	@echo "nitroview.dmg is notarized"
 
-.PHONY: all app zip dmg notarize tools lib linux linux-lib gnome gnome-register sdl sdl-dist flatpak windows clean deps ljt
+.PHONY: all app zip dmg notarize tools lib linux gnome gnome-register sdl sdl-dist flatpak windows clean deps ljt
