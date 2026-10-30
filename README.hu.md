@@ -19,7 +19,7 @@ Felhasználói felülete gyakorlatilag nincs: egy ablak a képpel, lapozni és n
 | macOS 12-től, Intel és Apple Silicon | `nitroview.app` (Cocoa + Metal, universal) |
 | Windows 10-től, Direct3D 11-gyel | `nitroview.exe` (egyetlen önálló fájl) |
 | Linux, GNOME | `nitroview-gnome` (GTK 4 + libadwaita), Flatpakként is |
-| Linux, bármilyen asztal (Wayland / X11), x64 és arm64 | `nitroview-sdl` (SDL3 + OpenGL, egyetlen önálló fájl) |
+| SDL3 + OpenGL (Linuxon és macOS-en kipróbálva, x86 és ARM) | `nitroview-sdl` (egyetlen önálló fájl) |
 
 Mind a négy ugyanúgy viselkedik: ugyanazok a billentyűk, egér- és érintőpados gesztusok, nagyítás
 és ablakkezelés, teljes képernyő, diavetítés és előtöltés. Az eltéréseket a
@@ -46,11 +46,11 @@ Microsoft „HEVC Video Extensions” bővítménye kell a Store-ból.
 **Linux, GNOME:** `flatpak install --user nitroview-gnome.flatpak`. A HEIC-fotókhoz az
 `org.freedesktop.Platform.codecs-extra` kiterjesztés kell a Flathubról.
 
-**Linux, bármilyen asztal:** csomagold ki a `nitroview-linux-x64.tar.gz`-t (vagy az `-arm64`-et Asahi
-Linuxon Apple M1 / M2-n és Raspberry Pi 4 / 5-ön): egyetlen fájl, amihez csak a glibc 2.35 vagy
-újabb kell. A `nitroview-sdl --register` az aktuális felhasználónak felveszi az asztal alkalmazásai
-közé („Megnyitás ezzel” a fájlkezelőben), az `--unregister` eltávolítja. Ez a néző HEIC-fájlokat nem
-nyit meg (lásd [HEIC](#heic)).
+**Linux SDL3-mal:** csomagold ki a `nitroview-linux-x64.tar.gz`-t (vagy az `-arm64`-et Asahi
+Linuxon Apple M1 / M2-n és Raspberry Pi 4 / 5-ön): egyetlen fájl bármilyen asztalhoz, Waylandre és
+X11-re, amihez csak a glibc 2.35 vagy újabb kell. A `nitroview-sdl --register` az aktuális
+felhasználónak felveszi az asztal alkalmazásai közé („Megnyitás ezzel” a fájlkezelőben), az
+`--unregister` eltávolítja. Ez a néző HEIC-fájlokat nem nyit meg (lásd [HEIC](#heic)).
 
 Fordítás saját kezűleg, a make-opciók és a dekóderek használata saját programból:
 [BUILDING.md](BUILDING.md) (angolul).

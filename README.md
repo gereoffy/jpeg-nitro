@@ -13,12 +13,12 @@ and CorelDRAW drawings are rendered sharp at any zoom level.
 There is no user interface to speak of: a window with the picture in it, use keys and the mouse to
 page and zoom.
 
-| platform                                          | viewer                                                    |
-| ------------------------------------------------- | --------------------------------------------------------- |
-| macOS 12+, Intel and Apple Silicon                | `nitroview.app` (Cocoa + Metal, universal)                |
-| Windows 10+ with Direct3D 11+                     | `nitroview.exe` (one self-contained file)                 |
-| Linux with GNOME                                  | `nitroview-gnome` (GTK 4 + libadwaita), also as a Flatpak |
-| Linux, any desktop (Wayland / X11), x64 and arm64 | `nitroview-sdl` (SDL3 + OpenGL, one self-contained file)  |
+| platform                                               | viewer                                                    |
+| ------------------------------------------------------ | --------------------------------------------------------- |
+| macOS 12+, Intel and Apple Silicon                     | `nitroview.app` (Cocoa + Metal, universal)                |
+| Windows 10+ with Direct3D 11+                          | `nitroview.exe` (one self-contained file)                 |
+| Linux with GNOME                                       | `nitroview-gnome` (GTK 4 + libadwaita), also as a Flatpak |
+| SDL3 + OpenGL (tested on Linux and macOS, x86 and ARM) | `nitroview-sdl` (one self-contained file)                 |
 
 All four behave the same: the same keys, mouse and trackpad gestures, zoom and window behaviour, full
 screen, slideshow and prefetching. The differences are listed under [Platform notes](#platform-notes).
@@ -42,8 +42,9 @@ Microsoft's "HEVC Video Extensions" from the Store.
 **Linux with GNOME:** `flatpak install --user nitroview-gnome.flatpak`. HEIC photos need the
 `org.freedesktop.Platform.codecs-extra` extension from Flathub.
 
-**Linux, any desktop:** unpack `nitroview-linux-x64.tar.gz` (or `-arm64` for Asahi Linux on an
-Apple M1 / M2 and the Raspberry Pi 4 / 5): one file, which needs only glibc 2.35 or newer.
+**Linux with SDL3:** unpack `nitroview-linux-x64.tar.gz` (or `-arm64` for Asahi Linux on an
+Apple M1 / M2 and the Raspberry Pi 4 / 5): one file for any desktop, Wayland or X11, which needs
+only glibc 2.35 or newer.
 `nitroview-sdl --register` adds it to the desktop's applications for the current user ("Open with"
 in the file manager), `--unregister` removes it. This viewer opens no HEIC files (see
 [HEIC](#heic)).
