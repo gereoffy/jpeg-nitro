@@ -82,6 +82,17 @@ AVIF needs dav1d built for Windows first: `WINCC=… scripts/get-deps.sh` with t
 
 ## Linux
 
+### Nix development environment
+
+Run `nix-shell` in the repository root to load `shell.nix`, which provides the
+compilation environment. Then follow [Optional dependencies](#optional-dependencies)
+and the Linux build instructions below.
+
+A configured `nixpkgs` channel is required; alternatively, use
+`nix-shell -I nixpkgs=/path/to/nixpkgs`.
+
+### Build commands
+
 ```
 make linux           # build/libnitro.a and the portable tools; on Linux a plain make does the same
 make gnome           # nitroview-gnome (GTK 4 + libadwaita), the decoders linked in statically
