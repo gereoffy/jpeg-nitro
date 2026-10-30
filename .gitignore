@@ -7,6 +7,9 @@
 /nitroview-linux-x64.tar.gz
 /nitroview-linux-arm64.tar.gz
 /nitroview.zip
+# the release archives (nitroview-macos-universal.zip, nitroview-windows-x64*.zip) and a renamed .exe
+/nitroview-*.zip
+/nitroview-*.exe
 /nitroview.dmg
 /bench/bench
 /bench/verify
