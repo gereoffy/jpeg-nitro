@@ -1,4 +1,5 @@
-# jpeg-nitro: nitroview (fast image viewer for macOS) + nitrojpeg (parallel JPEG decoder)
+# jpeg-nitro: nitroview (fast image viewer for macOS, Windows and Linux) + the parallel decoders it is
+# built on (libnitro: JPEG, PNG, PSD, HEIC, DNG, WebP, TIFF, AVIF; SVG and CorelDRAW rendering)
 #
 #   make                 nitroview; JPEGs nitrojpeg can't decode (damaged, CMYK ...) go to ImageIO
 #   make TURBOJPEG=1     with libjpeg-turbo (third_party/ljt, see scripts/get-deps.sh) as their
@@ -75,9 +76,9 @@ VT_FW      := $(if $(filter 1,$(NITROHEVC)),,-framework VideoToolbox -framework 
 FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework QuartzCore -framework UniformTypeIdentifiers \
               $(VT_FW)
 # libnitro: the decoders and nitro_load as one static library, built per target into <dir>/libnitro.a
-# (from <dir>/libobj/): build/ for this machine, build/app-<arch>/ for the app, build/dist/ for the
-# portable Linux build, build/win/ for Windows. With
-# dav1d (DAV1D=1) nitroavif is in it, compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
+# (from <dir>/libobj/): build/ for this machine, build/app-<arch>/ for the app's slices, build/dist/
+# for the portable Linux build, build/win/ for Windows. With dav1d (DAV1D=1) nitroavif is in it,
+# compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
 NITROHEVC  ?= 0
 LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/nitrodng.c src/nitrowebp.c \
               src/nitrotiff.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
@@ -88,7 +89,7 @@ LIB_DEFS    = $(if $(filter 1,$(DAV1D)),-DNV_DAV1D -I$(DAV1D_DIR)/include)
 HEVC_DEFS  := $(if $(filter 1,$(NITROHEVC)),-DNV_NITROHEVC)
 HEVC_NAME  := $(if $(filter 1,$(NITROHEVC)),nitrohevc,$(if $(filter Darwin,$(UNAME_S)),VideoToolbox,the system's))
 LIB_WARN   := -Wall -Wextra -Wno-unused-parameter
-define nitro_lib   # $(1): the compiler flags (optimisation, CPU, -fblocks, -fPIC ...)
+define nitro_lib   # $(1): the compiler flags (optimisation, CPU, -fblocks ...)
 	@rm -rf $(@D)/libobj && mkdir -p $(@D)/libobj
 	@echo "compiling libnitro into $@"
 	@printf '%s\n' $(LIB_SRC) $(LIB_AVIF) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) $(LIB_WARN) $(LIB_DEFS) $(HEVC_DEFS) -Isrc -c "$$0" -o $(@D)/libobj/$$(basename "$$0" .c).o'
@@ -130,7 +131,7 @@ LCMS       := third_party/lcms2
 BOOST      := third_party/boost
 # zlib for CorelDRAW in the Windows and the portable Linux build (macOS / Linux have it)
 ZLIB       := third_party/zlib
-# dav1d (VideoLAN, BSD-2-Clause) for AVIF in the Linux viewers (nitroavif), once scripts/get-deps.sh built it
+# dav1d (VideoLAN, BSD-2-Clause) for AVIF (nitroavif) in every viewer, once scripts/get-deps.sh built it
 DAV1D_DIR  := third_party/dav1d
 DAV1D      ?= $(if $(wildcard $(DAV1D_DIR)/lib/libdav1d.a),1,0)
 DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
@@ -507,7 +508,7 @@ bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h
 bench/psdverify: bench/psdverify.c build/libnitro.a
 	$(CC) -O3 $(CPUFLAGS) $(PORTFLAGS) -w -Isrc $^ $(THREADLIBS) -o $@
 
-# portable benchmark of the three decoders (also builds on Linux, see README)
+# portable benchmark of the three decoders (also builds on Linux, see BUILDING.md)
 bench/nbench: bench/nbench.c build/libnitro.a
 	$(CC) $(CFLAGS) -Isrc $^ $(THREADLIBS) -o $@
 
