@@ -38,6 +38,9 @@ Other modes:
 - `--inputtest files…`: sends synthesized mouse and wheel events and checks paging and zoom.
 - `--auto <ms>`: test mode: pages every `ms` (even if the image isn't shown yet) and quits
   at the end. For latency measurements.
+- `NV_DEBUG_TIME=1` (SDL viewer): one more line per image with where its time went: event → draw,
+  the upload and conversion when the image was not yet converted ahead, draw, swap; and a line for
+  each neighbour converted ahead of time.
 
 ## Results (50 photos, mostly 6000×4000, 17 MB on average)
 

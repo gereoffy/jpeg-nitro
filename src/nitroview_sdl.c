@@ -413,6 +413,7 @@ static GLuint g_conv_prog, g_png_prog, g_draw_prog, g_vao, g_fbo;
 static GLuint g_samp_lin, g_samp_pt, g_samp_bil;
 static GLint g_max_tbo;      // PNG rows in a buffer texture up to this size (0: converted on the CPU)
 static int g_bench_split;    // --bench: time the conversion and the mipmaps separately
+static int g_debug_time;     // NV_DEBUG_TIME: print where the time goes, per image
 static struct { GLint kind, hasa, cs; } U;                          // conversion uniforms
 static struct { GLint ch, pitch; } UP;                              // PNG
 static struct { GLint origin, size, orientation; } UD;              // draw uniforms
@@ -1565,22 +1566,27 @@ static void image_decoded(int i) {
 // came in meanwhile, so a key press waits for one conversion at most. Paging then only has to
 // draw. (Converting at decode time alone misses most images: the loader decodes three ahead,
 // so the next image is usually finished while a farther one is current.)
-static Decoded *next_to_convert(void) {
+static int next_to_convert(void) {   // its index, -1 if none
     int k[2] = {V.index + V.dir, V.index - V.dir};
     for (int i = 0; i < 2; i++) {
         if (k[i] < 0 || k[i] >= V.nfiles) continue;
         Decoded *d = loader_get(k[i]);
-        if (d && !d->tex && d->buf && !d->noconv) return d;
+        if (d && !d->tex && d->buf && !d->noconv) return k[i];
     }
-    return NULL;
+    return -1;
 }
 
 static void convert_ahead(void) {   // main thread: after a draw, and on EV_CONVERT
-    Decoded *d = next_to_convert();
-    if (!d) return;
+    int k = next_to_convert();
+    if (k < 0) return;
+    Decoded *d = loader_get(k);
+    double t = now_ms();
     if (!texture_for(d)) d->noconv = 1;
     glFlush();
-    if (next_to_convert()) post(EV_CONVERT, 0, NULL);
+    if (g_debug_time)
+        printf("  converted ahead [%d] %s: %.1f ms (upload %.1f, convert %.1f)\n", k + 1, base_name(V.files[k]), now_ms() - t,
+               d->upload_ms, d->conv_ms);
+    if (next_to_convert() >= 0) post(EV_CONVERT, 0, NULL);
 }
 
 typedef struct { float origin[2], size[2]; int orientation, nearest; } DrawParams;
@@ -1771,7 +1777,10 @@ static void render(void) {
     if (V.vw <= 0 || V.vh <= 0) return;
     loader_reap();
     Decoded *d = V.nfiles ? loader_get(V.index) : NULL;
+    double t0 = now_ms();
+    int converting = d && !d->tex;   // (NV_DEBUG_TIME: not converted ahead)
     GLuint tex = d ? texture_for(d) : 0;
+    double t1 = now_ms();
     // not decoded yet (a slow HEIC, a slideshow faster than decoding): the previous image stays
     // on screen until it is, rather than a black window (a failed one is not waited for)
     int previous = 0;
@@ -1810,13 +1819,23 @@ static void render(void) {
         }
 #endif
     }
+    double t2 = now_ms();
     SDL_GL_SwapWindow(V.win);
+    double t3 = now_ms();
+    int first = !V.reported;   // the first draw after a page
     if (tex && !previous && !V.reported) {
         V.reported = 1;
         printf("[%3d] %-40s %5dx%-5d read %5.1f ms  decode %6.1f ms (%-8s %3d bands)  key->on screen %6.1f ms%s\n",
                V.index + 1, base_name(V.files[V.index]), d->width, d->height, d->read_ms, d->decode_ms,
                mode_name(d->mode), d->bands, now_ms() - V.request_time, V.was_ready ? "  (prefetched)" : "");
         fflush(stdout);
+    }
+    if (g_debug_time && tex) {   // (the upload and conversion times are the CPU's side: the GPU's share waits in the swap)
+        if (first) printf("  timing: event->draw %.1f ms, ", t0 - V.request_time);
+        else printf("  timing: redraw, ");
+        if (converting) printf("texture %.1f ms (upload %.1f, convert %.1f), ", t1 - t0, d->upload_ms, d->conv_ms);
+        else printf("texture ready, ");
+        printf("draw %.1f ms, swap %.1f ms\n", t2 - t1, t3 - t2);
     }
     convert_ahead();
 }
@@ -2330,6 +2349,10 @@ static void usage(void) {
         "  --unregister          remove that again\n"
         "  -h, --help            this help\n"
         "\n"
+        "environment:\n"
+        "  NV_DEBUG_TIME=1       print where the time goes per image: upload, conversion, draw, swap\n"
+        "  NV_DEBUG_GL=1         print the OpenGL version and renderer\n"
+        "\n"
         "keys:\n"
         "  PgDn Space              next image         PgUp Backspace           previous\n"
         "  Home / End              first / last       F / Enter / F11          full screen\n"
@@ -2371,6 +2394,7 @@ int main(int argc, char **argv) {
     }
     if (help) { usage(); return 1; }
     g_pool_lock = SDL_CreateMutex();
+    g_debug_time = getenv("NV_DEBUG_TIME") != NULL;
     SDL_SetAppMetadata("NitroView", "1.0", APP_ID);   // (Wayland: the desktop file's icon, see --register)
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
     if (!SDL_Init(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
