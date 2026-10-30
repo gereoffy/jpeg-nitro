@@ -69,7 +69,8 @@ else   # the decoders' loop bodies are blocks (see src/nitro_os.h): clang -fbloc
 PORTFLAGS  := -fblocks
 THREADLIBS := -lpthread
 endif
-CFLAGS     := -O3 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter
+WARN       := -Wall -Wextra -Wno-unused-parameter
+CFLAGS     := -O3 $(CPUFLAGS) $(PORTFLAGS) $(WARN)
 ASAN       := -O1 -g $(PORTFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer
 # VideoToolbox: nitroheic's HEVC decoding (left out with nitrohevc: make NITROHEVC=1)
 VT_FW      := $(if $(filter 1,$(NITROHEVC)),,-framework VideoToolbox -framework CoreMedia -framework CoreVideo)
@@ -85,14 +86,13 @@ LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/
 LIB_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitroheic.h src/nitrohevc.h src/nitrodng.h src/nitrowebp.h \
               src/nitrotiff.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/heif.h src/tiff.h
 LIB_AVIF    = $(if $(filter 1,$(DAV1D)),src/nitroavif.c)
-LIB_DEFS    = $(if $(filter 1,$(DAV1D)),-DNV_DAV1D -I$(DAV1D_DIR)/include)
+LIB_DEFS    = $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
 HEVC_DEFS  := $(if $(filter 1,$(NITROHEVC)),-DNV_NITROHEVC)
 HEVC_NAME  := $(if $(filter 1,$(NITROHEVC)),nitrohevc,$(if $(filter Darwin,$(UNAME_S)),VideoToolbox,the system's))
-LIB_WARN   := -Wall -Wextra -Wno-unused-parameter
 define nitro_lib   # $(1): the compiler flags (optimisation, CPU, -fblocks ...)
 	@rm -rf $(@D)/libobj && mkdir -p $(@D)/libobj
 	@echo "compiling libnitro into $@"
-	@printf '%s\n' $(LIB_SRC) $(LIB_AVIF) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) $(LIB_WARN) $(LIB_DEFS) $(HEVC_DEFS) -Isrc -c "$$0" -o $(@D)/libobj/$$(basename "$$0" .c).o'
+	@printf '%s\n' $(LIB_SRC) $(LIB_AVIF) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) $(WARN) $(LIB_DEFS) $(HEVC_DEFS) -Isrc -c "$$0" -o $(@D)/libobj/$$(basename "$$0" .c).o'
 	@rm -f $@ && $(AR) rcs $@ $(@D)/libobj/*.o
 endef
 # what the four viewers share beside the library (compiled into each)
@@ -135,6 +135,7 @@ ZLIB       := third_party/zlib
 DAV1D_DIR  := third_party/dav1d
 DAV1D      ?= $(if $(wildcard $(DAV1D_DIR)/lib/libdav1d.a),1,0)
 DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
+DAV1D_DEFS := -DNV_DAV1D -I$(DAV1D_DIR)/include
 CDR        ?= $(if $(and $(filter 1,$(SVG)),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp)),1,0)
 MI         := third_party/mimalloc
 MIMALLOC   ?= $(if $(and $(filter 1,$(SVG)),$(wildcard $(MI)/include/mimalloc-new-delete.h)),1,0)
@@ -160,7 +161,7 @@ VIEWER_OBJS += build/libnitrosvg.a
 VIEWER_LIBS += -lc++
 endif
 ifeq ($(DAV1D),1)   # AVIF: nitroavif (in libnitro) with dav1d
-VIEWER_DEFS += -DNV_DAV1D -I$(DAV1D_DIR)/include
+VIEWER_DEFS += $(DAV1D_DEFS)
 VIEWER_LIBS += $(DAV1D_LIB)
 endif
 ifeq ($(MIMALLOC),1)   # C++ new / delete (the SVG / CorelDRAW code) through mimalloc
@@ -212,7 +213,7 @@ $(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) build/libnitro.a $(GNOME_SVG) $(GNOME_CD
 	@pkg-config --exists $(GNOME_PKGS) || { echo "missing GNOME development packages: gtk4 libadwaita-1"; exit 1; }
 	@pkg-config --atleast-version=4.6 gtk4 || { echo "GNOME frontend requires GTK 4.6 or newer"; exit 1; }
 	@pkg-config --atleast-version=1.1 libadwaita-1 || { echo "GNOME frontend requires libadwaita 1.1 or newer"; exit 1; }
-	$(CC) -std=gnu11 -O2 $(CPUFLAGS) $(PORTFLAGS) -Wall -Wextra -Wno-unused-parameter -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
+	$(CC) -std=gnu11 $(CFLAGS) -Isrc -I$(GNOME_DIR) $(GNOME_CFLAGS) \
 	  $(if $(GNOME_SVG),-DNV_SVG) $(if $(GNOME_CDR),-DNV_CDR) $(if $(GNOME_AVIF),-DNV_DAV1D) $(GNOME_SRC) $(GNOME_CDR) $(GNOME_SVG) \
 	  build/libnitro.a $(GNOME_AVIF) \
 	  $(GNOME_LIBS) $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lstdc++) $(THREADLIBS) -lm -o $@
@@ -227,11 +228,10 @@ SDL3_DIR  := third_party/sdl3
 SDL_BIN   := nitroview-sdl
 SDL_LIBS   = $(SDL3_DIR)/lib/libSDL3.a $(shell sed -n 's/^Libs:.*-lSDL3//p' $(SDL3_DIR)/lib/pkgconfig/sdl3.pc 2>/dev/null)
 SDL_DEC   := build/libnitro.a
+SDL_VEC   := $(GNOME_CDR) $(GNOME_SVG) $(if $(filter 1,$(MIMALLOC)),build/mimalloc.o build/nitroalloc.o)
 ifeq ($(UNAME_S),Darwin)
-SDL_VEC   := $(if $(filter 1,$(CDR)),build/libnitrocdr.a) $(if $(filter 1,$(SVG)),build/libnitrosvg.a)
-SDL_VLIBS := $(if $(filter 1,$(CDR)),-liconv -lz) $(if $(filter 1,$(SVG)),-lc++) -framework CoreFoundation $(VT_FW)   # (HEIC)
+SDL_VLIBS := $(if $(GNOME_CDR),-liconv -lz) $(if $(GNOME_SVG),-lc++) -framework CoreFoundation $(VT_FW)   # (HEIC)
 else
-SDL_VEC   := $(GNOME_CDR) $(GNOME_SVG) $(if $(and $(GNOME_SVG),$(filter 1,$(MIMALLOC))),build/mimalloc.o build/nitroalloc.o)
 SDL_VLIBS := $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lstdc++)
 endif
 SDL_AVIF  := $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB))
@@ -269,6 +269,7 @@ endif
 DIST_VEC   := $(if $(filter 1,$(CDR)),$(DIST_DIR)/libnitrocdr.a) $(if $(filter 1,$(SVG)),$(DIST_DIR)/libnitrosvg.a)
 # their new / delete through mimalloc, as on macOS (CorelDRAW on the M1 under Linux: ~10% faster than glibc's malloc)
 DIST_MI    := $(if $(and $(DIST_VEC),$(filter 1,$(MIMALLOC))),$(DIST_DIR)/mimalloc.o $(DIST_DIR)/nitroalloc.o)
+DIST_VDEFS  = $(if $(filter %libnitrosvg.a,$(DIST_VEC)),-DNV_SVG) $(if $(filter %libnitrocdr.a,$(DIST_VEC)),-DNV_CDR) $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
 $(DIST_DIR)/mimalloc.o $(DIST_DIR)/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 	$(call mimalloc_objs,-march=$(DIST_ARCH))
 $(DIST_DIR)/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
@@ -283,12 +284,10 @@ $(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build
                            src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	@mkdir -p $(@D)
-	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks -Wall -Wextra -Wno-unused-parameter \
-	  $(if $(filter %libnitrosvg.a,$(DIST_VEC)),-DNV_SVG) $(if $(filter %libnitrocdr.a,$(DIST_VEC)),-DNV_CDR) \
-	  $(if $(filter 1,$(DAV1D)),-DNV_DAV1D -I$(DAV1D_DIR)/include) \
+	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks $(WARN) $(DIST_VDEFS) \
 	  -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(DIST_DIR)/libnitro.a \
-	  $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB)) $(DIST_VEC) $(DIST_MI) $(SDL_LIBS) $(if $(DIST_VEC),-Wl$(COMMA)-Bstatic -lstdc++ -Wl$(COMMA)-Bdynamic) -static-libgcc \
-	  -lpthread -lm -o $@
+	  $(SDL_AVIF) $(DIST_VEC) $(DIST_MI) $(SDL_LIBS) $(if $(DIST_VEC),-Wl$(COMMA)-Bstatic -lstdc++ -Wl$(COMMA)-Bdynamic) -static-libgcc \
+	  $(THREADLIBS) -lm -o $@
 	@echo "$@ needs: $$(objdump -p $@ | sed -n 's/ *NEEDED *//p' | tr '\n' ' ')(glibc $$(objdump -T $@ | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2))"
 $(DIST_TGZ): $(DIST_DIR)/nitroview-sdl
 	tar -C $(DIST_DIR) -czf $@ nitroview-sdl
@@ -431,7 +430,7 @@ build/app-%/mimalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 # the library per architecture (AVIF in the slices whose architecture dav1d has)
 app_arch = $(patsubst build/app-%/libnitro.a,%,$@)
 build/app-%/libnitro.a: LIB_AVIF = $(if $(call dav1d_has,$(app_arch)),src/nitroavif.c)
-build/app-%/libnitro.a: LIB_DEFS = $(if $(call dav1d_has,$(app_arch)),-DNV_DAV1D -I$(DAV1D_DIR)/include)
+build/app-%/libnitro.a: LIB_DEFS = $(if $(call dav1d_has,$(app_arch)),$(DAV1D_DEFS))
 build/app-%/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-arch $* $(MAC_MIN) -O3 $(APPCPU_$*))
 build/app-%/nitroview: src/nitroview.m $(VIEWER_SRC) $(VIEWER_HDR) build/shaders.inc build/app-%/libnitro.a $(LIB_HDR) $(if $(filter 1,$(WUFFS)),build/app-%/png_wuffs.o) \
@@ -439,9 +438,9 @@ build/app-%/nitroview: src/nitroview.m $(VIEWER_SRC) $(VIEWER_HDR) build/shaders
                        $(if $(filter 1,$(MIMALLOC)),build/app-%/mimalloc.o) \
                        build/.config-$(CONFIG) Makefile
 	@mkdir -p $(@D)
-	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) -Wall -Wextra -Wno-unused-parameter -Ibuild -Isrc \
+	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) $(WARN) -Ibuild -Isrc \
 	  $(if $(call ljt_has,$*),-DNV_TURBOJPEG -I$(LJT)/include) $(if $(filter 1,$(WUFFS)),-DNV_WUFFS) $(if $(filter 1,$(SVG)),-DNV_SVG) $(if $(filter 1,$(CDR)),-DNV_CDR) \
-	  $(if $(call dav1d_has,$*),-DNV_DAV1D -I$(DAV1D_DIR)/include) \
+	  $(if $(call dav1d_has,$*),$(DAV1D_DEFS)) \
 	  -fobjc-arc src/nitroview.m $(VIEWER_SRC) $(@D)/libnitro.a $(if $(call dav1d_has,$*),$(DAV1D_LIB)) $(if $(filter 1,$(WUFFS)),$(@D)/png_wuffs.o) $(if $(filter 1,$(CDR)),$(@D)/libnitrocdr.a -liconv -lz) $(if $(filter 1,$(SVG)),$(@D)/libnitrosvg.a -lc++) \
 	  $(if $(filter 1,$(MIMALLOC)),$(@D)/mimalloc.o $(@D)/nitroalloc.o) $(if $(call ljt_has,$*),$(LJT)/lib/libturbojpeg.a -Wl$(COMMA)-w) $(FRAMEWORKS) -framework ImageIO -o $@
 build/nitroview-universal: $(foreach a,$(MAC_ARCHS),build/app-$(a)/nitroview)
@@ -545,7 +544,7 @@ clean:
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
 WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
-WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks -Wall -Wextra -Wno-unused-parameter -static
+WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks $(WARN) -static
 # everything Windows is built again when WINARCH changes (the v2 and v3 builds share build/win/)
 WIN_STAMP := build/win/.arch-$(WINARCH)
 $(WIN_STAMP):
