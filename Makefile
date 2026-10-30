@@ -180,6 +180,8 @@ endif
 
 # a failed recipe leaves no half-written target behind (e.g. an empty build/icon.inc without xxd)
 .DELETE_ON_ERROR:
+# the libraries the pattern rules make for the app's slices are kept, not deleted as intermediate files
+.SECONDARY:
 
 # rebuild the viewer when the optional parts change
 CONFIG := tj$(TURBOJPEG)-wuffs$(WUFFS)-svg$(SVG)-cdr$(CDR)-mi$(MIMALLOC)-dav1d$(DAV1D)-hevc$(NITROHEVC)
@@ -188,9 +190,15 @@ build/.config-$(CONFIG):
 	@rm -f build/.config-* nitroview
 	@touch $@
 
-# the library for this machine (the viewers, the tools)
-build/libnitro.a: $(LIB_SRC) $(LIB_AVIF) $(LIB_HDR) build/.config-$(CONFIG)
-	$(call nitro_lib,$(CFLAGS))
+# The libraries are built once per target directory, by the pattern rules after their
+# definitions below, with the directory's flags: TCPU (architecture / CPU, every library) and
+# TPORT (blocks, static linking: libnitro).
+#   build/            this machine: CPUFLAGS (-march=native)
+#   build/app-<arch>/ the app's slices: -arch, the macOS minimum, a portable CPU
+#   build/dist/       the portable Linux build: DIST_CPU
+#   build/win/        Windows: WINARCH, with WINCC / WINCXX / WINAR
+build/%: TCPU = $(CPUFLAGS)
+build/%: TPORT = $(PORTFLAGS)
 lib: build/libnitro.a
 	@echo "built build/libnitro.a (AVIF: $(if $(filter 1,$(DAV1D)),dav1d,no), HEIC: $(HEVC_NAME))"
 
@@ -270,16 +278,10 @@ DIST_VEC   := $(if $(filter 1,$(CDR)),$(DIST_DIR)/libnitrocdr.a) $(if $(filter 1
 # their new / delete through mimalloc, as on macOS (CorelDRAW on the M1 under Linux: ~10% faster than glibc's malloc)
 DIST_MI    := $(if $(and $(DIST_VEC),$(filter 1,$(MIMALLOC))),$(DIST_DIR)/mimalloc.o $(DIST_DIR)/nitroalloc.o)
 DIST_VDEFS  = $(if $(filter %libnitrosvg.a,$(DIST_VEC)),-DNV_SVG) $(if $(filter %libnitrocdr.a,$(DIST_VEC)),-DNV_CDR) $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
-$(DIST_DIR)/mimalloc.o $(DIST_DIR)/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
-	$(call mimalloc_objs,-march=$(DIST_ARCH))
-$(DIST_DIR)/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
-	$(call svg_lib,-march=$(DIST_ARCH))
-$(DIST_DIR)/libnitrocdr.a: CDR_C += $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
+$(DIST_DIR)/%: TCPU = $(DIST_CPU) $(DEFS)
+$(DIST_DIR)/%: TPORT = -fblocks
+$(DIST_DIR)/libnitrocdr.a: CDR_C += $(ZLIB_C)
 $(DIST_DIR)/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
-$(DIST_DIR)/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
-	$(call cdr_lib,-march=$(DIST_ARCH) -I$(ZLIB))
-$(DIST_DIR)/libnitro.a: $(LIB_SRC) $(LIB_AVIF) $(LIB_HDR) build/.config-$(CONFIG)
-	$(call nitro_lib,-O3 $(DIST_CPU) $(DEFS) -fblocks)
 $(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(DIST_DIR)/libnitro.a $(LIB_HDR) src/nitrosvg.h \
                            src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
@@ -332,11 +334,6 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 	  $(GNOME_APP_ID) stable   # (installing it fetches the GNOME runtime from Flathub if needed)
 	@echo "built $(FLATPAK_BUNDLE)"
 
-# optional Wuffs PNG decoder (third_party/wuffs.c, Apache-2.0), compiled once
-build/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
-	@mkdir -p build
-	$(CC) -O3 $(CPUFLAGS) -w -c $< -o $@
-
 # optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp,
 # one static library, compiled once (in parallel); $(1): compiler flags (architecture, CPU)
 SVG_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
@@ -352,8 +349,6 @@ define svg_lib
 	@rm -f $@ && $(AR) rcs $@ $(@D)/svgobj/*.o
 endef
 SVG_STAMP = $(wildcard $(LUNA)/.stamp-*)   # changes with the lunasvg commit / patches/lunasvg.patch
-build/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
-	$(call svg_lib,$(CPUFLAGS))
 
 # optional CorelDRAW rendering: libcdr + librevenge (its core and streams; the SVG generator is
 # part of the core: libcdr renders full colour pattern fills with it) +
@@ -368,6 +363,8 @@ CDR_CXX  = $(wildcard $(LIBCDR)/src/lib/*.cpp) src/nitrocdr.cpp \
 CDR_DEFS := -DBOOST_ALL_NO_LIB -DBOOST_ERROR_CODE_HEADER_ONLY -DLIBREVENGE_BUILD -DLIBREVENGE_STREAM_BUILD -DPLUTOVG_BUILD_STATIC \
             -I$(LIBCDR)/inc -I$(LIBREVENGE)/inc -I$(LCMS)/include -I$(BOOST) -I$(LUNA)/plutovg/include
 CDR_STAMP = $(wildcard $(LIBCDR)/.stamp-* $(LIBREVENGE)/.stamp-* $(LCMS)/.version-*)
+# zlib's inflate for the builds whose system has no zlib (Windows, the portable Linux build)
+ZLIB_C   := $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
 define cdr_lib
 	@rm -rf $(@D)/cdrobj && mkdir -p $(@D)/cdrobj
 	@echo "compiling libcdr + librevenge + lcms2 into $@"
@@ -375,18 +372,26 @@ define cdr_lib
 	@printf '%s\n' $(CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(1) -O2 -w $(CDR_DEFS) -c "$$0" -o $(@D)/cdrobj/$$(basename "$$0").o'
 	@rm -f $@ && $(AR) rcs $@ $(@D)/cdrobj/*.o
 endef
-build/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
-	$(call cdr_lib,$(CPUFLAGS))
-
 # mimalloc and the new / delete that use it; $(1): compiler flags (architecture, CPU)
 define mimalloc_objs
 	@mkdir -p $(@D)
 	$(CC) $(1) -O3 -DNDEBUG -w -I$(MI)/include -c $(MI)/src/static.c -o $(@D)/mimalloc.o
 	$(CXX) -std=c++17 $(1) -O2 -I$(MI)/include -c src/nitroalloc.cpp -o $(@D)/nitroalloc.o
 endef
-build/mimalloc.o build/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
-	$(call mimalloc_objs,$(CPUFLAGS))
 
+# the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
+%/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
+	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
+%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
+	$(call svg_lib,$(TCPU))
+%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
+	$(call cdr_lib,$(TCPU))
+%/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
+	$(call mimalloc_objs,$(TCPU))
+# optional Wuffs PNG decoder (third_party/wuffs.c, Apache-2.0), compiled once
+%/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
+	@mkdir -p $(@D)
+	$(CC) $(TCPU) -O3 -w -c $< -o $@
 
 # the Metal shader source, embedded as a byte array
 build/shaders.inc: src/shaders.metal
@@ -418,24 +423,16 @@ APPCPU_x86_64 := -march=x86-64-v3 $(X86JCC) $(DEFS)
 APPCPU_arm64  := -mcpu=apple-m1 $(DEFS)
 ljt_has = $(if $(filter 1,$(TURBOJPEG)),$(filter $(1),$(shell lipo -archs $(LJT)/lib/libturbojpeg.a 2>/dev/null)))
 dav1d_has = $(if $(filter 1,$(DAV1D)),$(filter $(1),$(shell lipo -archs $(DAV1D_LIB) 2>/dev/null)))
-build/app-%/png_wuffs.o: src/png_wuffs.c src/png_wuffs.h
-	@mkdir -p $(@D)
-	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) -w -c $< -o $@
-build/app-%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
-	$(call svg_lib,-arch $* $(MAC_MIN) $(APPCPU_$*))
-build/app-%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
-	$(call cdr_lib,-arch $* $(MAC_MIN) $(APPCPU_$*))
-build/app-%/mimalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
-	$(call mimalloc_objs,-arch $* $(MAC_MIN) $(APPCPU_$*))
-# the library per architecture (AVIF in the slices whose architecture dav1d has)
-app_arch = $(patsubst build/app-%/libnitro.a,%,$@)
+# the slice's architecture from a build/app-<arch>/... target name
+app_arch = $(firstword $(subst /, ,$(patsubst build/app-%,%,$@)))
+build/app-%: TCPU = -arch $(app_arch) $(MAC_MIN) $(APPCPU_$(app_arch))
+build/app-%: TPORT =
+# (AVIF in the slices whose architecture dav1d has)
 build/app-%/libnitro.a: LIB_AVIF = $(if $(call dav1d_has,$(app_arch)),src/nitroavif.c)
 build/app-%/libnitro.a: LIB_DEFS = $(if $(call dav1d_has,$(app_arch)),$(DAV1D_DEFS))
-build/app-%/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
-	$(call nitro_lib,-arch $* $(MAC_MIN) -O3 $(APPCPU_$*))
 build/app-%/nitroview: src/nitroview.m $(VIEWER_SRC) $(VIEWER_HDR) build/shaders.inc build/app-%/libnitro.a $(LIB_HDR) $(if $(filter 1,$(WUFFS)),build/app-%/png_wuffs.o) \
                        $(if $(filter 1,$(SVG)),build/app-%/libnitrosvg.a) $(if $(filter 1,$(CDR)),build/app-%/libnitrocdr.a) \
-                       $(if $(filter 1,$(MIMALLOC)),build/app-%/mimalloc.o) \
+                       $(if $(filter 1,$(MIMALLOC)),build/app-%/mimalloc.o build/app-%/nitroalloc.o) \
                        build/.config-$(CONFIG) Makefile
 	@mkdir -p $(@D)
 	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) $(WARN) -Ibuild -Isrc \
@@ -580,25 +577,17 @@ WIN_CXXLIBS := $(if $(WIN_OBJS),-lc++)
 DAV1D_WIN := third_party/dav1d-win
 WIN_DAV1D := $(if $(and $(filter-out 0,$(DAV1D)),$(wildcard $(DAV1D_WIN)/lib/libdav1d.a)),1)
 WIN_AVIF  := $(if $(WIN_DAV1D),-DNV_DAV1D -I$(DAV1D_WIN)/include)
-# the library, cross-compiled (nitroavif in it with dav1d-win)
-build/win/libnitro.a: CC = $(WINCC)
-build/win/libnitro.a: AR = $(WINAR)
+# the libraries, cross-compiled (nitroavif in libnitro with dav1d-win); rebuilt when WINARCH changes
+build/win/%: CC = $(WINCC)
+build/win/%: CXX = $(WINCXX)
+build/win/%: AR = $(WINAR)
+build/win/%: TCPU = -march=$(WINARCH) $(X86JCC) $(DEFS)
+build/win/%: TPORT = -fblocks -static
 build/win/libnitro.a: LIB_AVIF = $(if $(WIN_DAV1D),src/nitroavif.c)
 build/win/libnitro.a: LIB_DEFS = $(WIN_AVIF)
-build/win/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG) $(WIN_STAMP)
-	$(call nitro_lib,$(WINFLAGS))
-build/win/libnitrosvg.a: CC = $(WINCC)
-build/win/libnitrosvg.a: CXX = $(WINCXX)
-build/win/libnitrosvg.a: AR = $(WINAR)
-build/win/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP) $(WIN_STAMP)
-	$(call svg_lib,-march=$(WINARCH))
-build/win/libnitrocdr.a: CC = $(WINCC)
-build/win/libnitrocdr.a: CXX = $(WINCXX)
-build/win/libnitrocdr.a: AR = $(WINAR)
-build/win/libnitrocdr.a: CDR_C += $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
+build/win/libnitrocdr.a: CDR_C += $(ZLIB_C)
 build/win/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
-build/win/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP) $(WIN_STAMP)
-	$(call cdr_lib,-march=$(WINARCH) -I$(ZLIB))
+build/win/libnitro.a build/win/libnitrosvg.a build/win/libnitrocdr.a: $(WIN_STAMP)
 nitroview.exe: src/nitroview_win.c $(VIEWER_SRC) $(VIEWER_HDR) build/win/libnitro.a $(LIB_HDR) build/nitroview_res.o $(WIN_OBJS) \
                src/nitrosvg.h src/nitrocdr.h $(WIN_STAMP) Makefile
 	$(WINCC) $(WINFLAGS) $(WIN_DEFS) $(WIN_AVIF) -Ibuild -Isrc -municode src/nitroview_win.c $(VIEWER_SRC) build/win/libnitro.a \
