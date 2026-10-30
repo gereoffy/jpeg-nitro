@@ -208,7 +208,7 @@ GNOME_SVG := $(if $(filter 1,$(SVG)),build/libnitrosvg.a)
 GNOME_CDR := $(if $(and $(GNOME_SVG),$(filter 1,$(CDR))),build/libnitrocdr.a)
 
 GNOME_AVIF := $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB))
-$(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) build/libnitro.a $(GNOME_SVG) $(GNOME_CDR) $(GNOME_AVIF)
+$(GNOME_BIN): $(GNOME_SRC) $(GNOME_HDR) build/libnitro.a $(GNOME_SVG) $(GNOME_CDR) $(GNOME_AVIF) Makefile
 	@pkg-config --exists $(GNOME_PKGS) || { echo "missing GNOME development packages: gtk4 libadwaita-1"; exit 1; }
 	@pkg-config --atleast-version=4.6 gtk4 || { echo "GNOME frontend requires GTK 4.6 or newer"; exit 1; }
 	@pkg-config --atleast-version=1.1 libadwaita-1 || { echo "GNOME frontend requires libadwaita 1.1 or newer"; exit 1; }
@@ -242,7 +242,7 @@ build/icon.inc: packaging/icon.png
 	@mkdir -p build
 	cd packaging && xxd -i icon.png > ../build/icon.inc
 
-$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) src/nitrosvg.h src/nitrocdr.h
+$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) src/nitrosvg.h src/nitrocdr.h Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	$(CC) $(CFLAGS) $(SDL_VDEFS) -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(SDL_DEC) $(SDL_AVIF) \
 	  $(SDL_VEC) $(SDL_LIBS) $(SDL_VLIBS) $(THREADLIBS) -lm -o $@
@@ -280,7 +280,7 @@ $(DIST_DIR)/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
 $(DIST_DIR)/libnitro.a: $(LIB_SRC) $(LIB_AVIF) $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(DIST_CPU) $(DEFS) -fblocks)
 $(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(DIST_DIR)/libnitro.a $(LIB_HDR) src/nitrosvg.h \
-                           src/nitrocdr.h $(DIST_VEC) $(DIST_MI)
+                           src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	@mkdir -p $(@D)
 	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks -Wall -Wextra -Wno-unused-parameter \
@@ -487,7 +487,7 @@ bench/verify: bench/verify.c build/nitrojpeg_ref.o | ljt
 
 # robustness test on damaged files (production decoder + TurboJPEG fallback, like
 # the viewer), with AddressSanitizer + UBSan
-bench/robust: bench/robust.c src/nitrojpeg.c src/nitrojpeg.h | ljt
+bench/robust: bench/robust.c src/nitrojpeg.c src/nitrojpeg.h src/nitro_os.h src/tiff.h | ljt
 	$(CC) $(ASAN) -I$(LJT)/include bench/robust.c src/nitrojpeg.c $(REF_LIBS) $(THREADLIBS) -o $@
 
 bench/pngbench: bench/pngbench.m build/libnitro.a | deps
@@ -502,7 +502,7 @@ bench/pngverify: bench/pngverify.c build/libnitro.a
 	$(CC) -O3 $(CPUFLAGS) $(PORTFLAGS) -w -Isrc $^ -lz $(THREADLIBS) -o $@
 
 # nitropng robustness test on damaged PNGs, with AddressSanitizer + UBSan
-bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h
+bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h src/nitro_os.h
 	$(CC) $(ASAN) bench/pngrobust.c src/nitropng.c $(THREADLIBS) -o $@
 
 bench/psdverify: bench/psdverify.c build/libnitro.a
@@ -513,7 +513,7 @@ bench/nbench: bench/nbench.c build/libnitro.a
 	$(CC) $(CFLAGS) -Isrc $^ $(THREADLIBS) -o $@
 
 # nitropsd robustness test on damaged PSDs, with AddressSanitizer + UBSan
-bench/psdrobust: bench/psdrobust.c src/nitropsd.c src/nitropsd.h src/nitropng.c
+bench/psdrobust: bench/psdrobust.c src/nitropsd.c src/nitropsd.h src/nitropng.c src/nitropng.h src/nitro_os.h
 	$(CC) $(ASAN) bench/psdrobust.c src/nitropsd.c src/nitropng.c $(THREADLIBS) -o $@
 
 bench/pngsplit: bench/pngsplit.c
@@ -538,7 +538,8 @@ linux: build/libnitro.a $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe
+	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
+	  examples/nitroconvert
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
@@ -600,7 +601,7 @@ build/win/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
 build/win/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP) $(WIN_STAMP)
 	$(call cdr_lib,-march=$(WINARCH) -I$(ZLIB))
 nitroview.exe: src/nitroview_win.c $(VIEWER_SRC) $(VIEWER_HDR) build/win/libnitro.a $(LIB_HDR) build/nitroview_res.o $(WIN_OBJS) \
-               src/nitrosvg.h src/nitrocdr.h $(WIN_STAMP)
+               src/nitrosvg.h src/nitrocdr.h $(WIN_STAMP) Makefile
 	$(WINCC) $(WINFLAGS) $(WIN_DEFS) $(WIN_AVIF) -Ibuild -Isrc -municode src/nitroview_win.c $(VIEWER_SRC) build/win/libnitro.a \
 	  $(if $(WIN_DAV1D),$(DAV1D_WIN)/lib/libdav1d.a) build/nitroview_res.o $(WIN_OBJS) $(WINLIBS) $(WIN_CXXLIBS) -o $@
 windows: nitroview.exe bench/nbench.exe bench/psdverify.exe
