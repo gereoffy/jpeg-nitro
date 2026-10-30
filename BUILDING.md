@@ -39,7 +39,7 @@ the whole element) and `patches/librevenge.patch` (embedded images pass through 
 ## macOS
 
 ```
-make                 # nitroview, for the CPU it is built on (-march=native)
+make                 # nitroview, for the CPU it is built on (-march=native); on macOS this is the default target
 make app             # nitroview.app: universal (Intel + Apple Silicon), macOS 12+, ad-hoc signed
 make zip / make dmg  # nitroview.zip / nitroview.dmg of the app, for passing it on
 make dmg notarize SIGN_ID="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=name
@@ -83,7 +83,7 @@ AVIF needs dav1d built for Windows first: `WINCC=… scripts/get-deps.sh` with t
 ## Linux
 
 ```
-make                 # = make linux: build/libnitro.a and the portable tools
+make linux           # build/libnitro.a and the portable tools; on Linux a plain make does the same
 make gnome           # nitroview-gnome (GTK 4 + libadwaita), the decoders linked in statically
 make gnome-register  # its desktop file and icon for the current user
 make flatpak         # nitroview-gnome.flatpak on the GNOME 50 runtime
