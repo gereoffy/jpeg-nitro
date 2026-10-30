@@ -91,7 +91,7 @@ typedef int GLint, GLsizei;
 typedef float GLfloat;
 typedef unsigned char GLubyte;
 typedef char GLchar;
-typedef ptrdiff_t GLsizeiptr;
+typedef ptrdiff_t GLsizeiptr, GLintptr;
 #ifdef _WIN32
 #define NVGL __stdcall
 #else
@@ -131,6 +131,10 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_COLOR_BUFFER_BIT 0x4000
 #define GL_STATIC_DRAW 0x88E4
+#define GL_STREAM_DRAW 0x88E0
+#define GL_PIXEL_UNPACK_BUFFER 0x88EC
+#define GL_MAP_WRITE_BIT 0x0002
+#define GL_MAP_INVALIDATE_BUFFER_BIT 0x0008
 #define GL_ARRAY_BUFFER 0x8892
 #define GL_FLOAT 0x1406
 #define GL_MAX_TEXTURE_SIZE 0x0D33
@@ -181,6 +185,8 @@ typedef ptrdiff_t GLsizeiptr;
     X(void, glDeleteBuffers, (GLsizei n, const GLuint *b)) \
     X(void, glBindBuffer, (GLenum target, GLuint b)) \
     X(void, glBufferData, (GLenum target, GLsizeiptr size, const void *data, GLenum usage)) \
+    X(void *, glMapBufferRange, (GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)) \
+    X(GLubyte, glUnmapBuffer, (GLenum target)) \
     X(void, glTexBuffer, (GLenum target, GLenum ifmt, GLuint b)) \
     X(void, glFinish, (void)) \
     X(void, glFlush, (void)) \
@@ -246,6 +252,8 @@ typedef struct {
     size_t cap;
     GLuint tex;                        // converted RGBA + mips (main thread)
     int noconv;                        // the conversion failed: not tried again
+    int stage;                         // the data is in staging buffer stage-1 (stage_image), not in buf
+    double stage_ms;                   // ... copied there in this long (decoder thread)
     double read_ms, decode_ms, upload_ms, conv_ms;
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
@@ -705,19 +713,103 @@ static int png_to_bgra(Decoded *d) {
     return 0;
 }
 
+// Staging buffers: the decoder thread copies the decoded data into a buffer the GPU can read
+// (a pixel buffer object the main thread mapped in advance), so the upload is the GPU's own
+// copy, and the main thread doesn't copy 30-100 MB into the driver for each image (10-30 ms).
+// NSTAGE of them, as large as the largest image so far (up to STAGE_MAX); an image that finds
+// none free is uploaded from its host buffer, as before.
+#define NSTAGE 2
+#define STAGE_MAX ((size_t)160 << 20)
+enum { ST_NONE, ST_MAPPED, ST_FILLED };   // nothing / free, mapped for the decoder / holding an image
+static struct { GLuint id; size_t cap; void *map; int state; } g_stage[NSTAGE];   // (g_pool_lock)
+static size_t g_stage_cap;
+
+// Main thread: the free staging buffers exist, mapped, at least `need` bytes (grown if smaller).
+static void stage_prepare(size_t need) {
+    if (need > STAGE_MAX) return;
+    need = align_up(need, (size_t)1 << 20);
+    SDL_LockMutex(g_pool_lock);
+    if (need > g_stage_cap) g_stage_cap = need;
+    for (int i = 0; i < NSTAGE; i++) {
+        if (g_stage[i].state == ST_FILLED || (g_stage[i].state == ST_MAPPED && g_stage[i].cap >= g_stage_cap)) continue;
+        if (!g_stage[i].id) glGenBuffers(1, &g_stage[i].id);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_stage[i].id);
+        if (g_stage[i].state == ST_MAPPED) glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+        if (g_stage[i].cap < g_stage_cap) {
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)g_stage_cap, NULL, GL_STREAM_DRAW);
+            g_stage[i].cap = g_stage_cap;
+        }
+        g_stage[i].map = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)g_stage[i].cap, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+        g_stage[i].state = g_stage[i].map ? ST_MAPPED : ST_NONE;
+    }
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    SDL_UnlockMutex(g_pool_lock);
+}
+
+// Main thread: staging buffer st is free again. consumed: it was unmapped and uploaded from, so
+// it is mapped again (a new data store: the GPU may still be reading the old one).
+static void stage_release(int st, int consumed) {
+    SDL_LockMutex(g_pool_lock);
+    if (consumed) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_stage[st].id);
+        g_stage[st].map = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)g_stage[st].cap, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        g_stage[st].state = g_stage[st].map ? ST_MAPPED : ST_NONE;
+    } else {
+        g_stage[st].state = ST_MAPPED;
+    }
+    SDL_UnlockMutex(g_pool_lock);
+}
+
+// Decoder thread: the decoded data into a free staging buffer, the host buffer released. (Not
+// the PNG rows the CPU converts, png_to_bgra reads them; not when none is free: it stays in buf.)
+static void stage_image(Decoded *d) {
+    if (d->kind == KIND_PNG && d->size > (size_t)MAX(g_max_tbo, 0)) return;
+    SDL_LockMutex(g_pool_lock);
+    int k = -1;
+    for (int i = 0; i < NSTAGE; i++)
+        if (g_stage[i].state == ST_MAPPED && g_stage[i].cap >= d->size && (k < 0 || g_stage[i].cap < g_stage[k].cap)) k = i;
+    if (k >= 0) g_stage[k].state = ST_FILLED;
+    SDL_UnlockMutex(g_pool_lock);
+    if (k < 0) return;
+    double t = now_ms();
+    memcpy(g_stage[k].map, d->buf, d->size);
+    d->stage_ms = now_ms() - t;
+    buf_put(d->buf, d->cap);
+    d->buf = NULL;
+    d->stage = k + 1;
+}
+
 // Upload + convert + mipmaps on the GPU. Main thread.
 static GLuint texture_for(Decoded *d) {
     if (d->tex) return d->tex;
-    if (!d->buf) return 0;
+    if (!d->buf && !d->stage) return 0;
     if (d->kind == KIND_PNG && d->size > (size_t)MAX(g_max_tbo, 0) && png_to_bgra(d)) return 0;
     d->tex = tex_get(d->width, d->height);
     if (!d->tex) return 0;
     double t0 = now_ms();
+    // the source: the host buffer, or offsets into the staging buffer, unmapped now that the
+    // decoder has written it (the uploads then are the GPU's copies)
+    int st = d->stage - 1;
+    const uint8_t *base = d->buf;
+    if (st >= 0) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_stage[st].id);
+        if (!glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER)) {   // (its data store was lost)
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            stage_release(st, 1);
+            d->stage = 0;
+            tex_put(d->tex, d->width, d->height);
+            d->tex = 0;
+            return 0;
+        }
+        base = NULL;
+    }
+#define SRC(off) (base ? base + (off) : (const uint8_t *)(uintptr_t)(off))
     if (d->kind == KIND_BGRA) {   // already the pixels: straight into the texture
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, d->tex);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(d->pitch[0] / 4));
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, d->width, d->height, GL_BGRA, GL_UNSIGNED_BYTE, d->buf);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, d->width, d->height, GL_BGRA, GL_UNSIGNED_BYTE, SRC(0));
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         if (g_bench_split) glFinish();
         d->upload_ms = now_ms() - t0;
@@ -726,9 +818,13 @@ static GLuint texture_for(Decoded *d) {
         int kind = 0, n = 0;
         if (d->kind == KIND_PNG) {
             kind = 3;
-            glGenBuffers(1, &tbo);
-            glBindBuffer(GL_TEXTURE_BUFFER, tbo);
-            glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)d->size, d->buf, GL_STATIC_DRAW);
+            if (st >= 0) {
+                tbo = g_stage[st].id;   // the rows are read straight from the staging buffer
+            } else {
+                glGenBuffers(1, &tbo);
+                glBindBuffer(GL_TEXTURE_BUFFER, tbo);
+                glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)d->size, d->buf, GL_STATIC_DRAW);
+            }
             glGenTextures(1, &tbt);
             glActiveTexture(GL_TEXTURE0 + 5);
             glBindTexture(GL_TEXTURE_BUFFER, tbt);
@@ -737,11 +833,11 @@ static GLuint texture_for(Decoded *d) {
             kind = 4;
             n = d->ncomp + d->hasa;
             for (int c = 0; c < n; c++)
-                pl[c] = plane_texture(1 + c, d->buf + (size_t)c * d->width * d->height, d->width, d->height, (size_t)d->width);
+                pl[c] = plane_texture(1 + c, SRC((size_t)c * d->width * d->height), d->width, d->height, (size_t)d->width);
         } else {
             kind = d->ncomp == 1 ? 1 : d->limited ? 5 : 0;
             n = d->ncomp;
-            for (int c = 0; c < n; c++) pl[c] = plane_texture(1 + c, d->buf + d->offset[c], d->pw[c], d->ph[c], d->pitch[c]);
+            for (int c = 0; c < n; c++) pl[c] = plane_texture(1 + c, SRC(d->offset[c]), d->pw[c], d->ph[c], d->pitch[c]);
         }
         if (kind == 4 || kind == 1) {   // gray: plane 0 three times; PSD transparency in unit 4
             GLuint t1 = d->ncomp == 3 ? pl[1] : pl[0], t2 = d->ncomp == 3 ? pl[2] : pl[0];
@@ -780,13 +876,20 @@ static GLuint texture_for(Decoded *d) {
         d->conv_ms = now_ms() - t1;
         glDeleteTextures(4, pl);
         if (tbt) glDeleteTextures(1, &tbt);
-        if (tbo) glDeleteBuffers(1, &tbo);
+        if (tbo && st < 0) glDeleteBuffers(1, &tbo);
+    }
+#undef SRC
+    if (st >= 0) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        stage_release(st, 1);
+        d->stage = 0;
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d->tex);
     glGenerateMipmap(GL_TEXTURE_2D);
     buf_put(d->buf, d->cap);   // the decoded data is not needed any more
     d->buf = NULL;
+    stage_prepare(d->size);   // (staging buffers for the images to come: this large at least)
     return d->tex;
 }
 
@@ -794,6 +897,7 @@ static void decoded_free(Decoded *d) {   // main thread
     if (!d) return;
     tex_put(d->tex, d->width, d->height);
     buf_put(d->buf, d->cap);
+    if (d->stage) stage_release(d->stage - 1, 0);
 #ifdef NV_VECTOR
     if (d->dtex) glDeleteTextures(1, &d->dtex);
     vec_unref(d->vec);
@@ -1002,6 +1106,7 @@ static Decoded *decode_file(const char *path, char **error) {
     d->buf = buf;
     d->cap = cap;
     d->decode_ms = now_ms() - t1;
+    stage_image(d);
     return d;
 }
 
@@ -1571,9 +1676,16 @@ static int next_to_convert(void) {   // its index, -1 if none
     for (int i = 0; i < 2; i++) {
         if (k[i] < 0 || k[i] >= V.nfiles) continue;
         Decoded *d = loader_get(k[i]);
-        if (d && !d->tex && d->buf && !d->noconv) return k[i];
+        if (d && !d->tex && (d->buf || d->stage) && !d->noconv) return k[i];
     }
     return -1;
+}
+
+static const char *staged_note(const Decoded *d) {   // (NV_DEBUG_TIME)
+    static char b[48];
+    if (!d->stage_ms) return "";
+    snprintf(b, sizeof b, ", staged %.1f", d->stage_ms);
+    return b;
 }
 
 static void convert_ahead(void) {   // main thread: after a draw, and on EV_CONVERT
@@ -1584,8 +1696,8 @@ static void convert_ahead(void) {   // main thread: after a draw, and on EV_CONV
     if (!texture_for(d)) d->noconv = 1;
     glFlush();
     if (g_debug_time)
-        printf("  converted ahead [%d] %s: %.1f ms (upload %.1f, convert %.1f)\n", k + 1, base_name(V.files[k]), now_ms() - t,
-               d->upload_ms, d->conv_ms);
+        printf("  converted ahead [%d] %s: %.1f ms (upload %.1f, convert %.1f%s)\n", k + 1, base_name(V.files[k]), now_ms() - t,
+               d->upload_ms, d->conv_ms, staged_note(d));
     if (next_to_convert() >= 0) post(EV_CONVERT, 0, NULL);
 }
 
@@ -1833,7 +1945,7 @@ static void render(void) {
     if (g_debug_time && tex) {   // (the upload and conversion times are the CPU's side: the GPU's share waits in the swap)
         if (first) printf("  timing: event->draw %.1f ms, ", t0 - V.request_time);
         else printf("  timing: redraw, ");
-        if (converting) printf("texture %.1f ms (upload %.1f, convert %.1f), ", t1 - t0, d->upload_ms, d->conv_ms);
+        if (converting) printf("texture %.1f ms (upload %.1f, convert %.1f%s), ", t1 - t0, d->upload_ms, d->conv_ms, staged_note(d));
         else printf("texture ready, ");
         printf("draw %.1f ms, swap %.1f ms\n", t2 - t1, t3 - t2);
     }
