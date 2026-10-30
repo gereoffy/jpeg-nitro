@@ -1820,7 +1820,20 @@ static void anchor_of(float x, float y, double *ax, double *ay) {   // window co
     *ay = y * k - V.vh / 2.0;
 }
 
-static void on_char(char ch) {   // zoom keys by character: any keyboard layout, the numeric keypad too
+// The character a key makes with its modifiers on the current layout ('+' is Shift+= on a US
+// keyboard, Shift+3 on a Hungarian one), the numeric keypad's too; 0 if none. Not from text
+// input: that would send every key through the input method first (on Linux a round trip to
+// ibus, X11 and Wayland alike), the viewer has no text to enter.
+static char key_char(SDL_Scancode sc, SDL_Keymod mod) {
+    SDL_Keycode k = SDL_GetKeyFromScancode(sc, mod, false);
+    if (k == SDLK_KP_PLUS) return '+';
+    if (k == SDLK_KP_MINUS) return '-';
+    if (k == SDLK_KP_0) return '0';
+    if (k >= SDLK_KP_1 && k <= SDLK_KP_9) return (char)('1' + (k - SDLK_KP_1));
+    return k > 0 && k < 128 ? (char)k : 0;
+}
+
+static void on_char(char ch) {   // zoom keys by character (key_char): any keyboard layout, the numeric keypad too
     Decoded *cur = V.nfiles ? loader_get(V.index) : NULL;
     switch (ch) {
     case '+': case '=': if (cur) zoom_by(M_SQRT2, cur, 0, 0, 0); break;
@@ -1976,11 +1989,10 @@ static void handle(const SDL_Event *e) {
     case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: fullscreen_changed(1); break;
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: fullscreen_changed(0); break;
     case SDL_EVENT_WINDOW_DISPLAY_CHANGED: update_vector_target(); break;
-    case SDL_EVENT_TEXT_INPUT:
-        for (const char *c = e->text.text; *c; c++)
-            if (!(*c & 0x80)) on_char(*c);
+    case SDL_EVENT_KEY_DOWN:
+        on_key(e->key.key, e->key.mod);
+        if (!(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) on_char(key_char(e->key.scancode, e->key.mod));
         break;
-    case SDL_EVENT_KEY_DOWN: on_key(e->key.key, e->key.mod); break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (e->button.button == SDL_BUTTON_LEFT) {
             if (e->button.clicks == 2) {   // fit -> 100% at the clicked point, otherwise back to fit
@@ -2093,7 +2105,6 @@ static int create_window(const char *first, int hidden) {
     V.self_resize_time = now_ms();
     SDL_ShowWindow(V.win);
     SDL_GetWindowSizeInPixels(V.win, &V.vw, &V.vh);
-    SDL_StartTextInput(V.win);
     return 0;
 }
 
