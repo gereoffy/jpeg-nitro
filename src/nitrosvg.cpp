@@ -15,6 +15,7 @@ struct nitrosvg {
     std::unique_ptr<lunasvg::Document> doc;
     double w, h;     // intrinsic size
     double ox, oy;   // its top-left corner in document units (bounding box case)
+    int background = 0;   // (nitrosvg_set_background)
 };
 
 static std::mutex g_lock;   // every lunasvg call: the shared font cache has no lock of its own here
@@ -126,12 +127,16 @@ nitrosvg *nitrosvg_load(const void *data, size_t len) {
         ox = b.x;
         oy = b.y;
     }
-    return new nitrosvg{std::move(doc), w, h, ox, oy};
+    return new nitrosvg{std::move(doc), w, h, ox, oy, 0};
 }
 
 void nitrosvg_free(nitrosvg *svg) {
     std::lock_guard<std::mutex> g(g_lock);
     delete svg;
+}
+
+void nitrosvg_set_background(nitrosvg *svg, int background) {
+    if (svg && background >= 0 && background <= 2) svg->background = background;
 }
 
 void nitrosvg_size(const nitrosvg *svg, double *w, double *h) {
@@ -141,7 +146,12 @@ void nitrosvg_size(const nitrosvg *svg, double *w, double *h) {
 
 int nitrosvg_render(nitrosvg *svg, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     if (w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    for (int y = 0; y < h; y++) memset(bgra + (size_t)y * pitch, 0xFF, (size_t)w * 4);   // white, opaque
+    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};   // (opaque)
+    uint32_t bg = backgrounds[svg->background];
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
+        for (int x = 0; x < w; x++) row[x] = bg;
+    }
     std::lock_guard<std::mutex> g(g_lock);
     lunasvg::Bitmap bitmap(bgra, w, h, (int)pitch);   // ARGB32 premultiplied = BGRA bytes (little endian)
     if (bitmap.isNull()) return -1;

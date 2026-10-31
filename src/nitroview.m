@@ -99,7 +99,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 @property(nonatomic) double vectorScale;     // decoded pixels per document unit
 @property(nonatomic) int pages, page;        // a multi-page document (CDR): page count, the page shown (from 0)
 @property(nonatomic) int ev3;                // a DNG: the exposure correction it was developed with (1/3 EV)
-@property(nonatomic) int background;         // a DXF: the background it was drawn over (nitrodxf_set_background)
+@property(nonatomic) int background;         // a vector image: the background it was drawn over (g_vector_background)
 @property(nonatomic) int limited;            // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 @end
 @implementation Decoded {
@@ -189,7 +189,7 @@ enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_SVG = NV_MO
        MODE_NITROTIFF = NV_MODE_NITROTIFF, MODE_NITROAVIF = NV_MODE_NITROAVIF };   // (the rest: nitro_load.h)
 static int g_nthreads = 0;   // -j
 static _Atomic int g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
-static _Atomic int g_dxf_background;   // DXF background: 0 white, 1 AutoCAD's dark grey, 2 black (keys E / Shift+E)
+static _Atomic int g_vector_background;   // SVG / DXF / CDR background: 0 white, 1 dark grey, 2 black (keys E / Shift+E)
 
 static const char *mode_name(int m) {
     const char *n = nv_mode_name(m);
@@ -366,9 +366,13 @@ static void svg_free(void *doc) { nitrosvg_free(doc); }
 static Decoded *decode_svg(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
     nitrosvg *svg = nitrosvg_load(data.bytes, data.length);
     if (!svg) return nil;
+    int background = atomic_load(&g_vector_background);
+    nitrosvg_set_background(svg, background);
     double w, h;
     nitrosvg_size(svg, &w, &h);
-    return decode_vector(svg, w, h, svg_render, svg_free, MODE_SVG, d, pool, align, t1);
+    d = decode_vector(svg, w, h, svg_render, svg_free, MODE_SVG, d, pool, align, t1);
+    d.background = background;
+    return d;
 }
 static int dxf_render(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     return nitrodxf_render(doc, 0, bgra, w, h, pitch, scale, x0, y0);
@@ -377,7 +381,7 @@ static void dxf_free(void *doc) { nitrodxf_free(doc); }
 static Decoded *decode_dxf(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
     nitrodxf *dxf = nitrodxf_load(data.bytes, data.length);
     if (!dxf) return nil;
-    int background = atomic_load(&g_dxf_background);
+    int background = atomic_load(&g_vector_background);
     nitrodxf_set_background(dxf, background);
     double w, h;
     nitrodxf_size(dxf, 0, &w, &h);
@@ -407,8 +411,8 @@ static void cdr_free(void *doc) {
     }
     free(p);
 }
-static Decoded *decode_cdr_page(nitrocdr *cdr, _Atomic int *refs, int page, Decoded *d, BufferPool *pool, size_t align,
-                                double t1) {
+static Decoded *decode_cdr_page(nitrocdr *cdr, _Atomic int *refs, int page, int background, Decoded *d, BufferPool *pool,
+                                size_t align, double t1) {
     CdrPage *p = malloc(sizeof *p);
     if (!p) return nil;
     atomic_fetch_add(refs, 1);
@@ -418,6 +422,7 @@ static Decoded *decode_cdr_page(nitrocdr *cdr, _Atomic int *refs, int page, Deco
     d = decode_vector(p, w, h, cdr_render, cdr_free, MODE_CDR, d, pool, align, t1);   // (frees p on failure)
     d.pages = nitrocdr_pages(cdr);
     d.page = page;
+    d.background = background;
     return d;
 }
 static Decoded *decode_cdr(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
@@ -428,7 +433,9 @@ static Decoded *decode_cdr(NSData *data, Decoded *d, BufferPool *pool, size_t al
         return nil;
     }
     atomic_init(refs, 1);   // (this function's own reference, dropped below)
-    d = decode_cdr_page(cdr, refs, 0, d, pool, align, t1);
+    int background = atomic_load(&g_vector_background);
+    nitrocdr_set_background(cdr, background);
+    d = decode_cdr_page(cdr, refs, 0, background, d, pool, align, t1);
     if (atomic_fetch_sub(refs, 1) == 1) {   // the first page failed
         nitrocdr_free(cdr);
         free(refs);
@@ -440,7 +447,7 @@ static Decoded *cdr_page(Decoded *d, int page, BufferPool *pool, size_t align) {
     if (d.mode != MODE_CDR || !d.vector || page < 0 || page >= d.pages) return nil;
     CdrPage *p = d.vector;
     double t1 = now_ms();
-    Decoded *n = decode_cdr_page(p->cdr, p->refs, page, [Decoded new], pool, align, t1);
+    Decoded *n = decode_cdr_page(p->cdr, p->refs, page, d.background, [Decoded new], pool, align, t1);
     n.read_ms = d.read_ms;
     return n;
 }
@@ -722,8 +729,8 @@ typedef struct {
 // The size vector images are rendered for changed (see g_vector_tw): prefetched ones too small
 // for it are dropped and rendered again (the current one is sharpened by vectorDetail).
 - (void)vectorTargetChanged;
-// The DNG exposure correction (g_dng_ev3) or the DXF background (g_dxf_background) changed:
-// prefetched DNGs / DXFs are dropped and decoded again, the current one is replaced when its new
+// The DNG exposure correction (g_dng_ev3) or the vector background (g_vector_background) changed:
+// prefetched DNGs / vector images are dropped and decoded again, the current one is replaced when its new
 // decoding is ready (it stays on screen until then).
 - (void)displaySettingChanged;
 @property(nonatomic, copy) void (^onDecoded)(NSInteger index);
@@ -737,7 +744,7 @@ typedef struct {
 }
 static BOOL stale_setting(Decoded *d) {
     return (d.mode == MODE_NITRODNG && d.ev3 != atomic_load(&g_dng_ev3)) ||
-           (d.mode == MODE_DXF && d.background != atomic_load(&g_dxf_background));
+           ((d.mode == MODE_SVG || d.mode == MODE_DXF || d.mode == MODE_CDR) && d.background != atomic_load(&g_vector_background));
 }
 
 // the callbacks (paths: NSStrings, images: Decodeds, both retained for the loader)
@@ -1081,7 +1088,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     if (d.pages > 1) t = [t stringByAppendingFormat:@"  [page %d/%d]", d.page + 1, d.pages];
     if (d.mode == MODE_NITRODNG && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
-    if (d.mode == MODE_DXF && d.background) t = [t stringByAppendingString:d.background == 1 ? @"  dark background" : @"  black background"];
+    if ((d.mode == MODE_SVG || d.mode == MODE_DXF || d.mode == MODE_CDR) && d.background) t = [t stringByAppendingString:d.background == 1 ? @"  dark background" : @"  black background"];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -1480,10 +1487,10 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             if (cur) [self zoomTo:[ch characterAtIndex:0] - '0' image:cur view:self.drawableSize];
             return;
         case 'w': case 'W': [self windowToImage]; return;
-        case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; DXF: the next (Shift: previous) background
+        case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; SVG / DXF / CDR: the next (Shift: previous) background
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
-            if (cur && cur.mode == MODE_DXF) {
-                atomic_store(&g_dxf_background, (atomic_load(&g_dxf_background) + (back ? 2 : 1)) % 3);
+            if (cur && (cur.mode == MODE_SVG || cur.mode == MODE_DXF || cur.mode == MODE_CDR)) {
+                atomic_store(&g_vector_background, (atomic_load(&g_vector_background) + (back ? 2 : 1)) % 3);
                 [_loader displaySettingChanged];
                 return;
             }
@@ -2293,7 +2300,7 @@ int main(int argc, const char **argv) {
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
                 "  W                       back to the image's own size (small images 100%%, window follows)\n"
                 "  E / Shift+E             DNG raw image: brighter / darker (1/3 EV steps, kept while paging)\n"
-                "                          DXF drawing: the next / previous background (white, dark grey, black)\n"
+                "                          SVG / DXF / CorelDRAW drawing: the next / previous background (white, dark grey, black)\n"
                 "  Del, Cmd+Backspace      move the file to the .delete folder next to it   U / Cmd+Z  undo\n"
                 "mouse:\n"
                 "  drag                    move a zoomed image\n"

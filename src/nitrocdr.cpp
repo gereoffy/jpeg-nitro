@@ -878,6 +878,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
 
 struct nitrocdr {
     std::vector<Page> pages;
+    int background = 0;   // (nitrocdr_set_background)
 };
 
 nitrocdr *nitrocdr_load(const void *data, size_t len) {
@@ -933,7 +934,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
         pg.w = x1 - x0 + 2 * m;
         pg.h = y1 - y0 + 2 * m;
     }
-    return new nitrocdr{std::move(painter.pages)};
+    return new nitrocdr{std::move(painter.pages), 0};
 }
 
 void nitrocdr_free(nitrocdr *cdr) {
@@ -943,6 +944,10 @@ void nitrocdr_free(nitrocdr *cdr) {
 
 int nitrocdr_pages(const nitrocdr *cdr) { return (int)cdr->pages.size(); }
 
+void nitrocdr_set_background(nitrocdr *cdr, int background) {
+    if (cdr && background >= 0 && background <= 2) cdr->background = background;
+}
+
 void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h) {
     *w = cdr->pages[page].w;
     *h = cdr->pages[page].h;
@@ -950,7 +955,12 @@ void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h) {
 
 int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     if (page < 0 || page >= (int)cdr->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    for (int y = 0; y < h; y++) memset(bgra + (size_t)y * pitch, 0xFF, (size_t)w * 4);   // white, opaque
+    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};   // (opaque)
+    uint32_t bg = backgrounds[cdr->background];
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
+        for (int x = 0; x < w; x++) row[x] = bg;
+    }
     std::lock_guard<std::mutex> g(g_lock);
     plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
     plutovg_canvas_t *c = plutovg_canvas_create(surface);
