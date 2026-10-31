@@ -28,6 +28,7 @@ MIMALLOC_VER=2.1.7
 BOOST_VER=1.89.0
 SDL_VER=3.4.18
 DAV1D_VER=1.5.4   # (macOS: universal since nitroview.app uses it too; also in packaging/flatpak/*.json, with its sha256)
+MACOS_MIN=11.0   # (macOS deployment target of every library; the Makefile's MAC_MIN too)
 JOBS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)
 
 if [ ! -f stb_image.h ]; then
@@ -120,7 +121,7 @@ build_ljt() {   # arch prefix
     *) PROC=$A; CPU="" ;;
   esac
   local MAC=()
-  [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_ARCHITECTURES="$A" -DCMAKE_SYSTEM_PROCESSOR="$PROC" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
+  [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_ARCHITECTURES="$A" -DCMAKE_SYSTEM_PROCESSOR="$PROC" -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOS_MIN)
   [ -d libjpeg-turbo-$LJT_VER ] || {
     curl -fsSL -o ljt.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LJT_VER/libjpeg-turbo-$LJT_VER.tar.gz
     tar xf ljt.tar.gz
@@ -135,14 +136,14 @@ build_ljt() {   # arch prefix
 
 if [ "$(uname -s)" = Darwin ]; then
   # macOS: both architectures in one (universal) library, for the universal nitroview.app
-  if [ ! -f ljt/.universal-macos12 ]; then   # (older versions built only the host architecture)
+  if [ ! -f ljt/.universal-macos$MACOS_MIN ]; then   # (older versions built only the host architecture)
     build_ljt x86_64 ljt-x86_64
     build_ljt arm64 ljt-arm64
     rm -rf ljt && cp -R ljt-x86_64 ljt
     for L in libturbojpeg.a libjpeg.a; do
       lipo -create ljt-x86_64/lib/$L ljt-arm64/lib/$L -output ljt/lib/$L
     done
-    touch ljt/.universal-macos12
+    touch ljt/.universal-macos$MACOS_MIN
   fi
 elif [ ! -f ljt/lib/libturbojpeg.a ]; then
   build_ljt "$(uname -m)" ljt
@@ -158,7 +159,7 @@ if [ "${SDL:-1}" = 1 ] && [ ! -f sdl3/.version-$SDL_VER ]; then
   curl -fsSL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL3-$SDL_VER.tar.gz
   tar xf sdl3.tar.gz && rm sdl3.tar.gz
   MAC=()
-  [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
+  [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOS_MIN)
   (cd SDL3-$SDL_VER &&
    "$CMAKE" -S . -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF \
      -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_AUDIO=OFF -DSDL_CAMERA=OFF -DSDL_JOYSTICK=OFF -DSDL_HAPTIC=OFF \
@@ -184,7 +185,8 @@ dav1d_source() {
     tar xf dav1d.tar.xz && rm dav1d.tar.xz
   fi
 }
-if [ "${DAV1D:-1}" = 1 ] && [ ! -f dav1d/.version-$DAV1D_VER ]; then
+DAV1D_STAMP=dav1d/.version-$DAV1D_VER$([ "$(uname -s)" = Darwin ] && echo "-macos$MACOS_MIN")
+if [ "${DAV1D:-1}" = 1 ] && [ ! -f "$DAV1D_STAMP" ]; then
   rm -rf dav1d dav1d-x86_64 dav1d-arm64
   dav1d_source
   if [ "$(uname -s)" = Darwin ]; then
@@ -192,11 +194,11 @@ if [ "${DAV1D:-1}" = 1 ] && [ ! -f dav1d/.version-$DAV1D_VER ]; then
       F=$([ $A = arm64 ] && echo aarch64 || echo x86_64)
       cat > dav1d-$DAV1D_VER/$A.cross <<EOT
 [binaries]
-c = ['clang', '-arch', '$A', '-mmacosx-version-min=12.0']
+c = ['clang', '-arch', '$A', '-mmacosx-version-min=$MACOS_MIN']
 ar = 'ar'
 strip = 'strip'
 [built-in options]
-c_link_args = ['-arch', '$A', '-mmacosx-version-min=12.0']
+c_link_args = ['-arch', '$A', '-mmacosx-version-min=$MACOS_MIN']
 [host_machine]
 system = 'darwin'
 cpu_family = '$F'
@@ -211,7 +213,7 @@ EOT
   else
     build_dav1d dav1d
   fi
-  touch dav1d/.version-$DAV1D_VER
+  touch "$DAV1D_STAMP"
 fi
 if [ "${DAV1D:-1}" = 1 ] && [ -n "${WINCC:-}" ] && [ ! -f dav1d-win/.version-$DAV1D_VER ]; then
   WINBIN=$(dirname "$(command -v "$WINCC")")

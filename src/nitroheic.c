@@ -157,7 +157,14 @@ static void tile_done(void *ref, void *src, OSStatus st, VTDecodeInfoFlags flags
     }
     // BT.601 coefficients: matrix_coeffs 6 (ITU_R_601_4) or 5 (BT.470BG, as Samsung phones write it, which
     // VideoToolbox names "YCbCrMatrix#5"); BT.709 ...: ImageIO's job
-    CFTypeRef matrix = CVBufferCopyAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL);
+    CFTypeRef matrix;
+    if (__builtin_available(macOS 12.0, *)) matrix = CVBufferCopyAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL);
+    else {   // (macOS 11)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        if ((matrix = CVBufferGetAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL))) CFRetain(matrix);
+#pragma clang diagnostic pop
+    }
     int other = matrix && !CFEqual(matrix, kCVImageBufferYCbCrMatrix_ITU_R_601_4) &&
                 !CFEqual(matrix, CFSTR("YCbCrMatrix#5"));
     if (matrix) CFRelease(matrix);

@@ -17,7 +17,7 @@
 #   make CDR=0           no CorelDRAW support (libcdr, from scripts/get-deps.sh; needs SVG)
 #   make MIMALLOC=0      SVG / CorelDRAW code with the system malloc, not mimalloc
 #   make app             nitroview.app bundle, so the Finder can open images with it: universal
-#                        (x86_64 + arm64, macOS 12+); MAC_ARCHS=x86_64 for one architecture only
+#                        (x86_64 + arm64, macOS 11+); MAC_ARCHS=x86_64 for one architecture only
 #   make zip / make dmg  nitroview.zip / nitroview.dmg (drag to Applications) of the app
 #   make dmg notarize SIGN_ID="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=name
 #                        signed with a Developer ID and notarized by Apple: opens without a
@@ -419,7 +419,7 @@ build/nitroview.icns: packaging/icon.png
 # (not -march=native: it runs on other Macs) and joined with lipo. With TURBOJPEG=1 the
 # libjpeg-turbo fallback goes into each slice whose architecture the library has.
 MAC_ARCHS    ?= x86_64 arm64
-MAC_MIN      := -mmacosx-version-min=12.0
+MAC_MIN      := -mmacosx-version-min=11.0
 APPCPU_x86_64 := -march=x86-64-v3 $(X86JCC) $(DEFS)
 APPCPU_arm64  := -mcpu=apple-m1 $(DEFS)
 ljt_has = $(if $(filter 1,$(TURBOJPEG)),$(filter $(1),$(shell lipo -archs $(LJT)/lib/libturbojpeg.a 2>/dev/null)))
