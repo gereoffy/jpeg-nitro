@@ -532,7 +532,9 @@ struct FaceInfo {
 enum : uint32_t { COL_ACI = 1u << 24, COL_RGB = 2u << 24, COL_BYLAYER = 3u << 24, COL_BYBLOCK = 4u << 24 };
 enum { LT_BYLAYER = -1, LT_BYBLOCK = -2, LT_CONTINUOUS = -3 };
 
-const uint32_t BACKGROUND = 0x212830;   // AutoCAD's model space
+// the backgrounds (nitrodxf_set_background): AutoCAD's dark model space, paper white, black
+const uint32_t BACKGROUNDS[3] = {0x212830, 0xffffff, 0x000000};
+const uint32_t WIPEOUT = 0x01000000;   // (an item's rgba: the background colour, whichever it is)
 
 uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
     static uint32_t t[256];
@@ -610,6 +612,7 @@ struct InsData {
     int index = -2;   // the block (resolved when first drawn; -1: missing)
     M2 m;
     int cols = 1, rows = 1;
+    bool dimension = false;   // (its points: definition points)
     V2 colStep, rowStep;
 };
 struct PatLine {
@@ -627,7 +630,7 @@ struct Block {
 
 // --- the display list ----------------------------------------------------------
 
-enum : uint8_t { O_STROKE, O_FILL, O_FILL_EO, O_TEXT, O_POINTS, O_XLINE, O_RAY, O_HATCH };
+enum : uint8_t { O_STROKE, O_FILL, O_FILL_EO, O_TEXT, O_POINTS, O_XLINE, O_RAY, O_HATCH, O_DOTS };
 struct Item {
     uint8_t kind;
     uint32_t rgba;   // 0xAARRGGBB
@@ -664,6 +667,7 @@ struct nitrodxf {
     double ax0 = 0, ay0 = 0, ax1 = 0, ay1 = 0;   // shown area (around the origin)
     double ox = 0, oy = 0;                       // the origin in drawing units
     int pdmode = 0;
+    int background = 0;
     double pdsize = 0;
     ~nitrodxf() {
         for (Item &it : items) plutovg_path_destroy(it.path);
@@ -1502,6 +1506,7 @@ struct Parser {
         InsData in;
         in.block = upper(r.s(2));
         if (in.block.empty()) return;
+        in.dimension = dimension;
         if (dimension) {   // the dimension's own anonymous block, in place
             if (r.find(12)) in.m = translate(r.p2(12));
         } else {
@@ -1923,7 +1928,7 @@ struct Flat {
         if (!doc->items.empty()) {
             Item &it = doc->items.back();
             if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh &&
-                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS) && pend.back().cmd.size() < 2048)
+                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 2048)
                 return doc->items.size() - 1;
         }
         Item it{};
@@ -1946,7 +1951,8 @@ struct Flat {
         points += p.p1 - p.p0;
     }
 
-    void expand(const Block &b, const M2 &m, const Ctx &ctx, int depth) {
+    // (dim: in a dimension's block, whose points are its definition points: always dots, as in AutoCAD)
+    void expand(const Block &b, const M2 &m, const Ctx &ctx, int depth, bool dim = false) {
         for (const Prim &p : b.prims) {
             if (points > kMaxPoints || ++work > kMaxWork) return;
             int layer = p.layer == 0 && depth > 0 ? ctx.layer : p.layer;
@@ -1968,7 +1974,7 @@ struct Flat {
                 for (int row = 0; row < in.rows; row++)
                     for (int c = 0; c < in.cols && work <= kMaxWork; c++, work++) {
                         M2 cm = m * translate(in.colStep * c + in.rowStep * row) * in.m * translate(V2{} - child.base);
-                        expand(child, cm, cc, depth + 1);
+                        expand(child, cm, cc, depth + 1, dim || in.dimension);
                     }
                 active[in.index] = 0;
                 continue;
@@ -1982,8 +1988,8 @@ struct Flat {
             }
             case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1)], b, p, m); break;
             case K_FILL_EO: geo(pend[item(O_FILL_EO, rgba, 0, -1)], b, p, m); break;
-            case K_WIPEOUT: geo(pend[item(O_FILL, 0xff000000u | BACKGROUND, 0, -1)], b, p, m); break;
-            case K_POINT: geo(pend[item(O_POINTS, rgba, 0, -1)], b, p, m); break;
+            case K_WIPEOUT: geo(pend[item(O_FILL, WIPEOUT, 0, -1)], b, p, m); break;
+            case K_POINT: geo(pend[item(dim ? O_DOTS : O_POINTS, rgba, 0, -1)], b, p, m); break;
             case K_XLINE:
             case K_RAY: {
                 size_t i = item(p.kind == K_RAY ? O_RAY : O_XLINE, rgba, 0, -1);
@@ -2072,6 +2078,19 @@ void set_rgba(plutovg_canvas_t *c, uint32_t rgba, float alpha = 1) {
     plutovg_canvas_set_rgba(c, (rgba >> 16 & 255) / 255.0f, (rgba >> 8 & 255) / 255.0f, (rgba & 255) / 255.0f, (rgba >> 24) / 255.0f * alpha);
 }
 
+// An item's colour on the background: on white, AutoCAD's white (colour 7) is black and light
+// colours are darkened enough to be seen (yellow, light grey ...).
+uint32_t on_background(uint32_t rgba, int background) {
+    if (rgba == WIPEOUT) return 0xff000000u | BACKGROUNDS[background];
+    if (background != 1) return rgba;
+    uint32_t r = rgba >> 16 & 255, g = rgba >> 8 & 255, b = rgba & 255, a = rgba & 0xff000000u;
+    if ((rgba & 0xffffff) == 0xffffff) return a;
+    double lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    if (lum <= 0.55) return rgba;
+    double k = 0.55 / lum;
+    return a | (uint32_t)(r * k) << 16 | (uint32_t)(g * k) << 8 | (uint32_t)(b * k);
+}
+
 // the part [t0, t1] of the line p + t d inside the rectangle; false if none
 bool clip_line(double px, double py, double dx, double dy, const double r[4], double &t0, double &t1) {
     double p[4] = {-dx, dx, -dy, dy}, q[4] = {px - r[0], r[2] - px, py - r[1], r[3] - py};
@@ -2087,7 +2106,7 @@ bool clip_line(double px, double py, double dx, double dy, const double r[4], do
     return t0 <= t1;
 }
 
-void draw_hatch(plutovg_canvas_t *c, const Item &it, const std::vector<OPatLine> &pat, const double view[4], float scale) {
+void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::vector<OPatLine> &pat, const double view[4], float scale) {
     double r[4] = {std::max(view[0], (double)it.bx0), std::max(view[1], (double)it.by0), std::min(view[2], (double)it.bx1),
                    std::min(view[3], (double)it.by1)};
     if (r[0] > r[2] || r[1] > r[3]) return;
@@ -2141,12 +2160,12 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, const std::vector<OPatLine>
     plutovg_canvas_save(c);
     plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_EVEN_ODD);
     if (tone) {
-        set_rgba(c, it.rgba, 0.4f);
+        set_rgba(c, rgba, 0.4f);
         plutovg_canvas_fill_path(c, it.path);
     }
     if (segs) {
         plutovg_canvas_clip_path(c, it.path);
-        set_rgba(c, it.rgba);
+        set_rgba(c, rgba);
         plutovg_canvas_set_line_width(c, hair);
         plutovg_canvas_set_dash(c, 0, nullptr, 0);
         plutovg_canvas_stroke_path(c, lines);
@@ -2305,7 +2324,7 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
             fm[0] = (float)m.a, fm[1] = (float)m.b, fm[2] = (float)m.c, fm[3] = (float)m.d, fm[4] = (float)(m.e - ox), fm[5] = (float)(m.f - oy);
         } else {
             it.path = plutovg_path_create();
-            if (it.kind == O_POINTS) {
+            if (it.kind == O_POINTS || it.kind == O_DOTS) {
                 for (const V2 &q : pd.pt) plutovg_path_move_to(it.path, (float)(q.x - ox), (float)(q.y - oy));
             } else {
                 plutovg_path_reserve(it.path, (int)pd.pt.size() + (int)pd.cmd.size());
@@ -2345,6 +2364,10 @@ void nitrodxf_free(nitrodxf *dxf) { delete dxf; }
 
 int nitrodxf_pages(const nitrodxf *dxf) { return dxf ? 1 : 0; }
 
+void nitrodxf_set_background(nitrodxf *dxf, int background) {
+    if (dxf && background >= 0 && background <= 2) dxf->background = background;
+}
+
 void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
     (void)page;
     *w = dxf->ax1 - dxf->ax0;
@@ -2353,7 +2376,7 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
 
 int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     if (!dxf || page != 0 || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    uint32_t bg = 0xff000000u | BACKGROUND;
+    uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
     for (int y = 0; y < h; y++) {
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
         for (int x = 0; x < w; x++) row[x] = bg;
@@ -2372,9 +2395,10 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
         if (it.kind != O_XLINE && it.kind != O_RAY &&
             (it.bx1 < view[0] || it.bx0 > view[2] || it.by1 < view[1] || it.by0 > view[3]))
             continue;
+        uint32_t rgba = on_background(it.rgba, dxf->background);
         switch (it.kind) {
         case O_STROKE: {
-            set_rgba(c, it.rgba);
+            set_rgba(c, rgba);
             plutovg_canvas_set_line_width(c, std::max(it.width, hair));
             plutovg_canvas_set_line_join(c, it.width > hair ? PLUTOVG_LINE_JOIN_MITER : PLUTOVG_LINE_JOIN_BEVEL);
             const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
@@ -2389,18 +2413,20 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
         }
         case O_FILL:
         case O_FILL_EO:
-            set_rgba(c, it.rgba);
+            set_rgba(c, rgba);
             plutovg_canvas_set_fill_rule(c, it.kind == O_FILL_EO ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path);
             break;
-        case O_HATCH: draw_hatch(c, it, dxf->opatterns[it.aux], view, fs); break;
-        case O_POINTS: {   // as $PDMODE: 0 a dot, 1 nothing, 2 +, 3 x, 4 a tick; +32 a circle, +64 a square
-            if (dxf->pdmode == 1) break;
+        case O_HATCH: draw_hatch(c, it, rgba, dxf->opatterns[it.aux], view, fs); break;
+        case O_POINTS:
+        case O_DOTS: {   // as $PDMODE: 0 a dot, 1 nothing, 2 +, 3 x, 4 a tick; +32 a circle, +64 a square
+            int mode = it.kind == O_DOTS ? 0 : dxf->pdmode;
+            if (mode == 1) break;
             struct Pts {
                 plutovg_path_t *p;
                 int mode;
                 float r, hair;
-            } pc{tmp, dxf->pdmode, 0, hair};
+            } pc{tmp, mode, 0, hair};
             double size = dxf->pdsize > 0 ? dxf->pdsize : (dxf->pdsize < 0 ? -dxf->pdsize / 100 : 0.05) * h / scale;
             pc.r = (float)(size / 2);
             plutovg_path_reset(tmp);
@@ -2425,7 +2451,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
                 if (a->mode & 32) plutovg_path_add_circle(a->p, x, y, r);
                 if (a->mode & 64) plutovg_path_add_rect(a->p, x - r, y - r, 2 * r, 2 * r);
             }, &pc);
-            set_rgba(c, it.rgba);
+            set_rgba(c, rgba);
             plutovg_canvas_set_line_width(c, hair);
             plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_canvas_stroke_path(c, tmp);
@@ -2449,7 +2475,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
                     plutovg_path_add_path(tmp, dxf->glyphs[gp.glyph].path, &gm);
                 }
                 uint32_t col = run.color == 0 ? ot.rgba : 0xff000000u | ((run.color & 0xff000000u) == COL_RGB ? run.color & 0xffffff : aci_rgb((int)(run.color & 255)));
-                set_rgba(c, col);
+                set_rgba(c, on_background(col, dxf->background));
                 plutovg_canvas_fill_path(c, tmp);
             }
             break;
@@ -2462,7 +2488,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
             plutovg_path_reset(tmp);
             plutovg_path_move_to(tmp, (float)(x[0] + x[2] * t0), (float)(x[1] + x[3] * t0));
             plutovg_path_line_to(tmp, (float)(x[0] + x[2] * t1), (float)(x[1] + x[3] * t1));
-            set_rgba(c, it.rgba);
+            set_rgba(c, rgba);
             plutovg_canvas_set_line_width(c, hair);
             plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_canvas_stroke_path(c, tmp);

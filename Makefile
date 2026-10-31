@@ -153,7 +153,7 @@ endif
 ifeq ($(CDR),1)   # (before SVG: it uses the plutovg in libnitrosvg.a)
 VIEWER_DEFS += -DNV_CDR
 VIEWER_OBJS += build/libnitrocdr.a
-VIEWER_LIBS += -liconv -lz
+VIEWER_LIBS += -lz   # (iconv: with SVG)
 endif
 ifeq ($(SVG),1)
 VIEWER_DEFS += -DNV_SVG

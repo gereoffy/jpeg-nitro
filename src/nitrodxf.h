@@ -5,7 +5,7 @@
 // the model space (layers, blocks, line types, text styles) into a display list in drawing
 // units and draws it with plutovg (the one of nitrosvg), at any scale and offset, like
 // nitrocdr. Lines are hairlines (one device pixel), as AutoCAD shows them on screen; the
-// background is AutoCAD's dark model space.
+// background is AutoCAD's dark model space, or white or black (nitrodxf_set_background).
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -21,6 +21,9 @@ nitrodxf *nitrodxf_load(const void *data, size_t len);
 void nitrodxf_free(nitrodxf *dxf);
 
 int nitrodxf_pages(const nitrodxf *dxf);
+// The background it is drawn over: 0 AutoCAD's dark model space (the default), 1 white (AutoCAD's
+// white lines black, light colours darkened), 2 black. Set before rendering, not while it renders.
+void nitrodxf_set_background(nitrodxf *dxf, int background);
 // Size of the shown area in drawing units: the drawing's extents (far-off stray objects left
 // out) with a small margin. Render coordinates below start at its top left, y down.
 void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h);
