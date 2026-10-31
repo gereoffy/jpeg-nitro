@@ -512,8 +512,8 @@ block reference (and block array) is expanded with its transform, ByLayer / ByBl
 types resolved, into a display list of float paths around the drawing's centre, batched by colour
 and line type for fewer plutovg calls; drawing replays only the items that touch the view. As in
 AutoCAD's model space, lines are one device pixel wide (line weights are ignored; wide polylines
-keep their width), the background is dark (#212830) and colour 7 is white. Text: the drawing's code
-page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv (on Windows its own converter), MTEXT
+keep their width). Text: the drawing's code page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv
+(on Windows its own converter), MTEXT
 formatting (fonts, heights, colours, stacked fractions) and word wrapping; AutoCAD's SHX fonts are
 not on the system, so a sans serif stands in for them, scaled to the same capital height. Hatch
 patterns are generated for the visible part only, and drawn as a tone where they are denser than the

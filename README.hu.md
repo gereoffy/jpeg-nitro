@@ -8,8 +8,8 @@ A **NitroView** nagyon gyors képnéző **macOS-re, Windowsra és Linuxra**. Fot
 Photoshop-fájlokat, nyers (raw) képeket és vektoros rajzokat nyit meg, és saját dekóderekre épül,
 amelyek minden képet több CPU-magon dekódolnak: egy 24 megapixeles JPEG egy asztali Intel
 processzoron kb. 11 ms alatt nyílik meg, tízszer gyorsabban, mint a rendszer dekóderével, így egy
-fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. Az SVG- és CorelDRAW-rajzok
-bármekkora nagyításban élesek.
+fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. Az SVG-, CorelDRAW- és AutoCAD
+DXF-rajzok bármekkora nagyításban élesek.
 
 Felhasználói felülete gyakorlatilag nincs: egy ablak a képpel, lapozni és nagyítani billentyűkkel
 és az egérrel lehet.
@@ -83,6 +83,7 @@ fájlválasztó ablakot nyit.
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
 | W | vissza a kép saját méretére (kis képek 100%-on), az ablak újra követi a képek méretét |
 | E / Shift + E | DNG nyers képek: világosabb / sötétebb 1/3 EV-vel (±3 EV-ig; lapozáskor megmarad, a címsorban látszik) |
+| | SVG-, DXF- és CorelDRAW-rajzok: a következő / előző háttér: fehér, sötétszürke, fekete (lapozáskor megmarad) |
 | Del (Macen ⌘ + Backspace is) | törlés: a fájl a mellette lévő (rejtett) `.delete` mappába kerül, jön a következő kép; semmi nem vész el |
 | U / Ctrl + Z (Macen ⌘ Z) | az utolsó törlés visszavonása: a fájl visszakerül a helyére |
 | F / Enter | teljes képernyő be/ki |
@@ -165,6 +166,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **fényképezőgépes raw** (CR2, NEF, NRW, ARW, RAF) | a gép által a fájlba tett teljes méretű JPEG (a fájlnak csak ez a része olvasódik be) | |
 | **SVG** | alakzatok, útvonalak, színátmenetek, vágás, maszk, minta, `<style>` stíluslap, szöveg a rendszer betűtípusaival, beágyazott képek | a szűrők kimaradnak (árnyék, elmosás); a `<foreignObject>`-beli HTML (draw.io) nem jelenik meg; az SVG-betűtípusok és a csak szimbólumokat tartalmazó sprite-fájlok nem rajzolnak semmit |
 | **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok ([ / ]), a rejtett rétegek kimaradnak, mint a CorelDRAW-ban; a megjelenített terület a rajz befoglaló kerete, nem a lap | a nyílhegyek és a Corel saját vektoros és bitképes mintakitöltései kimaradnak |
+| **DXF** (AutoCAD R12 – 2018) | a modelltér: vonalak, ívek, vonalláncok, splinok, sraffozások, szöveg, blokkok, méretek; rétegek, színek és vonaltípusok, mint az AutoCAD-ben | a papírtér, a multileaderek, a multiline-ok, a 3D testek és a csatolt képek nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés
@@ -220,6 +222,7 @@ előre dekódolja, amíg az aktuálisat nézed.
 | AVIF | 41 webes AVIF, átlag | **10 ms** | ImageIO 32 ms |
 | SVG | 38 MB-os rajz | **0,53 s** | WebKit 1,4 s, CoreSVG 2,4 s |
 | CorelDRAW | 17,7 MB-os, csak vektoros terv | **1,8 s** | libcdr `cdr2xhtml` 5,4 s (csak SVG-vé alakítás) |
+| DXF | 7,5 MB-os alaprajz | **78 ms** | ezdxf 8,7 s |
 
 Asztali Intel i9-en mérve. Egy 2020-as M1-es MacBook Airen egy 24 MP-es JPEG ~30 ms alatt
 dekódolódik, háromszor gyorsabban, mint ugyanazon a gépen az Apple hardveres JPEG-dekódere. Egy
