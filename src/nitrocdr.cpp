@@ -156,10 +156,15 @@ struct Span {
 struct Line {
     int align = 0;   // 0 left, 1 center, 2 right
     std::vector<Span> spans;
-    float width = 0, size = 0, ascent = 0;
-    float height = 0;   // its line spacing: the font's ascent + descent (CorelDRAW's 100%)
-    plutovg_font_face_t *emptyFace = nullptr;   // the font of the line break that started it (for an
-    float emptySize = 0;                        // empty line: its height)
+    float width = 0, size = 0, ascent = 0, descent = 0;
+    float height = 0;   // from the previous line's baseline to its own (see layout())
+    float spacing = 1;  // CorelDRAW's line spacing (1: 100%)
+    float lineHeight = 0;   // or its spacing in points (> 0: instead of that)
+    bool paragraph = false;   // the first line of a paragraph: before it, the paragraph spacing
+    float before = 1, after = 0;   // the paragraph's spacing before / after it (1: 100%; < 0: points)
+    plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (for a first
+    float emptySize = 0;                        // line) or the empty paragraph's
+    bool emptyOwn = false;                      // (the latter: its own height, see layout())
 };
 struct Text {
     float x = 0, y = 0, w = 0, h = 0, rotate = 0;   // frame (w = h = 0: artistic text at x, y)
@@ -424,6 +429,7 @@ public:
 
     void startTextObject(const RVNGPropertyList &p) override {
         m_text.reset(new Text);
+        m_paragraphOpened = false;
         m_text->x = (float)points(p["svg:x"]);
         m_text->y = (float)points(p["svg:y"]);
         m_text->w = (float)points(p["svg:width"]);
@@ -467,6 +473,7 @@ public:
                 if (!*c) break;
                 if (*c == '\r' && c[1] == '\n') c++;
                 newLine();
+                if (*c == '\v') m_text->lines.back().paragraph = false;   // (a soft return: the same paragraph)
                 start = c + 1;
             }
         }
@@ -483,10 +490,36 @@ public:
     void openParagraph(const RVNGPropertyList &p) override {
         if (!m_text) return;
         m_align = 0;
+        m_spacing = 1;
+        m_lineHeight = 0;
+        m_before = 1;
+        m_after = 0;
+        auto spacing = [](const RVNGProperty *v, float &out) {   // (libcdr: as the line height, a share of
+            if (!v) return;                                       // the character height or points)
+            double d = v->getUnit() == librevenge::RVNG_PERCENT ? v->getDouble() : -points(v);
+            if (d > -10000 && d < 100) out = (float)d;
+        };
+        spacing(p["fo:margin-top"], m_before);
+        spacing(p["fo:margin-bottom"], m_after);
+        if (const RVNGProperty *lh = p["fo:line-height"]) {
+            double sp = lh->getDouble();
+            if (lh->getUnit() == librevenge::RVNG_PERCENT) {
+                if (sp > 0.01 && sp < 100) m_spacing = (float)sp;
+            } else {
+                double pt = points(lh);
+                if (pt > 0.01 && pt < 10000) m_lineHeight = (float)pt;
+            }
+        }
         if (is(p, "fo:text-align", "center")) m_align = 1;
         else if (is(p, "fo:text-align", "end") || is(p, "fo:text-align", "right")) m_align = 2;
         m_text->lines.emplace_back();
         m_text->lines.back().align = m_align;
+        m_text->lines.back().spacing = m_spacing;
+        m_text->lines.back().lineHeight = m_lineHeight;
+        m_text->lines.back().paragraph = true;
+        m_text->lines.back().before = m_before;
+        m_text->lines.back().after = m_after;
+        m_paragraphOpened = true;
     }
     void closeParagraph() override {}
     void defineCharacterStyle(const RVNGPropertyList &) override {}
@@ -504,6 +537,12 @@ public:
         m_span.italic = is(p, "fo:font-style", "italic");
         std::lock_guard<std::mutex> g(g_lock);
         m_span.face = find_font(font, m_span.bold, m_span.italic);
+        // a paragraph without text yet (an empty one has only its span): as high as this font
+        if (m_text && m_paragraphOpened && !m_text->lines.empty() && m_text->lines.back().spans.empty()) {
+            m_text->lines.back().emptyFace = m_span.face;
+            m_text->lines.back().emptySize = m_span.size;
+            m_text->lines.back().emptyOwn = true;
+        }
     }
     void closeSpan() override {}
     void openLink(const RVNGPropertyList &) override {}
@@ -532,6 +571,8 @@ private:
     std::unique_ptr<Text> m_text;
     Span m_span;
     int m_align = 0;
+    float m_spacing = 1, m_lineHeight = 0, m_before = 1, m_after = 0;
+    bool m_paragraphOpened = false;   // the last line is a paragraph of libcdr's (not a line break)
     bool m_inPage = false, m_inMaster = false;
 
     static float currentX(const plutovg_path_t *path) {
@@ -605,8 +646,14 @@ private:
         if (!m_text) return;
         m_text->lines.emplace_back();
         m_text->lines.back().align = m_align;
+        m_text->lines.back().spacing = m_spacing;
+        m_text->lines.back().lineHeight = m_lineHeight;
+        m_text->lines.back().paragraph = true;   // (libcdr: a paragraph's end, CorelDRAW's CR)
+        m_text->lines.back().before = m_before;
+        m_text->lines.back().after = m_after;
         m_text->lines.back().emptyFace = m_span.face;
         m_text->lines.back().emptySize = m_span.size;
+        m_paragraphOpened = false;
     }
     // the text in spans of one face each: characters the span's font lacks come from a fallback font
     void appendText(const std::string &s) {
@@ -640,11 +687,12 @@ private:
     // Line widths, positions and the bounding box. Artistic text (no frame): the first
     // baseline at (x, y), each line aligned on x. Frame text: lines from the frame's top,
     // aligned in its width. Both turn by 'rotate' about (x, y) / the frame's centre.
-    // a line's width, size, ascent and height from its spans (locked by the caller)
+    // a line's width, size, ascent and descent from its spans (locked by the caller)
     static void measure(Line &l) {
         l.width = 0;
         l.size = 0;
         l.ascent = 0;
+        l.descent = 0;
         float pen = 0;
         for (Span &s : l.spans) {
             s.width = s.face ? plutovg_font_face_text_extents(s.face, s.size, s.text.data(), (int)s.text.size(),
@@ -657,7 +705,7 @@ private:
                 float asc = 0, desc = 0, gap = 0;
                 plutovg_font_face_get_metrics(s.face, s.size, &asc, &desc, &gap, nullptr);
                 l.ascent = std::max(l.ascent, asc);
-                l.height = std::max(l.height, asc - desc);
+                l.descent = std::max(l.descent, -desc);
             }
         }
         if (l.spans.empty() && l.emptySize > 0) {   // an empty line: as high as the line break's font
@@ -666,12 +714,12 @@ private:
                 float asc = 0, desc = 0, gap = 0;
                 plutovg_font_face_get_metrics(l.emptyFace, l.size, &asc, &desc, &gap, nullptr);
                 l.ascent = asc;
-                l.height = asc - desc;
+                l.descent = -desc;
             }
         }
         if (l.size == 0) l.size = 12;
         if (l.ascent == 0) l.ascent = l.size * 0.8f;
-        if (l.height == 0) l.height = l.size * 1.15f;
+        if (l.descent == 0) l.descent = l.size * 0.35f;
     }
 
     // A paragraph wider than its text frame, broken into lines at the spaces, as CorelDRAW does
@@ -686,6 +734,11 @@ private:
             }
         Line cur;
         cur.align = l.align;
+        cur.spacing = l.spacing;
+        cur.lineHeight = l.lineHeight;
+        cur.paragraph = l.paragraph;
+        cur.before = l.before;
+        cur.after = l.after;
         float x = 0;
         auto flush = [&]() {
             while (!cur.spans.empty()) {   // (no trailing spaces: they would shift a centred line)
@@ -698,6 +751,10 @@ private:
             out.push_back(std::move(cur));
             cur = Line();
             cur.align = l.align;
+            cur.spacing = l.spacing;
+            cur.lineHeight = l.lineHeight;
+            cur.before = l.before;
+            cur.after = l.after;
             x = 0;
         };
         for (const Span &s : l.spans) {
@@ -739,15 +796,36 @@ private:
             else lines.push_back(std::move(l));
         }
         t.lines = std::move(lines);
-        for (Line &l : t.lines) {
-            maxw = std::max(maxw, l.width);
-            total += l.height;
-        }
+        // CorelDRAW's line spacing: from the previous line's descent to this one's ascent (100%:
+        // as the fonts give them; as measured on its PDF exports). In a frame a paragraph's first
+        // line has the paragraph spacing instead (before it, and the one after the previous
+        // paragraph); artistic text has only the line spacing. An empty line after a line break is
+        // as high as the line before it (not as the line break's font); an empty paragraph, as
+        // its own font.
         bool artistic = t.w == 0 && t.h == 0;
-        float top = artistic ? t.y - t.lines[0].ascent : t.y;
+        for (size_t i = 0; i < t.lines.size(); i++) {
+            Line &l = t.lines[i];
+            if (i && l.spans.empty() && !l.emptyOwn) {
+                l.size = t.lines[i - 1].size;
+                l.ascent = t.lines[i - 1].ascent;
+                l.descent = t.lines[i - 1].descent;
+            }
+            const Line &p = i ? t.lines[i - 1] : l;
+            auto space = [&](float share, const Line &of) {   // (a share of a line's height, or < 0: points)
+                return share < 0 ? -share : share * (of.ascent + of.descent);
+            };
+            if (i && l.paragraph && !artistic)
+                l.height = (l.before < 0 ? -l.before : l.before * (p.descent + l.ascent)) + space(p.after, p);
+            else
+                l.height = l.lineHeight > 0 ? l.lineHeight : (p.descent + l.ascent) * l.spacing;
+            maxw = std::max(maxw, l.width);
+            if (i) total += l.height;
+        }
+        const Line &first = t.lines[0];
+        float top = artistic ? t.y - first.ascent : t.y;
         float left = artistic ? t.x - maxw : t.x, right = artistic ? t.x + maxw : t.x + std::max(t.w, maxw);
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
-        rotatedBox(it, cx, cy, left, top, right, top + total + t.lines[0].size, t.rotate);
+        rotatedBox(it, cx, cy, left, top, right, top + (first.ascent + first.descent) * first.spacing + total + first.size, t.rotate);
     }
 
     std::shared_ptr<Style> parseStyle(const RVNGPropertyList &p) {
