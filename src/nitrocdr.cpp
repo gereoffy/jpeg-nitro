@@ -640,41 +640,106 @@ private:
     // Line widths, positions and the bounding box. Artistic text (no frame): the first
     // baseline at (x, y), each line aligned on x. Frame text: lines from the frame's top,
     // aligned in its width. Both turn by 'rotate' about (x, y) / the frame's centre.
+    // a line's width, size, ascent and height from its spans (locked by the caller)
+    static void measure(Line &l) {
+        l.width = 0;
+        l.size = 0;
+        l.ascent = 0;
+        float pen = 0;
+        for (Span &s : l.spans) {
+            s.width = s.face ? plutovg_font_face_text_extents(s.face, s.size, s.text.data(), (int)s.text.size(),
+                                                              PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
+                             : 0;
+            l.width = std::max(l.width, pen + s.shiftX * s.size + s.width);   // (shifted words reach further)
+            pen += s.width;
+            l.size = std::max(l.size, s.size);
+            if (s.face) {
+                float asc = 0, desc = 0, gap = 0;
+                plutovg_font_face_get_metrics(s.face, s.size, &asc, &desc, &gap, nullptr);
+                l.ascent = std::max(l.ascent, asc);
+                l.height = std::max(l.height, asc - desc);
+            }
+        }
+        if (l.spans.empty() && l.emptySize > 0) {   // an empty line: as high as the line break's font
+            l.size = l.emptySize;
+            if (l.emptyFace) {
+                float asc = 0, desc = 0, gap = 0;
+                plutovg_font_face_get_metrics(l.emptyFace, l.size, &asc, &desc, &gap, nullptr);
+                l.ascent = asc;
+                l.height = asc - desc;
+            }
+        }
+        if (l.size == 0) l.size = 12;
+        if (l.ascent == 0) l.ascent = l.size * 0.8f;
+        if (l.height == 0) l.height = l.size * 1.15f;
+    }
+
+    // A paragraph wider than its text frame, broken into lines at the spaces, as CorelDRAW does
+    // (libcdr passes a paragraph text as written: one line a paragraph). A word longer than the
+    // frame stays on a line of its own. Lines whose words are placed by shifts (imported PDF
+    // text) are left as they are. (locked by the caller)
+    static void wrap(const Line &l, float width, std::vector<Line> &out) {
+        for (const Span &s : l.spans)
+            if (s.shiftX != 0 || s.shiftY != 0) {
+                out.push_back(l);
+                return;
+            }
+        Line cur;
+        cur.align = l.align;
+        float x = 0;
+        auto flush = [&]() {
+            while (!cur.spans.empty()) {   // (no trailing spaces: they would shift a centred line)
+                std::string &t = cur.spans.back().text;
+                while (!t.empty() && t.back() == ' ') t.pop_back();
+                if (!t.empty()) break;
+                cur.spans.pop_back();
+            }
+            measure(cur);
+            out.push_back(std::move(cur));
+            cur = Line();
+            cur.align = l.align;
+            x = 0;
+        };
+        for (const Span &s : l.spans) {
+            for (size_t i = 0; i < s.text.size();) {   // words with their trailing spaces
+                size_t e = s.text.find(' ', i);
+                e = e == std::string::npos ? s.text.size() : s.text.find_first_not_of(' ', e);
+                if (e == std::string::npos) e = s.text.size();
+                std::string word = s.text.substr(i, e - i);
+                i = e;
+                size_t n = word.find_last_not_of(' ');   // (its width without the spaces)
+                float w = s.face ? plutovg_font_face_text_extents(s.face, s.size, word.data(), (int)(n == std::string::npos ? 0 : n + 1),
+                                                                  PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
+                                 : 0;
+                float full = s.face ? plutovg_font_face_text_extents(s.face, s.size, word.data(), (int)word.size(),
+                                                                     PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
+                                    : 0;
+                if (x > 0 && x + w > width) flush();
+                if (cur.spans.empty() || cur.spans.back().face != s.face || cur.spans.back().size != s.size ||
+                    memcmp(&cur.spans.back().color, &s.color, sizeof s.color) || cur.spans.back().font != s.font) {
+                    Span part = s;
+                    part.text.clear();
+                    cur.spans.push_back(part);
+                }
+                cur.spans.back().text += word;
+                x += full;
+            }
+        }
+        if (!cur.spans.empty() || out.empty()) flush();
+    }
+
     void layout(Item &it) {
         Text &t = *it.text;
         std::lock_guard<std::mutex> g(g_lock);
         float maxw = 0, total = 0;
+        std::vector<Line> lines;
         for (Line &l : t.lines) {
-            l.width = 0;
-            l.size = 0;
-            l.ascent = 0;
-            float pen = 0;
-            for (Span &s : l.spans) {
-                s.width = s.face ? plutovg_font_face_text_extents(s.face, s.size, s.text.data(), (int)s.text.size(),
-                                                                  PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
-                                 : 0;
-                l.width = std::max(l.width, pen + s.shiftX * s.size + s.width);   // (shifted words reach further)
-                pen += s.width;
-                l.size = std::max(l.size, s.size);
-                if (s.face) {
-                    float asc = 0, desc = 0, gap = 0;
-                    plutovg_font_face_get_metrics(s.face, s.size, &asc, &desc, &gap, nullptr);
-                    l.ascent = std::max(l.ascent, asc);
-                    l.height = std::max(l.height, asc - desc);
-                }
-            }
-            if (l.spans.empty() && l.emptySize > 0) {   // an empty line: as high as the line break's font
-                l.size = l.emptySize;
-                if (l.emptyFace) {
-                    float asc = 0, desc = 0, gap = 0;
-                    plutovg_font_face_get_metrics(l.emptyFace, l.size, &asc, &desc, &gap, nullptr);
-                    l.ascent = asc;
-                    l.height = asc - desc;
-                }
-            }
-            if (l.size == 0) l.size = 12;
-            if (l.ascent == 0) l.ascent = l.size * 0.8f;
-            if (l.height == 0) l.height = l.size * 1.15f;
+            measure(l);
+            if (t.w > 0 && l.width > t.w * 1.01f && l.spans.size()) wrap(l, t.w, lines);
+            else lines.push_back(std::move(l));
+        }
+        t.lines = std::move(lines);
+        for (Line &l : t.lines) {
             maxw = std::max(maxw, l.width);
             total += l.height;
         }
