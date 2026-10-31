@@ -15,7 +15,7 @@
 // (multi-threaded, into a host buffer, on the decoder thread) -> OpenGL: the planes as textures
 // -> a fragment shader into the RGBA texture (upsampling, YCbCr->RGB, PNG rows, PSD planes) ->
 // mipmaps -> trilinear scaled draw. Anything else goes through stb_image (16-bit / palette /
-// interlaced PNG, GIF, BMP, TGA, damaged or CMYK JPEG). SVG / CorelDRAW (optional, NV_SVG /
+// interlaced PNG, GIF, BMP, TGA, damaged or CMYK JPEG). SVG / DXF / CorelDRAW (optional, NV_SVG /
 // NV_CDR) as on Windows. Neighbouring images are decoded ahead in the background.
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -41,6 +41,7 @@
 #include "nitroavif.h"   // AVIF: AV1 through dav1d
 #endif
 #ifdef NV_SVG
+#include "nitrodxf.h"   // DXF drawings (drawn with the plutovg of the SVG library)
 #include "nitrosvg.h"   // optional SVG rendering (lunasvg)
 #endif
 #ifdef NV_CDR
@@ -213,7 +214,8 @@ static int gl_load(void) {
 // decoded image
 
 typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;
-enum { MODE_STB = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
+enum { MODE_STB = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_DXF = NV_MODE_DXF,
+       MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
 
 #ifdef NV_VECTOR
 // A loaded vector document (SVG, CorelDRAW), shared by the images of its pages and the background
@@ -356,7 +358,7 @@ static int cmp_names(const void *a, const void *b) {
 static const char *const heic_exts[] = {"heic", "heif", NULL};   // (only with an HEVC decoder: make NITROHEVC=1)
 static const char *const g_more_exts[] = {"tga",   // (stb_image reads these too)
 #ifdef NV_SVG
-                                          "svg",
+                                          "svg", "dxf",
 #endif
 #ifdef NV_CDR
                                           "cdr", "cmx",
@@ -1009,6 +1011,11 @@ static void svg_size(void *doc, int page, double *w, double *h) {
     nitrosvg_size(doc, w, h);
 }
 static void svg_free(void *doc) { nitrosvg_free(doc); }
+static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
+    return nitrodxf_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
+}
+static void dxf_size(void *doc, int page, double *w, double *h) { nitrodxf_size(doc, page, w, h); }
+static void dxf_free(void *doc) { nitrodxf_free(doc); }
 #endif
 #ifdef NV_CDR
 static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
@@ -1018,7 +1025,7 @@ static void cdr_size(void *doc, int page, double *w, double *h) { nitrocdr_size(
 static void cdr_free(void *doc) { nitrocdr_free(doc); }
 #endif
 
-// An SVG / CDR / CMX file by its name: the document (one reference), else NULL.
+// An SVG / DXF / CDR / CMX file by its name: the document (one reference), else NULL.
 static VectorDoc *load_vector(const char *path, const uint8_t *data, size_t len) {
     VectorDoc v = {0};
 #ifdef NV_SVG
@@ -1029,6 +1036,14 @@ static VectorDoc *load_vector(const char *path, const uint8_t *data, size_t len)
         v.free = svg_free;
         v.pages = 1;
         v.mode = MODE_SVG;
+    }
+    static const char *const dxf_exts[] = {"dxf", NULL};
+    if (!v.doc && nv_has_ext(path, dxf_exts) && (v.doc = nitrodxf_load(data, len))) {
+        v.render = dxf_render;
+        v.size = dxf_size;
+        v.free = dxf_free;
+        v.pages = nitrodxf_pages(v.doc);
+        v.mode = MODE_DXF;
     }
 #endif
 #ifdef NV_CDR
@@ -2477,7 +2492,7 @@ static int do_register(int on) {
             "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;"
             "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;"
 #ifdef NV_SVG
-            "image/svg+xml;"
+            "image/svg+xml;image/vnd.dxf;"
 #endif
 #ifdef NV_CDR
             "image/x-coreldraw;"

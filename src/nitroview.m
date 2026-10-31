@@ -46,6 +46,7 @@
 #include "png_wuffs.h"   // optional fast PNG decoder
 #endif
 #ifdef NV_SVG
+#include "nitrodxf.h"    // DXF drawings (drawn with the plutovg of the SVG library)
 #include "nitrosvg.h"    // optional SVG rendering (lunasvg)
 #endif
 #ifdef NV_CDR
@@ -182,7 +183,7 @@ static NSData *read_file(NSString *path) {
 #endif
 
 // Decode one file into a Metal buffer. Runs on the decoder thread.
-enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR,
+enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_DXF = NV_MODE_DXF,
        MODE_NITROHEIC = NV_MODE_NITROHEIC, MODE_NITRODNG = NV_MODE_NITRODNG, MODE_NITROWEBP = NV_MODE_NITROWEBP,
        MODE_NITROTIFF = NV_MODE_NITROTIFF, MODE_NITROAVIF = NV_MODE_NITROAVIF };   // (the rest: nitro_load.h)
 static int g_nthreads = 0;   // -j
@@ -367,6 +368,17 @@ static Decoded *decode_svg(NSData *data, Decoded *d, BufferPool *pool, size_t al
     nitrosvg_size(svg, &w, &h);
     return decode_vector(svg, w, h, svg_render, svg_free, MODE_SVG, d, pool, align, t1);
 }
+static int dxf_render(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
+    return nitrodxf_render(doc, 0, bgra, w, h, pitch, scale, x0, y0);
+}
+static void dxf_free(void *doc) { nitrodxf_free(doc); }
+static Decoded *decode_dxf(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
+    nitrodxf *dxf = nitrodxf_load(data.bytes, data.length);
+    if (!dxf) return nil;
+    double w, h;
+    nitrodxf_size(dxf, 0, &w, &h);
+    return decode_vector(dxf, w, h, dxf_render, dxf_free, MODE_DXF, d, pool, align, t1);
+}
 #endif
 
 #ifdef NV_CDR
@@ -511,6 +523,8 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
 #ifdef NV_SVG
     if ([ext isEqualToString:@"svg"])
         return decode_svg([NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES], d, pool, align, t1);
+    if ([ext isEqualToString:@"dxf"])
+        return decode_dxf([NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES], d, pool, align, t1);
 #endif
 #ifdef NV_CDR
     if ([ext isEqualToString:@"cdr"] || [ext isEqualToString:@"cmx"])
@@ -1766,7 +1780,7 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args) {
         NSArray *items = [[fm contentsOfDirectoryAtPath:a error:nil] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
         static const char *const more[] = {   // the vector formats, beside nv_image_exts
 #ifdef NV_SVG
-            "svg",
+            "svg", "dxf",
 #endif
 #ifdef NV_CDR
             "cdr", "cmx",

@@ -13,7 +13,7 @@
 #                        VideoToolbox left out)
 #   make WUFFS=1         with Wuffs (third_party/wuffs.c) for interlaced PNGs before ImageIO (nitropng
 #                        decodes all others)
-#   make SVG=0           no SVG support (lunasvg, from scripts/get-deps.sh)
+#   make SVG=0           no SVG and DXF support (lunasvg, from scripts/get-deps.sh; nitrodxf draws with its plutovg)
 #   make CDR=0           no CorelDRAW support (libcdr, from scripts/get-deps.sh; needs SVG)
 #   make MIMALLOC=0      SVG / CorelDRAW code with the system malloc, not mimalloc
 #   make app             nitroview.app bundle, so the Finder can open images with it: universal
@@ -158,7 +158,7 @@ endif
 ifeq ($(SVG),1)
 VIEWER_DEFS += -DNV_SVG
 VIEWER_OBJS += build/libnitrosvg.a
-VIEWER_LIBS += -lc++
+VIEWER_LIBS += -lc++ -liconv
 endif
 ifeq ($(DAV1D),1)   # AVIF: nitroavif (in libnitro) with dav1d
 VIEWER_DEFS += $(DAV1D_DEFS)
@@ -238,7 +238,7 @@ SDL_LIBS   = $(SDL3_DIR)/lib/libSDL3.a $(shell sed -n 's/^Libs:.*-lSDL3//p' $(SD
 SDL_DEC   := build/libnitro.a
 SDL_VEC   := $(GNOME_CDR) $(GNOME_SVG) $(if $(filter 1,$(MIMALLOC)),build/mimalloc.o build/nitroalloc.o)
 ifeq ($(UNAME_S),Darwin)
-SDL_VLIBS := $(if $(GNOME_CDR),-liconv -lz) $(if $(GNOME_SVG),-lc++) -framework CoreFoundation $(VT_FW)   # (HEIC)
+SDL_VLIBS := $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lc++ -liconv) -framework CoreFoundation $(VT_FW)   # (HEIC)
 else
 SDL_VLIBS := $(if $(GNOME_CDR),-lz) $(if $(GNOME_SVG),-lstdc++)
 endif
@@ -250,7 +250,7 @@ build/icon.inc: packaging/icon.png
 	@mkdir -p build
 	cd packaging && xxd -i icon.png > ../build/icon.inc
 
-$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) src/nitrosvg.h src/nitrocdr.h Makefile
+$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) src/nitrosvg.h src/nitrodxf.h src/nitrocdr.h Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	$(CC) $(CFLAGS) $(SDL_VDEFS) -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(SDL_DEC) $(SDL_AVIF) \
 	  $(SDL_VEC) $(SDL_LIBS) $(SDL_VLIBS) $(THREADLIBS) -lm -o $@
@@ -283,7 +283,7 @@ $(DIST_DIR)/%: TPORT = -fblocks
 $(DIST_DIR)/libnitrocdr.a: CDR_C += $(ZLIB_C)
 $(DIST_DIR)/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
 $(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(DIST_DIR)/libnitro.a $(LIB_HDR) src/nitrosvg.h \
-                           src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
+                           src/nitrodxf.h src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	@mkdir -p $(@D)
 	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks $(WARN) $(DIST_VDEFS) \
@@ -334,10 +334,11 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 	  $(GNOME_APP_ID) stable   # (installing it fetches the GNOME runtime from Flathub if needed)
 	@echo "built $(FLATPAK_BUNDLE)"
 
-# optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp,
-# one static library, compiled once (in parallel); $(1): compiler flags (architecture, CPU)
+# optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp, and DXF
+# (src/nitrodxf.cpp, drawn with the same plutovg), one static library, compiled once (in parallel);
+# $(1): compiler flags (architecture, CPU)
 SVG_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
-SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp
+SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp src/nitrodxf.cpp
 SVG_DEFS := -DLUNASVG_BUILD -DLUNASVG_BUILD_STATIC -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC \
             -DLUNASVG_DISABLE_EXTERNAL_RESOURCES -I$(LUNA)/include -I$(LUNA)/source -I$(LUNA)/plutovg/include \
             -I$(LUNA)/plutovg/source
@@ -382,7 +383,7 @@ endef
 # the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
 %/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
-%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h $(SVG_STAMP)
+%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h $(SVG_STAMP)
 	$(call svg_lib,$(TCPU))
 %/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
 	$(call cdr_lib,$(TCPU))
@@ -438,7 +439,7 @@ build/app-%/nitroview: src/nitroview.m $(VIEWER_SRC) $(VIEWER_HDR) build/shaders
 	$(CC) -arch $* $(MAC_MIN) -O3 $(APPCPU_$*) $(WARN) -Ibuild -Isrc \
 	  $(if $(call ljt_has,$*),-DNV_TURBOJPEG -I$(LJT)/include) $(if $(filter 1,$(WUFFS)),-DNV_WUFFS) $(if $(filter 1,$(SVG)),-DNV_SVG) $(if $(filter 1,$(CDR)),-DNV_CDR) \
 	  $(if $(call dav1d_has,$*),$(DAV1D_DEFS)) \
-	  -fobjc-arc src/nitroview.m $(VIEWER_SRC) $(@D)/libnitro.a $(if $(call dav1d_has,$*),$(DAV1D_LIB)) $(if $(filter 1,$(WUFFS)),$(@D)/png_wuffs.o) $(if $(filter 1,$(CDR)),$(@D)/libnitrocdr.a -liconv -lz) $(if $(filter 1,$(SVG)),$(@D)/libnitrosvg.a -lc++) \
+	  -fobjc-arc src/nitroview.m $(VIEWER_SRC) $(@D)/libnitro.a $(if $(call dav1d_has,$*),$(DAV1D_LIB)) $(if $(filter 1,$(WUFFS)),$(@D)/png_wuffs.o) $(if $(filter 1,$(CDR)),$(@D)/libnitrocdr.a -lz) $(if $(filter 1,$(SVG)),$(@D)/libnitrosvg.a -lc++ -liconv) \
 	  $(if $(filter 1,$(MIMALLOC)),$(@D)/mimalloc.o $(@D)/nitroalloc.o) $(if $(call ljt_has,$*),$(LJT)/lib/libturbojpeg.a -Wl$(COMMA)-w) $(FRAMEWORKS) -framework ImageIO -o $@
 build/nitroview-universal: $(foreach a,$(MAC_ARCHS),build/app-$(a)/nitroview)
 	lipo -create $^ -output $@

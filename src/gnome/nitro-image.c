@@ -7,6 +7,7 @@
 #include "../nitro_convert.h"   // their planes -> RGB (the library too)
 #include "../nitrojpeg.h"    // nj_set_max_workers
 #ifdef NV_SVG
+#include "../nitrodxf.h"   // DXF drawings (drawn with the plutovg of the SVG library)
 #include "../nitrosvg.h"   // optional SVG rendering (lunasvg)
 #endif
 #ifdef NV_CDR
@@ -22,7 +23,7 @@ static int decode_threads;
 static gint dng_ev3;   // DNG exposure correction in 1/3 EV (key E / Shift+E)
 
 // ---------------------------------------------------------------------------
-// Vector drawings, SVG (nitrosvg) and CorelDRAW CDR / CMX (nitrocdr): rendered at a fixed size
+// Vector drawings, SVG (nitrosvg), DXF (nitrodxf) and CorelDRAW CDR / CMX (nitrocdr): rendered at a fixed size
 // here, the visible part again at screen resolution when zoomed in (nitro-view.c). Without
 // nitrosvg, SVG goes through GTK's loaders.
 
@@ -31,6 +32,7 @@ struct _NitroVector {
     int pages;
 #ifdef NV_SVG
     nitrosvg *svg;
+    nitrodxf *dxf;
 #endif
 #ifdef NV_CDR
     nitrocdr *cdr;
@@ -46,6 +48,7 @@ void nitro_vector_unref(NitroVector *vector) {
     if (!vector || !g_atomic_int_dec_and_test(&vector->refs)) return;
 #ifdef NV_SVG
     if (vector->svg) nitrosvg_free(vector->svg);
+    if (vector->dxf) nitrodxf_free(vector->dxf);
 #endif
 #ifdef NV_CDR
     if (vector->cdr) nitrocdr_free(vector->cdr);
@@ -59,6 +62,7 @@ static void vector_size(const NitroVector *vector, int page, double *w, double *
     *w = *h = 0;
 #ifdef NV_SVG
     if (vector->svg) nitrosvg_size(vector->svg, w, h);
+    if (vector->dxf) nitrodxf_size(vector->dxf, page, w, h);
 #endif
 #ifdef NV_CDR
     if (vector->cdr) nitrocdr_size(vector->cdr, page, w, h);
@@ -76,6 +80,7 @@ GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_sca
     int rc = -1;
 #ifdef NV_SVG
     if (vector->svg) rc = nitrosvg_render(vector->svg, px, w, h, stride, k, x0 / k, y0 / k);
+    if (vector->dxf) rc = nitrodxf_render(vector->dxf, page, px, w, h, stride, k, x0 / k, y0 / k);
 #endif
 #ifdef NV_CDR
     if (vector->cdr) rc = nitrocdr_render(vector->cdr, page, px, w, h, stride, k, x0 / k, y0 / k);
@@ -126,7 +131,7 @@ static gboolean has_extension(GFile *file, const char *const *exts) {
     return found;
 }
 
-// An SVG (.svg, or text starting with '<') or a CorelDRAW file (.cdr, .cmx); NULL if it is not one.
+// An SVG (.svg, or text starting with '<'), a DXF or a CorelDRAW file (.cdr, .cmx); NULL if it is not one.
 static NitroImage *load_vector(GFile *file, const guint8 *data, gsize len) {
     NitroVector *vector = NULL;
 #ifdef NV_CDR
@@ -139,6 +144,13 @@ static NitroImage *load_vector(GFile *file, const guint8 *data, gsize len) {
     }
 #endif
 #ifdef NV_SVG
+    static const char *const dxf_exts[] = {"dxf", NULL};
+    nitrodxf *dxf = !vector && has_extension(file, dxf_exts) ? nitrodxf_load(data, len) : NULL;
+    if (dxf) {
+        vector = g_new0(NitroVector, 1);
+        vector->dxf = dxf;
+        vector->pages = nitrodxf_pages(dxf);
+    }
     static const char *const svg_exts[] = {"svg", NULL};
     gsize i = len >= 3 && !memcmp(data, "\xef\xbb\xbf", 3) ? 3 : 0;   // (UTF-8 byte order mark)
     while (i < len && g_ascii_isspace(data[i])) i++;

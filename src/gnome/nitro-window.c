@@ -65,8 +65,12 @@ static void page(NitroWindow *self, gint delta);
 static void size_window(NitroWindow *self, gboolean fill);
 
 static gboolean supported_extension(const char *name) {
-    // our decoders and GTK's loaders (see nitro-image.c); SVG with or without nitrosvg, CorelDRAW with nitrocdr
+    // our decoders and GTK's loaders (see nitro-image.c); SVG with or without nitrosvg, DXF with nitrodxf,
+    // CorelDRAW with nitrocdr
     static const char *const more[] = {"svg",
+#ifdef NV_SVG
+                                       "dxf",
+#endif
 #ifdef NV_CDR
                                        "cdr", "cmx",
 #endif

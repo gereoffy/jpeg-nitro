@@ -17,7 +17,7 @@
 // a buffer the decoder thread hands to Direct3D) -> compute shader (upsampling, YCbCr->RGB, PNG rows,
 // PSD planes) -> mipmaps -> trilinear scaled draw.
 // Anything else goes through WIC (damaged or CMYK JPEG, JPEG-compressed TIFF, lossless WebP, GIF, BMP ...).
-// SVG / CorelDRAW (optional, NV_SVG / NV_CDR): nitrosvg / nitrocdr render it once in full as
+// SVG / DXF / CorelDRAW (optional, NV_SVG / NV_CDR): nitrosvg / nitrodxf / nitrocdr render it once in full as
 // BGRA, and the visible part again, sharp, when zoomed in (as nitroview.m does).
 // Neighbouring images are decoded ahead in the background.
 #define COBJMACROS
@@ -55,6 +55,7 @@
 #include "nitroavif.h"   // AVIF: AV1 through dav1d
 #endif
 #ifdef NV_SVG
+#include "nitrodxf.h"   // DXF drawings (drawn with the plutovg of the SVG library)
 #include "nitrosvg.h"   // optional SVG rendering (lunasvg)
 #endif
 #ifdef NV_CDR
@@ -127,7 +128,8 @@ static const wchar_t *base_name(const wchar_t *p) {
 // decoded image
 
 typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;
-enum { MODE_WIC = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
+enum { MODE_WIC = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_DXF = NV_MODE_DXF,
+       MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
 
 #ifdef NV_VECTOR
 // A loaded vector document (SVG, CorelDRAW), shared by the images of its pages and the background
@@ -233,7 +235,7 @@ static void buf_put(uint8_t *p, size_t cap) {
 
 static const char *const g_more_exts[] = {   // the vector formats, beside nv_image_exts
 #ifdef NV_SVG
-    "svg",
+    "svg", "dxf",
 #endif
 #ifdef NV_CDR
     "cdr", "cmx",
@@ -819,6 +821,11 @@ static void svg_size(void *doc, int page, double *w, double *h) {
     nitrosvg_size(doc, w, h);
 }
 static void svg_free(void *doc) { nitrosvg_free(doc); }
+static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
+    return nitrodxf_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
+}
+static void dxf_size(void *doc, int page, double *w, double *h) { nitrodxf_size(doc, page, w, h); }
+static void dxf_free(void *doc) { nitrodxf_free(doc); }
 #endif
 #ifdef NV_CDR
 static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
@@ -828,7 +835,7 @@ static void cdr_size(void *doc, int page, double *w, double *h) { nitrocdr_size(
 static void cdr_free(void *doc) { nitrocdr_free(doc); }
 #endif
 
-// An SVG / CDR / CMX file by its name: the document (one reference), else NULL.
+// An SVG / DXF / CDR / CMX file by its name: the document (one reference), else NULL.
 static VectorDoc *load_vector(const char *path, const uint8_t *data, size_t len) {   // (path: UTF-8)
     VectorDoc v = {0};
 #ifdef NV_SVG
@@ -839,6 +846,14 @@ static VectorDoc *load_vector(const char *path, const uint8_t *data, size_t len)
         v.free = svg_free;
         v.pages = 1;
         v.mode = MODE_SVG;
+    }
+    static const char *const dxf_exts[] = {"dxf", NULL};
+    if (!v.doc && nv_has_ext(path, dxf_exts) && (v.doc = nitrodxf_load(data, len))) {
+        v.render = dxf_render;
+        v.size = dxf_size;
+        v.free = dxf_free;
+        v.pages = nitrodxf_pages(v.doc);
+        v.mode = MODE_DXF;
     }
 #endif
 #ifdef NV_CDR
@@ -2122,7 +2137,7 @@ static int create_window(const wchar_t *first) {
 static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
                                               L".heif", L".avif", L".tif", L".tiff", L".webp", L".gif", L".bmp", L".cr2", L".nef", L".nrw", L".arw", L".raf", L".dng",
 #ifdef NV_SVG
-                                              L".svg",
+                                              L".svg", L".dxf",
 #endif
 #ifdef NV_CDR
                                               L".cdr", L".cmx",
@@ -2164,9 +2179,9 @@ static int do_register(void) {
            "(or right-click an image > Open with > Choose another app > NitroView, \"Always\").\n"
            "After moving nitroview.exe, run --register again; --unregister removes all of it.\n",
 #if defined(NV_SVG) && defined(NV_CDR)
-           ", SVG and CorelDRAW",
+           ", SVG, DXF and CorelDRAW",
 #elif defined(NV_SVG)
-           " and SVG",
+           ", SVG and DXF",
 #elif defined(NV_CDR)
            " and CorelDRAW",
 #else

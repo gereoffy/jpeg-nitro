@@ -259,6 +259,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_NITROPSD: return "nitropsd";
     case NV_MODE_SVG: return "svg";
     case NV_MODE_CDR: return "cdr";
+    case NV_MODE_DXF: return "dxf";
     case NV_MODE_NITROHEIC: return "nitroheic";
     case NV_MODE_NITRODNG: return "nitrodng";
     case NV_MODE_NITROWEBP: return "nitrowebp";

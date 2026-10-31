@@ -21,6 +21,7 @@
     <mediatype>image/heif</mediatype>
     <mediatype>image/avif</mediatype>
     <mediatype>image/svg+xml</mediatype>
+    <mediatype>image/vnd.dxf</mediatype>
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>

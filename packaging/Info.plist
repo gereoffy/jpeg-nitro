@@ -39,6 +39,7 @@
                 <string>com.fuji.raw-image</string>
                 <string>com.adobe.raw-image</string>
                 <string>public.svg-image</string>
+                <string>com.autodesk.dxf</string>
                 <string>com.corel.cdr</string>
                 <string>com.corel.cmx</string>
             </array>
@@ -54,9 +55,18 @@
             </array>
         </dict>
     </array>
-    <!-- CorelDRAW files have no system type: declared here (imported, so a CorelDRAW install wins) -->
+    <!-- CorelDRAW and DXF files have no system type: declared here (imported, so a CorelDRAW / AutoCAD install wins) -->
     <key>UTImportedTypeDeclarations</key>
     <array>
+        <dict>
+            <key>UTTypeIdentifier</key>     <string>com.autodesk.dxf</string>
+            <key>UTTypeDescription</key>    <string>AutoCAD DXF drawing</string>
+            <key>UTTypeConformsTo</key>     <array><string>public.image</string><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key> <array><string>dxf</string></array>
+            </dict>
+        </dict>
         <dict>
             <key>UTTypeIdentifier</key>     <string>com.corel.cdr</string>
             <key>UTTypeDescription</key>    <string>CorelDRAW drawing</string>
