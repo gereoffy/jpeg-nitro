@@ -18,12 +18,12 @@ optional dependencies below add formats.
 ## Optional dependencies
 
 `scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is
-installed system-wide). The Makefile uses what it finds there: SVG, CorelDRAW and AVIF are built in
+installed system-wide). The Makefile uses what it finds there: SVG (with DXF), CorelDRAW and AVIF are built in
 automatically once their libraries are present.
 
 | dependency | for | option |
 |---|---|---|
-| [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG | `SVG=0` leaves it out |
+| [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG; DXF (nitrodxf is our own, it draws with this plutovg) | `SVG=0` leaves both out |
 | [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out; `MIMALLOC=0`: the C++ code with the system malloc |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
@@ -52,7 +52,7 @@ Options on the make command line (the defaults depend on what `scripts/get-deps.
 | `TURBOJPEG=1` | the JPEGs nitrojpeg does not decode (damaged or cut-off, CMYK, arithmetic coding) go to libjpeg-turbo before ImageIO: about 2× faster on them, 1.2 MB more; `--selftest` needs it |
 | `WUFFS=1` | interlaced PNGs through Wuffs before ImageIO |
 | `DAV1D=0` | AVIF through ImageIO instead of nitroavif + dav1d |
-| `SVG=0`, `CDR=0` | without SVG / CorelDRAW |
+| `SVG=0`, `CDR=0` | without SVG and DXF / CorelDRAW |
 | `MIMALLOC=0` | the SVG / CorelDRAW code with the system malloc instead of mimalloc |
 | `NITROHEVC=1` | HEIC with our own HEVC decoder, nitrohevc, instead of the system's (off by default, see [HEIC](README.md#heic)) |
 | `MAC_ARCHS=x86_64` | `make app` for one architecture only |
@@ -219,7 +219,7 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 - `nitrodng.c/.h`: DNG raw development (lossless JPEG, demosaicing, colour)
 - `nitrowebp.c/.h`: lossy WebP (VP8) decoder
 - `nitrotiff.c/.h`, `tiff.h`: TIFF decoder (strips / tiles in parallel)
-- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrocdr.cpp/.h`: CorelDRAW with libcdr, drawn with plutovg; `nitroalloc.cpp`: their mimalloc hookup
+- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrocdr.cpp/.h`: CorelDRAW with libcdr; the latter two draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 
 **The library**

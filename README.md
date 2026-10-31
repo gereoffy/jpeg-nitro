@@ -7,8 +7,8 @@
 **NitroView** is a very fast image viewer for **macOS, Windows and Linux**. It opens photos, scans,
 Photoshop files, raw images and vector drawings, and it is built on its own decoders, which decode
 every image on multiple CPU cores: a 24-megapixel JPEG opens in about 11 ms on a desktop Intel CPU, ten
-times faster than the system's decoder, so a photo series pages as fast as you press the key. SVG
-and CorelDRAW drawings are rendered sharp at any zoom level.
+times faster than the system's decoder, so a photo series pages as fast as you press the key. SVG,
+CorelDRAW and AutoCAD DXF drawings are rendered sharp at any zoom level.
 
 There is no user interface to speak of: a window with the picture in it, use keys and the mouse to
 page and zoom.
@@ -159,6 +159,7 @@ The GNOME viewer was contributed by Ferenc Czirok. Windows touchpad gestures are
 | **camera raw** (CR2, NEF, NRW, ARW, RAF) | the full-size JPEG the camera stored in the file (only that part of the file is read)                                                                                                                                |                                                                                                                                      |
 | **SVG**                                  | shapes, paths, gradients, clipping, masks, patterns, `<style>` sheets, text with the system's fonts, embedded images                                                                                                 | filters are left out (drop shadows, blurs); HTML in `<foreignObject>` (draw.io) is not drawn; SVG fonts and symbol-only sprites draw nothing   |
 | **CorelDRAW** (CDR 5 – X6, CMX)          | drawings, text (with similar fonts where the original is missing), embedded bitmaps, multi-page documents ([ / ]), hidden layers skipped as in CorelDRAW; the shown area is the drawing's bounding box, not the page | arrowheads and Corel's own vector and bitmap pattern fills are left out                                                                              |
+| **DXF** (AutoCAD R12 – 2018)            | the model space: lines, arcs, polylines (wide ones too), splines, hatches, text in the drawing's code page, blocks, dimensions, leaders; layers, colours and line types as in AutoCAD, over its dark background; far-off stray objects are left out of the shown area | lines are hairlines (line weights are ignored); paper space layouts, multileaders, multilines, 3D solids and the referenced images are not drawn; binary DXF does not open; DWG files: convert them to DXF first |
 | **everything else** (GIF, BMP, …)        | through the operating system's decoder (ImageIO, WIC, GTK's loaders; stb_image in the SDL viewer)                                                                                                                    |                                                                                                                                      |
 
 Vector drawings are rendered first in full, so paging, fitting and zooming out work as for photos.
@@ -213,6 +214,7 @@ you look at the current one.
 | AVIF             | 41 web AVIFs, average     | **10 ms**  | ImageIO 32 ms                                    |
 | SVG              | 38 MB drawing             | **0.53 s** | WebKit 1.4 s, CoreSVG 2.4 s                      |
 | CorelDRAW        | 17.7 MB all-vector plan   | **1.8 s**  | libcdr's `cdr2xhtml` 5.4 s (SVG conversion only) |
+| DXF              | 7.5 MB floor plan         | **78 ms**  | ezdxf 8.7 s                                      |
 
 Measured on an Intel i9 desktop. On a 2020 M1 MacBook Air a 24 MP JPEG decodes in ~30 ms, three
 times faster than Apple's hardware JPEG decoder on the same machine. A folder of 24 MP photos plays

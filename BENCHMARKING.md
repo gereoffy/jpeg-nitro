@@ -19,6 +19,7 @@ Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); the
 | **nitroavif** | AVIF (AV1 in HEIF: 8–12-bit, 4:2:0 – 4:4:4, gray, alpha, grids, crop / rotation / mirroring) | own HEIF parsing (shared with nitroheic), AV1 by [dav1d](https://code.videolan.org/videolan/dav1d); grid tiles decoded in parallel, our own parallel colour conversion (chroma upsampled linearly) | 41 web AVIFs: **~10 ms** avg. (M1: 10.8 ms; Windows i5: 13 ms) | ImageIO ~32 ms (M1: 22 ms); WIC: only with a Store extension |
 | **nitrosvg** | SVG (without filters) | lunasvg parser + plutovg renderer, with font lookup in the system and user font folders | 38 MB SVG: **~0.53 s** | WebKit ~1.4 s, CoreSVG ~2.4 s |
 | **nitrocdr** | CorelDRAW 5 – X6 (CDR), CMX | our [libcdr fork](https://github.com/gereoffy/libcdr) with many fixes (text styles, line spacing, clipping, bitmap transparency) and a 2× faster librevenge; draws directly with plutovg | 17.7 MB all-vector CDR: **~1.8 s**, ~3× faster | original libcdr `cdr2xhtml` ~5.4 s (only converting to SVG) |
+| **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~40 ms** read + **~40 ms** drawn (2000 px); 1.1 GB DXF: 2.4 + 2.4 s | ezdxf (Python) ~8.7 s |
 
 Times measured on the Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacBook Air a
 24 MP JPEG decodes in ~30 ms, ~3× faster than Apple's hardware JPEG decoder on the same machine
@@ -500,6 +501,39 @@ biggest plan 1.8 s (mostly libcdr's parsing). On macOS and in the Linux SDL view
 loading a big plan makes millions of small allocations, and with it plans load 20–25% faster on
 Intel and Apple Silicon too (`make MIMALLOC=0`: the system malloc); 193 CDRs on the M1 under Linux,
 16% faster than with glibc's malloc.
+
+### DXF
+
+**DXF** (nitrodxf, `src/nitrodxf.cpp`, our own): AutoCAD's text DXF, R12 to 2018, read in one pass
+into its tables (layers, line types, text styles, dimension styles) and blocks of primitives in
+their own coordinates: lines, arcs, ellipses and polyline bulges as cubic Béziers, splines evaluated
+into short lines, hatch boundaries, text as glyph runs. Then the model space is flattened: every
+block reference (and block array) is expanded with its transform, ByLayer / ByBlock colours and line
+types resolved, into a display list of float paths around the drawing's centre, batched by colour
+and line type for fewer plutovg calls; drawing replays only the items that touch the view. As in
+AutoCAD's model space, lines are one device pixel wide (line weights are ignored; wide polylines
+keep their width), the background is dark (#212830) and colour 7 is white. Text: the drawing's code
+page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv (on Windows its own converter), MTEXT
+formatting (fonts, heights, colours, stacked fractions) and word wrapping; AutoCAD's SHX fonts are
+not on the system, so a sans serif stands in for them, scaled to the same capital height. Hatch
+patterns are generated for the visible part only, and drawn as a tone where they are denser than the
+pixels. The shown area is the drawing's extents without far-off stray objects (a few items far
+outside where almost everything is, which AutoCAD's "zoom extents" would include). Damaged files:
+reading continues at the next intact record; block arrays and nested blocks are limited, so a
+broken file cannot explode.
+
+Test files: 311 DXFs (R9 – 2007), 360 DWGs converted to DXF with LibreDWG's `dwg2dxf` (up to 40
+of each version R10 – 2018) and 7 floor plans with their PDF exports. 619 of the 677 show; the
+other 58 have nothing drawable in their model space (paper space only, 3D solids only), and ezdxf
+draws nothing for them either. Side by side with ezdxf's renderings the drawings match, except
+that ezdxf draws thicker lines and makes up the dimensions whose blocks LibreDWG's R10 conversions
+lost. Under ASan and UBSan these and 240 cut or corrupted copies of them open without errors. Times
+on the Intel i9 (2000-pixel rendering): a 20–60 MB floor plan is read in 50–160 ms and drawn in
+30–180 ms; in the viewers a 4096-pixel rendering takes 70–140 ms.
+
+Not supported: paper space layouts and their viewports, multileaders, multilines, 3D solids
+(ACIS), the contents of referenced images (only their frame), binary DXF. DWG is not read; it can
+be converted to DXF (AutoCAD, the ODA File Converter, LibreDWG's `dwg2dxf`).
 
 ### Damaged files
 
