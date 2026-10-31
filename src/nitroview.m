@@ -189,7 +189,7 @@ enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_SVG = NV_MO
        MODE_NITROTIFF = NV_MODE_NITROTIFF, MODE_NITROAVIF = NV_MODE_NITROAVIF };   // (the rest: nitro_load.h)
 static int g_nthreads = 0;   // -j
 static _Atomic int g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
-static _Atomic int g_dxf_background;   // DXF background: 0 dark, 1 white, 2 black (keys E / Shift+E)
+static _Atomic int g_dxf_background;   // DXF background: 0 white, 1 AutoCAD's dark grey, 2 black (keys E / Shift+E)
 
 static const char *mode_name(int m) {
     const char *n = nv_mode_name(m);
@@ -1081,7 +1081,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     if (d.pages > 1) t = [t stringByAppendingFormat:@"  [page %d/%d]", d.page + 1, d.pages];
     if (d.mode == MODE_NITRODNG && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
-    if (d.mode == MODE_DXF && d.background) t = [t stringByAppendingString:d.background == 1 ? @"  white background" : @"  black background"];
+    if (d.mode == MODE_DXF && d.background) t = [t stringByAppendingString:d.background == 1 ? @"  dark background" : @"  black background"];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -2293,7 +2293,7 @@ int main(int argc, const char **argv) {
                 "  arrows                  move a zoomed image (Shift: bigger steps)\n"
                 "  W                       back to the image's own size (small images 100%%, window follows)\n"
                 "  E / Shift+E             DNG raw image: brighter / darker (1/3 EV steps, kept while paging)\n"
-                "                          DXF drawing: the next / previous background (dark, white, black)\n"
+                "                          DXF drawing: the next / previous background (white, dark grey, black)\n"
                 "  Del, Cmd+Backspace      move the file to the .delete folder next to it   U / Cmd+Z  undo\n"
                 "mouse:\n"
                 "  drag                    move a zoomed image\n"

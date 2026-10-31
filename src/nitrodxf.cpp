@@ -532,8 +532,8 @@ struct FaceInfo {
 enum : uint32_t { COL_ACI = 1u << 24, COL_RGB = 2u << 24, COL_BYLAYER = 3u << 24, COL_BYBLOCK = 4u << 24 };
 enum { LT_BYLAYER = -1, LT_BYBLOCK = -2, LT_CONTINUOUS = -3 };
 
-// the backgrounds (nitrodxf_set_background): AutoCAD's dark model space, paper white, black
-const uint32_t BACKGROUNDS[3] = {0x212830, 0xffffff, 0x000000};
+// the backgrounds (nitrodxf_set_background): paper white, AutoCAD's dark model space, black
+const uint32_t BACKGROUNDS[3] = {0xffffff, 0x212830, 0x000000};
 const uint32_t WIPEOUT = 0x01000000;   // (an item's rgba: the background colour, whichever it is)
 
 uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
@@ -2082,7 +2082,7 @@ void set_rgba(plutovg_canvas_t *c, uint32_t rgba, float alpha = 1) {
 // colours are darkened enough to be seen (yellow, light grey ...).
 uint32_t on_background(uint32_t rgba, int background) {
     if (rgba == WIPEOUT) return 0xff000000u | BACKGROUNDS[background];
-    if (background != 1) return rgba;
+    if (background != 0) return rgba;
     uint32_t r = rgba >> 16 & 255, g = rgba >> 8 & 255, b = rgba & 255, a = rgba & 0xff000000u;
     if ((rgba & 0xffffff) == 0xffffff) return a;
     double lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
