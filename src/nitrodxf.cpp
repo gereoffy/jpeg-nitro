@@ -168,7 +168,7 @@ double pow10i(int e) {
     return e >= 0 && e <= 22 ? t[e] : std::pow(10.0, e);
 }
 
-// a decimal number (the DXF way: no hex, no inf); def if there is none
+// a decimal number (the DXF way: no hex, no inf; a decimal comma too); def if there is none
 double num(sv s, double def = 0) {
     const char *p = s.data(), *e = p + s.size();
     while (p < e && (*p == ' ' || *p == '\t')) p++;
@@ -181,7 +181,7 @@ double num(sv s, double def = 0) {
         if (m < 100000000000000000ull) m = m * 10 + (uint64_t)(*p - '0');
         else ex++;
     }
-    if (p < e && *p == '.') {
+    if (p < e && (*p == '.' || *p == ',')) {   // (a decimal comma: some programs write the locale's)
         for (p++; p < e && *p >= '0' && *p <= '9'; p++, any = true)
             if (m < 100000000000000000ull) {
                 m = m * 10 + (uint64_t)(*p - '0');
