@@ -422,6 +422,49 @@ static GLuint g_samp_lin, g_samp_pt, g_samp_bil;
 static GLint g_max_tbo;      // PNG rows in a buffer texture up to this size (0: converted on the CPU)
 static int g_bench_split;    // --bench: time the conversion and the mipmaps separately
 static int g_debug_time;     // NV_DEBUG_TIME: print where the time goes, per image
+static double g_start_ms;    // (NV_DEBUG_TIME) when the viewer started
+static int g_x11;            // the video driver is X11
+// NV_DEBUG_TIME: the input events since the last page was drawn: the longest delay from the
+// window system's time stamp to the viewer reading the event, how many, the key repeats among
+// them, and the page turns they asked for (more than one: the draw was late for the earlier ones)
+static struct { double max_ms; int n, repeats, pages; } g_in;
+
+static void input_seen(double delay_ms) {
+    if (delay_ms > g_in.max_ms) g_in.max_ms = delay_ms;
+    g_in.n++;
+}
+
+#ifdef __linux__
+#include <time.h>
+// X11: SDL stamps the events with its own clock as it reads them, so the delay is taken from the
+// raw event: the X server (Xorg and XWayland alike) stamps a key or button press with
+// CLOCK_MONOTONIC in milliseconds when it receives it.
+struct x11_input_event {   // (the common prefix of XKeyEvent and XButtonEvent)
+    int type;
+    unsigned long serial;
+    int send_event;
+    void *display;
+    unsigned long window, root, subwindow, time;
+};
+static bool x11_event_hook(void *ctx, XEvent *xe) {
+    const struct x11_input_event *e = (const struct x11_input_event *)xe;
+    if (e->type == 2 || e->type == 4) {   // KeyPress, ButtonPress
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint32_t now = (uint32_t)((uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000);
+        input_seen((int32_t)(now - (uint32_t)e->time));
+    }
+    return true;
+}
+#endif
+
+// A key or wheel event: its delay from the window system's time stamp (Wayland: relative to the
+// first event's, as SDL aligns the compositor's clock to its own by that one; X11: see above)
+static void input_event(Uint64 stamp, int repeat) {
+    if (!g_debug_time) return;
+    if (repeat) g_in.repeats++;
+    if (!g_x11) input_seen((double)(SDL_GetTicksNS() - stamp) / 1e6);
+}
 static struct { GLint kind, hasa, cs; } U;                          // conversion uniforms
 static struct { GLint ch, pitch; } UP;                              // PNG
 static struct { GLint origin, size, orientation; } UD;              // draw uniforms
@@ -1477,6 +1520,7 @@ static void go(int i, int dir) {
     V.dir = dir;
     V.request_time = now_ms();
     V.reported = 0;
+    g_in.pages++;
     Decoded *ready = loader_get(i);
     V.was_ready = ready != NULL;
     nv_loader_focus(L, i, dir);
@@ -1943,11 +1987,22 @@ static void render(void) {
         fflush(stdout);
     }
     if (g_debug_time && tex) {   // (the upload and conversion times are the CPU's side: the GPU's share waits in the swap)
-        if (first) printf("  timing: event->draw %.1f ms, ", t0 - V.request_time);
-        else printf("  timing: redraw, ");
+        if (first) {
+            printf("  timing: at %.0f ms, ", t3 - g_start_ms);
+            if (g_in.n) {
+                printf("input %s%.1f ms", g_in.n > 1 ? "<= " : "", g_in.max_ms);
+                if (g_in.n > 1) printf(" (%d events)", g_in.n);
+                if (g_in.repeats) printf(", %d repeat%s", g_in.repeats, g_in.repeats > 1 ? "s" : "");
+                if (g_in.pages > 1) printf(", %d pages", g_in.pages);
+                printf(", ");
+            }
+            memset(&g_in, 0, sizeof g_in);
+            printf("event->draw %.1f ms, ", t0 - V.request_time);
+        } else printf("  timing: redraw, ");
         if (converting) printf("texture %.1f ms (upload %.1f, convert %.1f%s), ", t1 - t0, d->upload_ms, d->conv_ms, staged_note(d));
         else printf("texture ready, ");
         printf("draw %.1f ms, swap %.1f ms\n", t2 - t1, t3 - t2);
+        fflush(stdout);
     }
     convert_ahead();
 }
@@ -1959,6 +2014,7 @@ static void toggle_fullscreen(void) {
 
 static void fullscreen_changed(int on) {
     V.fullscreen = on;
+    if (g_debug_time) printf("  fullscreen %s\n", on ? "on" : "off");
     V.self_resize_time = now_ms();
     if (!on) {
         Decoded *d = loader_get(V.index);
@@ -2148,6 +2204,7 @@ static void handle(const SDL_Event *e) {
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: fullscreen_changed(0); break;
     case SDL_EVENT_WINDOW_DISPLAY_CHANGED: update_vector_target(); break;
     case SDL_EVENT_KEY_DOWN:
+        input_event(e->key.timestamp, e->key.repeat);
         on_key(e->key.key, e->key.mod);
         if (!(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) on_char(key_char(e->key.scancode, e->key.mod));
         break;
@@ -2187,7 +2244,10 @@ static void handle(const SDL_Event *e) {
             SDL_SetCursor(SDL_GetDefaultCursor());
         }
         break;
-    case SDL_EVENT_MOUSE_WHEEL: on_wheel(&e->wheel); break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        input_event(e->wheel.timestamp, 0);
+        on_wheel(&e->wheel);
+        break;
     case SDL_EVENT_PINCH_BEGIN: V.pinch_last = 1; break;
     case SDL_EVENT_PINCH_UPDATE: {   // touchpad pinch: zoom around the cursor
         // SDL documents the scale as the change since the previous update, and so it is on macOS;
@@ -2258,6 +2318,15 @@ static int create_window(const char *first, int hidden) {
     SDL_GL_SetSwapInterval(1);
     if (gpu_init()) return -1;
     if (getenv("NV_DEBUG_GL")) printf("OpenGL %s, %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
+    if (g_debug_time) {   // (the window system, the driver and the display: NV_DEBUG_TIME)
+        int v = SDL_GetVersion(), interval = 0;
+        SDL_GL_GetSwapInterval(&interval);
+        const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(V.win));
+        const char *session = getenv("XDG_SESSION_TYPE");
+        printf("environment: SDL %d.%d.%d, video driver %s (session: %s), OpenGL %s, %s, swap interval %d, display %dx%d @ %g Hz\n",
+               SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v), drv ? drv : "?", session ? session : "?",
+               glGetString(GL_VERSION), glGetString(GL_RENDERER), interval, m ? m->w : 0, m ? m->h : 0, m ? m->refresh_rate : 0.0f);
+    }
     if (hidden) return 0;
     set_icon();
     V.self_resize_time = now_ms();
@@ -2462,7 +2531,7 @@ static void usage(void) {
         "  -h, --help            this help\n"
         "\n"
         "environment:\n"
-        "  NV_DEBUG_TIME=1       print where the time goes per image: upload, conversion, draw, swap\n"
+        "  NV_DEBUG_TIME=1       print where the time goes per image: input delay, upload, conversion, draw, swap\n"
         "  NV_DEBUG_GL=1         print the OpenGL version and renderer\n"
         "\n"
         "keys:\n"
@@ -2507,9 +2576,14 @@ int main(int argc, char **argv) {
     if (help) { usage(); return 1; }
     g_pool_lock = SDL_CreateMutex();
     g_debug_time = getenv("NV_DEBUG_TIME") != NULL;
+    g_start_ms = now_ms();
     SDL_SetAppMetadata("NitroView", "1.0", APP_ID);   // (Wayland: the desktop file's icon, see --register)
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
     if (!SDL_Init(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    g_x11 = SDL_GetCurrentVideoDriver() && !strcmp(SDL_GetCurrentVideoDriver(), "x11");
+#ifdef __linux__
+    if (g_debug_time && g_x11) SDL_SetX11EventHook(x11_event_hook, NULL);
+#endif
     FileList fl = {0};
     collect_files(&fl, args, nargs);
     if ((bench || selftest) && !fl.n) { usage(); return 1; }
