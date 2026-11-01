@@ -111,11 +111,70 @@ static plutovg_surface_t *bmp32(const unsigned char *b, size_t n) {
     return s;
 }
 
+// A grayscale Photoshop image (8 bits, its merged image raw or PackBits compressed; embedded in
+// CorelDRAW documents as OLE objects): stb_image reads RGB ones only, these were left out.
+plutovg_surface_t *psdGray(const unsigned char *b, size_t n) {
+    auto u16 = [b](size_t o) { return (uint32_t)(b[o] << 8 | b[o + 1]); };
+    auto u32 = [b](size_t o) { return (uint32_t)b[o] << 24 | (uint32_t)b[o + 1] << 16 | (uint32_t)b[o + 2] << 8 | b[o + 3]; };
+    if (n < 26 || memcmp(b, "8BPS", 4) || u16(4) != 1 || u16(22) != 8 || u16(24) != 1) return nullptr;
+    uint32_t channels = u16(12), h = u32(14), w = u32(18);
+    if (!channels || !w || !h || w > 30000 || h > 30000) return nullptr;
+    size_t o = 26;
+    for (int i = 0; i < 3; i++) {   // the colour mode data, the image resources, the layers: skipped
+        if (o + 4 > n) return nullptr;
+        uint32_t len = u32(o);
+        if (len > n - o - 4) return nullptr;
+        o += 4 + len;
+    }
+    if (o + 2 > n) return nullptr;
+    uint32_t compression = u16(o);
+    o += 2;
+    std::vector<unsigned char> gray((size_t)w * h);
+    if (compression == 0) {
+        if (n - o < gray.size()) return nullptr;
+        memcpy(gray.data(), b + o, gray.size());
+    } else if (compression == 1) {   // each row's byte count (all channels), then the rows
+        size_t counts = o;
+        if ((n - o) / 2 < (size_t)channels * h) return nullptr;
+        o += (size_t)channels * h * 2;
+        for (uint32_t y = 0; y < h; y++) {
+            size_t end = o + u16(counts + 2 * y);
+            if (end > n) return nullptr;
+            unsigned char *row = gray.data() + (size_t)w * y;
+            uint32_t x = 0;
+            while (o < end && x < w) {
+                int c = (signed char)b[o++];
+                if (c >= 0) {
+                    for (int i = 0; i <= c && o < end && x < w; i++) row[x++] = b[o++];
+                } else if (c != -128 && o < end) {
+                    unsigned char v = b[o++];
+                    for (int i = 0; i <= -c && x < w; i++) row[x++] = v;
+                }
+            }
+            o = end;
+        }
+    } else
+        return nullptr;
+    plutovg_surface_t *s = plutovg_surface_create((int)w, (int)h);
+    if (!s) return nullptr;
+    unsigned char *data = plutovg_surface_get_data(s);
+    int stride = plutovg_surface_get_stride(s);
+    for (uint32_t y = 0; y < h; y++) {
+        uint32_t *dst = (uint32_t *)(data + (size_t)stride * y);
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t v = gray[(size_t)w * y + x];
+            dst[x] = 0xff000000u | v << 16 | v << 8 | v;
+        }
+    }
+    return s;
+}
+
 std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_image format) property
     const librevenge::RVNGBinaryData *d = p ? p->getBinaryData() : nullptr;
     if (!d || !d->size()) return nullptr;
     auto img = std::make_shared<Image>();
     img->s = bmp32(d->getDataBuffer(), d->size());
+    if (!img->s) img->s = psdGray(d->getDataBuffer(), d->size());
     if (!img->s) img->s = plutovg_surface_load_from_image_data(d->getDataBuffer(), (int)d->size());
     return img->s ? img : nullptr;
 }
