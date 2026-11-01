@@ -1094,8 +1094,8 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
             float k = st.markerUnit;
             plutovg_matrix_t t = {-dy * k, dx * k, dx * k, dy * k, at.x, at.y};   // (x across, y along)
             plutovg_path_transform(m, &t);
-            // its closed parts are filled, its open ones (a bar across the tip, a hollow triangle)
-            // outlined, closed, with the line's own width (as CorelDRAW's PDF export draws them)
+            // its closed parts are filled, its open ones (a bar across the tip, an open "<") outlined
+            // with the line's own width (CorelDRAW 9's PDF export closes them, CorelDRAW does not)
             plutovg_path_t *closed = plutovg_path_create(), *open = plutovg_path_create(), *part = plutovg_path_create();
             bool inPart = false;
             plutovg_path_iterator_t mi;
@@ -1103,7 +1103,7 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
             while (plutovg_path_iterator_has_next(&mi)) {
                 plutovg_path_command_t cmd = plutovg_path_iterator_next(&mi, pts);
                 if (cmd == PLUTOVG_PATH_COMMAND_MOVE_TO) {
-                    if (inPart) { plutovg_path_close(part); plutovg_path_add_path(open, part, nullptr); }
+                    if (inPart) plutovg_path_add_path(open, part, nullptr);
                     plutovg_path_reset(part);
                     plutovg_path_move_to(part, pts[0].x, pts[0].y);
                     inPart = true;
@@ -1116,7 +1116,7 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
                     inPart = false;
                 }
             }
-            if (inPart) { plutovg_path_close(part); plutovg_path_add_path(open, part, nullptr); }
+            if (inPart) plutovg_path_add_path(open, part, nullptr);
             plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, closed);
             plutovg_canvas_stroke_path(c, open);
