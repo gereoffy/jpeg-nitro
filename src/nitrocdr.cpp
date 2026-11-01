@@ -199,6 +199,8 @@ struct Style {
     plutovg_line_cap_t cap = PLUTOVG_LINE_CAP_BUTT;
     plutovg_line_join_t join = PLUTOVG_LINE_JOIN_MITER;
     std::vector<float> dashes;
+    std::string markerStart, markerEnd;   // arrowheads: SVG path data in their own units (libcdr's)
+    float markerUnit = 0;                 // one of those, in points; the tip at the line's end, y along it
 };
 
 struct Span {
@@ -982,6 +984,11 @@ private:
             st->strokeWidth = (float)points(p["svg:stroke-width"]);
             if (is(p, "svg:stroke-linecap", "round")) st->cap = PLUTOVG_LINE_CAP_ROUND;
             else if (is(p, "svg:stroke-linecap", "square")) st->cap = PLUTOVG_LINE_CAP_SQUARE;
+            if (p["libcdr:marker-unit"]) {
+                st->markerUnit = (float)points(p["libcdr:marker-unit"]);
+                if (p["libcdr:marker-start"]) st->markerStart = p["libcdr:marker-start"]->getStr().cstr();
+                if (p["libcdr:marker-end"]) st->markerEnd = p["libcdr:marker-end"]->getStr().cstr();
+            }
             if (is(p, "svg:stroke-linejoin", "round")) st->join = PLUTOVG_LINE_JOIN_ROUND;
             else if (is(p, "svg:stroke-linejoin", "bevel")) st->join = PLUTOVG_LINE_JOIN_BEVEL;
             if (is(p, "draw:stroke", "dash")) {   // ODF: dots1 x dots1-length, dots2 x dots2-length, all + distance
@@ -1056,6 +1063,46 @@ void drawText(plutovg_canvas_t *c, const Span &s, float x, float y, bool stroke)
     }
 }
 
+// A line's arrowheads (filled with its outline colour): at its first and last points, the tip
+// there, pointing away from the line (along its first / last segment, or curve's tangent)
+void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *path) {
+    plutovg_point_t first = {0, 0}, second = {0, 0}, last = {0, 0}, before = {0, 0};
+    bool haveFirst = false, haveSecond = false, haveLast = false;
+    plutovg_path_iterator_t iter;
+    plutovg_path_iterator_init(&iter, path);
+    plutovg_point_t pts[3];
+    auto differs = [](plutovg_point_t a, plutovg_point_t b) { return fabsf(a.x - b.x) > 1e-4f || fabsf(a.y - b.y) > 1e-4f; };
+    while (plutovg_path_iterator_has_next(&iter)) {
+        plutovg_path_command_t cmd = plutovg_path_iterator_next(&iter, pts);
+        int n = cmd == PLUTOVG_PATH_COMMAND_CUBIC_TO ? 3 : 1;
+        if (cmd == PLUTOVG_PATH_COMMAND_CLOSE) return;   // (closed: no ends)
+        for (int k = 0; k < n; k++) {
+            if (!haveFirst) { first = pts[k]; haveFirst = true; }
+            else if (!haveSecond && differs(pts[k], first)) { second = pts[k]; haveSecond = true; }
+            if (haveLast && differs(pts[k], last)) before = last;
+            last = pts[k];
+            haveLast = true;
+        }
+    }
+    if (!haveSecond) return;
+    auto draw = [&](const std::string &data, plutovg_point_t at, plutovg_point_t from) {
+        float dx = at.x - from.x, dy = at.y - from.y, len = sqrtf(dx * dx + dy * dy);
+        if (data.empty() || len <= 0) return;
+        dx /= len, dy /= len;
+        plutovg_path_t *m = plutovg_path_create();
+        if (plutovg_path_parse(m, data.data(), (int)data.size())) {
+            float k = st.markerUnit;
+            plutovg_matrix_t t = {-dy * k, dx * k, dx * k, dy * k, at.x, at.y};   // (x across, y along)
+            plutovg_path_transform(m, &t);
+            plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
+            plutovg_canvas_fill_path(c, m);
+        }
+        plutovg_path_destroy(m);
+    };
+    draw(st.markerStart, first, second);
+    draw(st.markerEnd, last, before);
+}
+
 void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
     plutovg_canvas_save(c);
     if (it.kind == Item::PATH) {
@@ -1077,6 +1124,10 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_set_line_join(c, st.join);
             if (!st.dashes.empty()) plutovg_canvas_set_dash(c, 0, st.dashes.data(), (int)st.dashes.size());
             plutovg_canvas_stroke_path(c, it.path.get());
+            if (st.markerUnit > 0) {
+                plutovg_canvas_set_dash(c, 0, nullptr, 0);
+                drawMarkers(c, st, it.path.get());
+            }
         }
     } else if (it.kind == Item::IMAGE) {
         if (it.path) plutovg_canvas_clip_path(c, it.path.get());   // (before the image's own transform)
