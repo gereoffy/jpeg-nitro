@@ -54,16 +54,7 @@
 #ifdef NV_DAV1D
 #include "nitroavif.h"   // AVIF: AV1 through dav1d
 #endif
-#ifdef NV_SVG
-#include "nitrodxf.h"   // DXF drawings (drawn with the plutovg of the SVG library)
-#include "nitrosvg.h"   // optional SVG rendering (lunasvg)
-#endif
-#ifdef NV_CDR
-#include "nitrocdr.h"   // optional CorelDRAW rendering (libcdr + plutovg)
-#endif
-#if defined(NV_SVG) || defined(NV_CDR)
-#define NV_VECTOR 1     // vector images: rendered again, sharp, when zoomed in
-#endif
+#include "nitro_vector.h"     // the vector drawings, SVG / DXF / CorelDRAW (shared too)
 
 #ifndef M_SQRT2
 #define M_SQRT2 1.41421356237309504880
@@ -77,7 +68,7 @@
 #define WM_APP_DECODED (WM_APP + 1)
 #define WM_APP_DETAIL (WM_APP + 2)   // a vector image's sharp detail is rendered
 #define WM_APP_PAGE (WM_APP + 3)     // another page of a multi-page document is drawn
-#define WM_APP_DNG (WM_APP + 4)      // a DNG is developed again (another exposure correction)
+#define WM_APP_RELOAD (WM_APP + 4)      // a DNG is developed again (another exposure correction)
 #define WM_APP_OPEN (WM_APP + 5)     // started without files: the open dialog
 #define TIMER_SLIDE 1
 #define TIMER_DETAIL 2
@@ -128,30 +119,9 @@ static const wchar_t *base_name(const wchar_t *p) {
 // decoded image
 
 typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;
-enum { MODE_WIC = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_DXF = NV_MODE_DXF,
-       MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
+enum { MODE_WIC = -3, MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
 
 #ifdef NV_VECTOR
-// A loaded vector document (SVG, CorelDRAW), shared by the images of its pages and the background
-// renders of their sharp detail: reference counted, freed by whichever drops it last.
-typedef struct {
-    void *doc;
-    int (*render)(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
-    void (*size)(void *doc, int page, double *w, double *h);
-    void (*free)(void *doc);
-    int pages, mode;
-    volatile LONG refs;
-} VectorDoc;
-static VectorDoc *vec_ref(VectorDoc *v) {
-    if (v) InterlockedIncrement(&v->refs);
-    return v;
-}
-static void vec_unref(VectorDoc *v) {
-    if (v && !InterlockedDecrement(&v->refs)) {
-        v->free(v->doc);
-        free(v);
-    }
-}
 // Shown fitted to the screen (full screen or key 0), the main thread sets the screen's size in
 // pixels here: vector images are then rendered at least that large (the prefetched ones too),
 // sharp from the start, not first enlarged and sharpened a moment later by the detail render.
@@ -177,8 +147,8 @@ typedef struct {
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
-    VectorDoc *vec;                    // SVG / CDR: the document (this is its page `page`)
-    int page;
+    NvVector *vec;                     // a drawing: the document (this is its page `page`) ...
+    int page, background;              // ... and the background it was drawn over
     double vscale;                     // decoded pixels per document unit
     ID3D11Texture2D *dtex;             // sharp detail (main thread): the visible part rendered at screen
     ID3D11ShaderResourceView *dsrv;    // resolution, over the rectangle dx, dy, dw, dh of the image
@@ -233,15 +203,6 @@ static void buf_put(uint8_t *p, size_t cap) {
 // ---------------------------------------------------------------------------
 // files
 
-static const char *const g_more_exts[] = {   // the vector formats, beside nv_image_exts
-#ifdef NV_SVG
-    "svg", "dxf",
-#endif
-#ifdef NV_CDR
-    "cdr", "cmx",
-#endif
-    NULL};
-
 typedef struct { wchar_t **v; int n, cap; } FileList;
 
 static void fl_add(FileList *l, const wchar_t *p) {
@@ -269,7 +230,7 @@ static void list_dir(FileList *out, const wchar_t *dir, const wchar_t *pattern, 
     int first = out->n;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (!any_ext && !nv_is_image_name_w(fd.cFileName) && !nv_has_ext_w(fd.cFileName, g_more_exts)) continue;
+        if (!any_ext && !nv_is_image_name_w(fd.cFileName) && !nv_has_ext_w(fd.cFileName, nv_vector_exts)) continue;
         wchar_t p[MAX_PATH * 2];
         if (!swfmt(p, MAX_PATH * 2, L"%ls%ls%ls", dir, dl && !sep ? L"\\" : L"", fd.cFileName)) fl_add(out, p);
     } while (FindNextFileW(h, &fd));
@@ -706,7 +667,7 @@ static void decoded_free(Decoded *d) {   // main thread
 #ifdef NV_VECTOR
     if (d->dsrv) ID3D11ShaderResourceView_Release(d->dsrv);
     if (d->dtex) ID3D11Texture2D_Release(d->dtex);
-    vec_unref(d->vec);
+    nv_vector_unref(d->vec);
 #endif
     free(d);
 }
@@ -811,85 +772,17 @@ done:
 
 
 #ifdef NV_VECTOR
-#ifdef NV_SVG
-static int svg_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    (void)page;
-    return nitrosvg_render(doc, bgra, w, h, pitch, scale, x0, y0);
-}
-static void svg_size(void *doc, int page, double *w, double *h) {
-    (void)page;
-    nitrosvg_size(doc, w, h);
-}
-static void svg_free(void *doc) { nitrosvg_free(doc); }
-static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrodxf_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
-}
-static void dxf_size(void *doc, int page, double *w, double *h) { nitrodxf_size(doc, page, w, h); }
-static void dxf_free(void *doc) { nitrodxf_free(doc); }
-#endif
-#ifdef NV_CDR
-static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrocdr_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
-}
-static void cdr_size(void *doc, int page, double *w, double *h) { nitrocdr_size(doc, page, w, h); }
-static void cdr_free(void *doc) { nitrocdr_free(doc); }
-#endif
 
-// An SVG / DXF / CDR / CMX file by its name: the document (one reference), else NULL.
-static VectorDoc *load_vector(const char *path, const uint8_t *data, size_t len) {   // (path: UTF-8)
-    VectorDoc v = {0};
-#ifdef NV_SVG
-    static const char *const svg_exts[] = {"svg", NULL};
-    if (nv_has_ext(path, svg_exts) && (v.doc = nitrosvg_load(data, len))) {
-        v.render = svg_render;
-        v.size = svg_size;
-        v.free = svg_free;
-        v.pages = 1;
-        v.mode = MODE_SVG;
-    }
-    static const char *const dxf_exts[] = {"dxf", NULL};
-    if (!v.doc && nv_has_ext(path, dxf_exts) && (v.doc = nitrodxf_load(data, len))) {
-        v.render = dxf_render;
-        v.size = dxf_size;
-        v.free = dxf_free;
-        v.pages = nitrodxf_pages(v.doc);
-        v.mode = MODE_DXF;
-    }
-#endif
-#ifdef NV_CDR
-    static const char *const cdr_exts[] = {"cdr", "cmx", NULL};
-    if (!v.doc && nv_has_ext(path, cdr_exts) && (v.doc = nitrocdr_load(data, len))) {
-        v.render = cdr_render;
-        v.size = cdr_size;
-        v.free = cdr_free;
-        v.pages = nitrocdr_pages(v.doc);
-        v.mode = MODE_CDR;
-    }
-#endif
-    if (!v.doc) return NULL;
-    VectorDoc *p = malloc(sizeof *p);
-    if (!p) { v.free(v.doc); return NULL; }
-    *p = v;
-    p->refs = 1;
-    return p;
-}
-
-// Renders a page of v as the image of d, in full: the long side 1024..4096 pixels (small icons
-// enlarged, huge drawings reduced), at least the fit-to-screen target, over white. Returns the
-// pixels (pool buffer) or NULL; d takes a reference to v.
-static uint8_t *decode_vector_page(VectorDoc *v, int page, Decoded *d, size_t *cap) {
-    double w = 0, h = 0;
-    v->size(v->doc, page, &w, &h);
-    if (!(w > 0 && h > 0)) return NULL;
-    double l = MAX(w, h), k = l < 1024 ? 1024 / l : l > 4096 ? 4096 / l : 1;
-    LONG tw = g_vec_tw, th = g_vec_th;
-    if (tw > 0 && th > 0) k = MAX(k, MIN(tw / w, th / h));
-    k = MIN(k, MAX_TEX / l);
-    int iw = MAX(1, MIN(MAX_TEX, (int)lround(w * k))), ih = MAX(1, MIN(MAX_TEX, (int)lround(h * k)));
+// Renders a page of v as the image of d, in full (the size: nv_vector_page_size), over the
+// background it was loaded with. Returns the pixels (pool buffer) or NULL; d takes a reference to v.
+static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *cap) {
+    int iw, ih;
+    double k = nv_vector_page_size(v, page, (int)g_vec_tw, (int)g_vec_th, MAX_TEX, &iw, &ih);
+    if (!k) return NULL;
     size_t pitch = (size_t)iw * 4;
     uint8_t *buf = buf_get(pitch * ih, cap);
     if (!buf) return NULL;
-    if (v->render(v->doc, page, buf, iw, ih, pitch, k, 0, 0)) {
+    if (nv_vector_render(v, page, buf, iw, ih, pitch, k, 0, 0)) {
         buf_put(buf, *cap);
         return NULL;
     }
@@ -898,10 +791,11 @@ static uint8_t *decode_vector_page(VectorDoc *v, int page, Decoded *d, size_t *c
     d->height = ih;
     d->pitch[0] = pitch;
     d->size = pitch * ih;
-    d->mode = v->mode;
+    d->mode = nv_vector_mode(v);
     d->bands = 1;
     d->orientation = 1;
-    d->vec = vec_ref(v);
+    d->vec = nv_vector_ref(v);
+    d->background = nv_vector_background_of(v);
     d->page = page;
     d->vscale = k;
     return buf;
@@ -933,11 +827,11 @@ static Decoded *decode_file(const wchar_t *wpath) {
     d->read_ms = t1 - t0;
     d->orientation = 1;
 #ifdef NV_VECTOR
-    VectorDoc *vec = load_vector(path, data, len);
+    NvVector *vec = nv_vector_open(path, data, len);
     free(path);
     if (vec) {
         buf = decode_vector_page(vec, 0, d, &cap);
-        vec_unref(vec);   // (d keeps its own reference)
+        nv_vector_unref(vec);   // (d keeps its own reference)
     } else
 #else
     free(path);
@@ -983,7 +877,7 @@ static Decoded *decode_file(const wchar_t *wpath) {
     d->upload_ms = now_ms() - t2;
     if (up) {
 #ifdef NV_VECTOR
-        vec_unref(d->vec);
+        nv_vector_unref(d->vec);
 #endif
         free(d);
         return NULL;
@@ -996,13 +890,21 @@ static Decoded *decode_file(const wchar_t *wpath) {
 // image cache + background decoder: nitro_prefetch, with these callbacks
 
 static NvLoader *L;
-static HWND g_notify;   // the window the decoder thread posts WM_APP_DECODED / WM_APP_DNG to
+static HWND g_notify;   // the window the decoder thread posts WM_APP_DECODED / WM_APP_RELOAD to
 
 static int stale_dng(const Decoded *d) { return d && d->mode == MODE_NITRODNG && d->ev3 != (int)g_dng_ev3; }
+static int stale_vector(const Decoded *d) {   // a drawing over another background than the current one
+#ifdef NV_VECTOR
+    return d && d->vec && d->background != nv_vector_background();
+#else
+    (void)d;
+    return 0;
+#endif
+}
 
 static void *ld_decode(void *path, char **error, void *ctx) { return decode_file(path); }
 static void ld_free(void *image, void *ctx) { decoded_free(image); }
-static int ld_stale(const void *image, void *ctx) { return stale_dng(image); }
+static int ld_stale(const void *image, void *ctx) { return stale_dng(image) || stale_vector(image); }
 static void *ld_path_dup(void *path, void *ctx) { return _wcsdup(path); }
 static void ld_path_free(void *path, void *ctx) { free(path); }
 static const char *ld_path_name(void *path, void *ctx) { return utf8(path); }
@@ -1031,9 +933,7 @@ static void loader_reap(void) {   // main thread (textures live here)
 // are dropped and rendered again (the current one is sharpened by the detail render).
 static int vec_too_small(const void *image, void *ctx) {
     const Decoded *d = image;
-    LONG tw = g_vec_tw, th = g_vec_th;
-    return d->vec && tw > 0 && th > 0 && MIN((double)tw / d->width, (double)th / d->height) > 1.01 &&
-           MAX(d->width, d->height) < MAX_TEX;
+    return d->vec && nv_vector_too_small(d->width, d->height, (int)g_vec_tw, (int)g_vec_th, MAX_TEX);
 }
 static void loader_vector_target_changed(void) { nv_loader_drop(L, vec_too_small, NULL, 1, NULL, NULL); }
 #endif
@@ -1042,25 +942,26 @@ typedef struct {
     Decoded *d;
     unsigned old_serial;          // the image it replaces (matched by serial: it may be freed meanwhile)
     wchar_t *path;
-} DngJob;
+} ReloadJob;
 
-static DWORD WINAPI dng_run(void *arg) {
-    DngJob *j = arg;
+static DWORD WINAPI reload_run(void *arg) {
+    ReloadJob *j = arg;
     j->d = decode_file(j->path);
-    PostMessageW(g_notify, WM_APP_DNG, (WPARAM)j, 0);
+    PostMessageW(g_notify, WM_APP_RELOAD, (WPARAM)j, 0);
     return 0;
 }
 
-// The DNG exposure correction changed (g_dng_ev3): prefetched DNGs are dropped and developed again,
-// the current one is replaced when its new development is ready (it stays on screen until then).
-static void loader_dng_exposure_changed(void) {
-    DngJob *j = calloc(1, sizeof *j);
+// The DNG exposure correction (g_dng_ev3) or the drawings' background (nv_vector_background)
+// changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
+// when its new decoding is ready (it stays on screen until then).
+static void loader_setting_changed(void) {
+    ReloadJob *j = calloc(1, sizeof *j);
     void *path = NULL;
     unsigned serial = 0;
     if (nv_loader_drop(L, ld_stale, NULL, j != NULL, &serial, &path) && path) {   // (no job: dropped, decoded again)
         j->old_serial = serial;
         j->path = path;
-        HANDLE th = CreateThread(NULL, 0, dng_run, j, 0, NULL);
+        HANDLE th = CreateThread(NULL, 0, reload_run, j, 0, NULL);
         if (th) {
             CloseHandle(th);
             return;
@@ -1186,9 +1087,13 @@ static void update_title(void) {
         swfmt(t, 1024, L"%ls  (%d/%d)  %ls", name, V.index + 1, V.nfiles,
                    loader_failed(V.index) ? L"CANNOT DECODE (unsupported or damaged)" : L"loading...");
 #ifdef NV_VECTOR
-    if (d && d->vec && d->vec->pages > 1) {
+    if (d && d->vec && nv_vector_pages(d->vec) > 1) {
         size_t n = wcslen(t);
-        swfmt(t + n, 1024 - n, L"  [page %d/%d]", d->page + 1, d->vec->pages);
+        swfmt(t + n, 1024 - n, L"  [page %d/%d]", d->page + 1, nv_vector_pages(d->vec));
+    }
+    if (d && d->vec && d->background) {
+        size_t n = wcslen(t);
+        swfmt(t + n, 1024 - n, L"  %hs", nv_vector_background_name(d->background));
     }
 #endif
     if (d && d->mode == MODE_NITRODNG && d->ev3) {
@@ -1545,7 +1450,7 @@ static int detail_current(const Decoded *d, const DetailRect *r) {
 
 typedef struct {
     Decoded *d;                  // (identified with vec and page: d itself may be gone by then)
-    VectorDoc *vec;              // (a reference: the document stays while it renders)
+    NvVector *vec;              // (a reference: the document stays while it renders)
     int page;
     double vscale;
     DetailRect r;
@@ -1558,7 +1463,7 @@ static DWORD WINAPI detail_run(void *arg) {
     DetailJob *j = arg;
     double t = now_ms(), k = j->vscale * j->r.scale;
     j->px = malloc((size_t)j->r.w * j->r.h * 4);
-    if (j->px && j->vec->render(j->vec->doc, j->page, j->px, j->r.w, j->r.h, (size_t)j->r.w * 4, k, j->r.dx / j->vscale,
+    if (j->px && nv_vector_render(j->vec, j->page, j->px, j->r.w, j->r.h, (size_t)j->r.w * 4, k, j->r.dx / j->vscale,
                                 j->r.dy / j->vscale)) {
         free(j->px);
         j->px = NULL;
@@ -1575,13 +1480,13 @@ static void start_detail(void) {   // TIMER_DETAIL
     DetailJob *j = calloc(1, sizeof *j);
     if (!j) return;
     j->d = d;
-    j->vec = vec_ref(d->vec);
+    j->vec = nv_vector_ref(d->vec);
     j->page = d->page;
     j->vscale = d->vscale;
     j->r = r;
     HANDLE th = CreateThread(NULL, 0, detail_run, j, 0, NULL);
     if (!th) {
-        vec_unref(j->vec);
+        nv_vector_unref(j->vec);
         free(j);
         return;
     }
@@ -1615,7 +1520,7 @@ static void detail_done(DetailJob *j) {   // WM_APP_DETAIL
         }
     }
     free(j->px);
-    vec_unref(j->vec);
+    nv_vector_unref(j->vec);
     free(j);
     redraw();   // (a view changed meanwhile asks for its own detail)
 }
@@ -1625,7 +1530,7 @@ static void detail_done(DetailJob *j) {   // WM_APP_DETAIL
 typedef struct {
     Decoded *d;
     unsigned old_serial;          // the image it replaces (matched by serial: it may be freed meanwhile)
-    VectorDoc *vec;
+    NvVector *vec;
     int page, index;
 } PageJob;
 
@@ -1642,7 +1547,7 @@ static DWORD WINAPI page_run(void *arg) {
         d->decode_ms = t2 - t1;
         d->upload_ms = now_ms() - t2;
         if (up) {
-            vec_unref(d->vec);
+            nv_vector_unref(d->vec);
             free(d);
             d = NULL;
         }
@@ -1658,16 +1563,16 @@ static DWORD WINAPI page_run(void *arg) {
 static void show_page(int delta) {
     unsigned serial;
     Decoded *d = nv_loader_get(L, V.index, &serial);
-    if (!d || !d->vec || d->page + delta < 0 || d->page + delta >= d->vec->pages) return;
+    if (!d || !d->vec || d->page + delta < 0 || d->page + delta >= nv_vector_pages(d->vec)) return;
     PageJob *j = calloc(1, sizeof *j);
     if (!j) return;
     j->old_serial = serial;
-    j->vec = vec_ref(d->vec);
+    j->vec = nv_vector_ref(d->vec);
     j->page = d->page + delta;
     j->index = V.index;
     HANDLE th = CreateThread(NULL, 0, page_run, j, 0, NULL);
     if (!th) {
-        vec_unref(j->vec);
+        nv_vector_unref(j->vec);
         free(j);
         return;
     }
@@ -1680,7 +1585,7 @@ static void page_done(PageJob *j) {   // WM_APP_PAGE
         update_title();
         redraw();
     }
-    vec_unref(j->vec);
+    nv_vector_unref(j->vec);
     free(j);
     loader_reap();
 }
@@ -1796,12 +1701,19 @@ static void on_char(wchar_t ch) {   // zoom keys by character: any keyboard layo
         break;
     case L'w': case L'W': window_to_image(); break;
     case L'u': case L'U': case 26: undo_delete(); break;   // U, Ctrl+Z: undo the last Del
-    case L'e': case L'E':   // DNG: brighter / (Shift) darker, 1/3 EV
+    case L'e': case L'E':   // DNG: brighter / (Shift) darker, 1/3 EV; a drawing: the next / (Shift) previous background
+#ifdef NV_VECTOR
+        if (cur && cur->vec) {
+            nv_vector_cycle_background(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+            loader_setting_changed();
+            break;
+        }
+#endif
         if (cur && cur->mode == MODE_NITRODNG) {
             int ev3 = MAX(-9, MIN(9, (int)g_dng_ev3 + (GetKeyState(VK_SHIFT) < 0 ? -1 : 1)));
             if (ev3 != (int)g_dng_ev3) {
                 InterlockedExchange(&g_dng_ev3, ev3);
-                loader_dng_exposure_changed();
+                loader_setting_changed();
             }
         }
         break;
@@ -1907,9 +1819,9 @@ static void open_dialog(int folder) {
     if (!pattern[0]) {
         char p[1024];
         nv_ext_list(p, sizeof p - 32, "*.", ";");
-        for (int i = 0; g_more_exts[i]; i++) {
+        for (int i = 0; nv_vector_exts[i]; i++) {
             strcat(p, ";*.");
-            strcat(p, g_more_exts[i]);
+            strcat(p, nv_vector_exts[i]);
         }
         MultiByteToWideChar(CP_UTF8, 0, p, -1, pattern, 1024);
     }
@@ -1971,8 +1883,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         loader_reap();
         if ((int)wp >= 0) image_decoded((int)wp);
         return 0;
-    case WM_APP_DNG: {
-        DngJob *j = (DngJob *)wp;
+    case WM_APP_RELOAD: {
+        ReloadJob *j = (ReloadJob *)wp;
         if (j->d && nv_loader_replace_image(L, j->old_serial, j->d) == V.index) {
             update_title();
             redraw();
@@ -2349,6 +2261,7 @@ static void usage(void) {
         "  arrows                  move a zoomed image (Shift: bigger steps)\n"
         "  W                       back to the image's own size (small images 100%%, window follows)\n"
         "  E / Shift+E             DNG raw image: brighter / darker (1/3 EV steps, kept while paging)\n"
+        "                          SVG / DXF / CorelDRAW drawing: the next / previous background (white, dark grey, black)\n"
         "  Del                     move the file to the .delete folder next to it   U / Ctrl+Z  undo\n"
         "  O / Shift+O             open images / a folder\n"
         "mouse:\n"

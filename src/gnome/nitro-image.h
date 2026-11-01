@@ -4,15 +4,18 @@
 #include <gio/gio.h>
 #include <gdk/gdk.h>
 
-// A vector document, SVG (nitrosvg) or CorelDRAW (nitrocdr), shared by the images made from it
-// (the pages of a drawing): rendered again, sharp, when zoomed in (see nitro-view.c).
-typedef struct _NitroVector NitroVector;
+#include "../nitro_vector.h"   // the vector drawings, SVG / DXF / CorelDRAW (shared by the viewers)
+
+// A drawing (nitro_vector), shared by the images made from it (the pages of a drawing): rendered
+// again, sharp, when zoomed in (see nitro-view.c).
+typedef NvVector NitroVector;
 
 typedef struct {
     GdkTexture *texture;   // the pixels (a vector drawing: rendered at a fixed size)
     NitroVector *vector;   // a vector drawing: its document (NULL otherwise) ...
     int page;              // ... the page shown (from 0) ...
-    double vector_scale;   // ... and texture pixels per document unit
+    double vector_scale;   // ... texture pixels per document unit ...
+    int background;        // ... and the background it was drawn over (nv_vector_background)
     int orientation;       // EXIF orientation (1..8), applied when drawing
     int width;             // display size (after the orientation)
     int height;
@@ -36,9 +39,6 @@ void nitro_image_set_threads(int threads);
 // DNG exposure correction in 1/3 EV for the images decoded from now on (keys E / Shift+E)
 void nitro_image_set_dng_ev3(int ev3);
 int nitro_image_get_dng_ev3(void);
-NitroVector *nitro_vector_ref(NitroVector *vector);
-void nitro_vector_unref(NitroVector *vector);
-int nitro_vector_pages(const NitroVector *vector);
 // Renders w x h pixels of a page: pixel (i, j) shows texture point ((x0 + i + 0.5) / scale,
 // (y0 + j + 0.5) / scale) of an image of vector_scale texture pixels per document unit; over white.
 // NULL on failure. Any thread.

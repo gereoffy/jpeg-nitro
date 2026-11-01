@@ -40,7 +40,7 @@ the whole element) and `patches/librevenge.patch` (embedded images pass through 
 
 ```
 make                 # nitroview, for the CPU it is built on (-march=native); on macOS this is the default target
-make app             # nitroview.app: universal (Intel + Apple Silicon), macOS 12+, ad-hoc signed
+make app             # nitroview.app: universal (Intel + Apple Silicon), macOS 11+, ad-hoc signed
 make zip / make dmg  # nitroview.zip / nitroview.dmg of the app, for passing it on
 make dmg notarize SIGN_ID="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=name
 ```
@@ -225,7 +225,7 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 **The library**
 - `src/nitro_load.c/.h`: file → decoded image with the decoders above (the library's face, what the viewers use); `src/nitro_convert.c/.h`: its planes → RGB
 - `examples/nitroconvert.c`: the example program on the library, any image → BMP
-- `src/nitro_prefetch.c/.h`, `src/nitro_view.h`: the viewers' shared prefetching loader and zoom arithmetic
+- `src/nitro_prefetch.c/.h`, `src/nitro_view.h`, `src/nitro_vector.c/.h`: the viewers' shared prefetching loader, zoom arithmetic, and vector drawings (SVG, DXF, CorelDRAW behind one interface: loading, pages, rendering, the background setting)
 
 **The viewers**
 - `src/nitroview.m`: Cocoa + Metal; `src/shaders.metal`: its GPU shaders (colour conversion, drawing), embedded at build time; `packaging/Info.plist`, `packaging/icon.png`

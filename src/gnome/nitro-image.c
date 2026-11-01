@@ -6,13 +6,6 @@
 #include "../nitro_load.h"      // reading and decoding with our decoders (the library)
 #include "../nitro_convert.h"   // their planes -> RGB (the library too)
 #include "../nitrojpeg.h"    // nj_set_max_workers
-#ifdef NV_SVG
-#include "../nitrodxf.h"   // DXF drawings (drawn with the plutovg of the SVG library)
-#include "../nitrosvg.h"   // optional SVG rendering (lunasvg)
-#endif
-#ifdef NV_CDR
-#include "../nitrocdr.h"   // optional CorelDRAW rendering (libcdr)
-#endif
 
 #include <math.h>
 #include <string.h>
@@ -23,52 +16,9 @@ static int decode_threads;
 static gint dng_ev3;   // DNG exposure correction in 1/3 EV (key E / Shift+E)
 
 // ---------------------------------------------------------------------------
-// Vector drawings, SVG (nitrosvg), DXF (nitrodxf) and CorelDRAW CDR / CMX (nitrocdr): rendered at a fixed size
-// here, the visible part again at screen resolution when zoomed in (nitro-view.c). Without
-// nitrosvg, SVG goes through GTK's loaders.
-
-struct _NitroVector {
-    gint refs;
-    int pages;
-#ifdef NV_SVG
-    nitrosvg *svg;
-    nitrodxf *dxf;
-#endif
-#ifdef NV_CDR
-    nitrocdr *cdr;
-#endif
-};
-
-NitroVector *nitro_vector_ref(NitroVector *vector) {
-    if (vector) g_atomic_int_inc(&vector->refs);
-    return vector;
-}
-
-void nitro_vector_unref(NitroVector *vector) {
-    if (!vector || !g_atomic_int_dec_and_test(&vector->refs)) return;
-#ifdef NV_SVG
-    if (vector->svg) nitrosvg_free(vector->svg);
-    if (vector->dxf) nitrodxf_free(vector->dxf);
-#endif
-#ifdef NV_CDR
-    if (vector->cdr) nitrocdr_free(vector->cdr);
-#endif
-    g_free(vector);
-}
-
-int nitro_vector_pages(const NitroVector *vector) { return vector ? vector->pages : 0; }
-
-static void vector_size(const NitroVector *vector, int page, double *w, double *h) {
-    *w = *h = 0;
-#ifdef NV_SVG
-    if (vector->svg) nitrosvg_size(vector->svg, w, h);
-    if (vector->dxf) nitrodxf_size(vector->dxf, page, w, h);
-#endif
-#ifdef NV_CDR
-    if (vector->cdr) nitrocdr_size(vector->cdr, page, w, h);
-#endif
-    (void)page;
-}
+// Vector drawings (nitro_vector: SVG, DXF, CorelDRAW): rendered at a fixed size here, the visible
+// part again at screen resolution when zoomed in (nitro-view.c). Without nitrosvg, SVG goes
+// through GTK's loaders.
 
 GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
                                 double y0) {
@@ -77,16 +27,7 @@ GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_sca
     guint8 *px = g_try_malloc(stride * (gsize)h);
     if (!px) return NULL;
     double k = scale * vector_scale;   // device pixels per document unit
-    int rc = -1;
-#ifdef NV_SVG
-    if (vector->svg) rc = nitrosvg_render(vector->svg, px, w, h, stride, k, x0 / k, y0 / k);
-    if (vector->dxf) rc = nitrodxf_render(vector->dxf, page, px, w, h, stride, k, x0 / k, y0 / k);
-#endif
-#ifdef NV_CDR
-    if (vector->cdr) rc = nitrocdr_render(vector->cdr, page, px, w, h, stride, k, x0 / k, y0 / k);
-#endif
-    (void)page;
-    if (rc) {
+    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k)) {
         g_free(px);
         return NULL;
     }
@@ -96,20 +37,19 @@ GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_sca
     return t;
 }
 
-// A page rendered with its long side 1024..4096 pixels (small icons enlarged, huge drawings
-// reduced), as the macOS / Windows viewers do (takes a reference to vector).
+// A page rendered in full (the size: nv_vector_page_size), as the other viewers do (takes a
+// reference to vector).
 static NitroImage *vector_image(NitroVector *vector, int page) {
-    double w = 0, h = 0;
-    vector_size(vector, page, &w, &h);
-    double l = MAX(w, h), k = l < 1024 ? 1024 / l : l > 4096 ? 4096 / l : 1;
-    int iw = MAX(1, MIN(16384, (int)lround(w * k))), ih = MAX(1, MIN(16384, (int)lround(h * k)));
-    GdkTexture *t = w > 0 && h > 0 ? nitro_vector_render(vector, page, k, iw, ih, 1.0, 0, 0) : NULL;
+    int iw, ih;
+    double k = nv_vector_page_size(vector, page, 0, 0, 16384, &iw, &ih);
+    GdkTexture *t = k ? nitro_vector_render(vector, page, k, iw, ih, 1.0, 0, 0) : NULL;
     if (!t) return NULL;
     NitroImage *image = g_new0(NitroImage, 1);
     image->texture = t;
-    image->vector = nitro_vector_ref(vector);
+    image->vector = nv_vector_ref(vector);
     image->page = page;
     image->vector_scale = k;
+    image->background = nv_vector_background_of(vector);
     image->orientation = 1;
     image->width = image->source_width = iw;
     image->height = image->source_height = ih;
@@ -117,55 +57,21 @@ static NitroImage *vector_image(NitroVector *vector, int page) {
 }
 
 NitroImage *nitro_image_load_page(NitroVector *vector, int page) {
-    if (!vector || page < 0 || page >= vector->pages) return NULL;
+    if (!vector || page < 0 || page >= nv_vector_pages(vector)) return NULL;
     gint64 start = g_get_monotonic_time();
     NitroImage *image = vector_image(vector, page);
     if (image) image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;
     return image;
 }
 
-static gboolean has_extension(GFile *file, const char *const *exts) {
-    char *name = g_file_get_basename(file);
-    gboolean found = name && nv_has_ext(name, exts);
-    g_free(name);
-    return found;
-}
-
-// An SVG (.svg, or text starting with '<'), a DXF or a CorelDRAW file (.cdr, .cmx); NULL if it is not one.
+// A drawing (an SVG, DXF or CorelDRAW file: nv_vector_open); NULL if it is not one.
 static NitroImage *load_vector(GFile *file, const guint8 *data, gsize len) {
-    NitroVector *vector = NULL;
-#ifdef NV_CDR
-    static const char *const cdr_exts[] = {"cdr", "cmx", NULL};
-    nitrocdr *cdr = has_extension(file, cdr_exts) ? nitrocdr_load(data, len) : NULL;
-    if (cdr) {
-        vector = g_new0(NitroVector, 1);
-        vector->cdr = cdr;
-        vector->pages = nitrocdr_pages(cdr);
-    }
-#endif
-#ifdef NV_SVG
-    static const char *const dxf_exts[] = {"dxf", NULL};
-    nitrodxf *dxf = !vector && has_extension(file, dxf_exts) ? nitrodxf_load(data, len) : NULL;
-    if (dxf) {
-        vector = g_new0(NitroVector, 1);
-        vector->dxf = dxf;
-        vector->pages = nitrodxf_pages(dxf);
-    }
-    static const char *const svg_exts[] = {"svg", NULL};
-    gsize i = len >= 3 && !memcmp(data, "\xef\xbb\xbf", 3) ? 3 : 0;   // (UTF-8 byte order mark)
-    while (i < len && g_ascii_isspace(data[i])) i++;
-    nitrosvg *svg = !vector && (has_extension(file, svg_exts) || (i < len && data[i] == '<')) ? nitrosvg_load(data, len) : NULL;
-    if (svg) {
-        vector = g_new0(NitroVector, 1);
-        vector->svg = svg;
-        vector->pages = 1;
-    }
-#endif
-    (void)file, (void)data, (void)len, (void)has_extension;
+    char *name = g_file_get_basename(file);
+    NitroVector *vector = name ? nv_vector_open(name, data, len) : NULL;
+    g_free(name);
     if (!vector) return NULL;
-    vector->refs = 1;
     NitroImage *image = vector_image(vector, 0);
-    nitro_vector_unref(vector);   // (the image keeps it)
+    nv_vector_unref(vector);   // (the image keeps it)
     return image;
 }
 
@@ -395,6 +301,6 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
 void nitro_image_free(NitroImage *image) {
     if (!image) return;
     g_clear_object(&image->texture);
-    g_clear_pointer(&image->vector, nitro_vector_unref);
+    g_clear_pointer(&image->vector, nv_vector_unref);
     g_free(image);
 }

@@ -58,7 +58,7 @@ typedef struct {
 
 static void detail_job_free(gpointer data) {
     DetailJob *j = data;
-    nitro_vector_unref(j->vector);
+    nv_vector_unref(j->vector);
     g_free(j);
 }
 
@@ -108,7 +108,7 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
     }
     if (self->detail_busy) return;   // (asks again when that one is done)
     DetailJob *j = g_new0(DetailJob, 1);
-    j->vector = nitro_vector_ref(self->vector);
+    j->vector = nv_vector_ref(self->vector);
     j->page = self->page;
     j->vector_scale = self->vector_scale;
     j->scale = scale;
@@ -272,7 +272,7 @@ static void nitro_view_size_allocate(GtkWidget *widget, int width, int height, i
 static void nitro_view_dispose(GObject *object) {
     NitroView *self = NITRO_VIEW(object);
     g_clear_object(&self->texture);
-    g_clear_pointer(&self->vector, nitro_vector_unref);
+    g_clear_pointer(&self->vector, nv_vector_unref);
     drop_detail(self);
     g_clear_handle_id(&self->changed_source, g_source_remove);
     G_OBJECT_CLASS(nitro_view_parent_class)->dispose(object);
@@ -314,7 +314,7 @@ void nitro_view_set_image(NitroView *self, GdkTexture *texture, NitroVector *vec
 
     gboolean keep_position = self->zoomed;
     g_clear_object(&self->texture);
-    g_clear_pointer(&self->vector, nitro_vector_unref);
+    g_clear_pointer(&self->vector, nv_vector_unref);
     drop_detail(self);
     self->source_width = 0.0;
     self->source_height = 0.0;
@@ -324,7 +324,7 @@ void nitro_view_set_image(NitroView *self, GdkTexture *texture, NitroVector *vec
         self->texture = g_object_ref(texture);
         self->source_width = gdk_texture_get_width(texture);
         self->source_height = gdk_texture_get_height(texture);
-        self->vector = nitro_vector_ref(vector);
+        self->vector = nv_vector_ref(vector);
         self->page = page;
         self->vector_scale = vector_scale;
         if (vector) self->orientation = 1;
@@ -346,7 +346,7 @@ void nitro_view_set_image(NitroView *self, GdkTexture *texture, NitroVector *vec
 void nitro_view_clear(NitroView *self) {
     g_return_if_fail(NITRO_IS_VIEW(self));
     g_clear_object(&self->texture);
-    g_clear_pointer(&self->vector, nitro_vector_unref);
+    g_clear_pointer(&self->vector, nv_vector_unref);
     drop_detail(self);
     self->source_width = 0.0;
     self->source_height = 0.0;

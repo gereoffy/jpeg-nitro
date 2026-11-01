@@ -45,19 +45,8 @@
 #ifdef NV_WUFFS
 #include "png_wuffs.h"   // optional fast PNG decoder
 #endif
-#ifdef NV_SVG
-#include "nitrodxf.h"    // DXF drawings (drawn with the plutovg of the SVG library)
-#include "nitrosvg.h"    // optional SVG rendering (lunasvg)
-#endif
-#ifdef NV_CDR
-#include "nitrocdr.h"    // optional CorelDRAW rendering (libcdr + plutovg)
-#endif
-#if defined(NV_SVG) || defined(NV_CDR)
-#define NV_VECTOR 1      // vector images: rendered again, sharp, when zoomed in
-#endif
+#include "nitro_vector.h" // the vector drawings, SVG / DXF / CorelDRAW (shared too)
 #include <stdatomic.h>
-// renders a vector document's area into BGRA (see nitrosvg_render / nitrocdr_render)
-typedef int (*VectorRender)(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -93,13 +82,11 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 @property(nonatomic) double read_ms, decode_ms;
 @property(nonatomic) int mode, bands;
 @property(nonatomic) id<MTLTexture> texture; // converted RGBA + mips (main thread only)
-@property(nonatomic) void *vector;           // SVG / CDR: the document, for sharp zoomed-in views
-@property(nonatomic) VectorRender vectorRender;
-@property(nonatomic) void (*vectorFree)(void *);
+@property(nonatomic) NvVector *vector;       // a drawing: the document (a reference), for its pages and sharp zoomed-in views
 @property(nonatomic) double vectorScale;     // decoded pixels per document unit
-@property(nonatomic) int pages, page;        // a multi-page document (CDR): page count, the page shown (from 0)
+@property(nonatomic) int pages, page;        // a multi-page document: page count, the page shown (from 0)
 @property(nonatomic) int ev3;                // a DNG: the exposure correction it was developed with (1/3 EV)
-@property(nonatomic) int background;         // a vector image: the background it was drawn over (g_vector_background)
+@property(nonatomic) int background;         // a drawing: the background it was drawn over (nv_vector_background)
 @property(nonatomic) int limited;            // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 @end
 @implementation Decoded {
@@ -107,7 +94,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
     size_t _offset[3], _pitch[3];
 }
 #ifdef NV_VECTOR
-- (void)dealloc { if (_vector && _vectorFree) _vectorFree(_vector); }
+- (void)dealloc { nv_vector_unref(_vector); }
 #endif
 - (int *)pw { return _pw; }
 - (int *)ph { return _ph; }
@@ -184,12 +171,11 @@ static NSData *read_file(NSString *path) {
 #endif
 
 // Decode one file into a Metal buffer. Runs on the decoder thread.
-enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3, MODE_SVG = NV_MODE_SVG, MODE_CDR = NV_MODE_CDR, MODE_DXF = NV_MODE_DXF,
+enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3,
        MODE_NITROHEIC = NV_MODE_NITROHEIC, MODE_NITRODNG = NV_MODE_NITRODNG, MODE_NITROWEBP = NV_MODE_NITROWEBP,
        MODE_NITROTIFF = NV_MODE_NITROTIFF, MODE_NITROAVIF = NV_MODE_NITROAVIF };   // (the rest: nitro_load.h)
 static int g_nthreads = 0;   // -j
 static _Atomic int g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
-static _Atomic int g_vector_background;   // SVG / DXF / CDR background: 0 white, 1 dark grey, 2 black (keys E / Shift+E)
 
 static const char *mode_name(int m) {
     const char *n = nv_mode_name(m);
@@ -322,132 +308,38 @@ static Decoded *decode_imageio(NSData *data, Decoded *d, BufferPool *pool, size_
 }
 
 #ifdef NV_VECTOR
-// Vector images (SVG, CorelDRAW): rendered once in full here (the long side 1024..4096
-// pixels: small icons are enlarged, huge drawings reduced), over white. Zoomed in further,
-// the viewer renders the visible part again at screen resolution (see ViewerView
-// vectorDetail). Takes over the document (freed with the Decoded).
+// Vector drawings (SVG, DXF, CorelDRAW: nitro_vector): a page rendered once in full here (the
+// size: nv_vector_page_size), over the background it was loaded with. Zoomed in further, the
+// viewer renders the visible part again at screen resolution (see ViewerView vectorDetail).
 // Shown fitted to the screen (full screen or key 0), the viewer sets the screen's size in
 // pixels here: images are then rendered at least that large, sharp from the start (the
 // prefetched ones too), not first enlarged and sharpened a moment later by vectorDetail.
+// d takes a reference to v.
 static _Atomic int g_vector_tw, g_vector_th;
-static BOOL vector_fits(Decoded *d, int tw, int th) {   // big enough for the target (or no target)
-    return tw <= 0 || th <= 0 || MIN((double)tw / d.width, (double)th / d.height) <= 1.01 ||
-           MAX(d.width, d.height) >= MAX_TEX;
-}
-static Decoded *decode_vector(void *doc, double w, double h, VectorRender render, void (*vfree)(void *), int mode, Decoded *d,
-                              BufferPool *pool, size_t align, double t1) {
-    double l = MAX(w, h), k = l < 1024 ? 1024 / l : l > 4096 ? 4096 / l : 1;
-    int tw = atomic_load(&g_vector_tw), th = atomic_load(&g_vector_th);
-    if (tw > 0 && th > 0 && w > 0 && h > 0) k = MAX(k, MIN(tw / w, th / h));
-    k = MIN(k, MAX_TEX / l);
-    int iw = MAX(1, MIN(MAX_TEX, (int)lround(w * k))), ih = MAX(1, MIN(MAX_TEX, (int)lround(h * k)));
-    id<MTLBuffer> buf = w > 0 && h > 0 ? bgra_buffer(d, iw, ih, pool, align) : nil;
-    if (!buf || render(doc, buf.contents, iw, ih, d.pitch[0], k, 0, 0)) {
+static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *pool, size_t align, double t1) {
+    int iw, ih;
+    double k = nv_vector_page_size(v, page, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), MAX_TEX, &iw, &ih);
+    id<MTLBuffer> buf = k ? bgra_buffer(d, iw, ih, pool, align) : nil;
+    if (!buf || nv_vector_render(v, page, buf.contents, iw, ih, d.pitch[0], k, 0, 0)) {
         if (buf) [pool put:buf];
-        vfree(doc);
         return nil;
     }
-    d.vector = doc;
-    d.vectorRender = render;
-    d.vectorFree = vfree;
+    d.vector = nv_vector_ref(v);
     d.vectorScale = k;
+    d.pages = nv_vector_pages(v);
+    d.page = page;
+    d.background = nv_vector_background_of(v);
     d.colorSpace = srgb_space();
     d.orientation = 1;
-    bgra_done(d, buf, mode, t1);
+    bgra_done(d, buf, nv_vector_mode(v), t1);
     return d;
 }
-#endif
-
-#ifdef NV_SVG
-static int svg_render(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrosvg_render(doc, bgra, w, h, pitch, scale, x0, y0);
-}
-static void svg_free(void *doc) { nitrosvg_free(doc); }
-static Decoded *decode_svg(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
-    nitrosvg *svg = nitrosvg_load(data.bytes, data.length);
-    if (!svg) return nil;
-    int background = atomic_load(&g_vector_background);
-    nitrosvg_set_background(svg, background);
-    double w, h;
-    nitrosvg_size(svg, &w, &h);
-    d = decode_vector(svg, w, h, svg_render, svg_free, MODE_SVG, d, pool, align, t1);
-    d.background = background;
-    return d;
-}
-static int dxf_render(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrodxf_render(doc, 0, bgra, w, h, pitch, scale, x0, y0);
-}
-static void dxf_free(void *doc) { nitrodxf_free(doc); }
-static Decoded *decode_dxf(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
-    nitrodxf *dxf = nitrodxf_load(data.bytes, data.length);
-    if (!dxf) return nil;
-    int background = atomic_load(&g_vector_background);
-    nitrodxf_set_background(dxf, background);
-    double w, h;
-    nitrodxf_size(dxf, 0, &w, &h);
-    d = decode_vector(dxf, w, h, dxf_render, dxf_free, MODE_DXF, d, pool, align, t1);
-    d.background = background;
-    return d;
-}
-#endif
-
-#ifdef NV_CDR
-// CorelDRAW (CDR, CMX): one page of the document; [ and ] show the others (cdr_page), sharing
-// the loaded document (loading a large plan takes seconds, drawing a page much less)
-typedef struct {
-    nitrocdr *cdr;
-    _Atomic int *refs;   // Decodeds sharing cdr
-    int page;
-} CdrPage;
-static int cdr_render(void *doc, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    CdrPage *p = doc;
-    return nitrocdr_render(p->cdr, p->page, bgra, w, h, pitch, scale, x0, y0);
-}
-static void cdr_free(void *doc) {
-    CdrPage *p = doc;
-    if (atomic_fetch_sub(p->refs, 1) == 1) {
-        nitrocdr_free(p->cdr);
-        free(p->refs);
-    }
-    free(p);
-}
-static Decoded *decode_cdr_page(nitrocdr *cdr, _Atomic int *refs, int page, int background, Decoded *d, BufferPool *pool,
-                                size_t align, double t1) {
-    CdrPage *p = malloc(sizeof *p);
-    if (!p) return nil;
-    atomic_fetch_add(refs, 1);
-    *p = (CdrPage){cdr, refs, page};
-    double w, h;
-    nitrocdr_size(cdr, page, &w, &h);
-    d = decode_vector(p, w, h, cdr_render, cdr_free, MODE_CDR, d, pool, align, t1);   // (frees p on failure)
-    d.pages = nitrocdr_pages(cdr);
-    d.page = page;
-    d.background = background;
-    return d;
-}
-static Decoded *decode_cdr(NSData *data, Decoded *d, BufferPool *pool, size_t align, double t1) {
-    nitrocdr *cdr = nitrocdr_load(data.bytes, data.length);
-    _Atomic int *refs = cdr ? malloc(sizeof *refs) : NULL;
-    if (!refs) {
-        if (cdr) nitrocdr_free(cdr);
-        return nil;
-    }
-    atomic_init(refs, 1);   // (this function's own reference, dropped below)
-    int background = atomic_load(&g_vector_background);
-    nitrocdr_set_background(cdr, background);
-    d = decode_cdr_page(cdr, refs, 0, background, d, pool, align, t1);
-    if (atomic_fetch_sub(refs, 1) == 1) {   // the first page failed
-        nitrocdr_free(cdr);
-        free(refs);
-    }
-    return d;
-}
-// Another page of the document d shows (a new Decoded, nil if it cannot be drawn).
-static Decoded *cdr_page(Decoded *d, int page, BufferPool *pool, size_t align) {
-    if (d.mode != MODE_CDR || !d.vector || page < 0 || page >= d.pages) return nil;
-    CdrPage *p = d.vector;
-    double t1 = now_ms();
-    Decoded *n = decode_cdr_page(p->cdr, p->refs, page, d.background, [Decoded new], pool, align, t1);
+// Another page of the drawing d shows (a new Decoded, nil if it cannot be drawn): [ and ]
+// (showPage), sharing the loaded document (loading a large plan takes seconds, drawing a page
+// much less).
+static Decoded *drawing_page(Decoded *d, int page, BufferPool *pool, size_t align) {
+    if (!d.vector || page < 0 || page >= d.pages) return nil;
+    Decoded *n = decode_drawing(d.vector, page, [Decoded new], pool, align, now_ms());
     n.read_ms = d.read_ms;
     return n;
 }
@@ -533,15 +425,14 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     d.read_ms = t1 - t0;
     NSString *ext = path.pathExtension.lowercaseString;
     (void)ext;
-#ifdef NV_SVG
-    if ([ext isEqualToString:@"svg"])
-        return decode_svg([NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES], d, pool, align, t1);
-    if ([ext isEqualToString:@"dxf"])
-        return decode_dxf([NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES], d, pool, align, t1);
-#endif
-#ifdef NV_CDR
-    if ([ext isEqualToString:@"cdr"] || [ext isEqualToString:@"cmx"])
-        return decode_cdr([NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES], d, pool, align, t1);
+#ifdef NV_VECTOR
+    NvVector *v = nv_vector_open(path.fileSystemRepresentation, bytes, len);
+    if (v) {
+        free(bytes);
+        d = decode_drawing(v, 0, d, pool, align, t1);
+        nv_vector_unref(v);   // (d keeps its own reference)
+        return d;
+    }
 #endif
     DecodeBuffers *bufs = [[DecodeBuffers alloc] initWithPool:pool];
     NvDecoder dec = {pool_get, pool_put, (__bridge void *)bufs, align, MAX_TEX, g_nthreads, atomic_load(&g_dng_ev3)};
@@ -729,7 +620,7 @@ typedef struct {
 // The size vector images are rendered for changed (see g_vector_tw): prefetched ones too small
 // for it are dropped and rendered again (the current one is sharpened by vectorDetail).
 - (void)vectorTargetChanged;
-// The DNG exposure correction (g_dng_ev3) or the vector background (g_vector_background) changed:
+// The DNG exposure correction (g_dng_ev3) or the vector background (nv_vector_background) changed:
 // prefetched DNGs / vector images are dropped and decoded again, the current one is replaced when its new
 // decoding is ready (it stays on screen until then).
 - (void)displaySettingChanged;
@@ -744,7 +635,7 @@ typedef struct {
 }
 static BOOL stale_setting(Decoded *d) {
     return (d.mode == MODE_NITRODNG && d.ev3 != atomic_load(&g_dng_ev3)) ||
-           ((d.mode == MODE_SVG || d.mode == MODE_DXF || d.mode == MODE_CDR) && d.background != atomic_load(&g_vector_background));
+           (d.vector && d.background != nv_vector_background());
 }
 
 // the callbacks (paths: NSStrings, images: Decodeds, both retained for the loader)
@@ -826,13 +717,13 @@ static void **retained_paths(NSArray<NSString *> *files) {   // the list as the 
     });
 }
 - (void)showPage:(int)page of:(NSInteger)i {
-#ifdef NV_CDR
+#ifdef NV_VECTOR
     unsigned serial;
     Decoded *d = (__bridge Decoded *)nv_loader_get(_L, (int)i, &serial);
     if (!d || page == d.page || page < 0 || page >= d.pages) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         Decoded *n;
-        @autoreleasepool { n = cdr_page(d, page, self->_pool, self->_align); }
+        @autoreleasepool { n = drawing_page(d, page, self->_pool, self->_align); }
         if (n) [self replaceSerial:serial with:n];
     });
 #endif
@@ -840,7 +731,7 @@ static void **retained_paths(NSArray<NSString *> *files) {   // the list as the 
 #ifdef NV_VECTOR
 static int vec_too_small(const void *image, void *ctx) {
     Decoded *d = (__bridge Decoded *)image;
-    return d.vector && !vector_fits(d, atomic_load(&g_vector_tw), atomic_load(&g_vector_th));
+    return d.vector && nv_vector_too_small(d.width, d.height, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), MAX_TEX);
 }
 #endif
 - (void)vectorTargetChanged {
@@ -940,7 +831,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
     BOOL _selfResizing;       // our own setFrame in progress
     BOOL _fsTransition;       // entering / leaving full screen
 #ifdef NV_VECTOR
-    // a vector image (SVG, CDR) zoomed in beyond its decoded size: the visible part rendered at screen resolution
+    // a drawing zoomed in beyond its decoded size: the visible part rendered at screen resolution
     id<MTLTexture> _detailTex;
     Decoded *_detailFor;
     double _detailScale, _detailRect[4];   // the scale it was rendered for, its image rect (x y w h)
@@ -1088,7 +979,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     if (d.pages > 1) t = [t stringByAppendingFormat:@"  [page %d/%d]", d.page + 1, d.pages];
     if (d.mode == MODE_NITRODNG && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
-    if ((d.mode == MODE_SVG || d.mode == MODE_DXF || d.mode == MODE_CDR) && d.background) t = [t stringByAppendingString:d.background == 1 ? @"  dark background" : @"  black background"];
+    if (d.vector && d.background) t = [t stringByAppendingFormat:@"  %s", nv_vector_background_name(d.background)];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -1489,8 +1380,8 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
         case 'w': case 'W': [self windowToImage]; return;
         case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; SVG / DXF / CDR: the next (Shift: previous) background
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
-            if (cur && (cur.mode == MODE_SVG || cur.mode == MODE_DXF || cur.mode == MODE_CDR)) {
-                atomic_store(&g_vector_background, (atomic_load(&g_vector_background) + (back ? 2 : 1)) % 3);
+            if (cur && cur.vector) {
+                nv_vector_cycle_background(back ? -1 : 1);
                 [_loader displaySettingChanged];
                 return;
             }
@@ -1554,7 +1445,7 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
 }
 
 #ifdef NV_VECTOR
-// A vector image (SVG, CDR) zoomed in beyond its decoded size (more than one device pixel per decoded pixel):
+// A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel):
 // once the zoom / position has been still for a moment, the visible part (+ a margin
 // for panning) is rendered again at screen resolution on a background queue and
 // drawn over the decoded image. Until then the previous detail is drawn where it
@@ -1603,12 +1494,11 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
         ViewerView *v = ws;
         if (!v || req != v->_detailReq) return;   // moved on meanwhile: a newer request follows
         double k = d.vectorScale;
-        VectorRender render = d.vectorRender;
         dispatch_async(v->_vectorQueue, ^{
             size_t pitch = (size_t)w * 4;
             uint8_t *px = malloc(pitch * h);
             double t0 = now_ms();
-            int rc = px ? render(d.vector, px, w, h, pitch, k * s, wr.origin.x / k, wr.origin.y / k) : -1;
+            int rc = px ? nv_vector_render(d.vector, d.page, px, w, h, pitch, k * s, wr.origin.x / k, wr.origin.y / k) : -1;
             double ms = now_ms() - t0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 ViewerView *v2 = ws;
@@ -1802,16 +1692,8 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args) {
         if (![fm fileExistsAtPath:a isDirectory:&dir]) { fprintf(stderr, "no such file: %s\n", a.UTF8String); continue; }
         if (!dir) { [out addObject:a]; continue; }
         NSArray *items = [[fm contentsOfDirectoryAtPath:a error:nil] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
-        static const char *const more[] = {   // the vector formats, beside nv_image_exts
-#ifdef NV_SVG
-            "svg", "dxf",
-#endif
-#ifdef NV_CDR
-            "cdr", "cmx",
-#endif
-            NULL};
         for (NSString *f in items)
-            if (nv_is_image_name(f.UTF8String) || nv_has_ext(f.UTF8String, more))
+            if (nv_is_image_name(f.UTF8String) || nv_has_ext(f.UTF8String, nv_vector_exts))
                 [out addObject:[a stringByAppendingPathComponent:f]];
     }
     return out;

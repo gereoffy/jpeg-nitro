@@ -62,7 +62,7 @@ static void *ld_decode(void *path, char **error, void *ctx) {
 static void ld_free(void *image, void *ctx) { nitro_image_free(image); }
 static int ld_stale(const void *image, void *ctx) {
     const NitroImage *i = image;
-    return i->dng && i->ev3 != nitro_image_get_dng_ev3();
+    return (i->dng && i->ev3 != nitro_image_get_dng_ev3()) || (i->vector && i->background != nv_vector_background());
 }
 static void *ld_path_dup(void *path, void *ctx) { return g_object_ref(path); }
 static void ld_path_free(void *path, void *ctx) { g_object_unref(path); }
@@ -132,7 +132,7 @@ int nitro_loader_replace_image(NitroLoader *l, unsigned serial, NitroImage *imag
     return nv_loader_replace_image(l->L, serial, image);
 }
 
-void nitro_loader_dng_changed(NitroLoader *l) { nv_loader_drop(l->L, ld_stale, NULL, 0, NULL, NULL); }
+void nitro_loader_setting_changed(NitroLoader *l) { nv_loader_drop(l->L, ld_stale, NULL, 0, NULL, NULL); }
 
 void nitro_loader_focus(NitroLoader *l, int index, int direction) { nv_loader_focus(l->L, index, direction); }
 
@@ -143,7 +143,7 @@ NitroImage *nitro_loader_get(NitroLoader *l, int index) {
     NitroImage *copy = g_new(NitroImage, 1);
     *copy = *image;
     if (copy->texture) g_object_ref(copy->texture);
-    nitro_vector_ref(copy->vector);
+    nv_vector_ref(copy->vector);
     copy->serial = serial;
     return copy;
 }

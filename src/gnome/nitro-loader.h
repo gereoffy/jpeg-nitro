@@ -33,9 +33,9 @@ void nitro_loader_insert_file(NitroLoader *loader, int index, GFile *file);
 // it is still there. Returns its index now, -1 if it is not there any more (image freed).
 int nitro_loader_replace_image(NitroLoader *loader, unsigned serial, NitroImage *image);
 
-// The DNG exposure correction changed (nitro_image_set_dng_ev3): DNGs decoded with another one
-// are dropped and decoded again.
-void nitro_loader_dng_changed(NitroLoader *loader);
+// The DNG exposure correction (nitro_image_set_dng_ev3) or the drawings' background
+// (nv_vector_background) changed: images decoded with another one are dropped and decoded again.
+void nitro_loader_setting_changed(NitroLoader *loader);
 
 // The image shown now and the paging direction (+1 / -1): decides what is decoded next.
 void nitro_loader_focus(NitroLoader *loader, int index, int direction);

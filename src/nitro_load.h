@@ -17,7 +17,7 @@ extern "C" {
 
 // The file extensions of the raster images a viewer opens from a folder: our decoders' formats
 // and what every platform's fallback decoder reads. NULL-terminated, lower case, without the
-// dot. (The vector formats, SVG and CorelDRAW, are the viewers' own: they add those.)
+// dot. (The vector drawings, SVG, DXF and CorelDRAW, are nitro_vector's: nv_vector_exts.)
 extern const char *const nv_image_exts[];
 
 // Is path's extension (case-insensitively) one of exts (NULL-terminated, without the dot)?

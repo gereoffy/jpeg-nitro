@@ -95,9 +95,10 @@ define nitro_lib   # $(1): the compiler flags (optimisation, CPU, -fblocks ...)
 	@printf '%s\n' $(LIB_SRC) $(LIB_AVIF) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) $(WARN) $(LIB_DEFS) $(HEVC_DEFS) -Isrc -c "$$0" -o $(@D)/libobj/$$(basename "$$0" .c).o'
 	@rm -f $@ && $(AR) rcs $@ $(@D)/libobj/*.o
 endef
-# what the four viewers share beside the library (compiled into each)
-VIEWER_SRC := src/nitro_prefetch.c
-VIEWER_HDR := src/nitro_prefetch.h src/nitro_view.h
+# what the four viewers share beside the library (compiled into each): the prefetching loader and
+# the vector drawings (with the viewer's NV_SVG / NV_CDR)
+VIEWER_SRC := src/nitro_prefetch.c src/nitro_vector.c
+VIEWER_HDR := src/nitro_prefetch.h src/nitro_view.h src/nitro_vector.h src/nitrosvg.h src/nitrodxf.h src/nitrocdr.h
 
 # GNOME frontend: GtkBuilder template + libadwaita, with the decoders from the static library
 # (one self-contained binary: nothing to find at run time).
@@ -250,7 +251,7 @@ build/icon.inc: packaging/icon.png
 	@mkdir -p build
 	cd packaging && xxd -i icon.png > ../build/icon.inc
 
-$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) src/nitrosvg.h src/nitrodxf.h src/nitrocdr.h Makefile
+$(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	$(CC) $(CFLAGS) $(SDL_VDEFS) -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(SDL_DEC) $(SDL_AVIF) \
 	  $(SDL_VEC) $(SDL_LIBS) $(SDL_VLIBS) $(THREADLIBS) -lm -o $@
@@ -282,8 +283,8 @@ $(DIST_DIR)/%: TCPU = $(DIST_CPU) $(DEFS)
 $(DIST_DIR)/%: TPORT = -fblocks
 $(DIST_DIR)/libnitrocdr.a: CDR_C += $(ZLIB_C)
 $(DIST_DIR)/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
-$(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(DIST_DIR)/libnitro.a $(LIB_HDR) src/nitrosvg.h \
-                           src/nitrodxf.h src/nitrocdr.h $(DIST_VEC) $(DIST_MI) Makefile
+$(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(DIST_DIR)/libnitro.a $(LIB_HDR) \
+                           $(DIST_VEC) $(DIST_MI) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	@mkdir -p $(@D)
 	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks $(WARN) $(DIST_VDEFS) \
@@ -590,7 +591,7 @@ build/win/libnitrocdr.a: CDR_C += $(ZLIB_C)
 build/win/libnitrocdr.a: CDR_DEFS += -I$(ZLIB)
 build/win/libnitro.a build/win/libnitrosvg.a build/win/libnitrocdr.a: $(WIN_STAMP)
 nitroview.exe: src/nitroview_win.c $(VIEWER_SRC) $(VIEWER_HDR) build/win/libnitro.a $(LIB_HDR) build/nitroview_res.o $(WIN_OBJS) \
-               src/nitrosvg.h src/nitrocdr.h $(WIN_STAMP) Makefile
+               $(WIN_STAMP) Makefile
 	$(WINCC) $(WINFLAGS) $(WIN_DEFS) $(WIN_AVIF) -Ibuild -Isrc -municode src/nitroview_win.c $(VIEWER_SRC) build/win/libnitro.a \
 	  $(if $(WIN_DAV1D),$(DAV1D_WIN)/lib/libdav1d.a) build/nitroview_res.o $(WIN_OBJS) $(WINLIBS) $(WIN_CXXLIBS) -o $@
 windows: nitroview.exe bench/nbench.exe bench/psdverify.exe
