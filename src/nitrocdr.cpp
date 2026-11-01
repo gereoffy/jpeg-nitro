@@ -147,6 +147,7 @@ struct Span {
     float size = 12;
     float scaleX = 1;   // horizontal stretch (CorelDRAW text squeezed to fit, style:text-scale)
     float shiftX = 0, shiftY = 0;   // moved from its place, in em (up positive; libcdr:shift-x / -y)
+    float rotate = 0;   // turned about its place, in degrees counter-clockwise (libcdr:rotate)
     Color color;
     std::string text;
     float width = 0;
@@ -529,6 +530,7 @@ public:
         if (sx > 0.01 && sx < 100) m_span.scaleX = (float)sx;
         m_span.shiftX = (float)number(p["libcdr:shift-x"]);
         m_span.shiftY = (float)number(p["libcdr:shift-y"]);
+        m_span.rotate = (float)number(p["libcdr:rotate"]);
         m_span.color = color(p["fo:color"]);
         std::string font = p["style:font-name"] ? p["style:font-name"]->getStr().cstr() : "Arial";
         m_span.font = font;
@@ -1000,9 +1002,10 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                     plutovg_canvas_set_font(c, s.face, s.size);
                     setColor(c, s.color, 1);
                     float sx = x + s.shiftX * s.size, sy = base - s.shiftY * s.size;   // (the next span starts unshifted)
-                    if (s.scaleX != 1) {
+                    if (s.scaleX != 1 || s.rotate != 0) {
                         plutovg_canvas_save(c);
                         plutovg_canvas_translate(c, sx, sy);
+                        if (s.rotate != 0) plutovg_canvas_rotate(c, (float)(-s.rotate * M_PI / 180));
                         plutovg_canvas_scale(c, s.scaleX, 1);
                         plutovg_canvas_fill_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, 0, 0);
                         plutovg_canvas_restore(c);
