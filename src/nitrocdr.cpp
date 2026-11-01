@@ -698,7 +698,7 @@ private:
             s.width = s.face ? plutovg_font_face_text_extents(s.face, s.size, s.text.data(), (int)s.text.size(),
                                                               PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
                              : 0;
-            l.width = std::max(l.width, pen + s.shiftX * s.size + s.width);   // (shifted words reach further)
+            l.width = std::max(l.width, pen + s.shiftX * s.size * s.scaleX + s.width);   // (shifted words reach further)
             pen += s.width;
             l.size = std::max(l.size, s.size);
             if (s.face) {
@@ -1001,7 +1001,8 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                 if (s.face) {
                     plutovg_canvas_set_font(c, s.face, s.size);
                     setColor(c, s.color, 1);
-                    float sx = x + s.shiftX * s.size, sy = base - s.shiftY * s.size;   // (the next span starts unshifted)
+                    // (the shift in the text's stretched em; the next span starts unshifted)
+                    float sx = x + s.shiftX * s.size * s.scaleX, sy = base - s.shiftY * s.size;
                     if (s.scaleX != 1 || s.rotate != 0) {
                         plutovg_canvas_save(c);
                         plutovg_canvas_translate(c, sx, sy);
