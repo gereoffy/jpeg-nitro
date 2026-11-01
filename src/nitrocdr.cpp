@@ -1063,7 +1063,7 @@ void drawText(plutovg_canvas_t *c, const Span &s, float x, float y, bool stroke)
     }
 }
 
-// A line's arrowheads (filled with its outline colour): at its first and last points, the tip
+// A line's arrowheads (in its outline colour): at its first and last points, the tip
 // there, pointing away from the line (along its first / last segment, or curve's tangent)
 void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *path) {
     plutovg_point_t first = {0, 0}, second = {0, 0}, last = {0, 0}, before = {0, 0};
@@ -1094,8 +1094,35 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
             float k = st.markerUnit;
             plutovg_matrix_t t = {-dy * k, dx * k, dx * k, dy * k, at.x, at.y};   // (x across, y along)
             plutovg_path_transform(m, &t);
+            // its closed parts are filled, its open ones (a bar across the tip, a hollow triangle)
+            // outlined, closed, with the line's own width (as CorelDRAW's PDF export draws them)
+            plutovg_path_t *closed = plutovg_path_create(), *open = plutovg_path_create(), *part = plutovg_path_create();
+            bool inPart = false;
+            plutovg_path_iterator_t mi;
+            plutovg_path_iterator_init(&mi, m);
+            while (plutovg_path_iterator_has_next(&mi)) {
+                plutovg_path_command_t cmd = plutovg_path_iterator_next(&mi, pts);
+                if (cmd == PLUTOVG_PATH_COMMAND_MOVE_TO) {
+                    if (inPart) { plutovg_path_close(part); plutovg_path_add_path(open, part, nullptr); }
+                    plutovg_path_reset(part);
+                    plutovg_path_move_to(part, pts[0].x, pts[0].y);
+                    inPart = true;
+                } else if (cmd == PLUTOVG_PATH_COMMAND_LINE_TO) plutovg_path_line_to(part, pts[0].x, pts[0].y);
+                else if (cmd == PLUTOVG_PATH_COMMAND_CUBIC_TO) plutovg_path_cubic_to(part, pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y);
+                else {
+                    plutovg_path_close(part);
+                    plutovg_path_add_path(closed, part, nullptr);
+                    plutovg_path_reset(part);
+                    inPart = false;
+                }
+            }
+            if (inPart) { plutovg_path_close(part); plutovg_path_add_path(open, part, nullptr); }
             plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
-            plutovg_canvas_fill_path(c, m);
+            plutovg_canvas_fill_path(c, closed);
+            plutovg_canvas_stroke_path(c, open);
+            plutovg_path_destroy(closed);
+            plutovg_path_destroy(open);
+            plutovg_path_destroy(part);
         }
         plutovg_path_destroy(m);
     };
