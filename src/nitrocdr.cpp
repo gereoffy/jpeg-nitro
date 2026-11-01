@@ -210,6 +210,7 @@ struct Span {
     float letterSpacing = 0, wordSpacing = 1;   // the character spacing / a space's width: shares of a
                                                 // space's width (libcdr:letter-spacing / -word-spacing)
     Color color;
+    bool fill = true;      // (libcdr: draw:fill none on the span: outlined characters only)
     bool stroke = false;   // the characters' outline (libcdr: draw:stroke on the span)
     Color strokeColor;
     float strokeWidth = 0;
@@ -624,6 +625,7 @@ public:
         m_span.letterSpacing = (float)number(p["libcdr:letter-spacing"]);
         m_span.wordSpacing = (float)number(p["libcdr:word-spacing"], 1.0);
         m_span.color = color(p["fo:color"]);
+        m_span.fill = !is(p, "draw:fill", "none");
         if (p["draw:stroke"] && !is(p, "draw:stroke", "none")) {
             m_span.stroke = true;
             m_span.strokeColor = color(p["svg:stroke-color"]);
@@ -1119,7 +1121,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                         plutovg_canvas_scale(c, s.scaleX, 1);
                     }
                     float tx = turned ? 0 : sx, ty = turned ? 0 : sy;
-                    drawText(c, s, tx, ty, false);
+                    if (s.fill) drawText(c, s, tx, ty, false);
                     // over the fill, a device pixel wide at least (as a shape's: CorelDRAW's hairlines
                     // show), but that only up to a twentieth of the size: small white letters came out black
                     if (s.stroke) {
