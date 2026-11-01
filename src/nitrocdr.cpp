@@ -162,9 +162,8 @@ struct Line {
     float lineHeight = 0;   // or its spacing in points (> 0: instead of that)
     bool paragraph = false;   // the first line of a paragraph: before it, the paragraph spacing
     float before = 1, after = 0;   // the paragraph's spacing before / after it (1: 100%; < 0: points)
-    plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (for a first
-    float emptySize = 0;                        // line) or the empty paragraph's
-    bool emptyOwn = false;                      // (the latter: its own height, see layout())
+    plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (libcdr gives
+    float emptySize = 0;                        // a line break the text's size) or the empty paragraph's
 };
 struct Text {
     float x = 0, y = 0, w = 0, h = 0, rotate = 0;   // frame (w = h = 0: artistic text at x, y)
@@ -541,7 +540,6 @@ public:
         if (m_text && m_paragraphOpened && !m_text->lines.empty() && m_text->lines.back().spans.empty()) {
             m_text->lines.back().emptyFace = m_span.face;
             m_text->lines.back().emptySize = m_span.size;
-            m_text->lines.back().emptyOwn = true;
         }
     }
     void closeSpan() override {}
@@ -799,13 +797,14 @@ private:
         // CorelDRAW's line spacing: from the previous line's descent to this one's ascent (100%:
         // as the fonts give them; as measured on its PDF exports). In a frame a paragraph's first
         // line has the paragraph spacing instead (before it, and the one after the previous
-        // paragraph); artistic text has only the line spacing. An empty line after a line break is
-        // as high as the line before it (not as the line break's font); an empty paragraph, as
-        // its own font.
+        // paragraph); artistic text has only the line spacing. An empty line is as high as the line
+        // before it, but not higher than the text's own style (its line break's size, see libcdr):
+        // so CorelDRAW's previews and PDF exports (after a large title, an empty line of the text's
+        // size; between its smaller characters, as they are).
         bool artistic = t.w == 0 && t.h == 0;
         for (size_t i = 0; i < t.lines.size(); i++) {
             Line &l = t.lines[i];
-            if (i && l.spans.empty() && !l.emptyOwn) {
+            if (i && l.spans.empty() && (l.emptySize <= 0 || t.lines[i - 1].size <= l.emptySize)) {
                 l.size = t.lines[i - 1].size;
                 l.ascent = t.lines[i - 1].ascent;
                 l.descent = t.lines[i - 1].descent;
