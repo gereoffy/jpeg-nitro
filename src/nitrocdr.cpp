@@ -1055,8 +1055,9 @@ static plutovg_color_t stopColor(const std::vector<plutovg_gradient_stop_t> &sto
 // the angle points from the start colour to the end colour. Linear: across the box's extent along
 // the angle, the edge pad (a share of it) plain start / end colour at each end; radial: a circle,
 // the end colour in the centre, the start colour at the farthest corner; square: a square turned
-// by the angle, likewise; conical: the end colour towards the angle, the start colour the other
-// way, both sides alike. (The edge pad of the last three is not measured yet.)
+// by the angle, likewise; the edge pad of these two shrinks them by twice its share (25: to half
+// the size); conical: the end colour towards the angle, the start colour the other way, both sides
+// alike. Midpoints come as a third stop.
 static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
     float cx = x + w * (.5f + st.centerX), cy = y + h * (.5f - st.centerY);
     float a = (float)(st.angle * M_PI / 180), dx = cosf(a), dy = -sinf(a);
@@ -1074,7 +1075,7 @@ static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y,
     } else if (st.fill == FILL_RADIAL) {
         float r = 0;
         for (auto &k : corners) r = std::max(r, hypotf(k[0] - cx, k[1] - cy));
-        r *= 1 - st.edge;
+        r *= 1 - 2 * std::min(st.edge, .499f);
         if (r <= 0) return false;
         std::vector<plutovg_gradient_stop_t> stops(st.stops.rbegin(), st.stops.rend());   // (from the centre)
         for (auto &s : stops) s.offset = 1 - s.offset;
@@ -1092,7 +1093,7 @@ static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y,
                 float u = (k[0] - cx) * dx + (k[1] - cy) * dy, v = (k[0] - cx) * -dy + (k[1] - cy) * dx;
                 side = std::max(side, std::max(fabsf(u), fabsf(v)));
             }
-            side *= 1 - st.edge;
+            side *= 1 - 2 * std::min(st.edge, .499f);
             unsigned char *data = plutovg_surface_get_data(img->s);
             int stride = plutovg_surface_get_stride(img->s);
             for (int j = 0; j < ih; j++) {
