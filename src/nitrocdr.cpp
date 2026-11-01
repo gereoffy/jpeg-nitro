@@ -207,6 +207,8 @@ struct Span {
     float scaleX = 1;   // horizontal stretch (CorelDRAW text squeezed to fit, style:text-scale)
     float shiftX = 0, shiftY = 0;   // moved from its place, in em (up positive; libcdr:shift-x / -y)
     float rotate = 0;   // turned about its place, in degrees counter-clockwise (libcdr:rotate)
+    float letterSpacing = 0, wordSpacing = 1;   // the character spacing / a space's width: shares of a
+                                                // space's width (libcdr:letter-spacing / -word-spacing)
     Color color;
     bool stroke = false;   // the characters' outline (libcdr: draw:stroke on the span)
     Color strokeColor;
@@ -216,6 +218,28 @@ struct Span {
     std::string font;           // the font asked for (and its style), for characters its face lacks
     bool bold = false, italic = false;
 };
+// A span's text's width (unstretched): with character or word spacing the characters' own widths
+// (no kerning), a share of a space's width added after each character but a space, and a space
+// its word spacing less that (a word's last character and its space: the word spacing alone; as
+// measured on CorelDRAW's PDF exports)
+float textWidth(const Span &s, const char *text, size_t len) {
+    if (!s.face) return 0;
+    if (s.letterSpacing == 0 && s.wordSpacing == 1)
+        return plutovg_font_face_text_extents(s.face, s.size, text, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, nullptr);
+    float space = plutovg_font_face_text_extents(s.face, s.size, " ", 1, PLUTOVG_TEXT_ENCODING_UTF8, nullptr);
+    float w = 0;
+    for (size_t i = 0; i < len;) {
+        size_t e = i + 1;
+        while (e < len && (text[e] & 0xc0) == 0x80) e++;
+        bool blank = e - i == 1 && text[i] == ' ';
+        w += blank ? space * (s.wordSpacing - s.letterSpacing)
+                   : plutovg_font_face_text_extents(s.face, s.size, text + i, (int)(e - i), PLUTOVG_TEXT_ENCODING_UTF8, nullptr) +
+                         space * s.letterSpacing;
+        i = e;
+    }
+    return w;
+}
+
 struct Line {
     int align = 0;   // 0 left, 1 center, 2 right
     std::vector<Span> spans;
@@ -597,6 +621,8 @@ public:
         m_span.shiftX = (float)number(p["libcdr:shift-x"]);
         m_span.shiftY = (float)number(p["libcdr:shift-y"]);
         m_span.rotate = (float)number(p["libcdr:rotate"]);
+        m_span.letterSpacing = (float)number(p["libcdr:letter-spacing"]);
+        m_span.wordSpacing = (float)number(p["libcdr:word-spacing"], 1.0);
         m_span.color = color(p["fo:color"]);
         if (p["draw:stroke"] && !is(p, "draw:stroke", "none")) {
             m_span.stroke = true;
@@ -766,9 +792,7 @@ private:
         l.descent = 0;
         float pen = 0;
         for (Span &s : l.spans) {
-            s.width = s.face ? plutovg_font_face_text_extents(s.face, s.size, s.text.data(), (int)s.text.size(),
-                                                              PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
-                             : 0;
+            s.width = textWidth(s, s.text.data(), s.text.size()) * s.scaleX;
             l.width = std::max(l.width, pen + s.shiftX * s.size * s.scaleX + s.width);   // (shifted words reach further)
             pen += s.width;
             l.size = std::max(l.size, s.size);
@@ -836,12 +860,8 @@ private:
                 std::string word = s.text.substr(i, e - i);
                 i = e;
                 size_t n = word.find_last_not_of(' ');   // (its width without the spaces)
-                float w = s.face ? plutovg_font_face_text_extents(s.face, s.size, word.data(), (int)(n == std::string::npos ? 0 : n + 1),
-                                                                  PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
-                                 : 0;
-                float full = s.face ? plutovg_font_face_text_extents(s.face, s.size, word.data(), (int)word.size(),
-                                                                     PLUTOVG_TEXT_ENCODING_UTF8, nullptr) * s.scaleX
-                                    : 0;
+                float w = textWidth(s, word.data(), n == std::string::npos ? 0 : n + 1) * s.scaleX;
+                float full = textWidth(s, word.data(), word.size()) * s.scaleX;
                 if (x > 0 && x + w > width) flush();
                 if (cur.spans.empty() || cur.spans.back().face != s.face || cur.spans.back().size != s.size ||
                     memcmp(&cur.spans.back().color, &s.color, sizeof s.color) || cur.spans.back().font != s.font) {
@@ -1017,6 +1037,23 @@ bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, fl
     }
 }
 
+// A span's text at (x, y) (its font set), filled or outlined: with character or word spacing
+// character by character
+void drawText(plutovg_canvas_t *c, const Span &s, float x, float y, bool stroke) {
+    auto draw = stroke ? plutovg_canvas_stroke_text : plutovg_canvas_fill_text;
+    if (s.letterSpacing == 0 && s.wordSpacing == 1) {
+        draw(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, x, y);
+        return;
+    }
+    for (size_t i = 0; i < s.text.size();) {
+        size_t e = i + 1;
+        while (e < s.text.size() && (s.text[e] & 0xc0) == 0x80) e++;
+        draw(c, s.text.data() + i, (int)(e - i), PLUTOVG_TEXT_ENCODING_UTF8, x, y);
+        x += textWidth(s, s.text.data() + i, e - i);
+        i = e;
+    }
+}
+
 void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
     plutovg_canvas_save(c);
     if (it.kind == Item::PATH) {
@@ -1082,14 +1119,14 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                         plutovg_canvas_scale(c, s.scaleX, 1);
                     }
                     float tx = turned ? 0 : sx, ty = turned ? 0 : sy;
-                    plutovg_canvas_fill_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, tx, ty);
+                    drawText(c, s, tx, ty, false);
                     // over the fill, a device pixel wide at least (as a shape's: CorelDRAW's hairlines
                     // show), but that only up to a twentieth of the size: small white letters came out black
                     if (s.stroke) {
                         setColor(c, s.strokeColor, 1);
                         plutovg_canvas_set_line_width(c, std::max(s.strokeWidth, std::min(1 / scale, s.size / 20)));
                         plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
-                        plutovg_canvas_stroke_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, tx, ty);
+                        drawText(c, s, tx, ty, true);
                     }
                     if (turned) plutovg_canvas_restore(c);
                 }
