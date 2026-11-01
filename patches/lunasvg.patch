@@ -17,7 +17,9 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
   flag (nitrocdr: "Futura Lt BT" -> Futura LT Light, not Book or Heavy)
 - plutovg_font_face_has_glyph(): whether a face has a character (nitrocdr takes the ones an
   old Western font lacks, such as ő / ű, from a fallback font)
-
+- <switch> was an unknown element, dropped with everything in it: Adobe Illustrator puts the
+  whole drawing in one (blank SVGs), draw.io its labels; now the first child whose conditions
+  hold (no requiredExtensions; systemLanguage English) is drawn
 --- a/plutovg/source/plutovg-path.c
 +++ b/plutovg/source/plutovg-path.c
 @@ -902,9 +902,8 @@
@@ -224,9 +226,39 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
   * @brief Load all font faces from a file and add them to the cache.
   *
   * @param cache A pointer to a `plutovg_font_face_cache_t` object.
+--- a/source/svgelement.cpp
++++ b/source/svgelement.cpp
+@@ -36,6 +36,7 @@
+         {"stop", ElementID::Stop},
+         {"style", ElementID::Style},
+         {"svg", ElementID::Svg},
++        {"switch", ElementID::G},
+         {"symbol", ElementID::Symbol},
+         {"text", ElementID::Text},
+         {"tspan", ElementID::Tspan},
 --- a/source/svgparser.cpp
 +++ b/source/svgparser.cpp
-@@ -777,7 +777,6 @@
+@@ -3,6 +3,8 @@
+ #include "svgparserutils.h"
+ 
+ #include <cassert>
++#include <climits>
++#include <set>
+ 
+ namespace lunasvg {
+ 
+@@ -714,6 +716,10 @@
+     std::string styleSheet;
+     SVGElement* currentElement = nullptr;
+     int ignoring = 0;
++    // <switch>: a group of which only the first child whose conditions hold is drawn (Adobe
++    // Illustrator puts every drawing in one, after a foreignObject of its own data); a switch
++    // was an unknown element, dropped with all it holds
++    std::set<const SVGElement*> switches, switchesDecided;
+     auto handleText = [&](std::string_view text, bool in_cdata) {
+         if(text.empty() || currentElement == nullptr || ignoring > 0)
+             return;
+@@ -777,7 +783,6 @@
                  auto n = input.find("-->");
                  if(n == std::string_view::npos)
                      return false;
@@ -234,3 +266,57 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
                  input.remove_prefix(n + 3);
                  continue;
              }
+@@ -837,6 +842,8 @@
+         if(!readIdentifier(input, buffer))
+             return false;
+         SVGElement* element = nullptr;
++        SVGElement* inSwitch = nullptr;
++        bool conditionFails = false;
+         if(ignoring > 0) {
+             ++ignoring;
+         } else {
+@@ -854,6 +861,10 @@
+                 } else {
+                     auto child = SVGElement::create(this, id);
+                     element = child.get();
++                    if(switches.count(currentElement))
++                        inSwitch = currentElement;
++                    if(buffer == "switch")
++                        switches.insert(element);
+                     currentElement->addChild(std::move(child));
+                 }
+             }
+@@ -875,6 +886,19 @@
+             auto id = PropertyID::Unknown;
+             if(element != nullptr)
+                 id = propertyid(buffer);
++            if(inSwitch != nullptr) {   // (no extensions are supported; languages: English)
++                auto value = input.substr(0, n);
++                if(buffer == "requiredExtensions" && value.find_first_not_of(" \t\r\n") != std::string_view::npos)
++                    conditionFails = true;
++                if(buffer == "systemLanguage") {
++                    bool english = false;
++                    for(size_t i = 0; i < value.size(); ++i)
++                        if((i == 0 || value[i - 1] == ',' || value[i - 1] == ' ') && value.substr(i, 2) == "en")
++                            english = true;
++                    if(!english)
++                        conditionFails = true;
++                }
++            }
+             if(id != PropertyID::Unknown) {
+                 decodeText(input.substr(0, n), buffer);
+                 if(id == PropertyID::Style) {
+@@ -891,6 +915,13 @@
+             skipOptionalSpaces(input);
+         }
+ 
++        if(inSwitch != nullptr) {
++            if(conditionFails || switchesDecided.count(inSwitch))
++                element->setAttribute(INT_MAX, PropertyID::Display, "none");
++            else
++                switchesDecided.insert(inSwitch);
++        }
++
+         if(skipDelimiter(input, '>')) {
+             if(element != nullptr)
+                 currentElement = element;
