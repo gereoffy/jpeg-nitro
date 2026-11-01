@@ -149,6 +149,9 @@ struct Span {
     float shiftX = 0, shiftY = 0;   // moved from its place, in em (up positive; libcdr:shift-x / -y)
     float rotate = 0;   // turned about its place, in degrees counter-clockwise (libcdr:rotate)
     Color color;
+    bool stroke = false;   // the characters' outline (libcdr: draw:stroke on the span)
+    Color strokeColor;
+    float strokeWidth = 0;
     std::string text;
     float width = 0;
     std::string font;           // the font asked for (and its style), for characters its face lacks
@@ -532,6 +535,11 @@ public:
         m_span.shiftY = (float)number(p["libcdr:shift-y"]);
         m_span.rotate = (float)number(p["libcdr:rotate"]);
         m_span.color = color(p["fo:color"]);
+        if (p["draw:stroke"] && !is(p, "draw:stroke", "none")) {
+            m_span.stroke = true;
+            m_span.strokeColor = color(p["svg:stroke-color"]);
+            m_span.strokeWidth = (float)points(p["svg:stroke-width"]);
+        }
         std::string font = p["style:font-name"] ? p["style:font-name"]->getStr().cstr() : "Arial";
         m_span.font = font;
         m_span.bold = is(p, "fo:font-weight", "bold");
@@ -1003,15 +1011,24 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                     setColor(c, s.color, 1);
                     // (the shift in the text's stretched em; the next span starts unshifted)
                     float sx = x + s.shiftX * s.size * s.scaleX, sy = base - s.shiftY * s.size;
-                    if (s.scaleX != 1 || s.rotate != 0) {
+                    bool turned = s.scaleX != 1 || s.rotate != 0;
+                    if (turned) {
                         plutovg_canvas_save(c);
                         plutovg_canvas_translate(c, sx, sy);
                         if (s.rotate != 0) plutovg_canvas_rotate(c, (float)(-s.rotate * M_PI / 180));
                         plutovg_canvas_scale(c, s.scaleX, 1);
-                        plutovg_canvas_fill_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, 0, 0);
-                        plutovg_canvas_restore(c);
-                    } else
-                        plutovg_canvas_fill_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, sx, sy);
+                    }
+                    float tx = turned ? 0 : sx, ty = turned ? 0 : sy;
+                    plutovg_canvas_fill_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, tx, ty);
+                    // over the fill, a device pixel wide at least (as a shape's: CorelDRAW's hairlines
+                    // show), but that only up to a twentieth of the size: small white letters came out black
+                    if (s.stroke) {
+                        setColor(c, s.strokeColor, 1);
+                        plutovg_canvas_set_line_width(c, std::max(s.strokeWidth, std::min(1 / scale, s.size / 20)));
+                        plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
+                        plutovg_canvas_stroke_text(c, s.text.data(), (int)s.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, tx, ty);
+                    }
+                    if (turned) plutovg_canvas_restore(c);
                 }
                 x += s.width;
             }
