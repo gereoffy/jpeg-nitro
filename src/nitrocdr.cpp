@@ -179,7 +179,7 @@ std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_i
     return img->s ? img : nullptr;
 }
 
-enum Fill { FILL_NONE, FILL_SOLID, FILL_LINEAR, FILL_RADIAL, FILL_BITMAP };
+enum Fill { FILL_NONE, FILL_SOLID, FILL_LINEAR, FILL_RADIAL, FILL_CONICAL, FILL_SQUARE, FILL_BITMAP };
 
 struct Style {
     Fill fill = FILL_NONE;
@@ -189,6 +189,11 @@ struct Style {
     std::vector<plutovg_gradient_stop_t> stops;
     float angle = 0;           // linear: degrees (librevenge / ODF)
     float cx = .5f, cy = .5f, r = 1;   // radial: in bounding box units
+    // a CorelDRAW fountain fill (libcdr:gradient-*): its stops from the start colour to the end
+    // colour; angle (counter-clockwise), centre offset and edge pad (shares) of its own
+    bool corel = false;
+    float centerX = 0, centerY = 0, edge = 0;
+    mutable std::shared_ptr<Image> gradTile;   // conical / square: drawn once over the bounding box
     std::shared_ptr<Image> tile;       // bitmap / pattern fill
     float tileW = 0, tileH = 0;        // points, or fractions of the bounding box (tileRel)
     bool tileRel = false;
@@ -931,6 +936,27 @@ private:
         if (is(p, "draw:fill", "solid")) {
             st->fill = FILL_SOLID;
             st->fillColor = color(p["draw:fill-color"]);
+        } else if (is(p, "draw:fill", "gradient") && p.child("libcdr:gradient-stops") &&
+                   p.child("libcdr:gradient-stops")->count() > 1) {
+            st->fill = is(p, "libcdr:gradient-type", "radial")    ? FILL_RADIAL
+                       : is(p, "libcdr:gradient-type", "conical") ? FILL_CONICAL
+                       : is(p, "libcdr:gradient-type", "square")  ? FILL_SQUARE
+                                                                  : FILL_LINEAR;
+            st->corel = true;
+            st->angle = (float)number(p["libcdr:gradient-angle"]);
+            st->centerX = (float)number(p["libcdr:gradient-center-x"]);
+            st->centerY = (float)number(p["libcdr:gradient-center-y"]);
+            st->edge = std::min(std::max((float)number(p["libcdr:gradient-edge"]), 0.f), .99f);
+            const RVNGPropertyListVector &v = *p.child("libcdr:gradient-stops");
+            for (unsigned long i = 0; i < v.count(); i++) {
+                Color k = color(v[i]["svg:stop-color"]);
+                plutovg_gradient_stop_t gs;
+                gs.offset = (float)number(v[i]["svg:offset"]);
+                gs.color.r = k.r, gs.color.g = k.g, gs.color.b = k.b, gs.color.a = 1;
+                st->stops.push_back(gs);
+            }
+            std::stable_sort(st->stops.begin(), st->stops.end(),
+                             [](const plutovg_gradient_stop_t &a, const plutovg_gradient_stop_t &b) { return a.offset < b.offset; });
         } else if (is(p, "draw:fill", "gradient")) {
             bool radial = is(p, "draw:style", "radial") || is(p, "draw:style", "square") || is(p, "draw:style", "rectangular") ||
                           is(p, "draw:style", "ellipsoid");
@@ -1011,7 +1037,90 @@ private:
 void setColor(plutovg_canvas_t *c, Color col, float alpha) { plutovg_canvas_set_rgba(c, col.r, col.g, col.b, col.a * alpha); }
 
 // Sets the fill paint for an item with bounding box (x, y, w, h).
+// The colour at t (0: the start colour, 1: the end colour) of a fountain fill's stops
+static plutovg_color_t stopColor(const std::vector<plutovg_gradient_stop_t> &stops, float t) {
+    if (t <= stops.front().offset) return stops.front().color;
+    for (size_t i = 1; i < stops.size(); i++)
+        if (t <= stops[i].offset) {
+            const plutovg_gradient_stop_t &a = stops[i - 1], &b = stops[i];
+            float k = b.offset > a.offset ? (t - a.offset) / (b.offset - a.offset) : 1;
+            return {a.color.r + (b.color.r - a.color.r) * k, a.color.g + (b.color.g - a.color.g) * k,
+                    a.color.b + (b.color.b - a.color.b) * k, 1};
+        }
+    return stops.back().color;
+}
+
+// A CorelDRAW fountain fill over the bounding box (as its PDF exports show): the centre is the
+// box's, moved by the offset (shares of the box's width / height, up positive: 0.5 is its edge);
+// the angle points from the start colour to the end colour. Linear: across the box's extent along
+// the angle, the edge pad (a share of it) plain start / end colour at each end; radial: a circle,
+// the end colour in the centre, the start colour at the farthest corner; square: a square turned
+// by the angle, likewise; conical: the end colour towards the angle, the start colour the other
+// way, both sides alike. (The edge pad of the last three is not measured yet.)
+static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
+    float cx = x + w * (.5f + st.centerX), cy = y + h * (.5f - st.centerY);
+    float a = (float)(st.angle * M_PI / 180), dx = cosf(a), dy = -sinf(a);
+    float corners[4][2] = {{x, y}, {x + w, y}, {x, y + h}, {x + w, y + h}};
+    if (st.fill == FILL_LINEAR) {
+        float mx = x + w / 2, my = y + h / 2, t0 = 0, t1 = 0;
+        for (auto &k : corners) {
+            float t = (k[0] - mx) * dx + (k[1] - my) * dy;
+            t0 = std::min(t0, t), t1 = std::max(t1, t);
+        }
+        float pad = (t1 - t0) * std::min(st.edge, .499f);
+        t0 += pad, t1 -= pad;
+        plutovg_canvas_set_linear_gradient(c, mx + dx * t0, my + dy * t0, mx + dx * t1, my + dy * t1, PLUTOVG_SPREAD_METHOD_PAD,
+                                           st.stops.data(), (int)st.stops.size(), nullptr);
+    } else if (st.fill == FILL_RADIAL) {
+        float r = 0;
+        for (auto &k : corners) r = std::max(r, hypotf(k[0] - cx, k[1] - cy));
+        r *= 1 - st.edge;
+        if (r <= 0) return false;
+        std::vector<plutovg_gradient_stop_t> stops(st.stops.rbegin(), st.stops.rend());   // (from the centre)
+        for (auto &s : stops) s.offset = 1 - s.offset;
+        plutovg_canvas_set_radial_gradient(c, cx, cy, r, cx, cy, 0, PLUTOVG_SPREAD_METHOD_PAD, stops.data(), (int)stops.size(), nullptr);
+    } else {
+        // conical / square: no such gradient in plutovg; drawn into an image over the box, once
+        // (512 pixels along its longer side: the colours change slowly)
+        int iw = w >= h ? 512 : std::max(8, (int)(512 * w / h)), ih = h >= w ? 512 : std::max(8, (int)(512 * h / w));
+        if (!st.gradTile || plutovg_surface_get_width(st.gradTile->s) != iw || plutovg_surface_get_height(st.gradTile->s) != ih) {
+            auto img = std::make_shared<Image>();
+            img->s = plutovg_surface_create(iw, ih);
+            if (!img->s) return false;
+            float side = 0;   // square: the half side reaching the farthest corner
+            for (auto &k : corners) {
+                float u = (k[0] - cx) * dx + (k[1] - cy) * dy, v = (k[0] - cx) * -dy + (k[1] - cy) * dx;
+                side = std::max(side, std::max(fabsf(u), fabsf(v)));
+            }
+            side *= 1 - st.edge;
+            unsigned char *data = plutovg_surface_get_data(img->s);
+            int stride = plutovg_surface_get_stride(img->s);
+            for (int j = 0; j < ih; j++) {
+                uint32_t *row = (uint32_t *)(data + (size_t)j * stride);
+                float py = y + (j + .5f) * h / ih - cy;
+                for (int i = 0; i < iw; i++) {
+                    float px = x + (i + .5f) * w / iw - cx, u = px * dx + py * dy, v = px * -dy + py * dx, t;
+                    if (st.fill == FILL_SQUARE) t = side > 0 ? 1 - std::max(fabsf(u), fabsf(v)) / side : 1;
+                    else t = 1 - fabsf(atan2f(v, u)) / (float)M_PI;
+                    plutovg_color_t k = stopColor(st.stops, std::min(std::max(t, 0.f), 1.f));
+                    row[i] = 0xff000000u | (uint32_t)(k.r * 255 + .5f) << 16 | (uint32_t)(k.g * 255 + .5f) << 8 | (uint32_t)(k.b * 255 + .5f);
+                }
+            }
+            st.gradTile = img;
+        }
+        plutovg_matrix_t m;
+        plutovg_matrix_init_translate(&m, x, y);
+        plutovg_matrix_scale(&m, w / iw, h / ih);
+        plutovg_canvas_set_texture(c, st.gradTile->s, PLUTOVG_TEXTURE_TYPE_PLAIN, st.opacity, &m);
+        return true;
+    }
+    plutovg_canvas_set_opacity(c, st.opacity);
+    return true;
+}
+
 bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
+    if (st.corel && (st.fill == FILL_LINEAR || st.fill == FILL_RADIAL || st.fill == FILL_CONICAL || st.fill == FILL_SQUARE))
+        return !st.stops.empty() && w > 0 && h > 0 && setCorelFill(c, st, x, y, w, h);
     switch (st.fill) {
     case FILL_SOLID: setColor(c, st.fillColor, st.opacity); return true;
     case FILL_LINEAR:
