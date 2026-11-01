@@ -336,6 +336,9 @@ static bool bitstream_name(std::string &family, int &weight, bool &italic) {
 static const char *substitute(const std::string &family) {
     static const char *const subst[][2] = {{"AvantGarde", "Avenir"}, {"Century Gothic", "Avenir"},
                                            {"Adobe Caslon Pro", "Times New Roman"},
+                                           // Bitstream scripts: like ones macOS has, then Windows'
+                                           {"Lydian Csv", "Apple Chancery"}, {"CommercialScript", "Snell Roundhand"},
+                                           {"Apple Chancery", "Lucida Handwriting"}, {"Snell Roundhand", "Lucida Handwriting"},
                                            {"Arial", "Liberation Sans"}, {"Helvetica", "Liberation Sans"},
                                            {"Times New Roman", "Liberation Serif"}, {"Times", "Liberation Serif"},
                                            {"Courier New", "Liberation Mono"}, {"Courier", "Liberation Mono"}};
