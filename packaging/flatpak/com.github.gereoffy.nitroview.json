@@ -73,8 +73,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/libcdr/archive/56859113657b541e37895852d33729231e7f9f5c.tar.gz",
-          "sha256": "0e9d6935ac1775f472910edbebe56a2ba7cc56d742c3f2d454585d4ee5cf4a6d",
+          "url": "https://github.com/gereoffy/libcdr/archive/02e0a99512307e1b4023fc7f651e9fcac696a4d9.tar.gz",
+          "sha256": "e49ff0d89394f5eb5d6967337e70f98e2db3f93245f352ef8a7bb7af7070d2c3",
           "dest": "third_party/libcdr"
         },
         {
