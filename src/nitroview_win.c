@@ -942,25 +942,40 @@ typedef struct {
     Decoded *d;
     unsigned old_serial;          // the image it replaces (matched by serial: it may be freed meanwhile)
     wchar_t *path;
+    int page;                     // the page of a drawing that was shown: shown again
+    Decoded *first;               // (its first page, decoded on the way: freed on the main thread)
 } ReloadJob;
+#ifdef NV_VECTOR
+static Decoded *render_vector_page(NvVector *vec, int page);
+#endif
 
 static DWORD WINAPI reload_run(void *arg) {
     ReloadJob *j = arg;
     j->d = decode_file(j->path);
+#ifdef NV_VECTOR
+    if (j->d && j->d->vec && j->page > 0 && j->page < nv_vector_pages(j->d->vec)) {
+        Decoded *shown = render_vector_page(j->d->vec, j->page);
+        if (shown) {
+            j->first = j->d;
+            j->d = shown;
+        }
+    }
+#endif
     PostMessageW(g_notify, WM_APP_RELOAD, (WPARAM)j, 0);
     return 0;
 }
 
 // The DNG exposure correction (g_dng_ev3) or the drawings' background (nv_vector_background)
 // changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
-// when its new decoding is ready (it stays on screen until then).
-static void loader_setting_changed(void) {
+// when its new decoding is ready (it stays on screen until then); page: the page of it shown (a drawing).
+static void loader_setting_changed(int page) {
     ReloadJob *j = calloc(1, sizeof *j);
     void *path = NULL;
     unsigned serial = 0;
     if (nv_loader_drop(L, ld_stale, NULL, j != NULL, &serial, &path) && path) {   // (no job: dropped, decoded again)
         j->old_serial = serial;
         j->path = path;
+        j->page = page;
         HANDLE th = CreateThread(NULL, 0, reload_run, j, 0, NULL);
         if (th) {
             CloseHandle(th);
@@ -1545,28 +1560,31 @@ typedef struct {
     int page, index;
 } PageJob;
 
-static DWORD WINAPI page_run(void *arg) {
-    PageJob *j = arg;
+static Decoded *render_vector_page(NvVector *vec, int page) {   // (a decoder thread)
     Decoded *d = calloc(1, sizeof *d);
     size_t cap = 0;
     double t1 = now_ms();
-    uint8_t *buf = d ? decode_vector_page(j->vec, j->page, d, &cap) : NULL;
-    if (buf) {
-        double t2 = now_ms();
-        int up = gpu_upload(d, buf);
-        buf_put(buf, cap);
-        d->decode_ms = t2 - t1;
-        d->upload_ms = now_ms() - t2;
-        if (up) {
-            nv_vector_unref(d->vec);
-            free(d);
-            d = NULL;
-        }
-    } else {
+    uint8_t *buf = d ? decode_vector_page(vec, page, d, &cap) : NULL;
+    if (!buf) {
         free(d);
-        d = NULL;
+        return NULL;
     }
-    j->d = d;
+    double t2 = now_ms();
+    int up = gpu_upload(d, buf);
+    buf_put(buf, cap);
+    d->decode_ms = t2 - t1;
+    d->upload_ms = now_ms() - t2;
+    if (up) {
+        nv_vector_unref(d->vec);
+        free(d);
+        return NULL;
+    }
+    return d;
+}
+
+static DWORD WINAPI page_run(void *arg) {
+    PageJob *j = arg;
+    j->d = render_vector_page(j->vec, j->page);
     PostMessageW(V.hwnd, WM_APP_PAGE, (WPARAM)j, 0);
     return 0;
 }
@@ -1716,7 +1734,7 @@ static void on_char(wchar_t ch) {   // zoom keys by character: any keyboard layo
 #ifdef NV_VECTOR
         if (cur && cur->vec) {
             nv_vector_cycle_background(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
-            loader_setting_changed();
+            loader_setting_changed(cur->page);
             break;
         }
 #endif
@@ -1724,7 +1742,7 @@ static void on_char(wchar_t ch) {   // zoom keys by character: any keyboard layo
             int ev3 = MAX(-9, MIN(9, (int)g_dng_ev3 + (GetKeyState(VK_SHIFT) < 0 ? -1 : 1)));
             if (ev3 != (int)g_dng_ev3) {
                 InterlockedExchange(&g_dng_ev3, ev3);
-                loader_setting_changed();
+                loader_setting_changed(0);
             }
         }
         break;
@@ -1900,6 +1918,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             update_title();
             redraw();
         }
+        if (j->first) decoded_free(j->first);
         free(j->path);
         free(j);
         loader_reap();

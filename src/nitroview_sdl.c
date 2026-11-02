@@ -1142,25 +1142,40 @@ typedef struct {
     Decoded *d;
     unsigned old_serial;          // the image it replaces (matched by serial: it may be freed meanwhile)
     char *path;
+    int page;                     // the page of a drawing that was shown: shown again
+    Decoded *first;               // (its first page, decoded on the way: freed on the main thread)
 } ReloadJob;
+#ifdef NV_VECTOR
+static Decoded *render_vector_page(NvVector *vec, int page);
+#endif
 
 static int SDLCALL reload_run(void *arg) {
     ReloadJob *j = arg;
     j->d = decode_file(j->path, NULL);
+#ifdef NV_VECTOR
+    if (j->d && j->d->vec && j->page > 0 && j->page < nv_vector_pages(j->d->vec)) {
+        Decoded *shown = render_vector_page(j->d->vec, j->page);
+        if (shown) {
+            j->first = j->d;
+            j->d = shown;
+        }
+    }
+#endif
     post(EV_RELOAD, 0, j);
     return 0;
 }
 
 // The DNG exposure correction (g_dng_ev3) or the drawings' background (nv_vector_background)
 // changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
-// when its new decoding is ready (it stays on screen until then).
-static void loader_setting_changed(void) {
+// when its new decoding is ready (it stays on screen until then); page: the page of it shown (a drawing).
+static void loader_setting_changed(int page) {
     ReloadJob *j = calloc(1, sizeof *j);
     void *path = NULL;
     unsigned serial = 0;
     if (nv_loader_drop(L, ld_stale, NULL, j != NULL, &serial, &path) && path) {   // (no job: dropped, decoded again)
         j->old_serial = serial;
         j->path = path;
+        j->page = page;
         if (!start_thread(reload_run, "dng", j)) return;
         j->path = NULL;
     }
@@ -1813,21 +1828,24 @@ typedef struct {
     int page, index;
 } PageJob;
 
-static int SDLCALL page_run(void *arg) {
-    PageJob *j = arg;
+static Decoded *render_vector_page(NvVector *vec, int page) {   // (a decoder thread)
     Decoded *d = calloc(1, sizeof *d);
     size_t cap = 0;
     double t1 = now_ms();
-    uint8_t *buf = d ? decode_vector_page(j->vec, j->page, d, &cap) : NULL;
-    if (buf) {
-        d->buf = buf;
-        d->cap = cap;
-        d->decode_ms = now_ms() - t1;
-    } else {
+    uint8_t *buf = d ? decode_vector_page(vec, page, d, &cap) : NULL;
+    if (!buf) {
         free(d);
-        d = NULL;
+        return NULL;
     }
-    j->d = d;
+    d->buf = buf;
+    d->cap = cap;
+    d->decode_ms = now_ms() - t1;
+    return d;
+}
+
+static int SDLCALL page_run(void *arg) {
+    PageJob *j = arg;
+    j->d = render_vector_page(j->vec, j->page);
     post(EV_PAGE, 0, j);
     return 0;
 }
@@ -1992,7 +2010,7 @@ static void on_char(char ch) {   // zoom keys by character (key_char): any keybo
 #ifdef NV_VECTOR
         if (cur && cur->vec) {
             nv_vector_cycle_background(ch == 'E' ? -1 : 1);
-            loader_setting_changed();
+            loader_setting_changed(cur->page);
             break;
         }
 #endif
@@ -2000,7 +2018,7 @@ static void on_char(char ch) {   // zoom keys by character (key_char): any keybo
             int ev3 = MAX(-9, MIN(9, SDL_GetAtomicInt(&g_dng_ev3) + (ch == 'E' ? -1 : 1)));
             if (ev3 != SDL_GetAtomicInt(&g_dng_ev3)) {
                 SDL_SetAtomicInt(&g_dng_ev3, ev3);
-                loader_setting_changed();
+                loader_setting_changed(0);
             }
         }
         break;
@@ -2102,6 +2120,7 @@ static void handle(const SDL_Event *e) {
                 update_title();
                 redraw();
             }
+            if (j->first) decoded_free(j->first);
             SDL_free(j->path);
             free(j);
             loader_reap();

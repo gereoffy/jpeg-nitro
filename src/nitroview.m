@@ -622,8 +622,8 @@ typedef struct {
 - (void)vectorTargetChanged;
 // The DNG exposure correction (g_dng_ev3) or the vector background (nv_vector_background) changed:
 // prefetched DNGs / vector images are dropped and decoded again, the current one is replaced when its new
-// decoding is ready (it stays on screen until then).
-- (void)displaySettingChanged;
+// decoding is ready (it stays on screen until then); page: the page of it shown (a drawing), shown again.
+- (void)displaySettingChanged:(int)page;
 @property(nonatomic, copy) void (^onDecoded)(NSInteger index);
 @end
 
@@ -739,7 +739,7 @@ static int vec_too_small(const void *image, void *ctx) {
     nv_loader_drop(_L, vec_too_small, NULL, 1, NULL, NULL);
 #endif
 }
-- (void)displaySettingChanged {
+- (void)displaySettingChanged:(int)page {
     unsigned serial = 0;
     void *p = NULL;
     if (!nv_loader_drop(_L, ld_stale, NULL, 1, &serial, &p) || !p) {
@@ -749,7 +749,19 @@ static int vec_too_small(const void *image, void *ctx) {
     NSString *path = (__bridge_transfer NSString *)p;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         Decoded *n;
-        @autoreleasepool { n = decode_file(path, self->_pool, self->_align); }
+        @autoreleasepool {
+            n = decode_file(path, self->_pool, self->_align);
+#ifdef NV_VECTOR
+            if (n && n.vector && page > 0 && page < n.pages) {   // the page that was shown, from the document loaded again
+                Decoded *shown = drawing_page(n, page, self->_pool, self->_align);
+                if (shown) {
+                    [self->_pool put:n.buffer];
+                    n.buffer = nil;
+                    n = shown;
+                }
+            }
+#endif
+        }
         if (n) [self replaceSerial:serial with:n];
     });
 }
@@ -1387,14 +1399,14 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
             if (cur && cur.vector) {
                 nv_vector_cycle_background(back ? -1 : 1);
-                [_loader displaySettingChanged];
+                [_loader displaySettingChanged:cur.page];
                 return;
             }
             if (!cur || cur.mode != MODE_NITRODNG) return;
             int ev3 = MAX(-9, MIN(9, atomic_load(&g_dng_ev3) + (back ? -1 : 1)));
             if (ev3 == atomic_load(&g_dng_ev3)) return;
             atomic_store(&g_dng_ev3, ev3);
-            [_loader displaySettingChanged];
+            [_loader displaySettingChanged:0];
             return;
         }
         default: break;
