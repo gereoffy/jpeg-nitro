@@ -388,24 +388,35 @@ plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic, 
         static const char *const suffixes[] = {" CE", " Cyr", " Baltic", " Greek", " Tur"};
         for (const char *sfx : suffixes)
             if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); changed = true; }
-        static const char *const bolds[] = {" Bold", " Black", " Heavy", " Semibold"};
+        static const char *const bolds[] = {" Bold", " Black", " Heavy"};
         for (const char *sfx : bolds)
             if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 700); changed = true; }
+        static const char *const semibolds[] = {" Semibold", " Demibold", " Semi Bold"};
+        for (const char *sfx : semibolds)
+            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 600); changed = true; }
         static const char *const italics[] = {" Italic", " Oblique"};
         for (const char *sfx : italics)
             if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); italic = changed = true; }
+        static const char *const lights[] = {" Light", " Semilight", " Semi Light"};   // ("Segoe UI Light": Visio's titles)
+        for (const char *sfx : lights)
+            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::min(weight, 300); changed = true; }
     }
     if (familyOut) *familyOut = family;
     const char *sub = substitute(family);
     const char *sub2 = sub ? substitute(sub) : nullptr;   // (a substitute's own: Linux's Liberation one)
     // a Bitstream font also under Linotype's name of the family ("Futura Lt BT": "Futura LT" Light)
     std::string linotype = bitstream ? family + " LT" : family;
+    // the last resorts (from [5]): a light, medium or semibold weight from a family that has such
+    // faces (Arial has regular and bold only); a missing semibold as a medium, the nearer in width
+    // (Visio's Segoe UI Semibold labels fit their boxes in Arial Bold no more)
+    bool between = weight != 400 && weight != 700;
     const char *tries[] = {name.c_str(), linotype.c_str(), family.c_str(), sub ? sub : family.c_str(), sub2 ? sub2 : family.c_str(),
-                           "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"};   // (from [5]: the last resorts)
+                           between ? "Helvetica Neue" : "Arial", "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"};
     for (const char *t : tries) {
+        if (t == tries[5] && weight == 600) weight = 500;
         // upright text: not from a family that has only italic faces (an installed "Futura Lt BT"
         // Light Italic alone made every Futura text italic); the next candidate instead
-        if (!italic && t != tries[5] && t != tries[6] && t != tries[7] && t != tries[8] &&
+        if (!italic && t != tries[5] && t != tries[6] && t != tries[7] && t != tries[8] && t != tries[9] &&
             !nf_has_style(t, false) && nf_has_style(t, true))
             continue;
         plutovg_font_face_t *f = nf_face(t, weight, italic);

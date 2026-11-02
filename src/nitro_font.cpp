@@ -19,6 +19,7 @@
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -229,6 +230,18 @@ void index_system(Index &ix) {
     index_dir(ix, "/Library/Fonts", 0);
     index_dir(ix, "/System/Library/Fonts", 0);
     if (const char *home = getenv("HOME")) index_dir(ix, std::string(home) + "/Library/Fonts", 0);
+    // Microsoft Office's own fonts (Calibri, Cambria, Candara, Tahoma ...: what Office and Visio
+    // documents are set in) come with each Office app, the same set in each: one of them
+    static const char *const office[] = {"/Applications/Microsoft Word.app/Contents/Resources/DFonts",
+                                         "/Applications/Microsoft Excel.app/Contents/Resources/DFonts",
+                                         "/Applications/Microsoft PowerPoint.app/Contents/Resources/DFonts",
+                                         "/Applications/Microsoft Outlook.app/Contents/Resources/DFonts",
+                                         "/Applications/Microsoft OneNote.app/Contents/Resources/DFonts"};
+    for (const char *dir : office)
+        if (access(dir, R_OK) == 0) {
+            index_dir(ix, dir, 0);
+            break;
+        }
 #else
     index_dir(ix, "/usr/share/fonts", 0);
     index_dir(ix, "/usr/local/share/fonts", 0);
