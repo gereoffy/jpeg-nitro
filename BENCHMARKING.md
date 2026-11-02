@@ -532,9 +532,9 @@ DWGs of the collection, converted the same way: 8363 show, 49 have nothing drawa
 on 34. Side by side with ezdxf's renderings the drawings match, except
 that ezdxf draws thicker lines and makes up the dimensions whose blocks LibreDWG's R10 conversions
 lost. Under ASan and UBSan every page of these, of the 8412 conversions of the whole collection and
-of 645 cut or corrupted copies opens without errors. Times
-on the Intel i9 (2000-pixel rendering): a 20–60 MB floor plan is read in 50–160 ms and drawn in
-30–180 ms; in the viewers a 4096-pixel rendering takes 70–140 ms.
+of 645 cut or corrupted copies opens without errors. On the Intel
+i9 a 243 MB DXF in the viewer (4096 × 3622): read 94.7 ms, decode 1051.5 ms, key to on screen
+1168.7 ms.
 
 Not supported: perspective views and non-rectangular viewport clipping, multileaders, multilines,
 3D solids (ACIS), external references (xrefs), the objects of AutoCAD Architecture / Mechanical
