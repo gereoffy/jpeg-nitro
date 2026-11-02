@@ -853,6 +853,22 @@ private:
                 float w = textWidth(s, word.data(), n == std::string::npos ? 0 : n + 1) * s.scaleX;
                 float full = textWidth(s, word.data(), word.size()) * s.scaleX;
                 if (x > 0 && x + w > width) flush();
+                if (w > width && n != std::string::npos) {   // wider than the frame on its own (a URL): the part that fits, the rest on the next line
+                    size_t fit = 0, k = 0;
+                    while (k < n + 1) {   // (whole UTF-8 characters)
+                        size_t next = k + 1;
+                        while (next < word.size() && (word[next] & 0xc0) == 0x80) next++;
+                        if (textWidth(s, word.data(), next) * s.scaleX > width && fit) break;
+                        fit = next;
+                        k = next;
+                    }
+                    if (fit < n + 1) {
+                        i -= word.size() - fit;   // (the rest is the next word)
+                        word.resize(fit);
+                        full = textWidth(s, word.data(), fit) * s.scaleX;
+                        w = full;
+                    }
+                }
                 if (cur.spans.empty() || cur.spans.back().face != s.face || cur.spans.back().size != s.size ||
                     memcmp(&cur.spans.back().color, &s.color, sizeof s.color) || cur.spans.back().font != s.font) {
                     Span part = s;
