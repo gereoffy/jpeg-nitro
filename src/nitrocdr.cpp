@@ -436,30 +436,11 @@ public:
     void openGroup(const RVNGPropertyList &) override {}
     void closeGroup() override {}
 
-    void drawRectangle(const RVNGPropertyList &p) override {
-        plutovg_path_t *path = plutovg_path_create();
-        double x = points(p["svg:x"]), y = points(p["svg:y"]), w = points(p["svg:width"]), h = points(p["svg:height"]);
-        double rx = points(p["svg:rx"]), ry = points(p["svg:ry"]);
-        if (rx > 0 || ry > 0) plutovg_path_add_round_rect(path, (float)x, (float)y, (float)w, (float)h, (float)rx, (float)ry);
-        else plutovg_path_add_rect(path, (float)x, (float)y, (float)w, (float)h);
-        addPath(path);
-    }
-    void drawEllipse(const RVNGPropertyList &p) override {
-        plutovg_path_t *path = plutovg_path_create();
-        double cx = points(p["svg:cx"]), cy = points(p["svg:cy"]), rx = points(p["svg:rx"]), ry = points(p["svg:ry"]);
-        plutovg_path_add_ellipse(path, (float)cx, (float)cy, (float)rx, (float)ry);
-        double rot = number(p["librevenge:rotate"]);
-        if (rot != 0) {
-            plutovg_matrix_t m;
-            plutovg_matrix_init_translate(&m, (float)cx, (float)cy);
-            plutovg_matrix_rotate(&m, (float)(-rot * M_PI / 180));
-            plutovg_matrix_translate(&m, (float)-cx, (float)-cy);
-            plutovg_path_transform(path, &m);
-        }
-        addPath(path);
-    }
-    void drawPolygon(const RVNGPropertyList &p) override { drawPoints(p, true); }
-    void drawPolyline(const RVNGPropertyList &p) override { drawPoints(p, false); }
+    // (libcdr draws every shape, CMX ones too, as a path: never these)
+    void drawRectangle(const RVNGPropertyList &) override {}
+    void drawEllipse(const RVNGPropertyList &) override {}
+    void drawPolygon(const RVNGPropertyList &) override {}
+    void drawPolyline(const RVNGPropertyList &) override {}
     void drawPath(const RVNGPropertyList &p) override {
         const RVNGPropertyListVector *d = p.child("svg:d");
         if (!d || !d->count()) return;
@@ -563,21 +544,8 @@ public:
     void endTableObject() override {}
     void insertTab() override { insertText(RVNGString("    ")); }
     void insertSpace() override { insertText(RVNGString(" ")); }
-    void insertText(const RVNGString &s) override {
-        if (!m_text) return;
-        // line breaks inside the text (a CorelDRAW soft return) start a new line, same alignment
-        const char *c = s.cstr();
-        const char *start = c;
-        for (;; c++) {
-            if (*c == '\n' || *c == '\r' || *c == '\v' || !*c) {
-                if (c > start) appendText(std::string(start, c - start));
-                if (!*c) break;
-                if (*c == '\r' && c[1] == '\n') c++;
-                newLine();
-                if (*c == '\v') m_text->lines.back().paragraph = false;   // (a soft return: the same paragraph)
-                start = c + 1;
-            }
-        }
+    void insertText(const RVNGString &s) override {   // (libcdr's line breaks come as insertLineBreak)
+        if (m_text && !s.empty()) appendText(s.cstr());
     }
     void insertLineBreak() override { newLine(); }
     void insertField(const RVNGPropertyList &) override {}
@@ -693,19 +661,6 @@ private:
         plutovg_point_t pt = {0, 0};
         plutovg_path_get_current_point(path, &pt.x, &pt.y);
         return pt.y;
-    }
-
-    void drawPoints(const RVNGPropertyList &p, bool close) {
-        const RVNGPropertyListVector *v = p.child("svg:points");
-        if (!v || !v->count()) return;
-        plutovg_path_t *path = plutovg_path_create();
-        for (unsigned long i = 0; i < v->count(); i++) {
-            float x = (float)points((*v)[i]["svg:x"]), y = (float)points((*v)[i]["svg:y"]);
-            if (i) plutovg_path_line_to(path, x, y);
-            else plutovg_path_move_to(path, x, y);
-        }
-        if (close) plutovg_path_close(path);
-        addPath(path);
     }
 
     void addPath(plutovg_path_t *path) {
