@@ -5,6 +5,8 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
   https://github.com/sammycage/plutovg/pull/91 refuses such surfaces instead)
 - plutovg_span_buffer_intersect did pointer arithmetic on the NULL data of an empty span buffer
   (UBSan: a fill clipped by a clip that covers no pixel, or that itself covers none)
+- the rasterizer's setjmp saved the signal mask on macOS: a system call for every fill and stroke
+  (_setjmp there; drawings of many small items rendered ~10% faster)
 - stb_truetype read past the outline of a glyph whose last contour is a single off-curve
   point (macOS Times "C"; ASan: heap-buffer-overflow in stbtt_GetGlyphShape;
   https://github.com/nothings/stb/issues/1296)
@@ -54,6 +56,22 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
  
  #ifdef __cplusplus
  }
+--- a/plutovg/source/plutovg-ft-raster.c
++++ b/plutovg/source/plutovg-ft-raster.c
+@@ -60,8 +60,13 @@
+ 
+ #include <setjmp.h>
+ 
++#ifdef __APPLE__   /* (setjmp saves the signal mask there: a system call per rendering) */
++#define pvg_ft_setjmp   _setjmp
++#define pvg_ft_longjmp  _longjmp
++#else
+ #define pvg_ft_setjmp   setjmp
+ #define pvg_ft_longjmp  longjmp
++#endif
+ #define pvg_ft_jmp_buf  jmp_buf
+ 
+ #include <stddef.h>
 --- a/plutovg/source/plutovg-path.c
 +++ b/plutovg/source/plutovg-path.c
 @@ -902,9 +902,8 @@
