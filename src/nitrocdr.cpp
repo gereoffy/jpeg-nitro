@@ -181,6 +181,16 @@ std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_i
 
 enum Fill { FILL_NONE, FILL_SOLID, FILL_LINEAR, FILL_RADIAL, FILL_CONICAL, FILL_SQUARE, FILL_BITMAP };
 
+plutovg_gradient_stop_t stop(float offset, Color c, float alpha = 1) {
+    plutovg_gradient_stop_t s;
+    s.offset = offset;
+    s.color.r = c.r;
+    s.color.g = c.g;
+    s.color.b = c.b;
+    s.color.a = alpha;
+    return s;
+}
+
 struct Style {
     Fill fill = FILL_NONE;
     Color fillColor;
@@ -873,13 +883,8 @@ private:
             st->centerY = (float)number(p["libcdr:gradient-center-y"]);
             st->edge = std::min(std::max((float)number(p["libcdr:gradient-edge"]), 0.f), .99f);
             const RVNGPropertyListVector &v = *p.child("libcdr:gradient-stops");
-            for (unsigned long i = 0; i < v.count(); i++) {
-                Color k = color(v[i]["svg:stop-color"]);
-                plutovg_gradient_stop_t gs;
-                gs.offset = (float)number(v[i]["svg:offset"]);
-                gs.color.r = k.r, gs.color.g = k.g, gs.color.b = k.b, gs.color.a = 1;
-                st->stops.push_back(gs);
-            }
+            for (unsigned long i = 0; i < v.count(); i++)
+                st->stops.push_back(stop((float)number(v[i]["svg:offset"]), color(v[i]["svg:stop-color"])));
             std::stable_sort(st->stops.begin(), st->stops.end(),
                              [](const plutovg_gradient_stop_t &a, const plutovg_gradient_stop_t &b) { return a.offset < b.offset; });
         } else if (is(p, "draw:fill", "gradient")) {
@@ -891,15 +896,6 @@ private:
             Color c0 = color(p["draw:start-color"]), c1 = color(p["draw:end-color"], Color{1, 1, 1, 1});
             const RVNGPropertyListVector *v = p.child("svg:linearGradient");
             if (!v) v = p.child("svg:radialGradient");
-            auto stop = [](float off, Color c, float a) {
-                plutovg_gradient_stop_t s;
-                s.offset = off;
-                s.color.r = c.r;
-                s.color.g = c.g;
-                s.color.b = c.b;
-                s.color.a = a;
-                return s;
-            };
             if (v && v->count()) {
                 for (unsigned long i = 0; i < v->count(); i++)
                     st->stops.push_back(stop((float)number((*v)[i]["svg:offset"]), color((*v)[i]["svg:stop-color"]),
