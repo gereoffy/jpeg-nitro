@@ -315,6 +315,7 @@ struct Item {
 
 struct Page {
     double x = 0, y = 0, w = 0, h = 0;   // shown area: the drawing's bounding box (see nitrocdr_load)
+    double pageW = 0, pageH = 0;         // the page's own size (points)
     std::vector<Item> items;
 };
 
@@ -442,8 +443,8 @@ public:
     void startPage(const RVNGPropertyList &p) override {
         pages.emplace_back();
         double w = points(p["svg:width"]), h = points(p["svg:height"]);
-        pages.back().w = w > 0 ? w : 595;
-        pages.back().h = h > 0 ? h : 842;
+        pages.back().w = pages.back().pageW = w > 0 ? w : 595;
+        pages.back().h = pages.back().pageH = h > 0 ? h : 842;
         m_inPage = true;
     }
     void endPage() override { m_inPage = false; }
@@ -1379,7 +1380,11 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     // file: a small logo on an A4 page fills the view, a scan much larger than its page shows
     // in full (an empty page keeps its size). A drawing of several pages gets one area, the
     // bounding box of all its pages: what lies above each other on them (the floors of a
-    // building) stays in place when paging.
+    // building) stays in place when paging. Pages of different sizes (a Visio document of posters)
+    // are shown each in its own area.
+    bool sameSize = true;
+    for (const Page &pg : painter.pages)
+        sameSize &= std::fabs(pg.pageW - painter.pages[0].pageW) < 1 && std::fabs(pg.pageH - painter.pages[0].pageH) < 1;
     double ux0 = 1e30, uy0 = 1e30, ux1 = -1e30, uy1 = -1e30;
     std::vector<std::array<double, 4>> boxes;
     for (const Page &pg : painter.pages) {
@@ -1400,7 +1405,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     for (size_t i = 0; i < painter.pages.size(); i++) {
         Page &pg = painter.pages[i];
         double x0 = boxes[i][0], y0 = boxes[i][1], x1 = boxes[i][2], y1 = boxes[i][3];
-        if (painter.pages.size() > 1 && ux1 > ux0 && uy1 > uy0) {
+        if (painter.pages.size() > 1 && sameSize && ux1 > ux0 && uy1 > uy0) {
             x0 = ux0;
             y0 = uy0;
             x1 = ux1;
