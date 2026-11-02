@@ -916,7 +916,9 @@ private:
         // before it, but not higher than the text's own style (its line break's size, see libcdr):
         // so CorelDRAW's previews and PDF exports (after a large title, an empty line of the text's
         // size; between its smaller characters, as they are). ODF text (libvisio): a paragraph's
-        // first line keeps the line spacing, the margins before and after it are added to that.
+        // first line keeps the line spacing, the margins before and after it are added to that;
+        // Visio's percentage is of the font size (120 % of 10 pt text: lines 12 pt apart, whatever
+        // the font's own height; its frames are sized so).
         for (size_t i = 0; i < t.lines.size(); i++) {
             Line &l = t.lines[i];
             if (i && l.spans.empty() && (l.emptySize <= 0 || t.lines[i - 1].size <= l.emptySize)) {
@@ -928,7 +930,7 @@ private:
             auto space = [&](float share, const Line &of) {   // (a share of a line's height, or < 0: points)
                 return share < 0 ? -share : share * (of.ascent + of.descent);
             };
-            float advance = l.lineHeight > 0 ? l.lineHeight : (p.descent + l.ascent) * l.spacing;
+            float advance = l.lineHeight > 0 ? l.lineHeight : t.corel ? (p.descent + l.ascent) * l.spacing : std::max(l.size, p.size) * l.spacing;
             if (i && l.paragraph && !artistic)
                 l.height = t.corel ? (l.before < 0 ? -l.before : l.before * (p.descent + l.ascent)) + space(p.after, p)
                                    : advance + l.padBefore + p.padAfter;
