@@ -4,8 +4,8 @@
 // nitrosvg: a small C interface to lunasvg (third_party/lunasvg, MIT; see
 // scripts/get-deps.sh) for the viewers: load an SVG, ask its size, render any part
 // of it at any scale. No filters (blur, drop shadow ...): lunasvg skips them.
-// The calls are serialised internally (lunasvg's font cache is not thread-safe
-// without C11 threads), so they can come from any thread.
+// The calls are serialised internally (under nitro_font's lock: the fonts, shared with
+// nitrodxf and nitrocdr, have glyph caches without a lock), so they can come from any thread.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

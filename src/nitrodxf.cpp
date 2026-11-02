@@ -10,6 +10,7 @@
 // render() replays the items that touch the view; hairlines are one device pixel wide.
 // What is 3D is shown from the top (x, y of the world coordinates).
 #include "nitrodxf.h"
+#include "nitro_font.h"
 
 #include <plutovg.h>
 
@@ -319,31 +320,6 @@ int codepage(sv name) {
     return 1252;   // (ANSI, "undefined", ASCII)
 }
 
-void put_utf8(std::string &o, uint32_t cp) {
-    if (cp < 0x80) o += (char)cp;
-    else if (cp < 0x800) {
-        o += (char)(0xc0 | cp >> 6);
-        o += (char)(0x80 | (cp & 63));
-    } else if (cp < 0x10000) {
-        o += (char)(0xe0 | cp >> 12);
-        o += (char)(0x80 | ((cp >> 6) & 63));
-        o += (char)(0x80 | (cp & 63));
-    } else {
-        o += (char)(0xf0 | cp >> 18);
-        o += (char)(0x80 | ((cp >> 12) & 63));
-        o += (char)(0x80 | ((cp >> 6) & 63));
-        o += (char)(0x80 | (cp & 63));
-    }
-}
-
-uint32_t utf8_next(const std::string &s, size_t &i) {   // (invalid bytes: as Latin-1)
-    unsigned char c = (unsigned char)s[i++];
-    int n = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
-    uint32_t cp = n ? c & (0x3f >> n) : c;
-    for (; n && i < s.size() && ((unsigned char)s[i] & 0xc0) == 0x80; n--) cp = (cp << 6) | ((unsigned char)s[i++] & 0x3f);
-    return cp;
-}
-
 // Text in a code page -> UTF-8: iconv (as in libcdr), on Windows its own converter. Bytes it
 // can't convert are skipped; without a converter for the code page: Latin-1.
 struct Conv {
@@ -357,7 +333,7 @@ struct Conv {
 #endif
     void append(std::string &o, sv s, int page) {
         auto latin1 = [&]() {
-            for (char ch : s) put_utf8(o, (unsigned char)ch);
+            for (char ch : s) nf_utf8_put(o, (unsigned char)ch);
         };
 #ifdef _WIN32
         int n = MultiByteToWideChar((UINT)page, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -368,7 +344,7 @@ struct Conv {
             uint32_t c = (uint16_t)w[i];
             if (c >= 0xd800 && c < 0xdc00 && i + 1 < w.size() && (uint16_t)w[i + 1] >= 0xdc00 && (uint16_t)w[i + 1] < 0xe000)
                 c = (c - 0xd800) * 0x400 + ((uint16_t)w[++i] - 0xdc00) + 0x10000;
-            if (c && c != 0xfffd) put_utf8(o, c);
+            if (c && c != 0xfffd) nf_utf8_put(o, c);
         }
 #else
         auto it = cds.find(page);
@@ -384,7 +360,7 @@ struct Conv {
             size_t r = iconv(cd, &src, &left, &dst, &room);
             for (size_t k = 0; k + 4 <= sizeof out - room; k += 4) {
                 uint32_t c = out[k] | out[k + 1] << 8 | out[k + 2] << 16 | (uint32_t)out[k + 3] << 24;
-                if (c && c != 0xfffd && c < 0x110000) put_utf8(o, c);
+                if (c && c != 0xfffd && c < 0x110000) nf_utf8_put(o, c);
             }
             if (r == (size_t)-1 && errno != E2BIG) {
                 if (errno == EINVAL) break;   // (an incomplete character at the end)
@@ -409,7 +385,7 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
     else if (!utf8) conv.append(s, raw, conv.cp);
     else {   // (invalid UTF-8: as Latin-1)
         std::string t(raw);
-        for (size_t i = 0; i < t.size();) put_utf8(s, utf8_next(t, i));
+        for (size_t i = 0; i < t.size();) nf_utf8_put(s, nf_utf8_next(t, i));
     }
     std::string o;
     o.reserve(s.size());
@@ -420,7 +396,7 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
             int n = 0;
             for (; n < 4 && i + 3 + n < s.size() && hexval(s[i + 3 + n]) >= 0; n++) v = v * 16 + (uint32_t)hexval(s[i + 3 + n]);
             if (n == 4) {
-                put_utf8(o, v);
+                nf_utf8_put(o, v);
                 i += 7;
                 continue;
             }
@@ -441,13 +417,13 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
                 uint32_t v = 0;
                 size_t j = i + 2;
                 for (; j < s.size() && j < i + 5 && s[j] >= '0' && s[j] <= '9'; j++) v = v * 10 + (uint32_t)(s[j] - '0');
-                put_utf8(o, v ? v : ' ');
+                nf_utf8_put(o, v ? v : ' ');
                 i = j;
                 continue;
             }
             uint32_t v = k == 'c' || k == 'C' ? 0xd8 : k == 'd' || k == 'D' ? 0xb0 : k == 'p' || k == 'P' ? 0xb1 : k == '%' ? '%' : 0;
             if (v || k == 'u' || k == 'U' || k == 'o' || k == 'O' || k == 'k' || k == 'K') {   // (under / overline: left out)
-                if (v) put_utf8(o, v);
+                if (v) nf_utf8_put(o, v);
                 i += 3;
                 continue;
             }
@@ -460,22 +436,13 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
 
 // --- fonts -------------------------------------------------------------------
 
-std::mutex g_font_lock;   // plutovg's faces have no lock of their own (glyph caches)
-
-plutovg_font_face_cache_t *font_cache() {   // locked by the caller
-    static plutovg_font_face_cache_t *cache;
-    if (!cache) {
-        cache = plutovg_font_face_cache_create();
-        plutovg_font_face_cache_load_sys(cache);
-    }
-    return cache;
-}
+// the faces come from nitro_font (shared with nitrosvg and nitrocdr), and are used under its
+// lock: plutovg's faces have no lock of their own (glyph caches)
 
 // A text style's font: TrueType by family ("Arial", from the style's extended data) or by file
 // name ("arialbd.ttf"); AutoCAD's own SHX stroke fonts (txt, simplex, romans, isocp ...) are
 // not here: a plain sans serif instead. Locked by the caller.
 plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
-    plutovg_font_face_cache_t *cache = font_cache();
     std::string fam(trim(family));
     std::string f(trim(file));
     size_t slash = f.find_last_of("/\\");
@@ -505,7 +472,7 @@ plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
     const char *tries[] = {fam.c_str(), "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"};
     for (const char *t : tries) {
         if (!*t) continue;
-        plutovg_font_face_t *face = plutovg_font_face_cache_get_weight(cache, t, bold ? 700 : 400, italic);
+        plutovg_font_face_t *face = nf_face(t, bold ? 700 : 400, italic);
         if (face) return face;
     }
     return nullptr;
@@ -516,8 +483,8 @@ plutovg_font_face_t *fallback_font(uint32_t cp) {
     static const char *const tries[] = {"Arial", "Helvetica", "Lucida Grande", "Arial Unicode MS", "Liberation Sans", "DejaVu Sans",
                                         "Noto Sans", "PingFang SC", "Hiragino Sans", "MS Gothic", "Noto Sans CJK JP"};
     for (const char *t : tries) {
-        plutovg_font_face_t *f = plutovg_font_face_cache_get(font_cache(), t, false, false);
-        if (f && plutovg_font_face_has_glyph(f, cp)) return f;
+        plutovg_font_face_t *f = nf_face(t, 400, false);
+        if (f && nf_has_glyph(f, cp)) return f;
     }
     return nullptr;
 }
@@ -769,7 +736,7 @@ struct Parser {
         auto it = glyphIndex.find(key);
         if (it != glyphIndex.end()) return it->second;
         plutovg_font_face_t *g = f;
-        if (g && cp > ' ' && !plutovg_font_face_has_glyph(g, cp)) {
+        if (g && cp > ' ' && !nf_has_glyph(g, cp)) {
             plutovg_font_face_t *fb = fallback_font(cp);
             if (fb) g = fb;
         }
@@ -1213,7 +1180,7 @@ struct Parser {
         GRun gr{color, (float)size, (float)sx, (float)skew, (uint32_t)t.glyphs.size(), 0};
         double x0 = x;
         for (size_t i = 0; i < s.size();) {
-            uint32_t c = utf8_next(s, i);
+            uint32_t c = nf_utf8_next(s, i);
             if (c == '\t') c = ' ';
             if (c < ' ') continue;
             uint32_t gi = glyph(f, c);
@@ -1238,7 +1205,7 @@ struct Parser {
         V2 p10 = r.p2(10), p11 = r.find(11) ? r.p2(11) : p10;
         double rot = r.d(50) * M_PI / 180;
         TextData t;
-        std::lock_guard<std::mutex> lock(g_font_lock);
+        std::lock_guard<std::mutex> lock(nf_lock());
         plutovg_font_face_t *f = face(st);
         const FaceInfo &fi = info(f);
         double size = h / fi.cap, skew = std::tan(obl * M_PI / 180);
@@ -1299,7 +1266,7 @@ struct Parser {
             uint32_t cp;
             int st;
         };
-        std::lock_guard<std::mutex> lock(g_font_lock);
+        std::lock_guard<std::mutex> lock(nf_lock());
         std::vector<St> states;
         St s0{face(st), h0, st.width > 0 ? st.width : 1, std::tan(st.oblique * M_PI / 180), 1, 0};
         St cs = s0;
@@ -1400,13 +1367,13 @@ struct Parser {
                     std::string v = param(i);
                     for (char &x : v)
                         if (x == '^' || x == '#') x = '/';
-                    for (size_t j = 0; j < v.size();) paras.back().push_back({utf8_next(v, j), state()});
+                    for (size_t j = 0; j < v.size();) paras.back().push_back({nf_utf8_next(v, j), state()});
                     continue;
                 }
                 default: i -= 1; paras.back().push_back({'\\', state()}); continue;
                 }
             }
-            paras.back().push_back({utf8_next(s, i), state()});
+            paras.back().push_back({nf_utf8_next(s, i), state()});
         }
 
         // lines: words wrapped at the reference width

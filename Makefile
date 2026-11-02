@@ -335,13 +335,15 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 	  $(GNOME_APP_ID) stable   # (installing it fetches the GNOME runtime from Flathub if needed)
 	@echo "built $(FLATPAK_BUNDLE)"
 
-# optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp, and DXF
-# (src/nitrodxf.cpp, drawn with the same plutovg), one static library, compiled once (in parallel);
+# optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp, DXF
+# (src/nitrodxf.cpp, drawn with the same plutovg) and the fonts of the vector renderers
+# (src/nitro_font.cpp: lunasvg asks it for every font, patches/lunasvg.patch; nitrodxf and
+# nitrocdr draw with the same faces), one static library, compiled once (in parallel);
 # $(1): compiler flags (architecture, CPU)
 SVG_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
-SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp src/nitrodxf.cpp
+SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp src/nitrodxf.cpp src/nitro_font.cpp
 SVG_DEFS := -DLUNASVG_BUILD -DLUNASVG_BUILD_STATIC -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC \
-            -DLUNASVG_DISABLE_EXTERNAL_RESOURCES -I$(LUNA)/include -I$(LUNA)/source -I$(LUNA)/plutovg/include \
+            -DLUNASVG_DISABLE_EXTERNAL_RESOURCES -DLUNASVG_DISABLE_LOAD_SYSTEM_FONTS -I$(LUNA)/include -I$(LUNA)/source -I$(LUNA)/plutovg/include \
             -I$(LUNA)/plutovg/source
 define svg_lib
 	@rm -rf $(@D)/svgobj && mkdir -p $(@D)/svgobj
@@ -384,9 +386,9 @@ endef
 # the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
 %/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
-%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h $(SVG_STAMP)
+%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h $(CDR_STAMP)
+%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h $(CDR_STAMP)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 	$(call mimalloc_objs,$(TCPU))

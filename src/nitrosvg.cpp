@@ -2,6 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // nitrosvg: C interface to lunasvg. See nitrosvg.h.
 #include "nitrosvg.h"
+#include "nitro_font.h"
 
 #include <lunasvg.h>
 
@@ -18,7 +19,17 @@ struct nitrosvg {
     int background = 0;   // (nitrosvg_set_background)
 };
 
-static std::mutex g_lock;   // every lunasvg call: the shared font cache has no lock of its own here
+// lunasvg asks nitro_font for every font (lunasvg_set_font_face_resolver, set at the first load),
+// and every lunasvg call runs under nitro_font's lock: the faces are shared with nitrodxf and
+// nitrocdr, and their glyph caches have no lock of their own
+static plutovg_font_face_t *resolve_font(void *, const char *family, bool bold, bool italic) { return nf_css_face(family, bold, italic); }
+static void set_resolver() {   // (locked by the caller)
+    static bool done;
+    if (!done) {
+        lunasvg_set_font_face_resolver(resolve_font, nullptr);
+        done = true;
+    }
+}
 
 // Fixes applied to the text before lunasvg parses it (only when the file needs them):
 //
@@ -115,7 +126,8 @@ nitrosvg *nitrosvg_load(const void *data, size_t len) {
         src = text_newlines(src);
     const char *s = src.data();
     len = src.size();
-    std::lock_guard<std::mutex> g(g_lock);
+    std::lock_guard<std::mutex> g(nf_lock());
+    set_resolver();
     auto doc = lunasvg::Document::loadFromData(s, len);
     if (!doc) return nullptr;
     double w = doc->width(), h = doc->height(), ox = 0, oy = 0;
@@ -131,7 +143,7 @@ nitrosvg *nitrosvg_load(const void *data, size_t len) {
 }
 
 void nitrosvg_free(nitrosvg *svg) {
-    std::lock_guard<std::mutex> g(g_lock);
+    std::lock_guard<std::mutex> g(nf_lock());
     delete svg;
 }
 
@@ -152,7 +164,7 @@ int nitrosvg_render(nitrosvg *svg, uint8_t *bgra, int w, int h, size_t pitch, do
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
         for (int x = 0; x < w; x++) row[x] = bg;
     }
-    std::lock_guard<std::mutex> g(g_lock);
+    std::lock_guard<std::mutex> g(nf_lock());
     lunasvg::Bitmap bitmap(bgra, w, h, (int)pitch);   // ARGB32 premultiplied = BGRA bytes (little endian)
     if (bitmap.isNull()) return -1;
     lunasvg::Matrix m((float)scale, 0, 0, (float)scale, (float)(-(x0 + svg->ox) * scale), (float)(-(y0 + svg->oy) * scale));

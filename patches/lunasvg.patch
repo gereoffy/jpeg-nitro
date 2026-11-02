@@ -7,19 +7,51 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
   point (macOS Times "C"; ASan: heap-buffer-overflow in stbtt_GetGlyphShape;
   https://github.com/nothings/stb/issues/1296)
 - XML comments inside <text> were drawn as text (https://github.com/sammycage/lunasvg/pull/281)
-- the font cache chose condensed or expanded faces as readily as the normal one (macOS Futura:
-  Futura Condensed Medium for Futura); with equal bold / italic the normal width wins now
-- the user's fonts are loaded too: ~/Library/Fonts on macOS (where Font Book installs), and
-  %LOCALAPPDATA%\Microsoft\Windows\Fonts on Windows (Windows 10+ installs there per user)
-- plutovg_font_face_cache_has_style(): whether a family has an upright / italic face (nitrocdr
-  skips a family with only italic faces for upright text)
-- plutovg_font_face_cache_get_weight(): a face by weight (OS/2 usWeightClass) instead of a bold
-  flag (nitrocdr: "Futura Lt BT" -> Futura LT Light, not Book or Heavy)
-- plutovg_font_face_has_glyph(): whether a face has a character (nitrocdr takes the ones an
-  old Western font lacks, such as ő / ű, from a fallback font)
+- lunasvg_set_font_face_resolver(): the application's own font lookup, asked for every font a
+  document names (generic families and the default font included) instead of lunasvg's cache,
+  which then need not load the system's fonts (built with LUNASVG_DISABLE_LOAD_SYSTEM_FONTS).
+  nitroview's src/nitro_font.cpp answers it, with the faces nitrodxf and nitrocdr draw with too:
+  one index of the installed fonts, chosen by weight and width, the user's font directories
+  included (what the earlier plutovg font cache changes of this patch did).
 - <switch> was an unknown element, dropped with everything in it: Adobe Illustrator puts the
   whole drawing in one (blank SVGs), draw.io its labels; now the first child whose conditions
   hold (no requiredExtensions; systemLanguage English) is drawn
+
+--- a/include/lunasvg.h
++++ b/include/lunasvg.h
+@@ -65,6 +65,7 @@
+ 
+ typedef struct plutovg_surface plutovg_surface_t;
+ typedef struct plutovg_matrix plutovg_matrix_t;
++typedef struct plutovg_font_face plutovg_font_face_t;
+ 
+ /**
+  * @brief Callback for cleaning up resources.
+@@ -125,6 +126,24 @@
+ * @return `true` if the font face was successfully added to the cache, `false` otherwise.
+ */
+ LUNASVG_API bool lunasvg_add_font_face_from_data(const char* family, bool bold, bool italic, const void* data, size_t length, lunasvg_destroy_func_t destroy_func, void* closure);
++
++/**
++* @brief A font lookup of the application's own.
++* @param closure The pointer given to lunasvg_set_font_face_resolver().
++* @param family The family as the document names it (a generic name such as "sans-serif" too), or an empty string for the default font.
++* @param bold Whether a bold face is wanted.
++* @param italic Whether an italic face is wanted.
++* @return The face to use, or `NULL` if there is none; the library takes a reference of its own.
++*/
++typedef plutovg_font_face_t* (*lunasvg_font_face_resolver_t)(void* closure, const char* family, bool bold, bool italic);
++
++/**
++* @brief Set a font lookup of the application's own: every font a document needs is asked from it instead of
++* the library's cache, which then need not load the system's fonts (LUNASVG_DISABLE_LOAD_SYSTEM_FONTS).
++* @param resolver The lookup, or `NULL` to use the library's cache again.
++* @param closure User-defined pointer passed to the resolver.
++*/
++LUNASVG_API void lunasvg_set_font_face_resolver(lunasvg_font_face_resolver_t resolver, void* closure);
+ 
+ #ifdef __cplusplus
+ }
 --- a/plutovg/source/plutovg-path.c
 +++ b/plutovg/source/plutovg-path.c
 @@ -902,9 +902,8 @@
@@ -57,175 +89,51 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
      return surface;
  }
  
---- a/plutovg/source/plutovg-font.c
-+++ b/plutovg/source/plutovg-font.c
-@@ -365,6 +365,11 @@
-     return plutovg_glyph_cache_get(&face->cache, face, codepoint);
- }
+--- a/source/graphics.cpp
++++ b/source/graphics.cpp
+@@ -421,6 +421,12 @@
  
-+bool plutovg_font_face_has_glyph(plutovg_font_face_t* face, plutovg_codepoint_t codepoint)
-+{
-+    return stbtt_FindGlyphIndex(&face->info, codepoint) != 0;
-+}
-+
- void plutovg_font_face_get_glyph_metrics(plutovg_font_face_t* face, float size, plutovg_codepoint_t codepoint, float* advance_width, float* left_side_bearing, plutovg_rect_t* extents)
+ FontFace FontFaceCache::getFontFace(const std::string& family, bool bold, bool italic) const
  {
-     float scale = plutovg_font_face_get_scale(face, size);
-@@ -513,6 +518,8 @@
-     int ttcindex;
-     bool bold;
-     bool italic;
-+    bool narrow; // condensed or expanded (OS/2 usWidthClass other than normal)
-+    int weight; // OS/2 usWeightClass (400 regular, 700 bold)
-     struct plutovg_font_face_entry* next;
- } plutovg_font_face_entry_t;
- 
-@@ -619,6 +626,8 @@
-     entry->ttcindex = 0;
-     entry->bold = bold;
-     entry->italic = italic;
-+    entry->narrow = false;
-+    entry->weight = bold ? 700 : 400;
- 
-     plutovg_font_face_cache_add_entry(cache, entry);
- }
-@@ -635,8 +644,8 @@
- 
- static plutovg_font_face_entry_t* plutovg_font_face_entry_select(plutovg_font_face_entry_t* a, plutovg_font_face_entry_t* b, bool bold, bool italic)
- {
--    int a_score = (bold == a->bold) + (italic == a->italic);
--    int b_score = (bold == b->bold) + (italic == b->italic);
-+    int a_score = 2 * ((bold == a->bold) + (italic == a->italic)) + !a->narrow;
-+    int b_score = 2 * ((bold == b->bold) + (italic == b->italic)) + !b->narrow;
-     return a_score > b_score ? a : b;
- }
- 
-@@ -686,6 +695,54 @@
-     return face;
- }
- 
-+plutovg_font_face_t* plutovg_font_face_cache_get_weight(plutovg_font_face_cache_t* cache, const char* family, int weight, bool italic)
-+{
-+    plutovg_font_face_entry_t* best = NULL;
-+    long best_score = 0;
-+    plutovg_mutex_lock(&cache->mutex);
-+    for(int i = 0; i < cache->size; ++i) {
-+        if(strcmp(cache->entries[i]->family, family) != 0)
-+            continue;
-+        for(plutovg_font_face_entry_t* entry = cache->entries[i]; entry; entry = entry->next) {
-+            int diff = entry->weight - weight;
-+            if(diff < 0) diff = -diff;
-+            // italic first, then normal width, then the weight; of two equally close weights the one
-+            // on the side of the request (a light weight: the lighter)
-+            bool side = weight < 400 ? entry->weight < weight : entry->weight > weight;
-+            long score = (entry->italic != italic) * 100000L + entry->narrow * 10000L + diff * 2 + !side;
-+            if(best == NULL || score < best_score) {
-+                best = entry;
-+                best_score = score;
-+            }
-+        }
-+        break;
++    if(m_resolver) {
++        if(auto face = m_resolver(m_closure, family.data(), bold, italic))
++            return FontFace(face);
++        return FontFace();
 +    }
-+    plutovg_font_face_t* face = NULL;
-+    if(best) {
-+        if(best->filename && best->face == NULL)
-+            best->face = plutovg_font_face_load_from_file(best->filename, best->ttcindex);
-+        face = best->face;
-+    }
-+    plutovg_mutex_unlock(&cache->mutex);
-+    return face;
-+}
 +
-+bool plutovg_font_face_cache_has_style(plutovg_font_face_cache_t* cache, const char* family, bool italic)
-+{
-+    bool found = false;
-+    plutovg_mutex_lock(&cache->mutex);
-+    for(int i = 0; i < cache->size && !found; ++i) {
-+        for(plutovg_font_face_entry_t* entry = cache->entries[i]; entry; entry = entry->next) {
-+            if(strcmp(entry->family, family) == 0 && entry->italic == italic) {
-+                found = true;
-+                break;
-+            }
-+        }
-+    }
-+    plutovg_mutex_unlock(&cache->mutex);
-+    return found;
-+}
-+
- #ifndef PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD
- 
- #include <ctype.h>
-@@ -935,6 +992,10 @@
-             entry->italic = true;
-         }
- 
-+        stbtt_uint32 os2 = stbtt__find_table(data, offset, "OS/2");
-+        entry->narrow = os2 && ttUSHORT(data + os2 + 6) != 5 && ttUSHORT(data + os2 + 6) != 0;   // usWidthClass
-+        entry->weight = os2 && ttUSHORT(data + os2 + 4) ? ttUSHORT(data + os2 + 4) : (entry->bold ? 700 : 400);   // usWeightClass
-+
-         plutovg_font_face_cache_add_entry(cache, entry);
-         num_faces++;
+     if(auto face = plutovg_font_face_cache_get(m_cache, family.data(), bold, italic)) {
+         return FontFace(face);
      }
-@@ -1035,9 +1096,21 @@
-     int num_faces = 0;
- #if defined(_WIN32)
-     num_faces += plutovg_font_face_cache_load_dir(cache, "C:\\Windows\\Fonts");
-+    const char* local = getenv("LOCALAPPDATA"); // the user's fonts too (Windows 10+ installs them there)
-+    if(local) {
-+        char path[4096];
-+        if(snprintf(path, sizeof(path), "%s\\Microsoft\\Windows\\Fonts", local) < (int)sizeof(path))
-+            num_faces += plutovg_font_face_cache_load_dir(cache, path);
-+    }
- #elif defined(__APPLE__)
-     num_faces += plutovg_font_face_cache_load_dir(cache, "/Library/Fonts");
-     num_faces += plutovg_font_face_cache_load_dir(cache, "/System/Library/Fonts");
-+    const char* home = getenv("HOME"); // the user's fonts too (Font Book installs there)
-+    if(home) {
-+        char path[4096];
-+        if(snprintf(path, sizeof(path), "%s/Library/Fonts", home) < (int)sizeof(path))
-+            num_faces += plutovg_font_face_cache_load_dir(cache, path);
-+    }
- #elif defined(__linux__)
-     num_faces += plutovg_font_face_cache_load_dir(cache, "/usr/share/fonts");
-     num_faces += plutovg_font_face_cache_load_dir(cache, "/usr/local/share/fonts");
---- a/plutovg/include/plutovg.h
-+++ b/plutovg/include/plutovg.h
-@@ -852,6 +852,11 @@
-  * @param extents Pointer to a `plutovg_rect_t` object to store the glyph bounding box.
-  */
- PLUTOVG_API void plutovg_font_face_get_glyph_metrics(plutovg_font_face_t* face, float size, plutovg_codepoint_t codepoint, float* advance_width, float* left_side_bearing, plutovg_rect_t* extents);
-+
-+/**
-+ * @brief Tells whether the font face has a glyph for the codepoint (else its "missing glyph" box is drawn).
-+ */
-+PLUTOVG_API bool plutovg_font_face_has_glyph(plutovg_font_face_t* face, plutovg_codepoint_t codepoint);
+--- a/source/graphics.h
++++ b/source/graphics.h
+@@ -421,10 +421,13 @@
+ public:
+     bool addFontFace(const std::string& family, bool bold, bool italic, const FontFace& face);
+     FontFace getFontFace(const std::string& family, bool bold, bool italic) const;
++    void setResolver(plutovg_font_face_t* (*resolver)(void*, const char*, bool, bool), void* closure) { m_resolver = resolver; m_closure = closure; }
  
- /**
-  * @brief Retrieves the path of a glyph and its advance width.
-@@ -969,8 +974,23 @@
-  * @return A pointer to the matching `plutovg_font_face_t` object, or NULL if not found. The returned face is owned by the cache and must not be destroyed by the caller.
-  */
- PLUTOVG_API plutovg_font_face_t* plutovg_font_face_cache_get(plutovg_font_face_cache_t* cache, const char* family, bool bold, bool italic);
-+
-+/**
-+ * @brief Tells whether the cache has a face of the family with the given italic flag.
-+ *
-+ * plutovg_font_face_cache_get() returns the closest face of a family, an italic one for upright
-+ * text when the family has only that; this lets the caller try another family instead.
-+ */
-+PLUTOVG_API bool plutovg_font_face_cache_has_style(plutovg_font_face_cache_t* cache, const char* family, bool italic);
+ private:
+     FontFaceCache();
+     plutovg_font_face_cache_t* m_cache;
++    plutovg_font_face_t* (*m_resolver)(void*, const char*, bool, bool) = nullptr;
++    void* m_closure = nullptr;
+     friend FontFaceCache* fontFaceCache();
+ };
  
- /**
-+ * @brief Like plutovg_font_face_cache_get(), with a weight (100..900, OS/2 usWeightClass: 400 regular,
-+ * 700 bold) instead of a bold flag: of the faces with the right italic flag (and normal width),
-+ * the one of the closest weight (a light weight prefers the lighter one of two equally close).
-+ */
-+PLUTOVG_API plutovg_font_face_t* plutovg_font_face_cache_get_weight(plutovg_font_face_cache_t* cache, const char* family, int weight, bool italic);
+--- a/source/lunasvg.cpp
++++ b/source/lunasvg.cpp
+@@ -26,6 +26,11 @@
+     return lunasvg::fontFaceCache()->addFontFace(family, bold, italic, lunasvg::FontFace(data, length, destroy_func, closure));
+ }
+ 
++void lunasvg_set_font_face_resolver(lunasvg_font_face_resolver_t resolver, void* closure)
++{
++    lunasvg::fontFaceCache()->setResolver(resolver, closure);
++}
 +
-+/**
-  * @brief Load all font faces from a file and add them to the cache.
-  *
-  * @param cache A pointer to a `plutovg_font_face_cache_t` object.
+ namespace lunasvg {
+ 
+ Bitmap::Bitmap(int width, int height)
 --- a/source/svgelement.cpp
 +++ b/source/svgelement.cpp
 @@ -36,6 +36,7 @@
@@ -306,17 +214,17 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
              if(id != PropertyID::Unknown) {
                  decodeText(input.substr(0, n), buffer);
                  if(id == PropertyID::Style) {
-@@ -891,6 +915,13 @@
-             skipOptionalSpaces(input);
-         }
+@@ -889,6 +913,13 @@
  
+             input.remove_prefix(n + 1);
+             skipOptionalSpaces(input);
++        }
++
 +        if(inSwitch != nullptr) {
 +            if(conditionFails || switchesDecided.count(inSwitch))
 +                element->setAttribute(INT_MAX, PropertyID::Display, "none");
 +            else
 +                switchesDecided.insert(inSwitch);
-+        }
-+
+         }
+ 
          if(skipDelimiter(input, '>')) {
-             if(element != nullptr)
-                 currentElement = element;

@@ -226,6 +226,7 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 - `src/nitro_load.c/.h`: file → decoded image with the decoders above (the library's face, what the viewers use); `src/nitro_convert.c/.h`: its planes → RGB
 - `examples/nitroconvert.c`: the example program on the library, any image → BMP
 - `src/nitro_prefetch.c/.h`, `src/nitro_view.h`, `src/nitro_vector.c/.h`: the viewers' shared prefetching loader, zoom arithmetic, and vector drawings (SVG, DXF, CorelDRAW behind one interface: loading, pages, rendering, the background setting)
+- `src/nitro_font.cpp/.h` (in libnitrosvg.a): the vector renderers' fonts, one index of the installed font files and their faces for nitrosvg (lunasvg asks it for every font), nitrodxf and nitrocdr, and the lock they draw under
 
 **The viewers**
 - `src/nitroview.m`: Cocoa + Metal; `src/shaders.metal`: its GPU shaders (colour conversion, drawing), embedded at build time; `packaging/Info.plist`, `packaging/icon.png`

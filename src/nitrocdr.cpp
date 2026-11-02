@@ -8,6 +8,7 @@
 // points (y down); render() replays it with plutovg for any scale / offset, skipping
 // whatever lies outside the target.
 #include "nitrocdr.h"
+#include "nitro_font.h"
 
 #include <libcdr/libcdr.h>
 #include <librevenge-stream/librevenge-stream.h>
@@ -34,9 +35,8 @@ using librevenge::RVNGPropertyList;
 using librevenge::RVNGPropertyListVector;
 using librevenge::RVNGString;
 
-// every plutovg call that may touch fonts: the glyph caches have no lock of their own
-// here (no C11 threads on macOS), and faces are shared between documents
-std::mutex g_lock;
+// every plutovg call that may touch a face runs under nitro_font's lock: the faces are shared
+// with nitrosvg and nitrodxf, and their glyph caches have no lock of their own
 
 // --- properties --------------------------------------------------------------
 
@@ -283,15 +283,6 @@ struct Page {
 
 // --- fonts -------------------------------------------------------------------
 
-plutovg_font_face_cache_t *font_cache() {   // locked by the caller
-    static plutovg_font_face_cache_t *cache;
-    if (!cache) {
-        cache = plutovg_font_face_cache_create();
-        plutovg_font_face_cache_load_sys(cache);
-    }
-    return cache;
-}
-
 bool ends_with(const std::string &s, const char *t) {
     size_t n = strlen(t);
     return s.size() >= n && !strcasecmp(s.c_str() + s.size() - n, t);
@@ -351,7 +342,6 @@ static const char *substitute(const std::string &family) {
 // "Times New Roman Bold", "Futura Lt BT" ... -> a face of the system fonts, falling back to
 // Arial / Helvetica (Linux: Liberation Sans / DejaVu Sans).
 plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic, std::string *familyOut = nullptr) {
-    plutovg_font_face_cache_t *cache = font_cache();
     std::string family = name;
     int weight = bold ? 700 : 400;
     bool bitstream = bitstream_name(family, weight, italic);
@@ -378,9 +368,9 @@ plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic, 
         // upright text: not from a family that has only italic faces (an installed "Futura Lt BT"
         // Light Italic alone made every Futura text italic); the next candidate instead
         if (!italic && t != tries[5] && t != tries[6] && t != tries[7] && t != tries[8] &&
-            !plutovg_font_face_cache_has_style(cache, t, false) && plutovg_font_face_cache_has_style(cache, t, true))
+            !nf_has_style(t, false) && nf_has_style(t, true))
             continue;
-        plutovg_font_face_t *f = plutovg_font_face_cache_get_weight(cache, t, weight, italic);
+        plutovg_font_face_t *f = nf_face(t, weight, italic);
         if (f) return f;
     }
     return nullptr;   // (a family without that style gives its closest face)
@@ -396,17 +386,9 @@ plutovg_font_face_t *fallback_font(const std::string &name, bool bold, bool ital
                            "DejaVu Sans"};
     for (const char *t : tries) {
         plutovg_font_face_t *f = find_font(t, bold, italic);
-        if (f && plutovg_font_face_has_glyph(f, cp)) return f;
+        if (f && nf_has_glyph(f, cp)) return f;
     }
     return nullptr;
-}
-
-static plutovg_codepoint_t utf8_next(const std::string &s, size_t &i) {   // (invalid bytes: as Latin-1)
-    unsigned char c = (unsigned char)s[i++];
-    int n = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
-    plutovg_codepoint_t cp = n ? c & (0x3f >> n) : c;
-    for (; n && i < s.size() && ((unsigned char)s[i] & 0xc0) == 0x80; n--) cp = (cp << 6) | ((unsigned char)s[i++] & 0x3f);
-    return cp;
 }
 
 // --- the painter -------------------------------------------------------------
@@ -613,7 +595,7 @@ public:
         m_span.font = font;
         m_span.bold = is(p, "fo:font-weight", "bold");
         m_span.italic = is(p, "fo:font-style", "italic");
-        std::lock_guard<std::mutex> g(g_lock);
+        std::lock_guard<std::mutex> g(nf_lock());
         m_span.face = find_font(font, m_span.bold, m_span.italic);
         // a paragraph without text yet (an empty one has only its span): as high as this font
         if (m_text && m_paragraphOpened && !m_text->lines.empty() && m_text->lines.back().spans.empty()) {
@@ -722,14 +704,14 @@ private:
     // the text in spans of one face each: characters the span's font lacks come from a fallback font
     void appendText(const std::string &s) {
         if (m_text->lines.empty()) newLine();
-        std::lock_guard<std::mutex> g(g_lock);
+        std::lock_guard<std::mutex> g(nf_lock());
         size_t start = 0;
         plutovg_font_face_t *runFace = m_span.face;
         for (size_t i = 0; i < s.size();) {
             size_t at = i;
-            plutovg_codepoint_t cp = utf8_next(s, i);
+            plutovg_codepoint_t cp = nf_utf8_next(s, i);
             plutovg_font_face_t *f = m_span.face;
-            if (f && cp > 0x20 && !plutovg_font_face_has_glyph(f, cp)) {
+            if (f && cp > 0x20 && !nf_has_glyph(f, cp)) {
                 plutovg_font_face_t *fb = fallback_font(m_span.font, m_span.bold, m_span.italic, cp);
                 if (fb) f = fb;
             }
@@ -845,7 +827,7 @@ private:
 
     void layout(Item &it) {
         Text &t = *it.text;
-        std::lock_guard<std::mutex> g(g_lock);
+        std::lock_guard<std::mutex> g(nf_lock());
         float maxw = 0, total = 0;
         std::vector<Line> lines;
         for (Line &l : t.lines) {
@@ -1349,7 +1331,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
 }
 
 void nitrocdr_free(nitrocdr *cdr) {
-    std::lock_guard<std::mutex> g(g_lock);   // (surfaces / paths only; faces stay in the cache)
+    std::lock_guard<std::mutex> g(nf_lock());   // (surfaces / paths only; the faces are nitro_font's)
     delete cdr;
 }
 
@@ -1372,7 +1354,7 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
         for (int x = 0; x < w; x++) row[x] = bg;
     }
-    std::lock_guard<std::mutex> g(g_lock);
+    std::lock_guard<std::mutex> g(nf_lock());
     plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
     plutovg_canvas_t *c = plutovg_canvas_create(surface);
     plutovg_canvas_scale(c, (float)scale, (float)scale);
