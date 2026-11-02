@@ -75,7 +75,7 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas CorelDRAW-rajz előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas CDR/DXF-rajz előző / következő oldala (címsor: [page 2/5]) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
@@ -166,7 +166,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **fényképezőgépes raw** (CR2, NEF, NRW, ARW, RAF) | a gép által a fájlba tett teljes méretű JPEG (a fájlnak csak ez a része olvasódik be) | |
 | **SVG** | alakzatok, útvonalak, színátmenetek, vágás, maszk, minta, `<style>` stíluslap, szöveg a rendszer betűtípusaival, beágyazott képek | a szűrők kimaradnak (árnyék, elmosás); a `<foreignObject>`-beli HTML (draw.io) nem jelenik meg; az SVG-betűtípusok és a csak szimbólumokat tartalmazó sprite-fájlok nem rajzolnak semmit |
 | **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok ([ / ]), a rejtett rétegek kimaradnak, mint a CorelDRAW-ban; a megjelenített terület a rajz befoglaló kerete, nem a lap | a nyílhegyek és a Corel saját vektoros és bitképes mintakitöltései kimaradnak |
-| **DXF** (AutoCAD R12 – 2018) | a modelltér: vonalak, ívek, vonalláncok, splinok, sraffozások, szöveg, blokkok, méretek; rétegek, színek és vonaltípusok, mint az AutoCAD-ben | a papírtér, a multileaderek, a multiline-ok, a 3D testek és a csatolt képek nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
+| **DXF** (AutoCAD R12 – 2018) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés

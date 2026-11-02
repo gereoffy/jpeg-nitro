@@ -507,32 +507,38 @@ Intel and Apple Silicon too (`make MIMALLOC=0`: the system malloc); 193 CDRs on 
 **DXF** (nitrodxf, `src/nitrodxf.cpp`, our own): AutoCAD's text DXF, R12 to 2018, read in one pass
 into its tables (layers, line types, text styles, dimension styles) and blocks of primitives in
 their own coordinates: lines, arcs, ellipses and polyline bulges as cubic Béziers, splines evaluated
-into short lines, hatch boundaries, text as glyph runs. Then the model space is flattened: every
-block reference (and block array) is expanded with its transform, ByLayer / ByBlock colours and line
-types resolved, into a display list of float paths around the drawing's centre, batched by colour
-and line type for fewer plutovg calls; drawing replays only the items that touch the view. As in
+into short lines, hatch boundaries, text as glyph runs. Then each page is flattened (the model
+space, then every layout's sheet: its paper space over the model space seen through each viewport,
+clipped, at its scale, twist and view direction; a repeated page once): every block reference (and
+block array) is expanded with its transform, ByLayer / ByBlock colours and line types resolved, into
+a display list of float paths around the page's centre, batched by colour and line type for fewer
+plutovg calls; drawing replays only the items that touch the view. As in
 AutoCAD's model space, lines are one device pixel wide (line weights are ignored; wide polylines
 keep their width). Text: the drawing's code page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv
 (on Windows its own converter), MTEXT
 formatting (fonts, heights, colours, stacked fractions) and word wrapping; AutoCAD's SHX fonts are
 not on the system, so a sans serif stands in for them, scaled to the same capital height. Hatch
 patterns are generated for the visible part only, and drawn as a tone where they are denser than the
-pixels. The shown area is the drawing's extents without far-off stray objects (a few items far
+pixels. The shown area is a page's extents without far-off stray objects (a few items far
 outside where almost everything is, which AutoCAD's "zoom extents" would include). Damaged files:
 reading continues at the next intact record; block arrays and nested blocks are limited, so a
 broken file cannot explode.
 
 Test files: 311 DXFs (R9 – 2007), 360 DWGs converted to DXF with LibreDWG's `dwg2dxf` (up to 40
-of each version R10 – 2018) and 7 floor plans with their PDF exports. 619 of the 677 show; the
-other 58 have nothing drawable in their model space (paper space only, 3D solids only), and ezdxf
-draws nothing for them either. Side by side with ezdxf's renderings the drawings match, except
+of each version R10 – 2018; with a fix for Autodesk Inventor drawings, whose sheets it drops:
+LibreDWG issue 1490) and 7 floor plans with their PDF exports. 672 of the 678 show; the other 6
+have nothing drawable (3D solids only, empty, or all on layers that are off). All 8446 different
+DWGs of the collection, converted the same way: 8363 show, 49 have nothing drawable, LibreDWG fails
+on 34. Side by side with ezdxf's renderings the drawings match, except
 that ezdxf draws thicker lines and makes up the dimensions whose blocks LibreDWG's R10 conversions
-lost. Under ASan and UBSan these and 240 cut or corrupted copies of them open without errors. Times
+lost. Under ASan and UBSan every page of these, of the 8412 conversions of the whole collection and
+of 645 cut or corrupted copies opens without errors. Times
 on the Intel i9 (2000-pixel rendering): a 20–60 MB floor plan is read in 50–160 ms and drawn in
 30–180 ms; in the viewers a 4096-pixel rendering takes 70–140 ms.
 
-Not supported: paper space layouts and their viewports, multileaders, multilines, 3D solids
-(ACIS), the contents of referenced images (only their frame), binary DXF. DWG is not read; it can
+Not supported: perspective views and non-rectangular viewport clipping, multileaders, multilines,
+3D solids (ACIS), external references (xrefs), the objects of AutoCAD Architecture / Mechanical
+(LibreDWG drops them), the contents of referenced images (only their frame), binary DXF. DWG is not read; it can
 be converted to DXF (AutoCAD, the ODA File Converter, LibreDWG's `dwg2dxf`).
 
 ### Damaged files
