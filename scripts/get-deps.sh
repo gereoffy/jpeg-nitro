@@ -8,7 +8,7 @@
 #   - libcdr (our fork with fixes, github.com/gereoffy/libcdr) + librevenge (MPL-2.0),
 #     lcms2 (MIT), the boost headers and (for Windows) zlib: CorelDRAW
 #     drawings in nitroview (sources only; the Makefile compiles them)
-#   - libvisio (LibreOffice's, MPL-2.0, + patches/libvisio.patch) and libxml2 (MIT, its XML
+#   - libvisio (our fork with fixes, github.com/gereoffy/libvisio, MPL-2.0) and libxml2 (MIT, its XML
 #     reader only, configured by patches/libxml2/): Visio drawings, through the same code
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - dav1d (static, BSD-2-Clause, VideoLAN): the AV1 decoder for AVIF images (DAV1D=0 skips it);
@@ -23,7 +23,7 @@ LJT_VER=3.1.2
 NASM_VER=2.16.03
 LUNASVG_COMMIT=90d6ff333862acf3f5551ffbbcb1e45957661881   # 2026-10-15 (also in packaging/flatpak/*.json, with its sha256)
 LIBCDR_COMMIT=20e4d64e4df41ab695de68572a543f3e8d40829a    # 2026-11-02, github.com/gereoffy/libcdr (and in packaging/flatpak/*.json)
-LIBVISIO_COMMIT=a42aaff13e4a67afcd077c3abb3ef13bb6463025  # 2026-10-24, github.com/LibreOffice/libvisio (and in packaging/flatpak/*.json)
+LIBVISIO_COMMIT=1ebd189cc11b32432018a6ddd317d881f2ad44fb  # 2026-11-02, github.com/gereoffy/libvisio (and in packaging/flatpak/*.json)
 LIBXML2_VER=2.13.8
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
@@ -73,17 +73,15 @@ if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
   mv librevenge-$LIBREVENGE_VER librevenge
   touch librevenge/.stamp-$LIBREVENGE_STAMP
 fi
-# Visio: libvisio + patches/libvisio.patch (ICU replaced with iconv; re-applied when the patch
-# changes) and libxml2's sources + patches/libxml2.patch (the Makefile compiles its XML reader with
+# Visio: libvisio from our fork (LibreOffice's libvisio with the fixes nitroview needs, ICU
+# replaced with iconv; one commit each: github.com/gereoffy/libvisio) and libxml2's sources + patches/libxml2.patch (the Makefile compiles its XML reader with
 # patches/libxml2/'s configuration: no configure run)
-LIBVISIO_STAMP=$LIBVISIO_COMMIT-$(cksum < ../patches/libvisio.patch | cut -d' ' -f1)
-if [ ! -f libvisio/.stamp-$LIBVISIO_STAMP ]; then
+if [ ! -f libvisio/.stamp-$LIBVISIO_COMMIT ]; then
   rm -rf libvisio libvisio-$LIBVISIO_COMMIT
-  curl -fsSL -o libvisio.tar.gz https://github.com/LibreOffice/libvisio/archive/$LIBVISIO_COMMIT.tar.gz
+  curl -fsSL -o libvisio.tar.gz https://github.com/gereoffy/libvisio/archive/$LIBVISIO_COMMIT.tar.gz
   tar xf libvisio.tar.gz && rm libvisio.tar.gz
-  (cd libvisio-$LIBVISIO_COMMIT && patch -p1 -s < ../../patches/libvisio.patch)
   mv libvisio-$LIBVISIO_COMMIT libvisio
-  touch libvisio/.stamp-$LIBVISIO_STAMP
+  touch libvisio/.stamp-$LIBVISIO_COMMIT
 fi
 LIBXML2_STAMP=$LIBXML2_VER-$(cksum < ../patches/libxml2.patch | cut -d' ' -f1)
 if [ ! -f libxml2/.stamp-$LIBXML2_STAMP ]; then

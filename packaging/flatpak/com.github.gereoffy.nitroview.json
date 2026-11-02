@@ -96,13 +96,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/LibreOffice/libvisio/archive/a42aaff13e4a67afcd077c3abb3ef13bb6463025.tar.gz",
-          "sha256": "7df664bb438da3d9641df3b4c7fdf32935b76338f7d425e95d8b9dc73fe14c77",
-          "dest": "third_party/libvisio"
-        },
-        {
-          "type": "patch",
-          "path": "../../patches/libvisio.patch",
+          "url": "https://github.com/gereoffy/libvisio/archive/1ebd189cc11b32432018a6ddd317d881f2ad44fb.tar.gz",
+          "sha256": "fa2295dd1ce9685d2d17cb07490249d7fdd68ae448137fa54f3f00db14e4fc69",
           "dest": "third_party/libvisio"
         },
         {
