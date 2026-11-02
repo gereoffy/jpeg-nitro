@@ -598,9 +598,12 @@ public:
     bool inPath = false, pathOpen = false;
     PathP path;
 
-    // a transparent bitmap drawn as two blits: the mask (SRCAND), then the picture (SRCPAINT)
-    SurfP mask;
-    double maskRect[4] = {0, 0, 0, 0};
+    // a transparent bitmap drawn as two blits: the mask (SRCAND), then the picture (SRCPAINT); or
+    // the other way round, a 1-bit mask ORed (SRCPAINT: white where the picture shows), then the
+    // picture ANDed (SRCAND: white where it does not). The first one waits for the second (and is
+    // drawn alone before any other record: flushMask)
+    SurfP mask, orMask;
+    double maskRect[4] = {0, 0, 0, 0}, orRect[4] = {0, 0, 0, 0};
 
     // --- the display list ---
     void addItem(Item &&it) {
@@ -1012,28 +1015,44 @@ public:
     void blit(double x, double y, double w, double h, SurfP img, double sx, double sy, double sw, double sh, uint32_t rop, float opacity = 1) {
         if (!img || !img->s || !(w != 0) || !(h != 0) || !(sw != 0) || !(sh != 0)) return;
         if (rop == SRCAND) {
-            flushMask();
-            mask = img;
-            maskRect[0] = x, maskRect[1] = y, maskRect[2] = w, maskRect[3] = h;
-            return;
-        }
-        if (rop == SRCPAINT) {
+            if (orMask && orRect[0] == x && orRect[1] == y && orRect[2] == w && orRect[3] == h) {
+                img = orThenAnd(orMask, img);
+                orMask = nullptr;
+            } else {
+                flushMask();
+                mask = img;
+                maskRect[0] = x, maskRect[1] = y, maskRect[2] = w, maskRect[3] = h;
+                return;
+            }
+        } else if (rop == SRCPAINT) {
             if (mask && maskRect[0] == x && maskRect[1] == y && maskRect[2] == w && maskRect[3] == h) {
                 img = applyMask(img, mask);
                 mask = nullptr;
-            } else
-                img = keyed(img, 0x000000);   // (OR with what is there: black adds nothing)
+            } else {
+                flushMask();
+                orMask = img;
+                orRect[0] = x, orRect[1] = y, orRect[2] = w, orRect[3] = h;
+                return;
+            }
         } else if (rop == NOTSRCCOPY) {
             img = inverted(img);
         }
         flushMask();
         blitItem(x, y, w, h, img, sx, sy, sw, sh, opacity);
     }
-    void flushMask() {   // a mask without its picture: its dark parts
-        if (!mask) return;
-        blitItem(maskRect[0], maskRect[1], maskRect[2], maskRect[3], keyed(mask, 0xffffff), 0, 0, plutovg_surface_get_width(mask->s),
-                 plutovg_surface_get_height(mask->s), 1);
-        mask = nullptr;
+    void flushMask() {   // a mask without its picture: its dark parts (SRCAND) or light ones (SRCPAINT)
+        if (mask) {
+            SurfP m = mask;
+            mask = nullptr;
+            blitItem(maskRect[0], maskRect[1], maskRect[2], maskRect[3], keyed(m, 0xffffff), 0, 0, plutovg_surface_get_width(m->s),
+                     plutovg_surface_get_height(m->s), 1);
+        }
+        if (orMask) {   // (OR with what is there: black adds nothing)
+            SurfP m = orMask;
+            orMask = nullptr;
+            blitItem(orRect[0], orRect[1], orRect[2], orRect[3], keyed(m, 0x000000), 0, 0, plutovg_surface_get_width(m->s),
+                     plutovg_surface_get_height(m->s), 1);
+        }
     }
     void blitItem(double x, double y, double w, double h, SurfP img, double sx, double sy, double sw, double sh, float opacity) {
         uint32_t rgb;
@@ -1095,6 +1114,24 @@ public:
                 uint32_t mp = mrow[(int64_t)x * mw / w];
                 bool light = ((mp >> 16 & 255) + (mp >> 8 & 255) + (mp & 255)) >= 384;
                 if (light && (row[x] & 0xffffff) == 0) row[x] = 0;
+            }
+        }
+        return o;
+    }
+    // the picture of a SRCPAINT / SRCAND pair: opaque where the mask is light, elsewhere transparent
+    // where the picture is white (ANDing white leaves what is there)
+    static SurfP orThenAnd(const SurfP &m, const SurfP &s) {
+        SurfP o = copySurface(s);
+        if (!o) return s;
+        int w = plutovg_surface_get_width(o->s), h = plutovg_surface_get_height(o->s), stride = plutovg_surface_get_stride(o->s);
+        int mw = plutovg_surface_get_width(m->s), mh = plutovg_surface_get_height(m->s), mstride = plutovg_surface_get_stride(m->s);
+        for (int y = 0; y < h; y++) {
+            uint32_t *row = (uint32_t *)(plutovg_surface_get_data(o->s) + (size_t)y * stride);
+            const uint32_t *mrow = (const uint32_t *)(plutovg_surface_get_data(m->s) + (size_t)((int64_t)y * mh / h) * mstride);
+            for (int x = 0; x < w; x++) {
+                uint32_t mp = mrow[(int64_t)x * mw / w];
+                bool light = ((mp >> 16 & 255) + (mp >> 8 & 255) + (mp & 255)) >= 384;
+                if (!light && (row[x] & 0xffffff) == 0xffffff) row[x] = 0;
             }
         }
         return o;
@@ -1286,6 +1323,8 @@ bool Player::playWmf(Bytes b, size_t o) {
         if (++records > 8u << 20) break;
         Bytes r = b.sub(o + 6, (size_t)(size - 3) * 2);   // the parameters
         o += (size_t)size * 2;
+        // (a mask waiting for its picture: drawn alone before anything else, in the state it came in)
+        if ((mask || orMask) && fn != 0x0b41 && fn != 0x0940 && fn != 0x0922 && fn != 0x0f43 && fn != 0x0107 && fn != 0x0626) flushMask();
         auto pt = [&](size_t i) { return (float)r.i16(i); };
         auto readPoints = [&](size_t at, size_t n) {
             pts.clear();
@@ -1572,6 +1611,9 @@ bool Player::playEmf(Bytes b) {
         Bytes r = b.sub(o, size);
         o += size;
         if (type == 14) break;   // EOF
+        // (a mask waiting for its picture: drawn alone before anything else, in the state it came in;
+        // StretchBltMode, comments and ICM records may come between the two)
+        if ((mask || orMask) && type != 76 && type != 77 && type != 81 && type != 21 && type != 70 && type != 98) flushMask();
         auto readPoints = [&](size_t at, size_t n, bool wide) {
             pts.clear();
             size_t sz = wide ? 8 : 4;
