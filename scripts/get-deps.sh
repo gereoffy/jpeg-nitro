@@ -8,6 +8,8 @@
 #   - libcdr (our fork with fixes, github.com/gereoffy/libcdr) + librevenge (MPL-2.0),
 #     lcms2 (MIT), the boost headers and (for Windows) zlib: CorelDRAW
 #     drawings in nitroview (sources only; the Makefile compiles them)
+#   - libvisio (LibreOffice's, MPL-2.0, + patches/libvisio.patch) and libxml2 (MIT, its XML
+#     reader only, configured by patches/libxml2/): Visio drawings, through the same code
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - dav1d (static, BSD-2-Clause, VideoLAN): the AV1 decoder for AVIF images (DAV1D=0 skips it);
 #     built with meson + ninja (pip, in third_party/tools/venv) and nasm; with WINCC=path/to/
@@ -21,6 +23,8 @@ LJT_VER=3.1.2
 NASM_VER=2.16.03
 LUNASVG_COMMIT=90d6ff333862acf3f5551ffbbcb1e45957661881   # 2026-10-15 (also in packaging/flatpak/*.json, with its sha256)
 LIBCDR_COMMIT=20e4d64e4df41ab695de68572a543f3e8d40829a    # 2026-11-02, github.com/gereoffy/libcdr (and in packaging/flatpak/*.json)
+LIBVISIO_COMMIT=a42aaff13e4a67afcd077c3abb3ef13bb6463025  # 2026-10-24, github.com/LibreOffice/libvisio (and in packaging/flatpak/*.json)
+LIBXML2_VER=2.13.8
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
 ZLIB_VER=1.3.1      # (only for the Windows build: macOS and Linux have it)
@@ -68,6 +72,27 @@ if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
   (cd librevenge-$LIBREVENGE_VER && patch -p1 -s < ../../patches/librevenge.patch)
   mv librevenge-$LIBREVENGE_VER librevenge
   touch librevenge/.stamp-$LIBREVENGE_STAMP
+fi
+# Visio: libvisio + patches/libvisio.patch (ICU replaced with iconv; re-applied when the patch
+# changes) and libxml2's sources + patches/libxml2.patch (the Makefile compiles its XML reader with
+# patches/libxml2/'s configuration: no configure run)
+LIBVISIO_STAMP=$LIBVISIO_COMMIT-$(cksum < ../patches/libvisio.patch | cut -d' ' -f1)
+if [ ! -f libvisio/.stamp-$LIBVISIO_STAMP ]; then
+  rm -rf libvisio libvisio-$LIBVISIO_COMMIT
+  curl -fsSL -o libvisio.tar.gz https://github.com/LibreOffice/libvisio/archive/$LIBVISIO_COMMIT.tar.gz
+  tar xf libvisio.tar.gz && rm libvisio.tar.gz
+  (cd libvisio-$LIBVISIO_COMMIT && patch -p1 -s < ../../patches/libvisio.patch)
+  mv libvisio-$LIBVISIO_COMMIT libvisio
+  touch libvisio/.stamp-$LIBVISIO_STAMP
+fi
+LIBXML2_STAMP=$LIBXML2_VER-$(cksum < ../patches/libxml2.patch | cut -d' ' -f1)
+if [ ! -f libxml2/.stamp-$LIBXML2_STAMP ]; then
+  rm -rf libxml2 libxml2-$LIBXML2_VER
+  curl -fsSL -o libxml2.tar.xz https://download.gnome.org/sources/libxml2/${LIBXML2_VER%.*}/libxml2-$LIBXML2_VER.tar.xz
+  tar xf libxml2.tar.xz && rm libxml2.tar.xz
+  (cd libxml2-$LIBXML2_VER && patch -p1 -s < ../../patches/libxml2.patch)
+  mv libxml2-$LIBXML2_VER libxml2
+  touch libxml2/.stamp-$LIBXML2_STAMP
 fi
 if [ ! -f lcms2/.version-$LCMS2_VER ]; then
   rm -rf lcms2 lcms2-$LCMS2_VER
@@ -238,4 +263,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"

@@ -1,0 +1,376 @@
+libvisio changes for nitroview (scripts/get-deps.sh applies this after downloading):
+- ICU replaced with iconv (on Windows MultiByteToWideChar), as in nitroview's libcdr fork: the
+  text of the old binary Visio files in Windows code pages, UTF-16 and the Symbol font, and the
+  metadata strings, are converted without the 30 MB ICU libraries (appendCodepageCharacters /
+  appendUTF16Characters in libvisio_utils.cpp)
+
+--- a/src/lib/VSDContentCollector.cpp
++++ b/src/lib/VSDContentCollector.cpp
+@@ -17,8 +17,6 @@
+ #include <set>
+ #include <stack>
+ #include <boost/spirit/include/qi.hpp>
+-#include <unicode/ucnv.h>
+-#include <unicode/utf8.h>
+ 
+ #include "VSDParser.h"
+ #include "VSDInternalStream.h"
+@@ -3742,7 +3740,7 @@
+     return;
+   }
+ 
+-  static const UChar32 symbolmap [] =
++  static const uint32_t symbolmap [] =
+   {
+     0x0020, 0x0021, 0x2200, 0x0023, 0x2203, 0x0025, 0x0026, 0x220D, // 0x20 ..
+     0x0028, 0x0029, 0x2217, 0x002B, 0x002C, 0x2212, 0x002E, 0x002F,
+@@ -3774,7 +3772,7 @@
+     0x23A0, 0x23A4, 0x23A5, 0x23A6, 0x23AB, 0x23AC, 0x23AD, 0x0020  // .. 0xFE
+   };
+ 
+-  UChar32  ucs4Character = 0;
++  uint32_t ucs4Character = 0;
+   if (format == VSD_TEXT_SYMBOL) // SYMBOL
+   {
+     for (unsigned char character : characters)
+@@ -3790,92 +3788,72 @@
+   }
+   else
+   {
+-    UErrorCode status = U_ZERO_ERROR;
+-    UConverter *conv = nullptr;
++    const char *codepage;
+     switch (format)
+     {
+     case VSD_TEXT_JAPANESE:
+-      conv = ucnv_open("windows-932", &status);
++      codepage = "CP932";
+       break;
+     case VSD_TEXT_KOREAN:
+-      conv = ucnv_open("windows-949", &status);
++      codepage = "CP949";
+       break;
+     case VSD_TEXT_CHINESE_SIMPLIFIED:
+-      conv = ucnv_open("windows-936", &status);
++      codepage = "CP936";
+       break;
+     case VSD_TEXT_CHINESE_TRADITIONAL:
+-      conv = ucnv_open("windows-950", &status);
++      codepage = "CP950";
+       break;
+     case VSD_TEXT_GREEK:
+-      conv = ucnv_open("windows-1253", &status);
++      codepage = "CP1253";
+       break;
+     case VSD_TEXT_TURKISH:
+-      conv = ucnv_open("windows-1254", &status);
++      codepage = "CP1254";
+       break;
+     case VSD_TEXT_VIETNAMESE:
+-      conv = ucnv_open("windows-1258", &status);
++      codepage = "CP1258";
+       break;
+     case VSD_TEXT_HEBREW:
+-      conv = ucnv_open("windows-1255", &status);
++      codepage = "CP1255";
+       break;
+     case VSD_TEXT_ARABIC:
+-      conv = ucnv_open("windows-1256", &status);
++      codepage = "CP1256";
+       break;
+     case VSD_TEXT_BALTIC:
+-      conv = ucnv_open("windows-1257", &status);
++      codepage = "CP1257";
+       break;
+     case VSD_TEXT_RUSSIAN:
+-      conv = ucnv_open("windows-1251", &status);
++      codepage = "CP1251";
+       break;
+     case VSD_TEXT_THAI:
+-      conv = ucnv_open("windows-874", &status);
++      codepage = "CP874";
+       break;
+     case VSD_TEXT_CENTRAL_EUROPE:
+-      conv = ucnv_open("windows-1250", &status);
++      codepage = "CP1250";
+       break;
+     default:
+-      conv = ucnv_open("windows-1252", &status);
++      codepage = "CP1252";
+       break;
+     }
+-    if (U_SUCCESS(status) && conv)
++    // a field's place (0x1e, the same byte in every code page) as U+FFFC, the rest converted
++    std::vector<unsigned char> run;
++    for (unsigned char character : characters)
+     {
+-      const auto *src = (const char *)characters.data();
+-      const char *srcLimit = (const char *)src + characters.size();
+-      while (src < srcLimit)
++      if (character != 0x1e)
+       {
+-        ucs4Character = ucnv_getNextUChar(conv, &src, srcLimit, &status);
+-        if (U_SUCCESS(status) && U_IS_UNICODE_CHAR(ucs4Character))
+-        {
+-          if (0x1e == ucs4Character)
+-            appendUCS4(text, 0xfffc);
+-          else
+-            appendUCS4(text, ucs4Character);
+-        }
++        run.push_back(character);
++        continue;
+       }
++      appendCodepageCharacters(text, run, codepage);
++      run.clear();
++      appendUCS4(text, 0xfffc);
+     }
+-    if (conv)
+-      ucnv_close(conv);
++    appendCodepageCharacters(text, run, codepage);
+   }
+ }
+ 
+ void libvisio::VSDContentCollector::appendCharacters(librevenge::RVNGString &text, const std::vector<unsigned char> &characters)
+ {
+-  UErrorCode status = U_ZERO_ERROR;
+-  UConverter *conv = ucnv_open("UTF-16LE", &status);
+-
+-  if (U_SUCCESS(status) && conv)
+-  {
+-    const auto *src = (const char *)characters.data();
+-    const char *srcLimit = (const char *)src + characters.size();
+-    while (src < srcLimit)
+-    {
+-      UChar32 ucs4Character = ucnv_getNextUChar(conv, &src, srcLimit, &status);
+-      if (U_SUCCESS(status) && U_IS_UNICODE_CHAR(ucs4Character))
+-        appendUCS4(text, ucs4Character);
+-    }
+-  }
+-  if (conv)
+-    ucnv_close(conv);
++  appendUTF16Characters(text, characters);
+ }
+ 
+ void libvisio::VSDContentCollector::_appendField(librevenge::RVNGString &text)
+--- a/src/lib/VSDMetaData.cpp
++++ b/src/lib/VSDMetaData.cpp
+@@ -14,7 +14,6 @@
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
+-#include <unicode/ucnv.h>
+ #include <ctime>
+ 
+ libvisio::VSDMetaData::VSDMetaData()
+@@ -264,32 +263,10 @@
+   }
+   else
+   {
+-    UErrorCode status = U_ZERO_ERROR;
+-    UConverter *conv = nullptr;
+-
+-    switch (codepage)
+-    {
+-    case 1252:
+-      // http://msdn.microsoft.com/en-us/goglobal/bb964654
+-      conv = ucnv_open("windows-1252", &status);
+-      break;
+-    }
+-
+-    if (U_SUCCESS(status) && conv)
+-    {
+-      assert(!characters.empty());
+-      const auto *src = (const char *)characters.data();
+-      const char *srcLimit = (const char *)src + characters.size();
+-      while (src < srcLimit)
+-      {
+-        UChar32 ucs4Character = ucnv_getNextUChar(conv, &src, srcLimit, &status);
+-        if (U_SUCCESS(status) && U_IS_UNICODE_CHAR(ucs4Character))
+-          appendUCS4(string, ucs4Character);
+-      }
+-    }
+-
+-    if (conv)
+-      ucnv_close(conv);
++    // http://msdn.microsoft.com/en-us/goglobal/bb964654
++    char name[16];
++    snprintf(name, sizeof(name), "CP%u", (unsigned)codepage);
++    appendCodepageCharacters(string, characters, name);
+   }
+ 
+   return string;
+--- a/src/lib/libvisio_utils.cpp
++++ b/src/lib/libvisio_utils.cpp
+@@ -11,8 +11,28 @@
+ 
+ #include <cstdarg>
+ #include <cstdio>
++#include <cstring>
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>   // MultiByteToWideChar: Windows has no iconv
++#include <cstdlib>
++#else
++#include <cerrno>
++#include <iconv.h>
++#endif
+ #include "VSDInternalStream.h"
+ 
++namespace
++{
++
++bool isUnicodeChar(uint32_t c)
++{
++  return c < 0x110000 && (c < 0xd800 || c > 0xdfff) && (c & 0xfffe) != 0xfffe && (c < 0xfdd0 || c > 0xfdef);
++}
++
++}
++
+ uint8_t libvisio::readU8(librevenge::RVNGInputStream *input)
+ {
+   if (!input || input->isEnd())
+@@ -129,18 +149,113 @@
+   return static_cast<unsigned long>(end - begin);
+ }
+ 
+-void libvisio::appendUCS4(librevenge::RVNGString &text, UChar32 ucs4Character)
++void libvisio::appendUCS4(librevenge::RVNGString &text, uint32_t ucs4Character)
+ {
+   // Convert carriage returns to new line characters
+-  if (ucs4Character == (UChar32) 0x0d || ucs4Character == (UChar32) 0x0e)
+-    ucs4Character = (UChar32) '\n';
++  if (ucs4Character == 0x0d || ucs4Character == 0x0e)
++    ucs4Character = '\n';
+ 
+-  unsigned char outbuf[U8_MAX_LENGTH+1];
++  unsigned char outbuf[5];
+   int i = 0;
+-  U8_APPEND_UNSAFE(&outbuf[0], i, ucs4Character);
++  if (ucs4Character < 0x80)
++    outbuf[i++] = (unsigned char)ucs4Character;
++  else if (ucs4Character < 0x800)
++  {
++    outbuf[i++] = (unsigned char)(0xc0 | (ucs4Character >> 6));
++    outbuf[i++] = (unsigned char)(0x80 | (ucs4Character & 0x3f));
++  }
++  else if (ucs4Character < 0x10000)
++  {
++    outbuf[i++] = (unsigned char)(0xe0 | (ucs4Character >> 12));
++    outbuf[i++] = (unsigned char)(0x80 | ((ucs4Character >> 6) & 0x3f));
++    outbuf[i++] = (unsigned char)(0x80 | (ucs4Character & 0x3f));
++  }
++  else
++  {
++    outbuf[i++] = (unsigned char)(0xf0 | (ucs4Character >> 18));
++    outbuf[i++] = (unsigned char)(0x80 | ((ucs4Character >> 12) & 0x3f));
++    outbuf[i++] = (unsigned char)(0x80 | ((ucs4Character >> 6) & 0x3f));
++    outbuf[i++] = (unsigned char)(0x80 | (ucs4Character & 0x3f));
++  }
+   outbuf[i] = 0;
+ 
+   text.append((char *)outbuf);
++}
++
++void libvisio::appendCodepageCharacters(librevenge::RVNGString &text, const std::vector<unsigned char> &characters, const char *codepage)
++{
++  if (characters.empty())
++    return;
++#ifdef _WIN32
++  // Windows' own converter, the code page number from the "CPnnnn" name; characters it can't
++  // convert (its replacement character) are skipped
++  const unsigned cp = strncmp(codepage, "CP", 2) == 0 ? (unsigned)atoi(codepage + 2) : 0;
++  if (!cp)
++    return;
++  const int n = MultiByteToWideChar(cp, 0, reinterpret_cast<const char *>(characters.data()), (int)characters.size(), nullptr, 0);
++  if (n <= 0)
++    return;
++  std::vector<wchar_t> wide((size_t)n);
++  MultiByteToWideChar(cp, 0, reinterpret_cast<const char *>(characters.data()), (int)characters.size(), wide.data(), n);
++  for (size_t i = 0; i < wide.size(); ++i)
++  {
++    uint32_t c = (uint16_t)wide[i];
++    if (c >= 0xd800 && c < 0xdc00 && i + 1 < wide.size() && (uint16_t)wide[i + 1] >= 0xdc00 && (uint16_t)wide[i + 1] < 0xe000)
++    {
++      c = ((c - 0xd800) << 10) + ((uint16_t)wide[i + 1] - 0xdc00) + 0x10000;
++      ++i;
++    }
++    if (c != 0xfffd && isUnicodeChar(c))
++      appendUCS4(text, c);
++  }
++#else
++  iconv_t cd = iconv_open("UTF-32LE", codepage);
++  if (cd == (iconv_t)-1)
++    return;
++  auto *src = const_cast<char *>(reinterpret_cast<const char *>(characters.data()));
++  size_t srcLeft = characters.size();
++  while (srcLeft)
++  {
++    unsigned char out[4 * 64];
++    auto *dst = reinterpret_cast<char *>(out);
++    size_t dstLeft = sizeof(out);
++    size_t r = iconv(cd, &src, &srcLeft, &dst, &dstLeft);
++    for (size_t k = 0; k + 4 <= sizeof(out) - dstLeft; k += 4)
++    {
++      uint32_t c = out[k] | (out[k + 1] << 8) | (out[k + 2] << 16) | ((uint32_t)out[k + 3] << 24);
++      if (isUnicodeChar(c))
++        appendUCS4(text, c);
++    }
++    if (r == (size_t)-1 && errno != E2BIG)
++    {
++      if (errno == EINVAL)   // an incomplete sequence at the end
++        break;
++      src++;   // EILSEQ: skip the byte
++      srcLeft--;
++    }
++  }
++  iconv_close(cd);
++#endif
++}
++
++void libvisio::appendUTF16Characters(librevenge::RVNGString &text, const std::vector<unsigned char> &characters)
++{
++  // UTF-16LE: unpaired surrogates are skipped
++  for (size_t i = 0; i + 1 < characters.size(); i += 2)
++  {
++    uint32_t c = characters[i] | (characters[i + 1] << 8);
++    if (c >= 0xd800 && c <= 0xdbff && i + 3 < characters.size())
++    {
++      uint32_t l = characters[i + 2] | (characters[i + 3] << 8);
++      if (l >= 0xdc00 && l <= 0xdfff)
++      {
++        c = ((c - 0xd800) << 10) + (l - 0xdc00) + 0x10000;
++        i += 2;
++      }
++    }
++    if (isUnicodeChar(c))
++      appendUCS4(text, c);
++  }
+ }
+ 
+ void libvisio::debugPrint(const char *format, ...)
+--- a/src/lib/libvisio_utils.h
++++ b/src/lib/libvisio_utils.h
+@@ -24,7 +24,8 @@
+ 
+ #include <librevenge/librevenge.h>
+ #include <librevenge-stream/librevenge-stream.h>
+-#include <unicode/utypes.h>
++#include <cstdint>
++#include <vector>
+ 
+ #if defined(HAVE_FUNC_ATTRIBUTE_FORMAT)
+ #define VSD_ATTRIBUTE_PRINTF(fmt, arg) __attribute__((format(printf, fmt, arg)))
+@@ -72,7 +73,11 @@
+ 
+ unsigned long getRemainingLength(librevenge::RVNGInputStream *input);
+ 
+-void appendUCS4(librevenge::RVNGString &text, UChar32 ucs4Character);
++void appendUCS4(librevenge::RVNGString &text, uint32_t ucs4Character);
++// Text in a Windows code page ("CP1252", "CP932" ...) or in UTF-16LE appended as UTF-8 (iconv, on
++// Windows MultiByteToWideChar; ICU did it before); characters that cannot be converted are skipped.
++void appendCodepageCharacters(librevenge::RVNGString &text, const std::vector<unsigned char> &characters, const char *codepage);
++void appendUTF16Characters(librevenge::RVNGString &text, const std::vector<unsigned char> &characters);
+ 
+ void debugPrint(const char *format, ...) VSD_ATTRIBUTE_PRINTF(1, 2);
+ 

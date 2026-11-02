@@ -18,13 +18,14 @@ optional dependencies below add formats.
 ## Optional dependencies
 
 `scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is
-installed system-wide). The Makefile uses what it finds there: SVG (with DXF), CorelDRAW and AVIF are built in
-automatically once their libraries are present.
+installed system-wide). The Makefile uses what it finds there: SVG (with DXF), CorelDRAW (with Visio) and AVIF are
+built in automatically once their libraries are present.
 
 | dependency | for | option |
 |---|---|---|
 | [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG; DXF (nitrodxf is our own, it draws with this plutovg) | `SVG=0` leaves both out |
 | [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out; `MIMALLOC=0`: the C++ code with the system malloc |
+| [libvisio](https://github.com/LibreOffice/libvisio) with `patches/libvisio.patch` (iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code | part of `CDR` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
 | libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
@@ -219,7 +220,7 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 - `nitrodng.c/.h`: DNG raw development (lossless JPEG, demosaicing, colour)
 - `nitrowebp.c/.h`: lossy WebP (VP8) decoder
 - `nitrotiff.c/.h`, `tiff.h`: TIFF decoder (strips / tiles in parallel)
-- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrocdr.cpp/.h`: CorelDRAW with libcdr; the latter two draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
+- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface); the latter two draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 
 **The library**
@@ -251,7 +252,8 @@ The viewer is MIT ([LICENSE](LICENSE)); the optional dependencies downloaded by
 (Apache-2.0), stb_image (public domain / MIT), SDL3 (zlib), dav1d (BSD-2-Clause), lunasvg and
 plutovg (MIT; plutovg's rasterizer is FreeType's smooth rasterizer, FreeType License: portions of
 this software are copyright © 2014 The FreeType Project (www.freetype.org), all rights reserved),
-libcdr and librevenge (MPL-2.0; our libcdr changes are in github.com/gereoffy/libcdr, the librevenge
-one in patches/), lcms2 (MIT), boost (Boost Software License), mimalloc (MIT). The inverse DCT
+libcdr, libvisio and librevenge (MPL-2.0; our libcdr changes are in github.com/gereoffy/libcdr, the
+libvisio and librevenge ones in patches/), libxml2 (MIT), lcms2 (MIT), boost (Boost Software License),
+mimalloc (MIT). The inverse DCT
 implements the algorithm of jidctint.c from the Independent JPEG Group's libjpeg: this software is
 based in part on the work of the Independent JPEG Group.

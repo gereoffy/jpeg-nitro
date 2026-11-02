@@ -36,7 +36,7 @@ NvVector *nv_vector_ref(NvVector *v);   // (NULL stays NULL)
 void nv_vector_unref(NvVector *v);
 
 int nv_vector_pages(const NvVector *v);        // 0 for NULL
-int nv_vector_mode(const NvVector *v);         // NV_MODE_SVG / NV_MODE_DXF / NV_MODE_CDR (nitro_load.h)
+int nv_vector_mode(const NvVector *v);         // NV_MODE_SVG / NV_MODE_DXF / NV_MODE_CDR / NV_MODE_VISIO (nitro_load.h)
 int nv_vector_background_of(const NvVector *v);   // the background it was loaded with
 // Size of a page in its own units (render coordinates start at its top left, y down).
 void nv_vector_size(const NvVector *v, int page, double *w, double *h);

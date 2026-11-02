@@ -96,6 +96,28 @@
         },
         {
           "type": "archive",
+          "url": "https://github.com/LibreOffice/libvisio/archive/a42aaff13e4a67afcd077c3abb3ef13bb6463025.tar.gz",
+          "sha256": "7df664bb438da3d9641df3b4c7fdf32935b76338f7d425e95d8b9dc73fe14c77",
+          "dest": "third_party/libvisio"
+        },
+        {
+          "type": "patch",
+          "path": "../../patches/libvisio.patch",
+          "dest": "third_party/libvisio"
+        },
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.8.tar.xz",
+          "sha256": "277294cb33119ab71b2bc81f2f445e9bc9435b893ad15bb2cd2b0e859a0ee84a",
+          "dest": "third_party/libxml2"
+        },
+        {
+          "type": "patch",
+          "path": "../../patches/libxml2.patch",
+          "dest": "third_party/libxml2"
+        },
+        {
+          "type": "archive",
           "url": "https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2",
           "sha256": "85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a",
           "dest": "third_party/boost"

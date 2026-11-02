@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
-// nitrocdr: CorelDRAW drawings through libcdr, drawn with plutovg. See nitrocdr.h.
+// nitrocdr: CorelDRAW drawings through libcdr, Visio drawings through libvisio, drawn with
+// plutovg. See nitrocdr.h.
 //
-// libcdr reports the drawing through librevenge::RVNGDrawingInterface (the calls the
+// Both libraries report the drawing through librevenge::RVNGDrawingInterface (the calls the
 // SVG / ODG generators get): pages, styles, paths, bitmaps (as BMP files) and text
 // frames of lines and spans. The Painter below records that as a display list in
 // points (y down); render() replays it with plutovg for any scale / offset, skipping
@@ -11,6 +12,7 @@
 #include "nitro_font.h"
 
 #include <libcdr/libcdr.h>
+#include <libvisio/libvisio.h>
 #include <librevenge-stream/librevenge-stream.h>
 #include <librevenge/librevenge.h>
 #include <plutovg.h>
@@ -1268,6 +1270,12 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
         if (libcdr::CMXDocument::isSupported(&in)) {
             in.seek(0, librevenge::RVNG_SEEK_SET);
             ok = libcdr::CMXDocument::parse(&in, &painter);
+        } else {
+            in.seek(0, librevenge::RVNG_SEEK_SET);
+            if (libvisio::VisioDocument::isSupported(&in)) {   // Visio: VSD, VDX, VSDX (stencils and templates too)
+                in.seek(0, librevenge::RVNG_SEEK_SET);
+                ok = libvisio::VisioDocument::parse(&in, &painter);
+            }
         }
     }
     if (!ok || painter.pages.empty()) return nullptr;

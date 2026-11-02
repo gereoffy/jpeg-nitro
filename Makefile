@@ -129,6 +129,9 @@ SVG        ?= $(if $(wildcard $(LUNA)/include/lunasvg.h),1,0)
 LIBCDR     := third_party/libcdr
 LIBREVENGE := third_party/librevenge
 LCMS       := third_party/lcms2
+# Visio through the same librevenge painter (nitrocdr), with libxml2's XML reader for libvisio
+LIBVISIO   := third_party/libvisio
+LIBXML2    := third_party/libxml2
 BOOST      := third_party/boost
 # zlib for CorelDRAW in the Windows and the portable Linux build (macOS / Linux have it)
 ZLIB       := third_party/zlib
@@ -137,7 +140,7 @@ DAV1D_DIR  := third_party/dav1d
 DAV1D      ?= $(if $(wildcard $(DAV1D_DIR)/lib/libdav1d.a),1,0)
 DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
 DAV1D_DEFS := -DNV_DAV1D -I$(DAV1D_DIR)/include
-CDR        ?= $(if $(and $(filter 1,$(SVG)),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp)),1,0)
+CDR        ?= $(if $(and $(filter 1,$(SVG)),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h)),1,0)
 MI         := third_party/mimalloc
 MIMALLOC   ?= $(if $(and $(filter 1,$(SVG)),$(wildcard $(MI)/include/mimalloc-new-delete.h)),1,0)
 CXX        := clang++
@@ -354,25 +357,31 @@ define svg_lib
 endef
 SVG_STAMP = $(wildcard $(LUNA)/.stamp-*)   # changes with the lunasvg commit / patches/lunasvg.patch
 
-# optional CorelDRAW rendering: libcdr + librevenge (its core and streams; the SVG generator is
-# part of the core: libcdr renders full colour pattern fills with it) +
-# lcms2 + src/nitrocdr.cpp in one static library, compiled once (in parallel); drawn with
-# the plutovg of libnitrosvg.a. $(1): compiler flags (architecture, CPU)
+# optional CorelDRAW and Visio rendering: libcdr + libvisio + librevenge (its core and streams;
+# the SVG generator is part of the core: libcdr renders full colour pattern fills with it) +
+# lcms2 + libxml2's XML reader (for libvisio; configured by patches/libxml2/) + src/nitrocdr.cpp
+# in one static library, compiled once (in parallel); drawn with the plutovg of libnitrosvg.a.
+# $(1): compiler flags (architecture, CPU)
 CDR_C    = $(wildcard $(LCMS)/src/*.c)
-CDR_CXX  = $(wildcard $(LIBCDR)/src/lib/*.cpp) src/nitrocdr.cpp \
+XML_C    = $(addprefix $(LIBXML2)/,parser.c parserInternals.c SAX2.c tree.c xmlreader.c xmlIO.c xmlstring.c encoding.c entities.c \
+             error.c dict.c hash.c list.c globals.c threads.c uri.c valid.c chvalid.c buf.c xmlmemory.c)
+XML_DEFS := -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include -I$(LIBXML2)
+CDR_CXX  = $(wildcard $(LIBCDR)/src/lib/*.cpp) $(wildcard $(LIBVISIO)/src/lib/*.cpp) src/nitrocdr.cpp \
            $(addprefix $(LIBREVENGE)/src/lib/,RVNGBinaryData.cpp RVNGMemoryStream.cpp RVNGProperty.cpp RVNGPropertyList.cpp \
              RVNGPropertyListVector.cpp RVNGString.cpp RVNGStringVector.cpp RVNGSVGDrawingGenerator.cpp \
              RVNGStreamImplementation.cpp \
              RVNGDirectoryStream.cpp RVNGOLEStream.cpp RVNGZipStream.cpp)
 CDR_DEFS := -DBOOST_ALL_NO_LIB -DBOOST_ERROR_CODE_HEADER_ONLY -DLIBREVENGE_BUILD -DLIBREVENGE_STREAM_BUILD -DPLUTOVG_BUILD_STATIC \
-            -I$(LIBCDR)/inc -I$(LIBREVENGE)/inc -I$(LCMS)/include -I$(BOOST) -I$(LUNA)/plutovg/include
-CDR_STAMP = $(wildcard $(LIBCDR)/.stamp-* $(LIBREVENGE)/.stamp-* $(LCMS)/.version-*)
+            -I$(LIBCDR)/inc -I$(LIBREVENGE)/inc -I$(LCMS)/include -I$(BOOST) -I$(LUNA)/plutovg/include \
+            -I$(LIBVISIO)/inc -Ipatches/libvisio -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include
+CDR_STAMP = $(wildcard $(LIBCDR)/.stamp-* $(LIBREVENGE)/.stamp-* $(LCMS)/.version-* $(LIBVISIO)/.stamp-* $(LIBXML2)/.stamp-*)
 # zlib's inflate for the builds whose system has no zlib (Windows, the portable Linux build)
 ZLIB_C   := $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
 define cdr_lib
 	@rm -rf $(@D)/cdrobj && mkdir -p $(@D)/cdrobj
-	@echo "compiling libcdr + librevenge + lcms2 into $@"
+	@echo "compiling libcdr + libvisio + librevenge + lcms2 + libxml2 into $@"
 	@printf '%s\n' $(CDR_C) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) -O2 -w -I$(LCMS)/include -c "$$0" -o $(@D)/cdrobj/$$(basename "$$0").o'
+	@printf '%s\n' $(XML_C) | xargs -n1 -P$(JOBS) sh -c '$(CC) $(1) -O2 -w $(XML_DEFS) -c "$$0" -o $(@D)/cdrobj/xml_$$(basename "$$0").o'
 	@printf '%s\n' $(CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(1) -O2 -w $(CDR_DEFS) -c "$$0" -o $(@D)/cdrobj/$$(basename "$$0").o'
 	@rm -f $@ && $(AR) rcs $@ $(@D)/cdrobj/*.o
 endef
@@ -388,7 +397,7 @@ endef
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
 %/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h $(CDR_STAMP)
+%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_STAMP)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 	$(call mimalloc_objs,$(TCPU))

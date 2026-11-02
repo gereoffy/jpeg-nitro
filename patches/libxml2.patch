@@ -1,0 +1,28 @@
+libxml2 change for nitroview (scripts/get-deps.sh applies this after downloading; the build itself
+is configured by patches/libxml2/config.h and libxml/xmlversion.h: the XML reader for libvisio):
+- the hash tables' random seed on Windows came from BCryptGenRandom, which needs bcrypt.dll linked
+  in: a viewer reading drawings has no hash-flooding attacker, the time and address seed used on
+  the other platforms is used on Windows too
+
+--- a/dict.c
++++ b/dict.c
+@@ -925,9 +925,7 @@
+  */
+ 
+ #ifdef _WIN32
+-  #define WIN32_LEAN_AND_MEAN
+-  #include <windows.h>
+-  #include <bcrypt.h>
++  #include <time.h> /* nitroview: the seed below (no bcrypt) */
+ #else
+   #if defined(HAVE_GETENTROPY)
+     #ifdef HAVE_UNISTD_H
+@@ -955,7 +953,7 @@
+     xmlInitMutex(&xmlRngMutex);
+ 
+     {
+-#ifdef _WIN32
++#if 0 /* nitroview: the time and address seed below on Windows too (no bcrypt for a hash seed) */
+         NTSTATUS status;
+ 
+         status = BCryptGenRandom(NULL, (unsigned char *) globalRngState,
