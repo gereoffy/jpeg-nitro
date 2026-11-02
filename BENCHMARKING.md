@@ -533,8 +533,8 @@ on 34. Side by side with ezdxf's renderings the drawings match, except
 that ezdxf draws thicker lines and makes up the dimensions whose blocks LibreDWG's R10 conversions
 lost. Under ASan and UBSan every page of these, of the 8412 conversions of the whole collection and
 of 645 cut or corrupted copies opens without errors. On the Intel
-i9 a 243 MB DXF in the viewer (4096 × 3622): read 94.7 ms, decode 1051.5 ms, key to on screen
-1168.7 ms.
+i9 a 243 MB DXF in the viewer (`--bench`, 4096 × 3622): read 84.3 ms, decode 814.8 ms, GPU upload
+15.8 ms.
 
 Not supported: perspective views and non-rectangular viewport clipping, multileaders, multilines,
 3D solids (ACIS), external references (xrefs), the objects of AutoCAD Architecture / Mechanical
