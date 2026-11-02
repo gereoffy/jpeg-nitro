@@ -2415,7 +2415,7 @@ static int do_register(int on) {
             "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;"
             "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;"
 #ifdef NV_SVG
-            "image/svg+xml;image/vnd.dxf;"
+            "image/svg+xml;image/vnd.dxf;image/wmf;image/emf;image/x-wmf;image/x-emf;"
 #endif
 #ifdef NV_CDR
             "image/x-coreldraw;"

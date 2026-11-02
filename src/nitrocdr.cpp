@@ -10,6 +10,7 @@
 // whatever lies outside the target.
 #include "nitrocdr.h"
 #include "nitro_font.h"
+#include "nitrometa.h"
 
 #include <libcdr/libcdr.h>
 #include <libvisio/libvisio.h>
@@ -77,8 +78,12 @@ Color color(const RVNGProperty *p, Color def = Color()) {   // "#rrggbb"
 // --- display list --------------------------------------------------------------
 
 struct Image {
-    plutovg_surface_t *s = nullptr;
-    ~Image() { plutovg_surface_destroy(s); }
+    plutovg_surface_t *s = nullptr;   // a bitmap, or
+    nitrometa *meta = nullptr;        // a WMF / EMF picture (the icons of Visio's stencils)
+    ~Image() {
+        plutovg_surface_destroy(s);
+        nitrometa_free(meta);
+    }
 };
 // libcdr's own bitmaps: uncompressed 32-bit BMPs (B G R A, bottom-up), alpha all 0 when opaque;
 // read here directly, as stb_image would (twice as fast as stb_image + plutovg's conversion)
@@ -171,14 +176,15 @@ plutovg_surface_t *psdGray(const unsigned char *b, size_t n) {
     return s;
 }
 
-std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_image format) property
+std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_image format) or a WMF / EMF property
     const librevenge::RVNGBinaryData *d = p ? p->getBinaryData() : nullptr;
     if (!d || !d->size()) return nullptr;
     auto img = std::make_shared<Image>();
     img->s = bmp32(d->getDataBuffer(), d->size());
     if (!img->s) img->s = psdGray(d->getDataBuffer(), d->size());
-    if (!img->s) img->s = plutovg_surface_load_from_image_data(d->getDataBuffer(), (int)d->size());
-    return img->s ? img : nullptr;
+    if (!img->s) img->meta = nitrometa_load(d->getDataBuffer(), d->size());
+    if (!img->s && !img->meta) img->s = plutovg_surface_load_from_image_data(d->getDataBuffer(), (int)d->size());
+    return img->s || img->meta ? img : nullptr;
 }
 
 enum Fill { FILL_NONE, FILL_SOLID, FILL_LINEAR, FILL_RADIAL, FILL_CONICAL, FILL_SQUARE, FILL_BITMAP };
@@ -1265,17 +1271,21 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
         }
     } else if (it.kind == Item::IMAGE) {
         if (it.path) plutovg_canvas_clip_path(c, it.path.get());   // (before the image's own transform)
-        int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s);
         float cx = it.x + it.w / 2, cy = it.y + it.h / 2;
         plutovg_canvas_translate(c, cx, cy);
         plutovg_canvas_scale(c, it.mirrorX ? -1 : 1, it.mirrorY ? -1 : 1);
         plutovg_canvas_rotate(c, (float)(it.rotate * M_PI / 180));
         plutovg_canvas_translate(c, -cx, -cy);
-        plutovg_matrix_t m;
-        plutovg_matrix_init_translate(&m, it.x, it.y);
-        plutovg_matrix_scale(&m, it.w / iw, it.h / ih);
-        plutovg_canvas_set_texture(c, it.img->s, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
-        plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
+        if (it.img->meta) {
+            nitrometa_draw(it.img->meta, c, it.x, it.y, it.w, it.h);
+        } else {
+            int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s);
+            plutovg_matrix_t m;
+            plutovg_matrix_init_translate(&m, it.x, it.y);
+            plutovg_matrix_scale(&m, it.w / iw, it.h / ih);
+            plutovg_canvas_set_texture(c, it.img->s, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
+            plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
+        }
     } else {
         const Text &t = *it.text;
         bool artistic = t.w == 0 && t.h == 0;

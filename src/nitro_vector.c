@@ -7,6 +7,7 @@
 #ifdef NV_SVG
 #include "nitrosvg.h"
 #include "nitrodxf.h"
+#include "nitrometa.h"
 #endif
 #ifdef NV_CDR
 #include "nitrocdr.h"
@@ -18,7 +19,7 @@
 
 const char *const nv_vector_exts[] = {
 #ifdef NV_SVG
-    "svg", "dxf",
+    "svg", "dxf", "wmf", "emf",
 #endif
 #ifdef NV_CDR
     "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vss", "vssx",
@@ -54,6 +55,16 @@ static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t p
 }
 static void dxf_size(void *doc, int page, double *w, double *h) { nitrodxf_size(doc, page, w, h); }
 static void dxf_free(void *doc) { nitrodxf_free(doc); }
+static int meta_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                       int (*cancelled)(void *), void *ctx) {
+    (void)page;
+    return nitrometa_render(doc, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+}
+static void meta_size(void *doc, int page, double *w, double *h) {
+    (void)page;
+    nitrometa_size(doc, w, h);
+}
+static void meta_free(void *doc) { nitrometa_free(doc); }
 #endif
 #ifdef NV_CDR
 static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
@@ -88,6 +99,15 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->free = dxf_free;
         v->pages = nitrodxf_pages(v->doc);
         v->mode = NV_MODE_DXF;
+    }
+    static const char *const meta_exts[] = {"wmf", "emf", NULL};
+    if (!v->doc && nv_has_ext(name, meta_exts) && (v->doc = nitrometa_load(data, len))) {
+        nitrometa_set_background(v->doc, v->background);
+        v->render = meta_render;
+        v->size = meta_size;
+        v->free = meta_free;
+        v->pages = 1;
+        v->mode = NV_MODE_META;
     }
 #endif
 #ifdef NV_CDR

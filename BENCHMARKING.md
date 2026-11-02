@@ -20,6 +20,7 @@ Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); the
 | **nitrosvg** | SVG (without filters) | lunasvg parser + plutovg renderer, with font lookup in the system and user font folders | 38 MB SVG: **~0.53 s** | WebKit ~1.4 s, CoreSVG ~2.4 s |
 | **nitrocdr** | CorelDRAW 5 – X6 (CDR), CMX | our [libcdr fork](https://github.com/gereoffy/libcdr) with many fixes (text styles, line spacing, clipping, bitmap transparency) and a 2× faster librevenge; draws directly with plutovg | 17.7 MB all-vector CDR: **~1.8 s**, ~3× faster | original libcdr `cdr2xhtml` ~5.4 s (only converting to SVG) |
 | **nitrocdr** (Visio) | Visio VSD 5 – 2010, VSDX / VSDM, VDX, stencils and templates | LibreOffice's libvisio (ICU replaced with iconv; libxml2's reader for the XML forms) through the same painter | 60 real drawings (network and rack diagrams): 1–31 ms each | |
+| **nitrometa** | WMF (placeable or not), EMF | our own reader: the GDI records played into a display list of device-space paths (text as glyph outlines), drawn with plutovg | 521 WMFs and 34 EMFs: a few ms each, the largest (a 0.8 MB EMF of 35 000 records) 22 ms read + 43 ms drawn (600 px) | |
 | **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~25 ms** read + **~20 ms** drawn (2000 px); 1.1 GB DXF: 2.9 + 1.5 s | ezdxf (Python) ~8.7 s |
 
 Times measured on the Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacBook Air a

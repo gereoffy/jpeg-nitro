@@ -23,7 +23,7 @@ built in automatically once their libraries are present.
 
 | dependency | for | option |
 |---|---|---|
-| [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG; DXF (nitrodxf is our own, it draws with this plutovg) | `SVG=0` leaves both out |
+| [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG; DXF and WMF / EMF (nitrodxf and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all three out |
 | [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out; `MIMALLOC=0`: the C++ code with the system malloc |
 | [libvisio](https://github.com/LibreOffice/libvisio) with `patches/libvisio.patch` (iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code | part of `CDR` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
@@ -220,7 +220,7 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 - `nitrodng.c/.h`: DNG raw development (lossless JPEG, demosaicing, colour)
 - `nitrowebp.c/.h`: lossy WebP (VP8) decoder
 - `nitrotiff.c/.h`, `tiff.h`: TIFF decoder (strips / tiles in parallel)
-- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface); the latter two draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
+- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files); `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface); the latter three draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 
 **The library**

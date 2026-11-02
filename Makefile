@@ -344,7 +344,7 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 # nitrocdr draw with the same faces), one static library, compiled once (in parallel);
 # $(1): compiler flags (architecture, CPU)
 SVG_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
-SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp src/nitrodxf.cpp src/nitro_font.cpp
+SVG_CXX  = $(wildcard $(LUNA)/source/*.cpp) src/nitrosvg.cpp src/nitrodxf.cpp src/nitrometa.cpp src/nitro_font.cpp
 SVG_DEFS := -DLUNASVG_BUILD -DLUNASVG_BUILD_STATIC -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC \
             -DLUNASVG_DISABLE_EXTERNAL_RESOURCES -DLUNASVG_DISABLE_LOAD_SYSTEM_FONTS -I$(LUNA)/include -I$(LUNA)/source -I$(LUNA)/plutovg/include \
             -I$(LUNA)/plutovg/source
@@ -395,7 +395,7 @@ endef
 # the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
 %/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
-%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
+%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitrometa.cpp src/nitrometa.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
 	$(call svg_lib,$(TCPU))
 %/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_STAMP)
 	$(call cdr_lib,$(TCPU))
