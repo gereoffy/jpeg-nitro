@@ -17,7 +17,10 @@ struct _NitroView {
     int detail_x, detail_y;   //   device pixel (from the texture's origin) and size
     int detail_w, detail_h;
     guint detail_gen;         // bumped when the image changes: renders in flight are dropped
-    gboolean detail_busy;     // a render is in flight (one at a time)
+    gboolean detail_busy;     // a render is in flight (one at a time), of this part (stopped through
+    GCancellable *detail_cancel;   //   detail_cancel when another part is wanted)
+    double busy_scale;
+    int busy_x, busy_y, busy_w, busy_h;
     guint changed_source;     // "view-changed" after an allocation changed the fit scale
     double source_width;
     double source_height;
@@ -54,17 +57,19 @@ typedef struct {
     double vector_scale, scale;
     int x, y, w, h;   // device pixels
     guint gen;
+    GCancellable *cancel;
 } DetailJob;
 
 static void detail_job_free(gpointer data) {
     DetailJob *j = data;
     nv_vector_unref(j->vector);
+    g_clear_object(&j->cancel);
     g_free(j);
 }
 
 static void detail_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancellable) {
     DetailJob *j = data;
-    GdkTexture *t = nitro_vector_render(j->vector, j->page, j->vector_scale, j->w, j->h, j->scale, j->x, j->y);
+    GdkTexture *t = nitro_vector_render(j->vector, j->page, j->vector_scale, j->w, j->h, j->scale, j->x, j->y, j->cancel);
     g_task_return_pointer(task, t, t ? g_object_unref : NULL);
 }
 
@@ -73,6 +78,7 @@ static void detail_done(GObject *source, GAsyncResult *result, gpointer user_dat
     DetailJob *j = g_task_get_task_data(G_TASK(result));
     GdkTexture *t = g_task_propagate_pointer(G_TASK(result), NULL);
     self->detail_busy = FALSE;
+    g_clear_object(&self->detail_cancel);
     if (t && j->gen == self->detail_gen) {
         g_clear_object(&self->detail);
         self->detail = t;
@@ -106,7 +112,11 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
         gtk_snapshot_append_texture(snapshot, self->detail, &bounds);
         return;
     }
-    if (self->detail_busy) return;   // (asks again when that one is done)
+    if (self->detail_busy) {   // (stopped if it is not this part: asks again when that one is done)
+        if (self->busy_scale != scale || self->busy_x != x0 || self->busy_y != y0 || self->busy_w != x1 - x0 || self->busy_h != y1 - y0)
+            g_cancellable_cancel(self->detail_cancel);
+        return;
+    }
     DetailJob *j = g_new0(DetailJob, 1);
     j->vector = nv_vector_ref(self->vector);
     j->page = self->page;
@@ -117,7 +127,14 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
     j->w = x1 - x0;
     j->h = y1 - y0;
     j->gen = self->detail_gen;
+    j->cancel = g_cancellable_new();
     self->detail_busy = TRUE;
+    self->detail_cancel = g_object_ref(j->cancel);
+    self->busy_scale = scale;
+    self->busy_x = x0;
+    self->busy_y = y0;
+    self->busy_w = j->w;
+    self->busy_h = j->h;
     GTask *task = g_task_new(self, NULL, detail_done, NULL);
     g_task_set_task_data(task, j, detail_job_free);
     g_task_run_in_thread(task, detail_thread);
@@ -127,6 +144,7 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
 static void drop_detail(NitroView *self) {
     g_clear_object(&self->detail);
     self->detail_gen++;
+    if (self->detail_cancel) g_cancellable_cancel(self->detail_cancel);
 }
 
 // Image size as displayed: EXIF orientations 5..8 turn the raster source by 90 degrees.

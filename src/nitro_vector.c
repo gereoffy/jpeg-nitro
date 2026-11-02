@@ -29,7 +29,8 @@ static _Atomic int g_background;   // (nv_vector_background)
 
 struct NvVector {
     void *doc;
-    int (*render)(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
+    int (*render)(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                  int (*cancelled)(void *), void *ctx);
     void (*size)(void *doc, int page, double *w, double *h);
     void (*free)(void *doc);
     int pages, mode, background;
@@ -37,8 +38,9 @@ struct NvVector {
 };
 
 #ifdef NV_SVG
-static int svg_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    (void)page;
+static int svg_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                      int (*cancelled)(void *), void *ctx) {
+    (void)page, (void)cancelled, (void)ctx;   // (lunasvg draws a document in one call)
     return nitrosvg_render(doc, bgra, w, h, pitch, scale, x0, y0);
 }
 static void svg_size(void *doc, int page, double *w, double *h) {
@@ -46,15 +48,17 @@ static void svg_size(void *doc, int page, double *w, double *h) {
     nitrosvg_size(doc, w, h);
 }
 static void svg_free(void *doc) { nitrosvg_free(doc); }
-static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrodxf_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
+static int dxf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                      int (*cancelled)(void *), void *ctx) {
+    return nitrodxf_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
 }
 static void dxf_size(void *doc, int page, double *w, double *h) { nitrodxf_size(doc, page, w, h); }
 static void dxf_free(void *doc) { nitrodxf_free(doc); }
 #endif
 #ifdef NV_CDR
-static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return nitrocdr_render(doc, page, bgra, w, h, pitch, scale, x0, y0);
+static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                      int (*cancelled)(void *), void *ctx) {
+    return nitrocdr_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
 }
 static void cdr_size(void *doc, int page, double *w, double *h) { nitrocdr_size(doc, page, w, h); }
 static void cdr_free(void *doc) { nitrocdr_free(doc); }
@@ -127,8 +131,9 @@ void nv_vector_size(const NvVector *v, int page, double *w, double *h) {
     v->size(v->doc, page, w, h);
 }
 
-int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    return v->render(v->doc, page, bgra, w, h, pitch, scale, x0, y0);
+int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                     int (*cancelled)(void *ctx), void *ctx) {
+    return v->render(v->doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
 }
 
 double nv_vector_page_size(const NvVector *v, int page, int tw, int th, int max_tex, int *pw, int *ph) {

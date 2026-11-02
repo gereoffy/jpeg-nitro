@@ -320,7 +320,7 @@ static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *po
     int iw, ih;
     double k = nv_vector_page_size(v, page, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), MAX_TEX, &iw, &ih);
     id<MTLBuffer> buf = k ? bgra_buffer(d, iw, ih, pool, align) : nil;
-    if (!buf || nv_vector_render(v, page, buf.contents, iw, ih, d.pitch[0], k, 0, 0)) {
+    if (!buf || nv_vector_render(v, page, buf.contents, iw, ih, d.pitch[0], k, 0, 0, NULL, NULL)) {
         if (buf) [pool put:buf];
         return nil;
     }
@@ -839,6 +839,10 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
     double _wantScale, _wantRect[4];
     unsigned _detailReq;
     BOOL _detailBusy;                       // one render at a time (a newer view asks again when it is done)
+    _Atomic int *_busyCancel;               // the one rendering: stopped when another view wants its own
+    Decoded *_busyFor;
+    double _busyScale;
+    CGRect _busyRect;
     dispatch_queue_t _vectorQueue;
 #endif
 }
@@ -1446,11 +1450,14 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
 }
 
 #ifdef NV_VECTOR
+static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag); }
+
 // A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel):
 // once the zoom / position has been still for a moment, the visible part (+ a margin
 // for panning) is rendered again at screen resolution on a background queue and
-// drawn over the decoded image, one render at a time. Until then the previous detail is drawn
-// where it belongs (scaled), so zooming stays smooth and only sharpens when it stops.
+// drawn over the decoded image, one render at a time (stopped when another view is wanted
+// meanwhile). Until then the previous detail is drawn where it belongs (scaled), so zooming
+// stays smooth and only sharpens when it stops.
 - (void)vectorDetail:(Decoded *)d encoder:(id<MTLRenderCommandEncoder>)re view:(CGSize)ds {
     if (_detailFor != d) { _detailTex = nil; _detailFor = nil; }
     double iw, ih, x0, y0;
@@ -1494,21 +1501,29 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         ViewerView *v = ws;
         if (!v || req != v->_detailReq) return;   // moved on meanwhile: a newer request follows
-        if (v->_detailBusy) {   // (another still renders: when it is done, the view asks for its own)
+        if (v->_detailBusy) {   // (another still renders, stopped if it is not this one: when it is done, the view asks again)
+            if (v->_busyFor != d || v->_busyScale != s || !CGRectEqualToRect(v->_busyRect, wr)) atomic_store(v->_busyCancel, 1);
             v->_wantFor = nil;
             return;
         }
+        _Atomic int *cancel = calloc(1, sizeof *cancel);
+        if (!cancel) return;
         v->_detailBusy = YES;
+        v->_busyCancel = cancel;
+        v->_busyFor = d;
+        v->_busyScale = s;
+        v->_busyRect = wr;
         double k = d.vectorScale;
         dispatch_async(v->_vectorQueue, ^{
             size_t pitch = (size_t)w * 4;
             uint8_t *px = malloc(pitch * h);
             double t0 = now_ms();
-            int rc = px ? nv_vector_render(d.vector, d.page, px, w, h, pitch, k * s, wr.origin.x / k, wr.origin.y / k) : -1;
+            int rc = px ? nv_vector_render(d.vector, d.page, px, w, h, pitch, k * s, wr.origin.x / k, wr.origin.y / k, detail_cancelled, cancel) : -1;
             double ms = now_ms() - t0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 ViewerView *v2 = ws;
-                if (v2) v2->_detailBusy = NO;
+                if (v2) v2->_detailBusy = NO, v2->_busyCancel = NULL, v2->_busyFor = nil;
+                free(cancel);
                 if (v2 && !rc) [v2 vectorDetailDone:d pixels:px w:w h:h scale:s rect:wr ms:ms];
                 else if (v2 && v2->_wantFor == d) v2->_wantFor = nil;   // (failed: may be asked for again)
                 if (v2) v2.needsDisplay = YES;   // (the view may have moved on meanwhile)

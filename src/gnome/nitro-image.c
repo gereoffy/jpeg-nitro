@@ -20,14 +20,16 @@ static gint dng_ev3;   // DNG exposure correction in 1/3 EV (key E / Shift+E)
 // part again at screen resolution when zoomed in (nitro-view.c). Without nitrosvg, SVG goes
 // through GTK's loaders.
 
+static int vector_cancelled(void *cancellable) { return g_cancellable_is_cancelled(cancellable); }
+
 GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
-                                double y0) {
+                                double y0, GCancellable *cancellable) {
     if (!vector || w <= 0 || h <= 0 || (gsize)w > G_MAXSIZE / 4 / (gsize)h) return NULL;
     gsize stride = (gsize)w * 4;
     guint8 *px = g_try_malloc(stride * (gsize)h);
     if (!px) return NULL;
     double k = scale * vector_scale;   // device pixels per document unit
-    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k)) {
+    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k, cancellable ? vector_cancelled : NULL, cancellable)) {
         g_free(px);
         return NULL;
     }
@@ -42,7 +44,7 @@ GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_sca
 static NitroImage *vector_image(NitroVector *vector, int page) {
     int iw, ih;
     double k = nv_vector_page_size(vector, page, 0, 0, 16384, &iw, &ih);
-    GdkTexture *t = k ? nitro_vector_render(vector, page, k, iw, ih, 1.0, 0, 0) : NULL;
+    GdkTexture *t = k ? nitro_vector_render(vector, page, k, iw, ih, 1.0, 0, 0, NULL) : NULL;
     if (!t) return NULL;
     NitroImage *image = g_new0(NitroImage, 1);
     image->texture = t;

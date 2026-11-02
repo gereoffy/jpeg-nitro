@@ -41,9 +41,9 @@ void nitro_image_set_dng_ev3(int ev3);
 int nitro_image_get_dng_ev3(void);
 // Renders w x h pixels of a page: pixel (i, j) shows texture point ((x0 + i + 0.5) / scale,
 // (y0 + j + 0.5) / scale) of an image of vector_scale texture pixels per document unit; over white.
-// NULL on failure. Any thread.
+// NULL on failure, or when cancellable (may be NULL) is cancelled meanwhile. Any thread.
 GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
-                                double y0);
+                                double y0, GCancellable *cancellable);
 // Another page of a drawing, as an image (rendered as nitro_image_load does). Any thread.
 NitroImage *nitro_image_load_page(NitroVector *vector, int page);
 NitroImage *nitro_image_load(GFile *file, GError **error);

@@ -32,9 +32,11 @@ void nitrodxf_set_background(nitrodxf *dxf, int background);
 void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h);
 
 // Renders a page into a w x h BGRA buffer (premultiplied, opaque): pixel (i, j) shows the point
-// (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the shown area. Returns 0 on success.
-// Thread-safe: several renders of the same drawing may run at once.
-int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
+// (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the shown area. Returns 0 on success, 1 if
+// cancelled (may be NULL; asked now and then while it renders) returned nonzero: then the buffer
+// is drawn in part. Thread-safe: several renders of the same drawing may run at once.
+int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx);
 
 #ifdef __cplusplus
 }

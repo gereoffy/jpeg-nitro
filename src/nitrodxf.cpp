@@ -2241,7 +2241,15 @@ bool clip_line(double px, double py, double dx, double dy, const double r[4], do
     return t0 <= t1;
 }
 
-void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::vector<OPatLine> &pat, const double view[4], float scale) {
+// a render's "stop now" (nitrodxf_render's cancelled)
+struct Cancel {
+    int (*fn)(void *);
+    void *ctx;
+    bool operator()() const { return fn && fn(ctx); }
+};
+
+void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::vector<OPatLine> &pat, const double view[4], float scale,
+                const Cancel &cancel) {
     double r[4] = {std::max(view[0], (double)it.bx0), std::max(view[1], (double)it.by0), std::min(view[2], (double)it.bx1),
                    std::min(view[3], (double)it.by1)};
     if (r[0] > r[2] || r[1] > r[3]) return;
@@ -2307,7 +2315,7 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
         const plutovg_path_element_t *el;
         int ne = plutovg_path_get_elements(lines, &el);
         plutovg_path_t *part = plutovg_path_create(), *quads = plutovg_path_create();
-        for (int k = 0; k + 3 < ne; k += 4) {   // (move_to, point, line_to, point)
+        for (int k = 0; k + 3 < ne && !((k & 63) == 60 && cancel()); k += 4) {   // (move_to, point, line_to, point)
             plutovg_path_reset(part);
             plutovg_path_move_to(part, el[k + 1].point.x, el[k + 1].point.y);
             plutovg_path_line_to(part, el[k + 3].point.x, el[k + 3].point.y);
@@ -2629,7 +2637,8 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
 
 static constexpr double kFar = 1 << 24;   // device pixels out of the view
 
-int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
+int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx) {
     if (!dxf || page < 0 || page >= (int)dxf->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
     const Page &pg = dxf->pages[(size_t)page];
     uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
@@ -2648,7 +2657,14 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     std::vector<float> dashes;
     plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
     float clip[4] = {-FLT_MAX, -FLT_MAX, FLT_MAX, FLT_MAX};   // (the viewport drawn in)
+    Cancel cancel{cancelled, ctx};
+    size_t n = 0;
+    int rc = 0;
     for (const Item &it : pg.items) {
+        if ((++n & 63) == 0 && cancel()) {
+            rc = 1;
+            break;
+        }
         if (it.kind == O_CLIP) clip[0] = it.bx0, clip[1] = it.by0, clip[2] = it.bx1, clip[3] = it.by1;
         else if (it.kind == O_UNCLIP) clip[0] = clip[1] = -FLT_MAX, clip[2] = clip[3] = FLT_MAX;
         else if (it.kind != O_XLINE && it.kind != O_RAY &&
@@ -2688,7 +2704,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
         case O_HATCH: {   // (its lines generated in the viewport's part of the view only)
             double cv[4] = {std::max(view[0], (double)clip[0]), std::max(view[1], (double)clip[1]), std::min(view[2], (double)clip[2]),
                             std::min(view[3], (double)clip[3])};
-            draw_hatch(c, it, rgba, dxf->opatterns[it.aux], cv, fs);
+            draw_hatch(c, it, rgba, dxf->opatterns[it.aux], cv, fs, cancel);
             break;
         }
         case O_POINTS:
@@ -2777,5 +2793,5 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     plutovg_path_destroy(tmp);
     plutovg_canvas_destroy(c);
     plutovg_surface_destroy(surface);
-    return 0;
+    return rc || cancel();   // (a hatch may have stopped)
 }

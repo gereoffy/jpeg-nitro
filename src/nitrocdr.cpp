@@ -1328,7 +1328,8 @@ void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h) {
     *h = cdr->pages[page].h;
 }
 
-int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
+int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx) {
     if (page < 0 || page >= (int)cdr->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
     static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};   // (opaque)
     uint32_t bg = backgrounds[cdr->background];
@@ -1344,9 +1345,16 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
     y0 += cdr->pages[page].y;
     plutovg_canvas_translate(c, (float)-x0, (float)-y0);
     float vx0 = (float)x0, vy0 = (float)y0, vx1 = (float)(x0 + w / scale), vy1 = (float)(y0 + h / scale);
-    for (const Item &it : cdr->pages[page].items)
+    size_t n = 0;
+    int rc = 0;
+    for (const Item &it : cdr->pages[page].items) {
+        if ((++n & 255) == 0 && cancelled && cancelled(ctx)) {
+            rc = 1;
+            break;
+        }
         if (it.bx1 >= vx0 && it.bx0 <= vx1 && it.by1 >= vy0 && it.by0 <= vy1) drawItem(c, it, (float)scale);
+    }
     plutovg_canvas_destroy(c);
     plutovg_surface_destroy(surface);
-    return 0;
+    return rc;
 }

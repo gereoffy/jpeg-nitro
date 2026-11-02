@@ -30,8 +30,10 @@ void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h);
 
 // Renders a page into a w x h BGRA buffer (premultiplied) over the opaque
 // background: pixel (i, j) shows the point (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the
-// shown area, in points. Returns 0 on success.
-int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
+// shown area, in points. Returns 0 on success, 1 if cancelled (may be NULL; asked now and then
+// while it renders) returned nonzero: then the buffer is drawn in part.
+int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx);
 
 #ifdef __cplusplus
 }

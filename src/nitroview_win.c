@@ -782,7 +782,7 @@ static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *ca
     size_t pitch = (size_t)iw * 4;
     uint8_t *buf = buf_get(pitch * ih, cap);
     if (!buf) return NULL;
-    if (nv_vector_render(v, page, buf, iw, ih, pitch, k, 0, 0)) {
+    if (nv_vector_render(v, page, buf, iw, ih, pitch, k, 0, 0, NULL, NULL)) {
         buf_put(buf, *cap);
         return NULL;
     }
@@ -1456,15 +1456,18 @@ typedef struct {
     DetailRect r;
     uint8_t *px;
     double ms;
+    volatile LONG cancel;        // set: the view wants another detail, it stops
 } DetailJob;
-static int g_detail_busy;   // (main thread)
+static int g_detail_busy;          // (main thread)
+static DetailJob *g_detail_job;    // the one rendering (main thread)
+static int detail_cancelled(void *j) { return InterlockedCompareExchange(&((DetailJob *)j)->cancel, 0, 0) != 0; }
 
 static DWORD WINAPI detail_run(void *arg) {
     DetailJob *j = arg;
     double t = now_ms(), k = j->vscale * j->r.scale;
     j->px = malloc((size_t)j->r.w * j->r.h * 4);
     if (j->px && nv_vector_render(j->vec, j->page, j->px, j->r.w, j->r.h, (size_t)j->r.w * 4, k, j->r.dx / j->vscale,
-                                j->r.dy / j->vscale)) {
+                                j->r.dy / j->vscale, detail_cancelled, j)) {
         free(j->px);
         j->px = NULL;
     }
@@ -1476,7 +1479,13 @@ static DWORD WINAPI detail_run(void *arg) {
 static void start_detail(void) {   // TIMER_DETAIL
     Decoded *d = loader_get(V.index);
     DetailRect r;
-    if (g_detail_busy || !d || !detail_target(d, &r) || detail_current(d, &r)) return;
+    int want = d && detail_target(d, &r) && !detail_current(d, &r);
+    if (g_detail_busy) {   // (one at a time, stopped if it is not this one: when it is done, the view asks again)
+        if (g_detail_job && (!want || g_detail_job->d != d || memcmp(&g_detail_job->r, &r, sizeof r)))
+            InterlockedExchange(&g_detail_job->cancel, 1);
+        return;
+    }
+    if (!want) return;
     DetailJob *j = calloc(1, sizeof *j);
     if (!j) return;
     j->d = d;
@@ -1492,10 +1501,12 @@ static void start_detail(void) {   // TIMER_DETAIL
     }
     CloseHandle(th);
     g_detail_busy = 1;
+    g_detail_job = j;
 }
 
 static void detail_done(DetailJob *j) {   // WM_APP_DETAIL
     g_detail_busy = 0;
+    g_detail_job = NULL;
     Decoded *d = loader_get(V.index);
     if (j->px && d == j->d && d->vec == j->vec && d->page == j->page) {
         D3D11_TEXTURE2D_DESC td = {(UINT)j->r.w, (UINT)j->r.h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0},
