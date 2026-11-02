@@ -838,6 +838,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
     Decoded *_wantFor;                      // the last requested detail (pending or rendering)
     double _wantScale, _wantRect[4];
     unsigned _detailReq;
+    BOOL _detailBusy;                       // one render at a time (a newer view asks again when it is done)
     dispatch_queue_t _vectorQueue;
 #endif
 }
@@ -1448,8 +1449,8 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
 // A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel):
 // once the zoom / position has been still for a moment, the visible part (+ a margin
 // for panning) is rendered again at screen resolution on a background queue and
-// drawn over the decoded image. Until then the previous detail is drawn where it
-// belongs (scaled), so zooming stays smooth and only sharpens when it stops.
+// drawn over the decoded image, one render at a time. Until then the previous detail is drawn
+// where it belongs (scaled), so zooming stays smooth and only sharpens when it stops.
 - (void)vectorDetail:(Decoded *)d encoder:(id<MTLRenderCommandEncoder>)re view:(CGSize)ds {
     if (_detailFor != d) { _detailTex = nil; _detailFor = nil; }
     double iw, ih, x0, y0;
@@ -1493,6 +1494,11 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         ViewerView *v = ws;
         if (!v || req != v->_detailReq) return;   // moved on meanwhile: a newer request follows
+        if (v->_detailBusy) {   // (another still renders: when it is done, the view asks for its own)
+            v->_wantFor = nil;
+            return;
+        }
+        v->_detailBusy = YES;
         double k = d.vectorScale;
         dispatch_async(v->_vectorQueue, ^{
             size_t pitch = (size_t)w * 4;
@@ -1502,8 +1508,10 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             double ms = now_ms() - t0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 ViewerView *v2 = ws;
+                if (v2) v2->_detailBusy = NO;
                 if (v2 && !rc) [v2 vectorDetailDone:d pixels:px w:w h:h scale:s rect:wr ms:ms];
                 else if (v2 && v2->_wantFor == d) v2->_wantFor = nil;   // (failed: may be asked for again)
+                if (v2) v2.needsDisplay = YES;   // (the view may have moved on meanwhile)
                 free(px);
             });
         });
