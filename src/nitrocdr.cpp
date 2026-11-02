@@ -176,15 +176,69 @@ plutovg_surface_t *psdGray(const unsigned char *b, size_t n) {
     return s;
 }
 
-std::shared_ptr<Image> image(const RVNGProperty *p) {   // a BMP (or other stb_image format) or a WMF / EMF property
+std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth = 0);
+
+// An embedded OLE object (libvisio passes it as it is: a compound file): the picture it is shown
+// as (its presentation stream: an EMF, a WMF or a DIB), else a Paintbrush object's own BMP.
+std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
+    librevenge::RVNGStringStream ole(b, (unsigned)n);
+    if (depth > 1 || !ole.isStructured()) return nullptr;
+    auto stream = [&](const char *name, std::vector<unsigned char> &out) {
+        std::unique_ptr<librevenge::RVNGInputStream> s(ole.getSubStreamByName(name));
+        if (!s) return false;
+        s->seek(0, librevenge::RVNG_SEEK_END);
+        unsigned long len = (unsigned long)s->tell(), got = 0;
+        s->seek(0, librevenge::RVNG_SEEK_SET);
+        const unsigned char *d = len ? s->read(len, got) : nullptr;
+        if (!d || got != len) return false;
+        out.assign(d, d + len);
+        return true;
+    };
+    auto u32 = [](const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; };
+    std::vector<unsigned char> s;
+    // [MS-OLEDS] 2.3.4: the clipboard format (0xffffffff, a standard one), the target device, aspect,
+    // lindex, advf, reserved, width, height, the data's size, the data
+    if (stream("OlePres000", s) || stream("\x02OlePres000", s)) {
+        if (s.size() >= 12 && u32(&s[0]) == 0xffffffff) {
+            uint32_t format = u32(&s[4]), device = u32(&s[8]);
+            size_t o = 8 + std::max<uint32_t>(device, 4);
+            if (device < s.size() && o + 28 <= s.size()) {
+                size_t len = std::min<size_t>(u32(&s[o + 24]), s.size() - o - 28);
+                const unsigned char *d = &s[o + 28];
+                std::shared_ptr<Image> img;
+                if (format == 14 || format == 3) img = picture(d, len, depth + 1);   // (EMF, WMF)
+                else if (format == 8 && len > 40) {                               // (a DIB: a BMP without its file header)
+                    std::vector<unsigned char> bmp(14 + len);
+                    uint32_t bits = u32(d) + (u32(d + 32) ? u32(d + 32) : d[14] <= 8 ? 1u << d[14] : 0) * 4 +
+                                    (u32(d) == 40 && u32(d + 16) == 3 ? 12 : 0);   // (the palette, the bit fields' masks)
+                    bmp[0] = 'B', bmp[1] = 'M';
+                    for (int k = 0; k < 4; k++) bmp[2 + k] = (uint8_t)((14 + len) >> 8 * k), bmp[10 + k] = (uint8_t)((14 + bits) >> 8 * k);
+                    memcpy(&bmp[14], d, len);
+                    img = picture(bmp.data(), bmp.size(), depth + 1);
+                }
+                if (img) return img;
+            }
+        }
+    }
+    if ((stream("Ole10Native", s) || stream("\x01Ole10Native", s)) && s.size() > 4)   // (its size, the file)
+        return picture(&s[4], std::min<size_t>(u32(&s[0]), s.size() - 4), depth + 1);
+    return nullptr;
+}
+
+std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   // a BMP (or other stb_image format), a WMF / EMF or an OLE object
+    if (n >= 8 && !memcmp(b, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8)) return olePicture(b, n, depth);
+    auto img = std::make_shared<Image>();
+    img->s = bmp32(b, n);
+    if (!img->s) img->s = psdGray(b, n);
+    if (!img->s) img->meta = nitrometa_load(b, n);
+    if (!img->s && !img->meta) img->s = plutovg_surface_load_from_image_data(b, (int)n);
+    return img->s || img->meta ? img : nullptr;
+}
+
+std::shared_ptr<Image> image(const RVNGProperty *p) {
     const librevenge::RVNGBinaryData *d = p ? p->getBinaryData() : nullptr;
     if (!d || !d->size()) return nullptr;
-    auto img = std::make_shared<Image>();
-    img->s = bmp32(d->getDataBuffer(), d->size());
-    if (!img->s) img->s = psdGray(d->getDataBuffer(), d->size());
-    if (!img->s) img->meta = nitrometa_load(d->getDataBuffer(), d->size());
-    if (!img->s && !img->meta) img->s = plutovg_surface_load_from_image_data(d->getDataBuffer(), (int)d->size());
-    return img->s || img->meta ? img : nullptr;
+    return picture(d->getDataBuffer(), d->size());
 }
 
 enum Fill { FILL_NONE, FILL_SOLID, FILL_LINEAR, FILL_RADIAL, FILL_CONICAL, FILL_SQUARE, FILL_BITMAP };
@@ -279,6 +333,15 @@ struct Line {
     bool paragraph = false;   // the first line of a paragraph: before it, the paragraph spacing
     float before = 1, after = 0;   // the paragraph's spacing before / after it (1: 100%; < 0: points)
     float padBefore = 0, padAfter = 0;   // or (ODF, libvisio) margins in points added to the line spacing
+    // (ODF, libvisio) the paragraph's indents in points: its lines' left and right margins in the
+    // frame, its first line's start from the left one (a hanging indent: < 0)
+    float indent = 0, indentRight = 0, indentFirst = 0;
+    std::string bullet;   // a list item's label (its first line's), at the first line's start
+    float labelWidth = 0;   // the label's room: the text starts after it (text:min-label-width)
+    float bulletSize = 1;   // the label's size: a share of the text's (or < 0: points)
+    std::string bulletFont;
+    plutovg_font_face_t *bulletFace = nullptr;   // (layout())
+    float left = 0;   // where its text starts in the frame (layout())
     plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (libcdr gives
     float emptySize = 0;                        // a line break the text's size) or the empty paragraph's
     static Line like(const Line &o) {   // a new line with o's paragraph settings (no text, not a paragraph start)
@@ -290,6 +353,9 @@ struct Line {
         l.after = o.after;
         l.padBefore = o.padBefore;
         l.padAfter = o.padAfter;
+        l.indent = o.indent;
+        l.indentRight = o.indentRight;
+        l.indentFirst = o.indentFirst;
         return l;
     }
 };
@@ -534,9 +600,12 @@ public:
         it.mirrorY = p["draw:mirror-vertical"] && p["draw:mirror-vertical"]->getInt();
         float cx = it.x + it.w / 2, cy = it.y + it.h / 2;
         rotatedBox(it, cx, cy, it.x, it.y, it.x + it.w, it.y + it.h, it.rotate);
-        // the bitmap's outline (libcdr:clip-path): it shows only inside (cropped bitmaps, the
-        // pattern tiles of imported PDF plans); the clip, in page coordinates, goes in it.path
-        if (const RVNGPropertyListVector *clip = p.child("libcdr:clip-path")) {
+        // the bitmap's outline (libcdr:clip-path; libvisio:clip-path, patches/libvisio.patch: a cropped
+        // picture's shape): it shows only inside (cropped bitmaps, the pattern tiles of imported PDF
+        // plans); the clip, in page coordinates, goes in it.path
+        const RVNGPropertyListVector *clip = p.child("libcdr:clip-path");
+        if (!clip) clip = p.child("libvisio:clip-path");
+        if (clip) {
             it.path.reset(buildPath(*clip));
             plutovg_rect_t r;
             plutovg_path_extents(it.path.get(), &r, false);
@@ -553,6 +622,7 @@ public:
     void startTextObject(const RVNGPropertyList &p) override {
         m_text.reset(new Text);
         m_paragraphOpened = false;
+        m_lists.clear();
         m_text->x = (float)points(p["svg:x"]);
         m_text->y = (float)points(p["svg:y"]);
         m_text->w = (float)points(p["svg:width"]);
@@ -597,11 +667,30 @@ public:
     }
     void insertLineBreak() override { newLine(); }
     void insertField(const RVNGPropertyList &) override {}
-    void openOrderedListLevel(const RVNGPropertyList &) override {}
-    void openUnorderedListLevel(const RVNGPropertyList &) override {}
-    void closeOrderedListLevel() override {}
-    void closeUnorderedListLevel() override {}
-    void openListElement(const RVNGPropertyList &) override {}
+    // lists (libvisio's bullets): an item is a paragraph with its level's label before it
+    void openOrderedListLevel(const RVNGPropertyList &) override { m_lists.emplace_back(); }
+    void openUnorderedListLevel(const RVNGPropertyList &p) override {
+        Line l;
+        if (p["text:bullet-char"]) l.bullet = p["text:bullet-char"]->getStr().cstr();
+        if (p["fo:font-family"]) l.bulletFont = p["fo:font-family"]->getStr().cstr();
+        if (const RVNGProperty *s = p["fo:font-size"]) {
+            double v = s->getUnit() == librevenge::RVNG_PERCENT ? s->getDouble() : -points(s);
+            if (v > -1000 && v < 100 && v != 0) l.bulletSize = (float)v;
+        }
+        l.labelWidth = (float)std::min(std::max(points(p["text:min-label-width"]), 0.0), 10000.0);
+        m_lists.push_back(std::move(l));
+    }
+    void closeOrderedListLevel() override { if (!m_lists.empty()) m_lists.pop_back(); }
+    void closeUnorderedListLevel() override { closeOrderedListLevel(); }
+    void openListElement(const RVNGPropertyList &p) override {
+        openParagraph(p);
+        if (!m_text || m_lists.empty() || m_text->lines.empty()) return;
+        Line &l = m_text->lines.back();
+        l.bullet = m_lists.back().bullet;
+        l.bulletFont = m_lists.back().bulletFont;
+        l.bulletSize = m_lists.back().bulletSize;
+        l.labelWidth = m_lists.back().labelWidth;
+    }
     void closeListElement() override {}
     void defineParagraphStyle(const RVNGPropertyList &) override {}
     void openParagraph(const RVNGPropertyList &p) override {
@@ -615,9 +704,13 @@ public:
         if (corel) {
             spacing(p["fo:margin-top"], m_para.before);
             spacing(p["fo:margin-bottom"], m_para.after);
-        } else {   // (ODF: lengths added to the line spacing)
-            m_para.padBefore = (float)std::min(std::max(points(p["fo:margin-top"]), 0.0), 10000.0);
-            m_para.padAfter = (float)std::min(std::max(points(p["fo:margin-bottom"]), 0.0), 10000.0);
+        } else {   // (ODF: lengths added to the line spacing; the indents)
+            auto len = [&](const char *key, double lo) { return (float)std::min(std::max(points(p[key]), lo), 10000.0); };
+            m_para.padBefore = len("fo:margin-top", 0);
+            m_para.padAfter = len("fo:margin-bottom", 0);
+            m_para.indent = len("fo:margin-left", 0);
+            m_para.indentRight = len("fo:margin-right", 0);
+            m_para.indentFirst = len("fo:text-indent", -10000);
         }
         if (const RVNGProperty *lh = p["fo:line-height"]) {
             double sp = lh->getDouble();
@@ -694,6 +787,7 @@ private:
         return img;
     }
     std::unique_ptr<Text> m_text;
+    std::vector<Line> m_lists;   // the open list levels' labels (an ordered one: none)
     Span m_span;
     Line m_para;   // the open paragraph's settings (alignment, spacings), for its lines
     bool m_paragraphOpened = false;   // the last line is a paragraph of libcdr's (not a line break)
@@ -829,18 +923,40 @@ private:
     }
 
     // A paragraph wider than its text frame, broken into lines at the spaces, as CorelDRAW does
-    // (libcdr passes a paragraph text as written: one line a paragraph). A word longer than the
-    // frame stays on a line of its own. Lines whose words are placed by shifts (imported PDF
-    // text) are left as they are. (locked by the caller)
-    static void wrap(const Line &l, float width, std::vector<Line> &out) {
+    // (libcdr passes a paragraph text as written: one line a paragraph); a word whose characters
+    // change style (a bold first letter) stays whole. A word longer than the frame is broken at the
+    // last character that fits. first / width: the room of its first line and of the others. Lines
+    // whose words are placed by shifts (imported PDF text) are left as they are. (locked by the caller)
+    static void wrap(const Line &l, float first, float width, std::vector<Line> &out) {
         for (const Span &s : l.spans)
             if (s.shiftX != 0 || s.shiftY != 0) {
                 out.push_back(l);
                 return;
             }
+        // the words with their trailing spaces, in pieces of one span each
+        struct Piece {
+            const Span *s;
+            std::string text;
+        };
+        std::vector<std::vector<Piece>> words(1);
+        for (const Span &s : l.spans)
+            for (size_t i = 0; i < s.text.size();) {
+                size_t e = s.text.find(' ', i);
+                bool ends = e != std::string::npos;
+                e = ends ? s.text.find_first_not_of(' ', e) : s.text.size();
+                if (e == std::string::npos) e = s.text.size();
+                words.back().push_back({&s, s.text.substr(i, e - i)});
+                i = e;
+                if (ends) words.emplace_back();
+            }
+        if (words.back().empty()) words.pop_back();
+        auto pieceWidth = [](const Piece &p, bool trim) {   // (trim: without its trailing spaces)
+            size_t n = trim ? p.text.find_last_not_of(' ') : p.text.size() - 1;
+            return textWidth(*p.s, p.text.data(), n == std::string::npos ? 0 : n + 1) * p.s->scaleX;
+        };
         Line cur = Line::like(l);
         cur.paragraph = l.paragraph;
-        float x = 0;
+        float x = 0, room = first;
         auto flush = [&]() {
             while (!cur.spans.empty()) {   // (no trailing spaces: they would shift a centred line)
                 std::string &t = cur.spans.back().text;
@@ -852,43 +968,48 @@ private:
             out.push_back(std::move(cur));
             cur = Line::like(l);
             x = 0;
+            room = width;
         };
-        for (const Span &s : l.spans) {
-            for (size_t i = 0; i < s.text.size();) {   // words with their trailing spaces
-                size_t e = s.text.find(' ', i);
-                e = e == std::string::npos ? s.text.size() : s.text.find_first_not_of(' ', e);
-                if (e == std::string::npos) e = s.text.size();
-                std::string word = s.text.substr(i, e - i);
-                i = e;
-                size_t n = word.find_last_not_of(' ');   // (its width without the spaces)
-                float w = textWidth(s, word.data(), n == std::string::npos ? 0 : n + 1) * s.scaleX;
-                float full = textWidth(s, word.data(), word.size()) * s.scaleX;
-                if (x > 0 && x + w > width) flush();
-                if (w > width && n != std::string::npos) {   // wider than the frame on its own (a URL): the part that fits, the rest on the next line
-                    size_t fit = 0, k = 0;
-                    while (k < n + 1) {   // (whole UTF-8 characters)
-                        size_t next = k + 1;
-                        while (next < word.size() && (word[next] & 0xc0) == 0x80) next++;
-                        if (textWidth(s, word.data(), next) * s.scaleX > width && fit) break;
-                        fit = next;
-                        k = next;
-                    }
-                    if (fit < n + 1) {
-                        i -= word.size() - fit;   // (the rest is the next word)
-                        word.resize(fit);
-                        full = textWidth(s, word.data(), fit) * s.scaleX;
-                        w = full;
-                    }
+        auto same = [](const Span &a, const Span &b) {
+            return a.face == b.face && a.size == b.size && !memcmp(&a.color, &b.color, sizeof a.color) && a.font == b.font &&
+                   a.scaleX == b.scaleX && a.letterSpacing == b.letterSpacing && a.wordSpacing == b.wordSpacing &&
+                   a.fill == b.fill && a.stroke == b.stroke && a.background == b.background;
+        };
+        for (size_t k = 0; k < words.size(); k++) {
+            float w = 0, full = 0;
+            for (size_t j = 0; j < words[k].size(); j++) {
+                float pw = pieceWidth(words[k][j], false);
+                full += pw;
+                w += j + 1 < words[k].size() ? pw : pieceWidth(words[k][j], true);
+            }
+            if (x > 0 && x + w > room) flush();
+            if (w > room && words[k].size() == 1) {   // wider than the frame on its own (a URL): the part that fits, the rest on the next line
+                const Span &s = *words[k][0].s;
+                const std::string t = words[k][0].text;
+                size_t n = t.find_last_not_of(' ');
+                size_t fit = 0;
+                for (size_t i = 0; n != std::string::npos && i < n + 1;) {   // (whole UTF-8 characters)
+                    size_t next = i + 1;
+                    while (next < t.size() && (t[next] & 0xc0) == 0x80) next++;
+                    if (textWidth(s, t.data(), next) * s.scaleX > room && fit) break;
+                    fit = next;
+                    i = next;
                 }
-                if (cur.spans.empty() || cur.spans.back().face != s.face || cur.spans.back().size != s.size ||
-                    memcmp(&cur.spans.back().color, &s.color, sizeof s.color) || cur.spans.back().font != s.font) {
-                    Span part = s;
+                if (n != std::string::npos && fit < n + 1) {   // (the rest is the next word)
+                    words.insert(words.begin() + k + 1, std::vector<Piece>{{&s, t.substr(fit)}});
+                    words[k][0].text.resize(fit);
+                    full = pieceWidth(words[k][0], false);
+                }
+            }
+            for (const Piece &p : words[k]) {
+                if (cur.spans.empty() || !same(cur.spans.back(), *p.s)) {
+                    Span part = *p.s;
                     part.text.clear();
                     cur.spans.push_back(part);
                 }
-                cur.spans.back().text += word;
-                x += full;
+                cur.spans.back().text += p.text;
             }
+            x += full;
         }
         if (!cur.spans.empty() || out.empty()) flush();
     }
@@ -905,8 +1026,38 @@ private:
         std::vector<Line> lines;
         for (Line &l : t.lines) {
             measure(l);
-            if (t.fw > 0 && l.width > t.fw * 1.01f && l.spans.size()) wrap(l, t.fw, lines);
-            else lines.push_back(std::move(l));
+            // the indents (libvisio's): a paragraph's first line from its first-line indent, after
+            // its label (a hanging indent: the label left of the text, the text at the indent)
+            float firstLeft = std::max(l.indent + l.indentFirst, 0.f);
+            if (!l.bullet.empty()) firstLeft = std::max(l.indent, firstLeft + l.labelWidth);
+            float first = t.fw - (l.paragraph ? firstLeft : l.indent) - l.indentRight, rest = t.fw - l.indent - l.indentRight;
+            size_t from = lines.size();
+            if (t.fw > 0 && l.width > std::max(first, 1.f) * 1.01f && l.spans.size()) {
+                wrap(l, std::max(first, 1.f), std::max(rest, 1.f), lines);
+                if (from < lines.size()) {   // (the label on the first line)
+                    lines[from].bullet = l.bullet;
+                    lines[from].bulletFont = l.bulletFont;
+                    lines[from].bulletSize = l.bulletSize;
+                }
+            } else
+                lines.push_back(std::move(l));
+            if (from == lines.size()) continue;
+            for (size_t k = from; k < lines.size(); k++) lines[k].left = k == from && lines[k].paragraph ? firstLeft : lines[k].indent;
+            Line &f = lines[from];
+            if (!f.bullet.empty() && f.paragraph) {   // the label's face: its own font's, else the text's, else one that has it
+                size_t i = 0;
+                plutovg_codepoint_t cp = nf_utf8_next(f.bullet, i);
+                const Span *s = f.spans.empty() ? nullptr : &f.spans[0];
+                plutovg_font_face_t *face = f.bulletFont.empty() ? nullptr : find_font(f.bulletFont, false, false);
+                if (face && !nf_has_glyph(face, cp)) face = nullptr;
+                if (!face && s && s->face && nf_has_glyph(s->face, cp)) face = s->face;
+                if (!face) face = fallback_font(s ? s->font : "Arial", false, false, cp);
+                if (!face && s) {   // (a symbol font's private character: a plain bullet)
+                    f.bullet = "\xE2\x80\xA2";
+                    face = s->face;
+                }
+                f.bulletFace = face;
+            }
         }
         t.lines = std::move(lines);
         // CorelDRAW's line spacing: from the previous line's descent to this one's ascent (100%:
@@ -936,7 +1087,7 @@ private:
                                    : advance + l.padBefore + p.padAfter;
             else
                 l.height = advance;
-            maxw = std::max(maxw, l.width);
+            maxw = std::max(maxw, l.left + l.width);
             if (i) total += l.height;
         }
         const Line &first = t.lines[0], &last = t.lines.back();
@@ -1339,7 +1490,17 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             if (i) base += l.height;
             float x;
             if (artistic) x = l.align == 1 ? t.x - l.width / 2 : l.align == 2 ? t.x - l.width : t.x;
-            else x = l.align == 1 ? t.fx + (t.fw - l.width) / 2 : l.align == 2 ? t.fx + t.fw - l.width : t.fx;
+            else {   // (in the room between its indents)
+                float room = t.fw - l.left - l.indentRight;
+                x = t.fx + l.left + (l.align == 1 ? (room - l.width) / 2 : l.align == 2 ? room - l.width : 0);
+            }
+            if (l.bulletFace && !l.spans.empty()) {   // a list item's label: at its first line's start, in the text's colour
+                const Span &s = l.spans[0];
+                plutovg_canvas_set_font(c, l.bulletFace, l.bulletSize < 0 ? -l.bulletSize : s.size * l.bulletSize);
+                setColor(c, s.color, 1);
+                plutovg_canvas_fill_text(c, l.bullet.data(), (int)l.bullet.size(), PLUTOVG_TEXT_ENCODING_UTF8,
+                                         t.fx + std::max(l.indent + l.indentFirst, 0.f), base);
+            }
             for (const Span &s : l.spans) {
                 if (s.face) {
                     if (s.background) {   // (behind the line's height of it)

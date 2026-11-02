@@ -10,7 +10,42 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
   province drawn with the vertices of another one, joined to its own end point by a long spike)
 - the guides of the XML files (Type="Guide" shapes, drawn as infinite lines across the page)
   are not drawn, as the binary files' guide chunks are not
+- a picture larger than its shape (cropped in Visio: its offset and size beyond the shape's box)
+  passed with the box as its clip path (libvisio:clip-path): it showed in full, over the text
+  around it
+- the XML files: a shape with a Master of its own inside a group (a master's instance grouped
+  with other shapes) keeps its master; it took its group's (none), and lost its master's
+  geometry, styles and hidden sections (half-defined paths, the hidden ones drawn)
+- the XML files: the paragraph and character rows a shape inherits from its master at the
+  shape's own depth: at the master's (shallower in a group), they ended the shape before its
+  text was formatted (an instance's bullets and alignment lost)
 
+--- a/src/lib/VSDCharacterList.cpp
++++ b/src/lib/VSDCharacterList.cpp
+@@ -151,6 +151,13 @@
+     element.second->setCharCount(0);
+ }
+ 
++// (the rows a shape inherits from its master are at the master's depth: at the shape's own, as its own rows)
++void libvisio::VSDCharacterList::resetLevel(unsigned level)
++{
++  for (auto &element : m_elements)
++    element.second->m_level = level;
++}
++
+ unsigned libvisio::VSDCharacterList::getLevel() const
+ {
+   if (m_elements.empty() || !m_elements.begin()->second)
+--- a/src/lib/VSDCharacterList.h
++++ b/src/lib/VSDCharacterList.h
+@@ -40,6 +40,7 @@
+   void setCharCount(unsigned id, unsigned charCount);
+   void resetCharCount();
+   unsigned getLevel() const;
++  void resetLevel(unsigned level);
+ 
+   void setElementsOrder(const std::vector<unsigned> &m_elementsOrder);
+   void handle(VSDCollector *collector) const;
 --- a/src/lib/VSDContentCollector.cpp
 +++ b/src/lib/VSDContentCollector.cpp
 @@ -17,8 +17,6 @@
@@ -22,7 +57,38 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
  
  #include "VSDParser.h"
  #include "VSDInternalStream.h"
-@@ -3742,7 +3740,7 @@
+@@ -1330,6 +1328,30 @@
+ 
+   _appendVisibleAndPrintable(m_currentForeignProps);
+ 
++  // A picture larger than its shape (cropped: its offset and size beyond the shape's box) shows
++  // only inside the shape, as in Visio: the box as its clip path (libvisio:clip-path).
++  const double eps = 1e-6;
++  if (m_foreignOffsetX < -eps || m_foreignOffsetY < -eps || m_foreignOffsetX + m_foreignWidth > m_xform.width + eps ||
++      m_foreignOffsetY + m_foreignHeight > m_xform.height + eps)
++  {
++    librevenge::RVNGPropertyListVector clip;
++    const double corners[4][2] = {{0.0, 0.0}, {m_xform.width, 0.0}, {m_xform.width, m_xform.height}, {0.0, m_xform.height}};
++    for (int i = 0; i < 4; ++i)
++    {
++      double x = corners[i][0], y = corners[i][1];
++      transformPoint(x, y);
++      librevenge::RVNGPropertyList node;
++      node.insert("librevenge:path-action", i ? "L" : "M");
++      node.insert("svg:x", m_scale * x);
++      node.insert("svg:y", m_scale * y);
++      clip.append(node);
++    }
++    librevenge::RVNGPropertyList close;
++    close.insert("librevenge:path-action", "Z");
++    clip.append(close);
++    m_currentForeignProps.insert("libvisio:clip-path", clip);
++  }
++
+   if (m_currentForeignData.size() && m_currentForeignProps["librevenge:mime-type"] && m_foreignWidth != 0.0 && m_foreignHeight != 0.0)
+   {
+     m_shapeOutputDrawing->addStyle(styleProps);
+@@ -3742,7 +3764,7 @@
      return;
    }
  
@@ -31,7 +97,7 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
    {
      0x0020, 0x0021, 0x2200, 0x0023, 0x2203, 0x0025, 0x0026, 0x220D, // 0x20 ..
      0x0028, 0x0029, 0x2217, 0x002B, 0x002C, 0x2212, 0x002E, 0x002F,
-@@ -3774,7 +3772,7 @@
+@@ -3774,7 +3796,7 @@
      0x23A0, 0x23A4, 0x23A5, 0x23A6, 0x23AB, 0x23AC, 0x23AD, 0x0020  // .. 0xFE
    };
  
@@ -40,7 +106,7 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
    if (format == VSD_TEXT_SYMBOL) // SYMBOL
    {
      for (unsigned char character : characters)
-@@ -3790,92 +3788,72 @@
+@@ -3790,92 +3812,72 @@
    }
    else
    {
@@ -206,6 +272,32 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
    }
  
    return string;
+--- a/src/lib/VSDParagraphList.cpp
++++ b/src/lib/VSDParagraphList.cpp
+@@ -153,6 +153,13 @@
+     element.second->setCharCount(0);
+ }
+ 
++// (the rows a shape inherits from its master are at the master's depth: at the shape's own, as its own rows)
++void libvisio::VSDParagraphList::resetLevel(unsigned level)
++{
++  for (auto &element : m_elements)
++    element.second->m_level = level;
++}
++
+ unsigned libvisio::VSDParagraphList::getLevel() const
+ {
+   if (m_elements.empty() || !m_elements.begin()->second)
+--- a/src/lib/VSDParagraphList.h
++++ b/src/lib/VSDParagraphList.h
+@@ -39,6 +39,7 @@
+   void setCharCount(unsigned id, unsigned charCount);
+   void resetCharCount();
+   unsigned getLevel() const;
++  void resetLevel(unsigned level);
+ 
+   void setElementsOrder(const std::vector<unsigned> &m_elementsOrder);
+   void handle(VSDCollector *collector) const;
 --- a/src/lib/VSDParser.cpp
 +++ b/src/lib/VSDParser.cpp
 @@ -9,6 +9,8 @@
@@ -379,7 +471,18 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
  
    unsigned id = idString ? (unsigned)xmlStringToLong(idString) : MINUS_ONE;
    unsigned masterPage = masterPageString ? (unsigned)xmlStringToLong(masterPageString) : MINUS_ONE;
-@@ -993,6 +994,7 @@
+@@ -948,7 +949,9 @@
+   unsigned fillStyle =  fillStyleString ? (unsigned)xmlStringToLong(fillStyleString) : MINUS_ONE;
+   unsigned textStyle =  textStyleString ? (unsigned)xmlStringToLong(textStyleString) : MINUS_ONE;
+ 
+-  if (masterPage != MINUS_ONE || masterShape != MINUS_ONE)
++  // A shape of a master's group (MasterShape alone) is of its group's master; a shape with a
++  // Master of its own keeps it (a master's instance inside a group of other shapes).
++  if (masterPage == MINUS_ONE && masterShape != MINUS_ONE)
+   {
+     if (!m_shapeStack.empty())
+       masterPage = m_shapeStack.top().m_masterPage;
+@@ -993,6 +996,7 @@
    m_shape.m_textStyleId = textStyle;
  
    m_shape.m_parent = m_shapeStack.empty() ? MINUS_ONE : m_shapeStack.top().m_shapeId;
@@ -387,7 +490,7 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
    m_shape.m_masterPage = masterPage;
    m_shape.m_masterShape = masterShape;
    m_shape.m_shapeId = id;
-@@ -1757,7 +1759,7 @@
+@@ -1757,7 +1761,7 @@
  
  void libvisio::VSDXMLParserBase::_flushShape()
  {
@@ -396,6 +499,22 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
      return;
  
    m_collector->collectShape(m_shape.m_shapeId, m_currentShapeLevel, m_shape.m_parent,
+@@ -1841,6 +1845,7 @@
+                                        m_shape.m_charStyle.allcaps, m_shape.m_charStyle.initcaps, m_shape.m_charStyle.smallcaps,
+                                        m_shape.m_charStyle.superscript, m_shape.m_charStyle.subscript, m_shape.m_charStyle.scaleWidth);
+ 
++  m_shape.m_charList.resetLevel(m_currentShapeLevel+2);
+   m_shape.m_charList.handle(m_collector);
+ 
+   m_collector->collectDefaultParaStyle(m_shape.m_paraStyle.charCount, m_shape.m_paraStyle.indFirst, m_shape.m_paraStyle.indLeft,
+@@ -1849,6 +1854,7 @@
+                                        m_shape.m_paraStyle.bulletStr, m_shape.m_paraStyle.bulletFont, m_shape.m_paraStyle.bulletFontSize,
+                                        m_shape.m_paraStyle.textPosAfterBullet, m_shape.m_paraStyle.flags);
+ 
++  m_shape.m_paraList.resetLevel(m_currentShapeLevel+2);
+   m_shape.m_paraList.handle(m_collector);
+ 
+   m_collector->collectUnhandledChunk(0, m_currentShapeLevel);
 --- a/src/lib/libvisio_utils.cpp
 +++ b/src/lib/libvisio_utils.cpp
 @@ -11,8 +11,28 @@
