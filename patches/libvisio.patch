@@ -8,7 +8,8 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
   often stored in reverse, and an instance's polyline rows that take their vertices from the
   master's data got the data of the wrong section (a map of North America: every island of a
   province drawn with the vertices of another one, joined to its own end point by a long spike)
-
+- the guides of the XML files (Type="Guide" shapes, drawn as infinite lines across the page)
+  are not drawn, as the binary files' guide chunks are not
 
 --- a/src/lib/VSDContentCollector.cpp
 +++ b/src/lib/VSDContentCollector.cpp
@@ -322,6 +323,79 @@ libvisio changes for nitroview (scripts/get-deps.sh applies this after downloadi
  
    std::map<unsigned, VSDName> m_fonts;
    std::map<unsigned, VSDName> m_names;
+--- a/src/lib/VSDStencils.cpp
++++ b/src/lib/VSDStencils.cpp
+@@ -17,7 +17,7 @@
+     m_textStyleId(MINUS_ONE), m_lineStyle(), m_fillStyle(), m_textBlockStyle(), m_charStyle(),
+     m_charList(), m_paraStyle(), m_paraList(), m_tabSets(), m_text(), m_names(),
+     m_textFormat(libvisio::VSD_TEXT_UTF16), m_nurbsData(), m_polylineData(), m_xform(), m_txtxform(),
+-    m_xform1d(), m_misc(), m_layerMem(), m_aName()
++    m_xform1d(), m_misc(), m_guide(false), m_layerMem(), m_aName()
+ {
+ }
+ 
+@@ -31,7 +31,7 @@
+     m_paraList(shape.m_paraList), m_tabSets(shape.m_tabSets), m_text(shape.m_text), m_names(shape.m_names),
+     m_textFormat(shape.m_textFormat), m_nurbsData(shape.m_nurbsData), m_polylineData(shape.m_polylineData),
+     m_xform(shape.m_xform), m_txtxform(shape.m_txtxform ? new XForm(*(shape.m_txtxform)) : nullptr),
+-    m_xform1d(shape.m_xform1d ? new XForm1D(*(shape.m_xform1d)) : nullptr), m_misc(shape.m_misc),
++    m_xform1d(shape.m_xform1d ? new XForm1D(*(shape.m_xform1d)) : nullptr), m_misc(shape.m_misc), m_guide(shape.m_guide),
+     m_layerMem(shape.m_layerMem), m_aName(shape.m_aName)
+ {
+ }
+@@ -73,6 +73,7 @@
+     m_txtxform.reset(shape.m_txtxform ? new XForm(*(shape.m_txtxform)) : nullptr);
+     m_xform1d.reset(shape.m_xform1d ? new XForm1D(*shape.m_xform1d) : nullptr);
+     m_misc = shape.m_misc;
++    m_guide = shape.m_guide;
+     m_layerMem = shape.m_layerMem;
+     m_aName = shape.m_aName;
+   }
+@@ -110,6 +111,7 @@
+   m_textStyleId = MINUS_ONE;
+   m_textFormat = libvisio::VSD_TEXT_UTF16;
+   m_misc = VSDMisc();
++  m_guide = false;
+   m_layerMem = VSDName();
+   m_aName = VSDName();
+ }
+--- a/src/lib/VSDStencils.h
++++ b/src/lib/VSDStencils.h
+@@ -56,6 +56,7 @@
+   std::unique_ptr<XForm> m_txtxform;
+   std::unique_ptr<XForm1D> m_xform1d;
+   VSDMisc m_misc;
++  bool m_guide;   // a guide (Type="Guide"): not drawn
+   VSDName m_layerMem;
+   VSDName m_aName;
+ };
+--- a/src/lib/VSDXMLParserBase.cpp
++++ b/src/lib/VSDXMLParserBase.cpp
+@@ -940,6 +940,7 @@
+   const shared_ptr<xmlChar> textStyleString(xmlTextReaderGetAttribute(reader, BAD_CAST("TextStyle")), xmlFree);
+ 
+   shared_ptr<xmlChar> pShapeName(xmlTextReaderGetAttribute(reader, BAD_CAST("NameU")), xmlFree);
++  const shared_ptr<xmlChar> typeString(xmlTextReaderGetAttribute(reader, BAD_CAST("Type")), xmlFree);
+ 
+   unsigned id = idString ? (unsigned)xmlStringToLong(idString) : MINUS_ONE;
+   unsigned masterPage = masterPageString ? (unsigned)xmlStringToLong(masterPageString) : MINUS_ONE;
+@@ -993,6 +994,7 @@
+   m_shape.m_textStyleId = textStyle;
+ 
+   m_shape.m_parent = m_shapeStack.empty() ? MINUS_ONE : m_shapeStack.top().m_shapeId;
++  m_shape.m_guide = typeString && xmlStrEqual(typeString.get(), BAD_CAST("Guide"));   // (a guide: not drawn, as the binary files' guide chunks are not)
+   m_shape.m_masterPage = masterPage;
+   m_shape.m_masterShape = masterShape;
+   m_shape.m_shapeId = id;
+@@ -1757,7 +1759,7 @@
+ 
+ void libvisio::VSDXMLParserBase::_flushShape()
+ {
+-  if (!m_isShapeStarted)
++  if (!m_isShapeStarted || m_shape.m_guide)
+     return;
+ 
+   m_collector->collectShape(m_shape.m_shapeId, m_currentShapeLevel, m_shape.m_parent,
 --- a/src/lib/libvisio_utils.cpp
 +++ b/src/lib/libvisio_utils.cpp
 @@ -11,8 +11,28 @@
