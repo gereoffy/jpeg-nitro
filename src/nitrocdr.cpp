@@ -494,10 +494,10 @@ public:
                                       (float)points(e["svg:y2"]), x, y);
                 break;
             case 'Q': plutovg_path_quad_to(path, (float)points(e["svg:x1"]), (float)points(e["svg:y1"]), x, y); break;
-            case 'A':
+            case 'A':   // (a flag left out means 1, as librevenge's own SVG writer takes it: libvisio's ellipses give no sweep)
                 plutovg_path_arc_to(path, (float)points(e["svg:rx"]), (float)points(e["svg:ry"]),
-                                    (float)(number(e["librevenge:rotate"]) * M_PI / 180), e["librevenge:large-arc"] && e["librevenge:large-arc"]->getInt(),
-                                    e["librevenge:sweep"] && e["librevenge:sweep"]->getInt(), x, y);
+                                    (float)(number(e["librevenge:rotate"]) * M_PI / 180), !e["librevenge:large-arc"] || e["librevenge:large-arc"]->getInt(),
+                                    !e["librevenge:sweep"] || e["librevenge:sweep"]->getInt(), x, y);
                 break;
             case 'Z': plutovg_path_close(path); break;
             default: break;
