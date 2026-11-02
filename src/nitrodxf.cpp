@@ -2596,7 +2596,10 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     if (inventor) srcs.push_back(nullptr);   // (only if no sheet shows)
     std::sort(P.idwViews.begin(), P.idwViews.end());
     size_t points = 0, work = 0;
-    std::vector<uint64_t> hashes;
+    std::vector<uint64_t> hashes;   // (the pages': 0 until one could be the same as another)
+    auto same = [&](const Page &a, const Page &b) {
+        return a.items.size() == b.items.size() && a.ax0 == b.ax0 && a.ay0 == b.ay0 && a.ax1 == b.ax1 && a.ay1 == b.ay1 && a.ox == b.ox && a.oy == b.oy;
+    };
     for (const Block *src : srcs) {
         if (doc->pages.size() >= 64 || (!src && inventor && !doc->pages.empty())) break;
         Page pg;
@@ -2608,8 +2611,15 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
         } else
             F.expand(*ms, M2(), ctx, 0);
         points = F.points, work = F.work;
+        bool keep = finish_page(F, pg);
         uint64_t h = 0;
-        if (finish_page(F, pg) && std::find(hashes.begin(), hashes.end(), h = page_hash(doc.get(), pg)) == hashes.end()) {
+        for (size_t i = 0; keep && i < doc->pages.size(); i++)   // (hashed only to tell pages alike in size apart)
+            if (same(doc->pages[i], pg)) {
+                if (!hashes[i]) hashes[i] = page_hash(doc.get(), doc->pages[i]) | 1;
+                if (!h) h = page_hash(doc.get(), pg) | 1;
+                keep = h != hashes[i];
+            }
+        if (keep) {
             hashes.push_back(h);
             doc->pages.push_back(std::move(pg));
         } else
