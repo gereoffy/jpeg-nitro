@@ -5,8 +5,10 @@
 // The file is read in one pass into tables (layers, line types, text styles) and blocks of
 // primitives in their own coordinates: paths of lines and cubic Béziers (arcs, ellipses,
 // bulges), text as glyph runs, fills, hatch patterns, block references. Then the model space is
-// flattened: every block reference is expanded with its transform, ByLayer / ByBlock colours
-// and line types resolved, into a display list of float paths around the drawing's centre.
+// flattened (a drawing saved on a layout: its sheet, the paper space over the model space seen
+// through each viewport): every block reference is expanded with its transform, ByLayer /
+// ByBlock colours and line types resolved, into a display list of float paths around the
+// drawing's centre.
 // render() replays the items that touch the view; hairlines are one device pixel wide.
 // What is 3D is shown from the top (x, y of the world coordinates).
 #include "nitrodxf.h"
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -79,14 +82,19 @@ M2 rotate(double rad) {
 M2 scaling(double sx, double sy) { return {sx, 0, 0, sy, 0, 0}; }
 double det(const M2 &m) { return m.a * m.d - m.b * m.c; }
 
-// The object coordinate system of a planar entity with extrusion n (AutoCAD's arbitrary axis
-// algorithm), seen from the top: OCS (x, y, elevation) -> WCS (x, y). n = (0, 0, -1) mirrors x.
+// AutoCAD's arbitrary axis algorithm: the x and y axes of a plane with normal n (unit)
+void plane_axes(V3 n, V3 &ax, V3 &ay) {
+    ax = unit(std::fabs(n.x) < 1.0 / 64 && std::fabs(n.y) < 1.0 / 64 ? cross({0, 1, 0}, n) : cross({0, 0, 1}, n));
+    ay = unit(cross(n, ax));
+}
+
+// The object coordinate system of a planar entity with extrusion n, seen from the top:
+// OCS (x, y, elevation) -> WCS (x, y). n = (0, 0, -1) mirrors x.
 M2 ocs(V3 n, double elevation = 0) {
     if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z)) return M2();
     n = unit(n);
-    V3 ax = std::fabs(n.x) < 1.0 / 64 && std::fabs(n.y) < 1.0 / 64 ? cross({0, 1, 0}, n) : cross({0, 0, 1}, n);
-    ax = unit(ax);
-    V3 ay = unit(cross(n, ax));
+    V3 ax, ay;
+    plane_axes(n, ax, ay);
     return {ax.x, ax.y, ay.x, ay.y, elevation * n.x, elevation * n.y};
 }
 
@@ -588,6 +596,14 @@ struct PatLine {
 };
 using Pattern = std::vector<PatLine>;
 
+// a viewport of the sheet: the model space in a rectangle of the paper space
+struct VPort {
+    uint64_t handle;
+    M2 m;                      // model -> paper
+    double r[4];               // the rectangle
+    std::vector<int> frozen;   // layers frozen in it
+};
+
 struct Block {
     std::vector<Prim> prims;
     Geo geo;
@@ -597,14 +613,14 @@ struct Block {
 
 // --- the display list ----------------------------------------------------------
 
-enum : uint8_t { O_STROKE, O_FILL, O_FILL_EO, O_TEXT, O_POINTS, O_XLINE, O_RAY, O_HATCH, O_DOTS };
+enum : uint8_t { O_STROKE, O_FILL, O_FILL_EO, O_TEXT, O_POINTS, O_XLINE, O_RAY, O_HATCH, O_DOTS, O_CLIP, O_UNCLIP };
 struct Item {
     uint8_t kind;
     uint32_t rgba;   // 0xAARRGGBB
     float width;     // 0: hairline
     int dash;        // dashes[] or -1
     plutovg_path_t *path = nullptr;
-    float bx0, by0, bx1, by1;   // bounding box (culling)
+    float bx0, by0, bx1, by1;   // bounding box (culling); O_CLIP: the rectangle (up to O_UNCLIP)
     int aux = -1;               // O_TEXT: otexts[], O_HATCH: opatterns[], O_XLINE / O_RAY: point + direction in xlines[]
 };
 struct OText {
@@ -680,6 +696,13 @@ struct Parser {
 
     Block model, paper;
     Block *cur = nullptr;   // the block being read
+    int tilemode = 1;       // 0: saved on a layout (its sheet is shown)
+    std::vector<VPort> vports;
+    std::unordered_map<std::string, int> layerHandles;
+    // Inventor's views: in the model space, one block reference (on *IDW_BlockReferenceLayer) per
+    // viewport, which shows only that one, all at about the same place. Which one is not in the
+    // DXF; the one with the next handle after the viewport's (in every sample: 4 or 5 after it).
+    std::vector<std::pair<uint64_t, int>> idwViews;   // handle, model.prims[]
 
     int layer(sv name) {
         std::string u = upper(name);
@@ -772,6 +795,8 @@ struct Parser {
                 dimasz = num(p.v, dimasz);
             else if (var == "$DIMSCALE" && p.code == 40)
                 dimscale = num(p.v, 1);
+            else if (var == "$TILEMODE" && p.code == 70)
+                tilemode = inum(p.v, 1);
             else if ((var == "$EXTMIN" || var == "$EXTMAX") && (p.code == 10 || p.code == 20))
                 ext[var == "$EXTMAX"][p.code == 20] = num(p.v);
         }
@@ -792,7 +817,9 @@ struct Parser {
 
     void tableEntry(const Rec &r) {
         if (r.type == "LAYER") {
-            Layer &l = layers[layer(r.s(2))];
+            int i = layer(r.s(2));
+            if (r.find(5)) layerHandles[upper(r.s(5))] = i;
+            Layer &l = layers[i];
             int c = r.i(62, 7);
             l.off = c < 0;
             const Pair *t = r.find(420);
@@ -1766,6 +1793,52 @@ struct Parser {
         finish(p, b);
     }
 
+    // A viewport of the active layout (in its paper space), as ezdxf draws them: paper = centre +
+    // scale * (twist (DCS of (model - target)) - view centre), the display coordinate system from
+    // the view direction by the arbitrary axis algorithm (a parallel projection of the plane z = 0:
+    // affine; perspective views are left out). Id 1 is the layout's own view, not one on the
+    // sheet. Up to R14 the view is in AutoCAD's extended data ("MVIEW").
+    void viewport(const Rec &r) {
+        double w = r.d(40), h = r.d(41), vh = r.d(45), twist = r.d(51);
+        V2 c = r.p2(10), vc = r.p2(12);
+        V3 t = r.p3(17), dir = r.p3(16, {0, 0, 1});
+        VPort v;
+        if (!r.find(45)) {
+            bool acad = false, mview = false;
+            int pts = 0, reals = 0;
+            for (const Pair &p : r.g) {
+                double x = num(p.v);
+                if (p.code == 1001) acad = upper(p.v) == "ACAD", mview = false;
+                else if (acad && p.code == 1000) mview = upper(p.v) == "MVIEW";
+                else if (!mview) continue;
+                else if (p.code >= 1010 && p.code <= 1030 && (pts < 2 || (pts == 2 && p.code != 1010))) {   // target, direction
+                    pts += p.code == 1010;
+                    V3 &q = pts == 1 ? t : dir;
+                    (p.code == 1010 ? q.x : p.code == 1020 ? q.y : q.z) = x;
+                } else if (p.code == 1040 && pts == 2 && reals < 4)   // twist, view height, centre
+                    *(reals == 0 ? &twist : reals == 1 ? &vh : reals == 2 ? &vc.x : &vc.y) = x, reals++;
+                else if (p.code == 1003) {   // frozen layers, by name
+                    auto it = layerIndex.find(upper(p.v));
+                    if (it != layerIndex.end()) v.frozen.push_back(it->second);
+                }
+            }
+        }
+        double k = vh > 0 ? h / vh : 0;
+        V3 n = unit(dir), ax, ay;
+        if (r.i(69) == 1 || (r.i(90) & 0x20001) || !(w > 0 && k > 1e-12 && k < 1e12) || std::fabs(n.z) < 1e-6) return;
+        if (!finite(c) || !finite(vc) || !finite(V2{w, h}) || !std::isfinite(t.x + t.y + t.z + twist)) return;
+        plane_axes(n, ax, ay);
+        M2 dcs{ax.x, ay.x, ax.y, ay.y, -(t.x * ax.x + t.y * ax.y + t.z * ax.z), -(t.x * ay.x + t.y * ay.y + t.z * ay.z)};
+        v.handle = strtoull(std::string(r.s(5)).c_str(), nullptr, 16);
+        v.m = translate(c - vc * k) * rotate(twist * M_PI / 180) * scaling(k, k) * dcs;
+        v.r[0] = c.x - w / 2, v.r[1] = c.y - h / 2, v.r[2] = c.x + w / 2, v.r[3] = c.y + h / 2;
+        for (const Pair &p : r.g) {
+            auto it = p.code == 331 ? layerHandles.find(upper(p.v)) : layerHandles.end();
+            if (it != layerHandles.end()) v.frozen.push_back(it->second);
+        }
+        if (vports.size() < 1000) vports.push_back(std::move(v));
+    }
+
     // one entity record into block b (POLYLINE: with its vertices)
     void entity(const Rec &r, Block &b, const std::vector<Rec> *verts) {
         const std::string &t = r.type;
@@ -1821,6 +1894,8 @@ struct Flat {
     std::vector<Pattern> pats;   // hatch patterns (doc->opatterns)
     std::unordered_map<uint64_t, int> dashIndex;
     std::vector<char> active;   // blocks being expanded (no recursion)
+    std::vector<char> hidden;   // layers frozen in the viewport being drawn
+    std::vector<char> skip;     // the model space's prims not in the viewport being drawn
     size_t points = 0, work = 0;
     // (block references exploding, arrays or nested: drawn in part)
     static constexpr size_t kMaxPoints = 40000000, kMaxWork = 100000000;
@@ -1922,9 +1997,10 @@ struct Flat {
     void expand(const Block &b, const M2 &m, const Ctx &ctx, int depth, bool dim = false) {
         for (const Prim &p : b.prims) {
             if (points > kMaxPoints || ++work > kMaxWork) return;
+            if (depth == 0 && !skip.empty() && skip[(size_t)(&p - b.prims.data())]) continue;
             int layer = p.layer == 0 && depth > 0 ? ctx.layer : p.layer;
             const Layer &L = P.layers[layer];
-            if (L.frozen || (L.off && p.kind != K_INSERT)) continue;
+            if (L.frozen || hidden[layer] || (L.off && p.kind != K_INSERT)) continue;
             uint32_t col = rgb(p.color, layer, ctx);
             uint32_t rgba = 0xff000000u | col;
             if (p.kind == K_INSERT) {
@@ -1995,6 +2071,28 @@ struct Flat {
             }
             }
         }
+    }
+
+    // the model space through a viewport, clipped to its rectangle
+    void viewport(const Block &ms, const VPort &v, const Ctx &ctx) {
+        size_t n = doc->items.size();
+        item(O_CLIP, 0, 0, -1);
+        pend.back().pt = {{v.r[0], v.r[1]}, {v.r[2], v.r[3]}};
+        for (int l : v.frozen) hidden[l] = 1;
+        if (&ms == &P.model && !P.idwViews.empty()) {   // (Inventor: its own view only)
+            skip.assign(ms.prims.size(), 0);
+            for (auto &h : P.idwViews) skip[(size_t)h.second] = 1;
+            auto it = std::upper_bound(P.idwViews.begin(), P.idwViews.end(), std::make_pair(v.handle, INT_MAX));
+            if (it != P.idwViews.end()) skip[(size_t)it->second] = 0;
+        }
+        expand(ms, v.m, ctx, 0);
+        skip.clear();
+        for (int l : v.frozen) hidden[l] = 0;
+        if (doc->items.size() == n + 1) {   // (nothing in it)
+            doc->items.pop_back();
+            pend.pop_back();
+        } else
+            item(O_UNCLIP, 0, 0, -1);
     }
 };
 
@@ -2218,6 +2316,10 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
             }
         }
         bool paper = r.i(67) == 1;
+        if (r.type == "VIEWPORT") {
+            if (paper && section == "ENTITIES") P.viewport(r);
+            continue;
+        }
         if (r.type == "POLYLINE") {
             poly = r;
             verts.clear();
@@ -2225,31 +2327,54 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
             polyPaper = paper;
             continue;
         }
-        if (Block *b = target(paper)) P.entity(r, *b, nullptr);
+        Block *b = target(paper);
+        if (!b) continue;
+        size_t n = b->prims.size();
+        P.entity(r, *b, nullptr);
+        if (b == &P.model && r.type == "INSERT" && b->prims.size() == n + 1 && upper(r.s(8)) == "*IDW_BLOCKREFERENCELAYER")
+            P.idwViews.push_back({strtoull(std::string(r.s(5)).c_str(), nullptr, 16), (int)n});
     }
     flushPoly();   // (a file of entities alone, without sections: they were read into the model space)
 
-    // the model space (its entities, or the *Model_Space block), else the paper space
+    // the model space (its entities, or the *Model_Space block), else the paper space; saved on
+    // a layout: the paper space, over the model space in its viewports
     const Block *top = &P.model;
     auto named = [&](const char *n) -> const Block * {
         auto it = P.blockIndex.find(n);
         return it == P.blockIndex.end() ? nullptr : &P.blocks[it->second];
     };
-    if (top->prims.empty()) {
-        const Block *ms = named("*MODEL_SPACE"), *ps = named("*PAPER_SPACE");
-        top = ms && !ms->prims.empty() ? ms : !P.paper.prims.empty() ? &P.paper : ps && !ps->prims.empty() ? ps : top;
+    const Block *ms = named("*MODEL_SPACE"), *ps = named("*PAPER_SPACE");
+    if (!top->prims.empty() || !ms) ms = top;
+    if (top->prims.empty()) top = !ms->prims.empty() ? ms : !P.paper.prims.empty() ? &P.paper : ps && !ps->prims.empty() ? ps : top;
+    std::sort(P.idwViews.begin(), P.idwViews.end());
+    Flat F{P, doc.get(), {}, {}, {}, {}, std::vector<char>(P.blocks.size()), std::vector<char>(P.layers.size()), {}, 0};
+    Flat::Ctx ctx{0, aci_rgb(7), LT_CONTINUOUS};
+    if (P.tilemode == 0 && (!P.vports.empty() || !P.paper.prims.empty())) {
+        for (const VPort &v : P.vports) F.viewport(*ms, v, ctx);
+        top = &P.paper;
     }
-    Flat F{P, doc.get(), {}, {}, {}, {}, std::vector<char>(P.blocks.size()), 0};
-    F.expand(*top, M2(), {0, aci_rgb(7), LT_CONTINUOUS}, 0);
+    F.expand(*top, M2(), ctx, 0);
     if (doc->items.empty()) return nullptr;
 
     // boxes, the shown area, then float paths around its centre
     std::vector<std::array<double, 4>> box(doc->items.size());
+    double clip[4] = {};
+    bool clipped = false;
     for (size_t i = 0; i < doc->items.size(); i++) {
         double b[4] = {1e300, 1e300, -1e300, -1e300};
-        const Item &it = doc->items[i];
-        const auto &pts = F.pend[i].pt;
+        Item &it = doc->items[i];
+        auto &pts = F.pend[i].pt;
         size_t n = it.kind == O_XLINE || it.kind == O_RAY ? std::min<size_t>(1, pts.size()) : pts.size();
+        bool bad = !(it.width < 1e15f);
+        for (size_t k = 0; k < n && !bad; k++) bad = !finite(pts[k]);
+        if (bad) {   // (out of any drawing, a damaged file's block references or viewports: left out)
+            it.kind = O_FILL;
+            it.width = 0;
+            F.pend[i].cmd.clear();
+            pts.clear();
+            box[i] = {1e300, 1e300, -1e300, -1e300};
+            continue;
+        }
         for (size_t k = 0; k < n; k++) {
             b[0] = std::min(b[0], pts[k].x);
             b[1] = std::min(b[1], pts[k].y);
@@ -2258,6 +2383,14 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
         }
         double h = it.width / 2;
         box[i] = {b[0] - h, b[1] - h, b[2] + h, b[3] + h};
+        if (it.kind == O_CLIP) {   // (its rectangle: not in the extents; what is drawn in it, clipped)
+            memcpy(clip, b, sizeof clip);
+            box[i] = {1e300, 1e300, -1e300, -1e300};
+            clipped = true;
+        } else if (it.kind == O_UNCLIP)
+            clipped = false;
+        else if (clipped)
+            box[i] = {std::max(box[i][0], clip[0]), std::max(box[i][1], clip[1]), std::min(box[i][2], clip[2]), std::min(box[i][3], clip[3])};
     }
     double ext[4];
     extents(doc->items, box, ext);
@@ -2281,7 +2414,11 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
         it.by0 = (float)(box[i][1] - oy);
         it.bx1 = (float)(box[i][2] - ox);
         it.by1 = (float)(box[i][3] - oy);
-        if (it.kind == O_XLINE || it.kind == O_RAY) {
+        if (it.kind == O_CLIP) {
+            it.bx0 = (float)(pd.pt[0].x - ox), it.by0 = (float)(pd.pt[0].y - oy);
+            it.bx1 = (float)(pd.pt[1].x - ox), it.by1 = (float)(pd.pt[1].y - oy);
+        } else if (it.kind == O_UNCLIP) {
+        } else if (it.kind == O_XLINE || it.kind == O_RAY) {
             it.aux = (int)doc->xlines.size() / 4;
             for (float v : {(float)(pd.pt[0].x - ox), (float)(pd.pt[0].y - oy), (float)pd.pt[1].x, (float)pd.pt[1].y}) doc->xlines.push_back(v);
         } else if (it.kind == O_TEXT) {
@@ -2340,6 +2477,8 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
     *h = dxf->ay1 - dxf->ay0;
 }
 
+static constexpr double kFar = 1 << 24;   // device pixels out of the view
+
 int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     if (!dxf || page != 0 || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
     uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
@@ -2358,9 +2497,10 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     std::vector<float> dashes;
     plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
     for (const Item &it : dxf->items) {
-        if (it.kind != O_XLINE && it.kind != O_RAY &&
-            (it.bx1 < view[0] || it.bx0 > view[2] || it.by1 < view[1] || it.by0 > view[3]))
-            continue;
+        if (it.kind != O_XLINE && it.kind != O_RAY && it.kind != O_CLIP && it.kind != O_UNCLIP &&
+            (it.bx1 < view[0] || it.bx0 > view[2] || it.by1 < view[1] || it.by0 > view[3] ||
+             std::max(view[0] - it.bx0, std::max(it.bx1 - view[2], std::max(view[1] - it.by0, it.by1 - view[3]))) * scale > kFar))
+            continue;   // (kFar: plutovg's fixed point would overflow; far-off strays of a damaged file)
         uint32_t rgba = on_background(it.rgba, dxf->background);
         switch (it.kind) {
         case O_STROKE: {
@@ -2446,6 +2586,11 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
             }
             break;
         }
+        case O_CLIP:
+            plutovg_canvas_save(c);
+            plutovg_canvas_clip_rect(c, it.bx0, it.by0, it.bx1 - it.bx0, it.by1 - it.by0);
+            break;
+        case O_UNCLIP: plutovg_canvas_restore(c); break;
         case O_XLINE:
         case O_RAY: {
             const float *x = &dxf->xlines[(size_t)it.aux * 4];

@@ -2,8 +2,9 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitrodxf: AutoCAD DXF drawings (ASCII DXF, R12 - 2018) for the viewers. Our own parser reads
-// the model space (layers, blocks, line types, text styles) into a display list in drawing
-// units and draws it with plutovg (the one of nitrosvg), at any scale and offset, like
+// the model space (layers, blocks, line types, text styles), or for a drawing saved on a layout
+// its sheet (the paper space and the model space in its viewports), into a display list in
+// drawing units and draws it with plutovg (the one of nitrosvg), at any scale and offset, like
 // nitrocdr. Lines are hairlines (one device pixel), as AutoCAD shows them on screen, over white
 // (as the SVGs), or AutoCAD's dark model space or black (nitrodxf_set_background).
 #pragma once
