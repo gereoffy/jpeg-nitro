@@ -714,6 +714,7 @@ struct Parser {
     // viewport, which shows only that one, all at about the same place. Which one is not in the
     // DXF; the one with the next handle after the viewport's (in every sample: 4 or 5 after it).
     std::vector<std::pair<uint64_t, int>> idwViews;   // handle, model.prims[]
+    std::unordered_map<uint64_t, int> dashIndex;      // (line type, scale) -> doc->dashes[] (of all the pages)
 
     int layer(sv name) {
         std::string u = upper(name);
@@ -1916,7 +1917,6 @@ struct Flat {
     std::vector<M2> textM;       // the texts' transforms (doc->otexts from otext0)
     size_t otext0;
     std::vector<Pattern> pats;   // hatch patterns (doc->opatterns)
-    std::unordered_map<uint64_t, int> dashIndex;
     std::vector<char> active;   // blocks being expanded (no recursion)
     std::vector<char> hidden;   // layers frozen in the viewport being drawn
     std::vector<char> skip;     // the model space's prims not in the viewport being drawn
@@ -1952,8 +1952,8 @@ struct Flat {
         uint32_t bits;
         memcpy(&bits, &fs, 4);
         uint64_t key = (uint64_t)lt << 32 | bits;
-        auto it = dashIndex.find(key);
-        if (it != dashIndex.end()) return it->second;
+        auto it = P.dashIndex.find(key);
+        if (it != P.dashIndex.end()) return it->second;
         // alternating on / off from an "on" element: the pattern turned, the turn as the dash offset
         std::vector<std::pair<double, bool>> e;
         for (double x : pat)
@@ -1989,15 +1989,16 @@ struct Flat {
                 doc->dashes.push_back(std::move(d));
             }
         }
-        return dashIndex[key] = idx;
+        return P.dashIndex[key] = idx;
     }
 
-    // a new item, or the last one if it can take more of the same
+    // a new item, or the last one if it can take more of the same (up to 128 path commands:
+    // plutovg's time grows faster than a path's size)
     size_t item(uint8_t kind, uint32_t rgba, float width, int dsh) {
         if (!items.empty()) {
             Item &it = items.back();
             if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh &&
-                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 2048)
+                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 128)
                 return items.size() - 1;
         }
         Item it{};
@@ -2255,12 +2256,24 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
         set_rgba(c, rgba, 0.4f);
         plutovg_canvas_fill_path(c, it.path);
     }
-    if (segs) {
+    if (segs) {   // (stroked a few segments at a time: plutovg's time grows faster than their number)
         plutovg_canvas_clip_path(c, it.path);
         set_rgba(c, rgba);
         plutovg_canvas_set_line_width(c, hair);
         plutovg_canvas_set_dash(c, 0, nullptr, 0);
-        plutovg_canvas_stroke_path(c, lines);
+        const plutovg_path_element_t *el;
+        int ne = plutovg_path_get_elements(lines, &el), n = 0;
+        plutovg_path_t *part = plutovg_path_create();
+        for (int k = 0; k + 3 < ne; k += 4) {   // (move_to, point, line_to, point)
+            plutovg_path_move_to(part, el[k + 1].point.x, el[k + 1].point.y);
+            plutovg_path_line_to(part, el[k + 3].point.x, el[k + 3].point.y);
+            if (++n == 4 || k + 4 >= ne) {
+                plutovg_canvas_stroke_path(c, part);
+                plutovg_path_reset(part);
+                n = 0;
+            }
+        }
+        plutovg_path_destroy(part);
     }
     plutovg_canvas_restore(c);
     plutovg_path_destroy(lines);
@@ -2377,6 +2390,36 @@ bool finish_page(Flat &F, Page &pg) {
     return true;
 }
 
+// A page's display list as a hash (FNV-1a): the same pages (layouts showing the same) are kept once.
+uint64_t page_hash(const nitrodxf *doc, const Page &pg) {
+    uint64_t h = 14695981039346656037ull;
+    auto add = [&](const void *p, size_t n) {
+        for (size_t i = 0; i < n; i++) h = (h ^ static_cast<const uint8_t *>(p)[i]) * 1099511628211ull;
+    };
+    double area[6] = {pg.ax0, pg.ay0, pg.ax1, pg.ay1, pg.ox, pg.oy};
+    add(area, sizeof area);
+    for (const Item &it : pg.items) {
+        add(&it.kind, 1), add(&it.rgba, 4), add(&it.width, 4), add(&it.dash, 4);
+        if (it.kind == O_CLIP) add(&it.bx0, 4), add(&it.by0, 4), add(&it.bx1, 4), add(&it.by1, 4);
+        else if (it.kind == O_TEXT) {
+            const OText &t = doc->otexts[(size_t)it.aux];
+            add(&t.text, sizeof t.text), add(t.m, sizeof t.m);
+        } else if (it.kind == O_XLINE || it.kind == O_RAY)
+            add(&doc->xlines[(size_t)it.aux * 4], 4 * sizeof(float));
+        if (it.path) {
+            const plutovg_path_element_t *el;
+            int n = plutovg_path_get_elements(it.path, &el);
+            add(el, (size_t)n * sizeof *el);
+        }
+        if (it.kind == O_HATCH)
+            for (const OPatLine &pl : doc->opatterns[(size_t)it.aux]) {
+                add(&pl, 6 * sizeof(float));
+                add(pl.dashes.data(), pl.dashes.size() * sizeof(float));
+            }
+    }
+    return h;
+}
+
 } // namespace
 
 nitrodxf *nitrodxf_load(const void *data, size_t len) {
@@ -2479,8 +2522,9 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     flushPoly();   // (a file of entities alone, without sections: they were read into the model space)
 
     // The pages: the model space, then the layouts in their tabs' order (a layout's sheet: its
-    // paper space, over the model space in its viewports). Empty ones are left out, and so is an
-    // Inventor drawing's model space (its views piled up, for the viewports) when a sheet shows.
+    // paper space, over the model space in its viewports). Empty ones and repeated ones are left
+    // out, and so is an Inventor drawing's model space (its views piled up, for the viewports)
+    // when a sheet shows.
     auto named = [&](const std::string &n) -> const Block * {
         auto it = P.blockIndex.find(n);
         return it == P.blockIndex.end() ? nullptr : &P.blocks[it->second];
@@ -2502,6 +2546,7 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     if (inventor) srcs.push_back(nullptr);   // (only if no sheet shows)
     std::sort(P.idwViews.begin(), P.idwViews.end());
     size_t points = 0, work = 0;
+    std::vector<uint64_t> hashes;
     for (const Block *src : srcs) {
         if (doc->pages.size() >= 64 || (!src && inventor && !doc->pages.empty())) break;
         Page pg;
@@ -2513,8 +2558,11 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
         } else
             F.expand(*ms, M2(), ctx, 0);
         points = F.points, work = F.work;
-        if (finish_page(F, pg)) doc->pages.push_back(std::move(pg));
-        else
+        uint64_t h = 0;
+        if (finish_page(F, pg) && std::find(hashes.begin(), hashes.end(), h = page_hash(doc.get(), pg)) == hashes.end()) {
+            hashes.push_back(h);
+            doc->pages.push_back(std::move(pg));
+        } else
             for (Item &it : pg.items) plutovg_path_destroy(it.path);
     }
     if (doc->pages.empty()) return nullptr;
