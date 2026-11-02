@@ -3,6 +3,8 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
   the path (https://github.com/sammycage/plutovg/pull/90)
 - plutovg_surface_create cleared height * stride bytes computed in int (overflow above 2 GB;
   https://github.com/sammycage/plutovg/pull/91 refuses such surfaces instead)
+- plutovg_span_buffer_intersect did pointer arithmetic on the NULL data of an empty span buffer
+  (UBSan: a fill clipped by a clip that covers no pixel, or that itself covers none)
 - stb_truetype read past the outline of a glyph whose last contour is a single off-curve
   point (macOS Times "C"; ASan: heap-buffer-overflow in stbtt_GetGlyphShape;
   https://github.com/nothings/stb/issues/1296)
@@ -66,6 +68,17 @@ lunasvg / plutovg fixes for nitroview (scripts/get-deps.sh applies this after do
              current_x = start_x;
              current_y = start_y;
          } else {
+--- a/plutovg/source/plutovg-rasterize.c
++++ b/plutovg/source/plutovg-rasterize.c
+@@ -112,6 +112,8 @@
+ void plutovg_span_buffer_intersect(plutovg_span_buffer_t* span_buffer, const plutovg_span_buffer_t* a, const plutovg_span_buffer_t* b)
+ {
+     plutovg_span_buffer_reset(span_buffer);
++    if(a->spans.size == 0 || b->spans.size == 0)
++        return;
+     plutovg_array_ensure(span_buffer->spans, plutovg_max(a->spans.size, b->spans.size));
+ 
+     plutovg_span_t* a_spans = a->spans.data;
 --- a/plutovg/source/plutovg-stb-truetype.h
 +++ b/plutovg/source/plutovg-stb-truetype.h
 @@ -1768,7 +1768,8 @@
