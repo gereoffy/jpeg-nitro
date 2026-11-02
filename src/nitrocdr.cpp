@@ -1148,7 +1148,8 @@ private:
             if (radial) {
                 st->cx = (float)number(p["svg:cx"], .5);
                 st->cy = (float)number(p["svg:cy"], .5);
-                st->r = p["draw:border"] ? (float)(1 - number(p["draw:border"])) : 1.f;
+                // (its radius: svg:r, libvisio's, in bounding box units; else from the border)
+                st->r = p["svg:r"] ? (float)number(p["svg:r"]) : p["draw:border"] ? (float)(1 - number(p["draw:border"])) : 1.f;
                 if (st->r <= 0) st->r = .01f;
             }
         } else if (is(p, "draw:fill", "bitmap")) {
