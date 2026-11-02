@@ -2,11 +2,12 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitrodxf: AutoCAD DXF drawings (ASCII DXF, R12 - 2018) for the viewers. Our own parser reads
-// the model space (layers, blocks, line types, text styles), or for a drawing saved on a layout
-// its sheet (the paper space and the model space in its viewports), into a display list in
-// drawing units and draws it with plutovg (the one of nitrosvg), at any scale and offset, like
-// nitrocdr. Lines are hairlines (one device pixel), as AutoCAD shows them on screen, over white
-// (as the SVGs), or AutoCAD's dark model space or black (nitrodxf_set_background).
+// the model space (layers, blocks, line types, text styles) and the layouts' sheets (the paper
+// space and the model space in its viewports) as pages: the model space first, then the layouts
+// in their tabs' order (empty ones left out). Each is a display list in drawing units, drawn with
+// plutovg (the one of nitrosvg), at any scale and offset, like nitrocdr. Lines are hairlines
+// (one device pixel), as AutoCAD shows them on screen, over white (as the SVGs), or AutoCAD's
+// dark model space or black (nitrodxf_set_background).
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -25,8 +26,9 @@ int nitrodxf_pages(const nitrodxf *dxf);
 // The background it is drawn over: 0 white (the default; AutoCAD's white lines black, light colours
 // darkened), 1 AutoCAD's dark model space, 2 black. Set before rendering, not while it renders.
 void nitrodxf_set_background(nitrodxf *dxf, int background);
-// Size of the shown area in drawing units: the drawing's extents (far-off stray objects left
-// out) with a small margin. Render coordinates below start at its top left, y down.
+// Size of a page's shown area in drawing units: its extents (far-off stray objects left out)
+// with a small margin; 0 x 0 if there is no such page. Render coordinates below start at its top
+// left, y down.
 void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h);
 
 // Renders a page into a w x h BGRA buffer (premultiplied, opaque): pixel (i, j) shows the point

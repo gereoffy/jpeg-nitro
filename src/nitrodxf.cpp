@@ -4,11 +4,11 @@
 //
 // The file is read in one pass into tables (layers, line types, text styles) and blocks of
 // primitives in their own coordinates: paths of lines and cubic Béziers (arcs, ellipses,
-// bulges), text as glyph runs, fills, hatch patterns, block references. Then the model space is
-// flattened (a drawing saved on a layout: its sheet, the paper space over the model space seen
-// through each viewport): every block reference is expanded with its transform, ByLayer /
-// ByBlock colours and line types resolved, into a display list of float paths around the
-// drawing's centre.
+// bulges), text as glyph runs, fills, hatch patterns, block references. Then each page (the model
+// space, then every layout's sheet: its paper space over the model space seen through each
+// viewport) is flattened: every block reference is expanded with its transform, ByLayer /
+// ByBlock colours and line types resolved, into a display list of float paths around the page's
+// centre.
 // render() replays the items that touch the view; hairlines are one device pixel wide.
 // What is 3D is shown from the top (x, y of the world coordinates).
 #include "nitrodxf.h"
@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -609,6 +610,8 @@ struct Block {
     Geo geo;
     V2 base;
     bool xref = false;
+    std::vector<VPort> vports;   // a layout's paper space: its viewports
+    int viewports = 0;           // (VIEWPORTs seen in it)
 };
 
 // --- the display list ----------------------------------------------------------
@@ -620,7 +623,7 @@ struct Item {
     float width;     // 0: hairline
     int dash;        // dashes[] or -1
     plutovg_path_t *path = nullptr;
-    float bx0, by0, bx1, by1;   // bounding box (culling); O_CLIP: the rectangle (up to O_UNCLIP)
+    float bx0, by0, bx1, by1;   // bounding box (culling; not clipped); O_CLIP: the rectangle (up to O_UNCLIP)
     int aux = -1;               // O_TEXT: otexts[], O_HATCH: opatterns[], O_XLINE / O_RAY: point + direction in xlines[]
 };
 struct OText {
@@ -636,24 +639,29 @@ struct OPatLine {
     float bx, by, dx, dy, ox, oy;
     std::vector<float> dashes;
 };
+// a page: the model space or a layout's sheet
+struct Page {
+    std::vector<Item> items;
+    double ax0 = 0, ay0 = 0, ax1 = 0, ay1 = 0;   // shown area (around the origin)
+    double ox = 0, oy = 0;                       // the origin in drawing units
+};
 
 } // namespace
 
 struct nitrodxf {
-    std::vector<Item> items;
+    std::vector<Page> pages;   // the model space, then the layouts
     std::vector<OText> otexts;
     std::vector<std::vector<OPatLine>> opatterns;
     std::vector<float> xlines;
     std::vector<Dash> dashes;
     std::vector<TextData> texts;
     std::vector<Glyph> glyphs;
-    double ax0 = 0, ay0 = 0, ax1 = 0, ay1 = 0;   // shown area (around the origin)
-    double ox = 0, oy = 0;                       // the origin in drawing units
     int pdmode = 0;
     int background = 0;
     double pdsize = 0;
     ~nitrodxf() {
-        for (Item &it : items) plutovg_path_destroy(it.path);
+        for (Page &pg : pages)
+            for (Item &it : pg.items) plutovg_path_destroy(it.path);
         for (Glyph &g : glyphs) plutovg_path_destroy(g.path);
     }
 };
@@ -696,8 +704,11 @@ struct Parser {
 
     Block model, paper;
     Block *cur = nullptr;   // the block being read
-    int tilemode = 1;       // 0: saved on a layout (its sheet is shown)
-    std::vector<VPort> vports;
+    struct Layout {
+        int tab;
+        std::string record;   // its paper space's BLOCK_RECORD handle
+    };
+    std::vector<Layout> layouts;
     std::unordered_map<std::string, int> layerHandles;
     // Inventor's views: in the model space, one block reference (on *IDW_BlockReferenceLayer) per
     // viewport, which shows only that one, all at about the same place. Which one is not in the
@@ -795,8 +806,6 @@ struct Parser {
                 dimasz = num(p.v, dimasz);
             else if (var == "$DIMSCALE" && p.code == 40)
                 dimscale = num(p.v, 1);
-            else if (var == "$TILEMODE" && p.code == 70)
-                tilemode = inum(p.v, 1);
             else if ((var == "$EXTMIN" || var == "$EXTMAX") && (p.code == 10 || p.code == 20))
                 ext[var == "$EXTMAX"][p.code == 20] = num(p.v);
         }
@@ -1793,12 +1802,14 @@ struct Parser {
         finish(p, b);
     }
 
-    // A viewport of the active layout (in its paper space), as ezdxf draws them: paper = centre +
-    // scale * (twist (DCS of (model - target)) - view centre), the display coordinate system from
-    // the view direction by the arbitrary axis algorithm (a parallel projection of the plane z = 0:
-    // affine; perspective views are left out). Id 1 is the layout's own view, not one on the
-    // sheet. Up to R14 the view is in AutoCAD's extended data ("MVIEW").
-    void viewport(const Rec &r) {
+    // A viewport of a layout (in its paper space b), as ezdxf draws them: paper = centre + scale *
+    // (twist (DCS of (model - target)) - view centre), the display coordinate system from the view
+    // direction by the arbitrary axis algorithm (a parallel projection of the plane z = 0: affine;
+    // perspective views are left out). The layout's own view is not one on the sheet: id 1 in
+    // the entities, the first one in a layout's block (whose ids are all 0). Up to R14 the view
+    // is in AutoCAD's extended data ("MVIEW").
+    void viewport(const Rec &r, Block &b, bool entities) {
+        if (b.viewports++ == 0 && !entities) return;
         double w = r.d(40), h = r.d(41), vh = r.d(45), twist = r.d(51);
         V2 c = r.p2(10), vc = r.p2(12);
         V3 t = r.p3(17), dir = r.p3(16, {0, 0, 1});
@@ -1825,7 +1836,7 @@ struct Parser {
         }
         double k = vh > 0 ? h / vh : 0;
         V3 n = unit(dir), ax, ay;
-        if (r.i(69) == 1 || (r.i(90) & 0x20001) || !(w > 0 && k > 1e-12 && k < 1e12) || std::fabs(n.z) < 1e-6) return;
+        if ((entities && r.i(69) == 1) || (r.i(90) & 0x20001) || !(w > 0 && k > 1e-12 && k < 1e12) || std::fabs(n.z) < 1e-6) return;
         if (!finite(c) || !finite(vc) || !finite(V2{w, h}) || !std::isfinite(t.x + t.y + t.z + twist)) return;
         plane_axes(n, ax, ay);
         M2 dcs{ax.x, ay.x, ax.y, ay.y, -(t.x * ax.x + t.y * ax.y + t.z * ax.z), -(t.x * ay.x + t.y * ay.y + t.z * ay.z)};
@@ -1836,7 +1847,18 @@ struct Parser {
             auto it = p.code == 331 ? layerHandles.find(upper(p.v)) : layerHandles.end();
             if (it != layerHandles.end()) v.frozen.push_back(it->second);
         }
-        if (vports.size() < 1000) vports.push_back(std::move(v));
+        if (b.vports.size() < 1000) b.vports.push_back(std::move(v));
+    }
+
+    void layout(const Rec &r) {   // (its own groups after the plot settings)
+        bool own = false;
+        Layout l{0, {}};
+        for (const Pair &p : r.g) {
+            if (p.code == 100) own = upper(p.v) == "ACDBLAYOUT";
+            else if (own && p.code == 71) l.tab = inum(p.v);
+            else if (own && p.code == 330) l.record = upper(trim(p.v));
+        }
+        if (!l.record.empty() && layouts.size() < 1000) layouts.push_back(l);
     }
 
     // one entity record into block b (POLYLINE: with its vertices)
@@ -1889,16 +1911,21 @@ namespace {
 struct Flat {
     Parser &P;
     nitrodxf *doc;
-    std::vector<Pending> pend;   // the items' paths (doc->items)
-    std::vector<M2> textM;       // the texts' transforms (doc->otexts)
+    std::vector<Item> &items;    // a page's
+    std::vector<Pending> pend;   // the items' paths
+    std::vector<M2> textM;       // the texts' transforms (doc->otexts from otext0)
+    size_t otext0;
     std::vector<Pattern> pats;   // hatch patterns (doc->opatterns)
     std::unordered_map<uint64_t, int> dashIndex;
     std::vector<char> active;   // blocks being expanded (no recursion)
     std::vector<char> hidden;   // layers frozen in the viewport being drawn
     std::vector<char> skip;     // the model space's prims not in the viewport being drawn
-    size_t points = 0, work = 0;
+    size_t points, work;        // (of all the pages)
     // (block references exploding, arrays or nested: drawn in part)
     static constexpr size_t kMaxPoints = 40000000, kMaxWork = 100000000;
+
+    Flat(Parser &p, nitrodxf *d, std::vector<Item> &it, size_t pts, size_t wk)
+        : P(p), doc(d), items(it), otext0(d->otexts.size()), active(p.blocks.size()), hidden(p.layers.size()), points(pts), work(wk) {}
 
     struct Ctx {
         int layer;
@@ -1967,20 +1994,20 @@ struct Flat {
 
     // a new item, or the last one if it can take more of the same
     size_t item(uint8_t kind, uint32_t rgba, float width, int dsh) {
-        if (!doc->items.empty()) {
-            Item &it = doc->items.back();
+        if (!items.empty()) {
+            Item &it = items.back();
             if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh &&
                 (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 2048)
-                return doc->items.size() - 1;
+                return items.size() - 1;
         }
         Item it{};
         it.kind = kind;
         it.rgba = rgba;
         it.width = width;
         it.dash = dsh;
-        doc->items.push_back(it);
+        items.push_back(it);
         pend.emplace_back();
-        return doc->items.size() - 1;
+        return items.size() - 1;
     }
     void geo(Pending &pd, const Block &b, const Prim &p, const M2 &m) {
         size_t pi = p.p0;
@@ -2044,7 +2071,7 @@ struct Flat {
             }
             case K_TEXT: {
                 size_t i = item(O_TEXT, rgba, 0, -1);
-                doc->items[i].aux = (int)doc->otexts.size();
+                items[i].aux = (int)doc->otexts.size();
                 doc->otexts.push_back({p.aux, {}, rgba});
                 M2 tm = m * doc->texts[p.aux].m;
                 textM.push_back(tm);
@@ -2056,7 +2083,7 @@ struct Flat {
             case K_HATCH: {
                 size_t i = item(O_HATCH, rgba, 0, -1);
                 geo(pend[i], b, p, m);
-                doc->items[i].aux = (int)pats.size();
+                items[i].aux = (int)pats.size();
                 Pattern pt = P.patterns[p.aux];
                 for (PatLine &pl : pt) {
                     pl.base = m(pl.base);
@@ -2075,7 +2102,7 @@ struct Flat {
 
     // the model space through a viewport, clipped to its rectangle
     void viewport(const Block &ms, const VPort &v, const Ctx &ctx) {
-        size_t n = doc->items.size();
+        size_t n = items.size();
         item(O_CLIP, 0, 0, -1);
         pend.back().pt = {{v.r[0], v.r[1]}, {v.r[2], v.r[3]}};
         for (int l : v.frozen) hidden[l] = 1;
@@ -2088,8 +2115,8 @@ struct Flat {
         expand(ms, v.m, ctx, 0);
         skip.clear();
         for (int l : v.frozen) hidden[l] = 0;
-        if (doc->items.size() == n + 1) {   // (nothing in it)
-            doc->items.pop_back();
+        if (items.size() == n + 1) {   // (nothing in it)
+            items.pop_back();
             pend.pop_back();
         } else
             item(O_UNCLIP, 0, 0, -1);
@@ -2239,6 +2266,117 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
     plutovg_path_destroy(lines);
 }
 
+// A page's display list: boxes, the shown area, then float paths around its centre. False if
+// it shows nothing.
+bool finish_page(Flat &F, Page &pg) {
+    nitrodxf *doc = F.doc;
+    if (pg.items.empty()) return false;
+    std::vector<std::array<double, 4>> box(pg.items.size()), raw(pg.items.size());   // (raw: not clipped)
+    double clip[4] = {};
+    bool clipped = false;
+    for (size_t i = 0; i < pg.items.size(); i++) {
+        double b[4] = {1e300, 1e300, -1e300, -1e300};
+        Item &it = pg.items[i];
+        auto &pts = F.pend[i].pt;
+        size_t n = it.kind == O_XLINE || it.kind == O_RAY ? std::min<size_t>(1, pts.size()) : pts.size();
+        bool bad = !(it.width < 1e15f);
+        for (size_t k = 0; k < n && !bad; k++) bad = !finite(pts[k]);
+        if (bad) {   // (out of any drawing, a damaged file's block references or viewports: left out)
+            it.kind = O_FILL;
+            it.width = 0;
+            F.pend[i].cmd.clear();
+            pts.clear();
+            box[i] = raw[i] = {1e300, 1e300, -1e300, -1e300};
+            continue;
+        }
+        for (size_t k = 0; k < n; k++) {
+            b[0] = std::min(b[0], pts[k].x);
+            b[1] = std::min(b[1], pts[k].y);
+            b[2] = std::max(b[2], pts[k].x);
+            b[3] = std::max(b[3], pts[k].y);
+        }
+        double h = it.width / 2;
+        box[i] = raw[i] = {b[0] - h, b[1] - h, b[2] + h, b[3] + h};
+        if (it.kind == O_CLIP) {   // (its rectangle: not in the extents; what is drawn in it, clipped)
+            memcpy(clip, b, sizeof clip);
+            box[i] = {1e300, 1e300, -1e300, -1e300};
+            clipped = true;
+        } else if (it.kind == O_UNCLIP)
+            clipped = false;
+        else if (clipped)
+            box[i] = {std::max(box[i][0], clip[0]), std::max(box[i][1], clip[1]), std::min(box[i][2], clip[2]), std::min(box[i][3], clip[3])};
+    }
+    double ext[4];
+    extents(pg.items, box, ext);
+    if (!(ext[2] >= ext[0] && ext[3] >= ext[1])) return false;
+    double w = ext[2] - ext[0], h = ext[3] - ext[1], s = std::max(w, h);
+    if (!(s > 0)) s = 1;
+    double margin = 0.015 * s;
+    w = std::max(w, s / 1000);   // (a single line: not a zero-width image)
+    h = std::max(h, s / 1000);
+    pg.ox = (ext[0] + ext[2]) / 2;
+    pg.oy = (ext[1] + ext[3]) / 2;
+    pg.ax0 = -w / 2 - margin;
+    pg.ax1 = w / 2 + margin;
+    pg.ay0 = -h / 2 - margin;
+    pg.ay1 = h / 2 + margin;
+    double ox = pg.ox, oy = pg.oy;
+    for (size_t i = 0; i < pg.items.size(); i++) {
+        Item &it = pg.items[i];
+        Pending &pd = F.pend[i];
+        it.bx0 = (float)(raw[i][0] - ox);
+        it.by0 = (float)(raw[i][1] - oy);
+        it.bx1 = (float)(raw[i][2] - ox);
+        it.by1 = (float)(raw[i][3] - oy);
+        if (it.kind == O_CLIP) {
+            it.bx0 = (float)(pd.pt[0].x - ox), it.by0 = (float)(pd.pt[0].y - oy);
+            it.bx1 = (float)(pd.pt[1].x - ox), it.by1 = (float)(pd.pt[1].y - oy);
+        } else if (it.kind == O_UNCLIP) {
+        } else if (it.kind == O_XLINE || it.kind == O_RAY) {
+            it.aux = (int)doc->xlines.size() / 4;
+            for (float v : {(float)(pd.pt[0].x - ox), (float)(pd.pt[0].y - oy), (float)pd.pt[1].x, (float)pd.pt[1].y}) doc->xlines.push_back(v);
+        } else if (it.kind == O_TEXT) {
+            const M2 &m = F.textM[(size_t)it.aux - F.otext0];
+            float *fm = doc->otexts[it.aux].m;
+            fm[0] = (float)m.a, fm[1] = (float)m.b, fm[2] = (float)m.c, fm[3] = (float)m.d, fm[4] = (float)(m.e - ox), fm[5] = (float)(m.f - oy);
+        } else {
+            it.path = plutovg_path_create();
+            if (it.kind == O_POINTS || it.kind == O_DOTS) {
+                for (const V2 &q : pd.pt) plutovg_path_move_to(it.path, (float)(q.x - ox), (float)(q.y - oy));
+            } else {
+                plutovg_path_reserve(it.path, (int)pd.pt.size() + (int)pd.cmd.size());
+                size_t pi = 0;
+                for (uint8_t c : pd.cmd) {
+                    const V2 *q = &pd.pt[pi];
+                    switch (c) {
+                    case C_MOVE: plutovg_path_move_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy)), pi++; break;
+                    case C_LINE: plutovg_path_line_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy)), pi++; break;
+                    case C_CUBIC:
+                        plutovg_path_cubic_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy), (float)(q[1].x - ox), (float)(q[1].y - oy),
+                                              (float)(q[2].x - ox), (float)(q[2].y - oy));
+                        pi += 3;
+                        break;
+                    default: plutovg_path_close(it.path);
+                    }
+                }
+            }
+            if (it.kind == O_HATCH) {
+                std::vector<OPatLine> op;
+                for (const PatLine &pl : F.pats[it.aux]) {
+                    OPatLine o{(float)(pl.base.x - ox), (float)(pl.base.y - oy), (float)pl.dir.x, (float)pl.dir.y, (float)pl.off.x, (float)pl.off.y, {}};
+                    for (double d : pl.dashes) o.dashes.push_back((float)d);
+                    op.push_back(std::move(o));
+                }
+                it.aux = (int)doc->opatterns.size();
+                doc->opatterns.push_back(std::move(op));
+            }
+        }
+        Pending().cmd.swap(pd.cmd);
+        Pending().pt.swap(pd.pt);
+    }
+    return true;
+}
+
 } // namespace
 
 nitrodxf *nitrodxf_load(const void *data, size_t len) {
@@ -2315,9 +2453,13 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
                 continue;
             }
         }
+        if (section == "OBJECTS") {
+            if (r.type == "LAYOUT") P.layout(r);
+            continue;
+        }
         bool paper = r.i(67) == 1;
         if (r.type == "VIEWPORT") {
-            if (paper && section == "ENTITIES") P.viewport(r);
+            if (Block *b = target(paper); b && b != &P.model) P.viewport(r, *b, b == &P.paper);
             continue;
         }
         if (r.type == "POLYLINE") {
@@ -2336,151 +2478,70 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     }
     flushPoly();   // (a file of entities alone, without sections: they were read into the model space)
 
-    // the model space (its entities, or the *Model_Space block), else the paper space; saved on
-    // a layout: the paper space, over the model space in its viewports
-    const Block *top = &P.model;
-    auto named = [&](const char *n) -> const Block * {
+    // The pages: the model space, then the layouts in their tabs' order (a layout's sheet: its
+    // paper space, over the model space in its viewports). Empty ones are left out, and so is an
+    // Inventor drawing's model space (its views piled up, for the viewports) when a sheet shows.
+    auto named = [&](const std::string &n) -> const Block * {
         auto it = P.blockIndex.find(n);
         return it == P.blockIndex.end() ? nullptr : &P.blocks[it->second];
     };
     const Block *ms = named("*MODEL_SPACE"), *ps = named("*PAPER_SPACE");
-    if (!top->prims.empty() || !ms) ms = top;
-    if (top->prims.empty()) top = !ms->prims.empty() ? ms : !P.paper.prims.empty() ? &P.paper : ps && !ps->prims.empty() ? ps : top;
+    if (!P.model.prims.empty() || !ms) ms = &P.model;
+    const Block *paper = P.paper.prims.empty() && P.paper.vports.empty() && ps ? ps : &P.paper;
+    bool inventor = ms == &P.model && !P.idwViews.empty() && P.idwViews.size() == P.model.prims.size();
+    std::vector<const Block *> srcs;   // (nullptr: the model space)
+    if (!inventor) srcs.push_back(nullptr);
+    std::stable_sort(P.layouts.begin(), P.layouts.end(), [](const Parser::Layout &a, const Parser::Layout &b) { return a.tab < b.tab; });
+    for (const Parser::Layout &l : P.layouts) {
+        auto it = P.blockNames.find(l.record);
+        if (it == P.blockNames.end() || it->second == "*MODEL_SPACE") continue;
+        const Block *b = it->second == "*PAPER_SPACE" ? paper : named(it->second);
+        if (b && std::find(srcs.begin(), srcs.end(), b) == srcs.end()) srcs.push_back(b);
+    }
+    if (std::find(srcs.begin(), srcs.end(), paper) == srcs.end()) srcs.push_back(paper);   // (up to R14 no layouts: one)
+    if (inventor) srcs.push_back(nullptr);   // (only if no sheet shows)
     std::sort(P.idwViews.begin(), P.idwViews.end());
-    Flat F{P, doc.get(), {}, {}, {}, {}, std::vector<char>(P.blocks.size()), std::vector<char>(P.layers.size()), {}, 0};
-    Flat::Ctx ctx{0, aci_rgb(7), LT_CONTINUOUS};
-    if (P.tilemode == 0 && (!P.vports.empty() || !P.paper.prims.empty())) {
-        for (const VPort &v : P.vports) F.viewport(*ms, v, ctx);
-        top = &P.paper;
+    size_t points = 0, work = 0;
+    for (const Block *src : srcs) {
+        if (doc->pages.size() >= 64 || (!src && inventor && !doc->pages.empty())) break;
+        Page pg;
+        Flat F(P, doc.get(), pg.items, points, work);
+        Flat::Ctx ctx{0, aci_rgb(7), LT_CONTINUOUS};
+        if (src) {
+            for (const VPort &v : src->vports) F.viewport(*ms, v, ctx);
+            F.expand(*src, M2(), ctx, 0);
+        } else
+            F.expand(*ms, M2(), ctx, 0);
+        points = F.points, work = F.work;
+        if (finish_page(F, pg)) doc->pages.push_back(std::move(pg));
+        else
+            for (Item &it : pg.items) plutovg_path_destroy(it.path);
     }
-    F.expand(*top, M2(), ctx, 0);
-    if (doc->items.empty()) return nullptr;
-
-    // boxes, the shown area, then float paths around its centre
-    std::vector<std::array<double, 4>> box(doc->items.size());
-    double clip[4] = {};
-    bool clipped = false;
-    for (size_t i = 0; i < doc->items.size(); i++) {
-        double b[4] = {1e300, 1e300, -1e300, -1e300};
-        Item &it = doc->items[i];
-        auto &pts = F.pend[i].pt;
-        size_t n = it.kind == O_XLINE || it.kind == O_RAY ? std::min<size_t>(1, pts.size()) : pts.size();
-        bool bad = !(it.width < 1e15f);
-        for (size_t k = 0; k < n && !bad; k++) bad = !finite(pts[k]);
-        if (bad) {   // (out of any drawing, a damaged file's block references or viewports: left out)
-            it.kind = O_FILL;
-            it.width = 0;
-            F.pend[i].cmd.clear();
-            pts.clear();
-            box[i] = {1e300, 1e300, -1e300, -1e300};
-            continue;
-        }
-        for (size_t k = 0; k < n; k++) {
-            b[0] = std::min(b[0], pts[k].x);
-            b[1] = std::min(b[1], pts[k].y);
-            b[2] = std::max(b[2], pts[k].x);
-            b[3] = std::max(b[3], pts[k].y);
-        }
-        double h = it.width / 2;
-        box[i] = {b[0] - h, b[1] - h, b[2] + h, b[3] + h};
-        if (it.kind == O_CLIP) {   // (its rectangle: not in the extents; what is drawn in it, clipped)
-            memcpy(clip, b, sizeof clip);
-            box[i] = {1e300, 1e300, -1e300, -1e300};
-            clipped = true;
-        } else if (it.kind == O_UNCLIP)
-            clipped = false;
-        else if (clipped)
-            box[i] = {std::max(box[i][0], clip[0]), std::max(box[i][1], clip[1]), std::min(box[i][2], clip[2]), std::min(box[i][3], clip[3])};
-    }
-    double ext[4];
-    extents(doc->items, box, ext);
-    if (!(ext[2] >= ext[0] && ext[3] >= ext[1])) return nullptr;
-    double w = ext[2] - ext[0], h = ext[3] - ext[1], s = std::max(w, h);
-    if (!(s > 0)) s = 1;
-    double margin = 0.015 * s;
-    w = std::max(w, s / 1000);   // (a single line: not a zero-width image)
-    h = std::max(h, s / 1000);
-    doc->ox = (ext[0] + ext[2]) / 2;
-    doc->oy = (ext[1] + ext[3]) / 2;
-    doc->ax0 = -w / 2 - margin;
-    doc->ax1 = w / 2 + margin;
-    doc->ay0 = -h / 2 - margin;
-    doc->ay1 = h / 2 + margin;
-    double ox = doc->ox, oy = doc->oy;
-    for (size_t i = 0; i < doc->items.size(); i++) {
-        Item &it = doc->items[i];
-        Pending &pd = F.pend[i];
-        it.bx0 = (float)(box[i][0] - ox);
-        it.by0 = (float)(box[i][1] - oy);
-        it.bx1 = (float)(box[i][2] - ox);
-        it.by1 = (float)(box[i][3] - oy);
-        if (it.kind == O_CLIP) {
-            it.bx0 = (float)(pd.pt[0].x - ox), it.by0 = (float)(pd.pt[0].y - oy);
-            it.bx1 = (float)(pd.pt[1].x - ox), it.by1 = (float)(pd.pt[1].y - oy);
-        } else if (it.kind == O_UNCLIP) {
-        } else if (it.kind == O_XLINE || it.kind == O_RAY) {
-            it.aux = (int)doc->xlines.size() / 4;
-            for (float v : {(float)(pd.pt[0].x - ox), (float)(pd.pt[0].y - oy), (float)pd.pt[1].x, (float)pd.pt[1].y}) doc->xlines.push_back(v);
-        } else if (it.kind == O_TEXT) {
-            const M2 &m = F.textM[it.aux];
-            float *fm = doc->otexts[it.aux].m;
-            fm[0] = (float)m.a, fm[1] = (float)m.b, fm[2] = (float)m.c, fm[3] = (float)m.d, fm[4] = (float)(m.e - ox), fm[5] = (float)(m.f - oy);
-        } else {
-            it.path = plutovg_path_create();
-            if (it.kind == O_POINTS || it.kind == O_DOTS) {
-                for (const V2 &q : pd.pt) plutovg_path_move_to(it.path, (float)(q.x - ox), (float)(q.y - oy));
-            } else {
-                plutovg_path_reserve(it.path, (int)pd.pt.size() + (int)pd.cmd.size());
-                size_t pi = 0;
-                for (uint8_t c : pd.cmd) {
-                    const V2 *q = &pd.pt[pi];
-                    switch (c) {
-                    case C_MOVE: plutovg_path_move_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy)), pi++; break;
-                    case C_LINE: plutovg_path_line_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy)), pi++; break;
-                    case C_CUBIC:
-                        plutovg_path_cubic_to(it.path, (float)(q[0].x - ox), (float)(q[0].y - oy), (float)(q[1].x - ox), (float)(q[1].y - oy),
-                                              (float)(q[2].x - ox), (float)(q[2].y - oy));
-                        pi += 3;
-                        break;
-                    default: plutovg_path_close(it.path);
-                    }
-                }
-            }
-            if (it.kind == O_HATCH) {
-                std::vector<OPatLine> op;
-                for (const PatLine &pl : F.pats[it.aux]) {
-                    OPatLine o{(float)(pl.base.x - ox), (float)(pl.base.y - oy), (float)pl.dir.x, (float)pl.dir.y, (float)pl.off.x, (float)pl.off.y, {}};
-                    for (double d : pl.dashes) o.dashes.push_back((float)d);
-                    op.push_back(std::move(o));
-                }
-                it.aux = (int)doc->opatterns.size();
-                doc->opatterns.push_back(std::move(op));
-            }
-        }
-        Pending().cmd.swap(pd.cmd);
-        Pending().pt.swap(pd.pt);
-    }
+    if (doc->pages.empty()) return nullptr;
     return doc.release();
 }
 
 void nitrodxf_free(nitrodxf *dxf) { delete dxf; }
 
-int nitrodxf_pages(const nitrodxf *dxf) { return dxf ? 1 : 0; }
+int nitrodxf_pages(const nitrodxf *dxf) { return dxf ? (int)dxf->pages.size() : 0; }
 
 void nitrodxf_set_background(nitrodxf *dxf, int background) {
     if (dxf && background >= 0 && background <= 2) dxf->background = background;
 }
 
 void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
-    (void)page;
-    *w = dxf->ax1 - dxf->ax0;
-    *h = dxf->ay1 - dxf->ay0;
+    *w = *h = 0;
+    if (!dxf || page < 0 || page >= (int)dxf->pages.size()) return;
+    const Page &pg = dxf->pages[(size_t)page];
+    *w = pg.ax1 - pg.ax0;
+    *h = pg.ay1 - pg.ay0;
 }
 
 static constexpr double kFar = 1 << 24;   // device pixels out of the view
 
 int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    if (!dxf || page != 0 || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    const Page &pg = dxf->pages[(size_t)page];
     uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
     for (int y = 0; y < h; y++) {
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
@@ -2488,7 +2549,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     }
     plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
     plutovg_canvas_t *c = plutovg_canvas_create(surface);
-    double vx0 = dxf->ax0 + x0, vy1 = dxf->ay1 - y0;   // the view in drawing units (around the origin)
+    double vx0 = pg.ax0 + x0, vy1 = pg.ay1 - y0;   // the view in drawing units (around the origin)
     plutovg_matrix_t mt = {(float)scale, 0, 0, (float)-scale, (float)(-scale * vx0), (float)(scale * vy1)};
     plutovg_canvas_set_matrix(c, &mt);
     float hair = (float)(1 / scale), fs = (float)scale;
@@ -2496,10 +2557,14 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     plutovg_path_t *tmp = plutovg_path_create();
     std::vector<float> dashes;
     plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
-    for (const Item &it : dxf->items) {
-        if (it.kind != O_XLINE && it.kind != O_RAY && it.kind != O_CLIP && it.kind != O_UNCLIP &&
-            (it.bx1 < view[0] || it.bx0 > view[2] || it.by1 < view[1] || it.by0 > view[3] ||
-             std::max(view[0] - it.bx0, std::max(it.bx1 - view[2], std::max(view[1] - it.by0, it.by1 - view[3]))) * scale > kFar))
+    float clip[4] = {-FLT_MAX, -FLT_MAX, FLT_MAX, FLT_MAX};   // (the viewport drawn in)
+    for (const Item &it : pg.items) {
+        if (it.kind == O_CLIP) clip[0] = it.bx0, clip[1] = it.by0, clip[2] = it.bx1, clip[3] = it.by1;
+        else if (it.kind == O_UNCLIP) clip[0] = clip[1] = -FLT_MAX, clip[2] = clip[3] = FLT_MAX;
+        else if (it.kind != O_XLINE && it.kind != O_RAY &&
+                 (std::min(it.bx1, clip[2]) < view[0] || std::max(it.bx0, clip[0]) > view[2] || std::min(it.by1, clip[3]) < view[1] ||
+                  std::max(it.by0, clip[1]) > view[3] ||
+                  std::max(view[0] - it.bx0, std::max(it.bx1 - view[2], std::max(view[1] - it.by0, it.by1 - view[3]))) * scale > kFar))
             continue;   // (kFar: plutovg's fixed point would overflow; far-off strays of a damaged file)
         uint32_t rgba = on_background(it.rgba, dxf->background);
         switch (it.kind) {
@@ -2523,7 +2588,12 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
             plutovg_canvas_set_fill_rule(c, it.kind == O_FILL_EO ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path);
             break;
-        case O_HATCH: draw_hatch(c, it, rgba, dxf->opatterns[it.aux], view, fs); break;
+        case O_HATCH: {   // (its lines generated in the viewport's part of the view only)
+            double cv[4] = {std::max(view[0], (double)clip[0]), std::max(view[1], (double)clip[1]), std::min(view[2], (double)clip[2]),
+                            std::min(view[3], (double)clip[3])};
+            draw_hatch(c, it, rgba, dxf->opatterns[it.aux], cv, fs);
+            break;
+        }
         case O_POINTS:
         case O_DOTS: {   // as $PDMODE: 0 a dot, 1 nothing, 2 +, 3 x, 4 a tick; +32 a circle, +64 a square
             int mode = it.kind == O_DOTS ? 0 : dxf->pdmode;
