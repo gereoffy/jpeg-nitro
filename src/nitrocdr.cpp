@@ -259,6 +259,15 @@ struct Line {
     float before = 1, after = 0;   // the paragraph's spacing before / after it (1: 100%; < 0: points)
     plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (libcdr gives
     float emptySize = 0;                        // a line break the text's size) or the empty paragraph's
+    static Line like(const Line &o) {   // a new line with o's paragraph settings (no text, not a paragraph start)
+        Line l;
+        l.align = o.align;
+        l.spacing = o.spacing;
+        l.lineHeight = o.lineHeight;
+        l.before = o.before;
+        l.after = o.after;
+        return l;
+    }
 };
 struct Text {
     float x = 0, y = 0, w = 0, h = 0, rotate = 0;   // frame (w = h = 0: artistic text at x, y)
@@ -540,36 +549,27 @@ public:
     void defineParagraphStyle(const RVNGPropertyList &) override {}
     void openParagraph(const RVNGPropertyList &p) override {
         if (!m_text) return;
-        m_align = 0;
-        m_spacing = 1;
-        m_lineHeight = 0;
-        m_before = 1;
-        m_after = 0;
+        m_para = Line();
         auto spacing = [](const RVNGProperty *v, float &out) {   // (libcdr: as the line height, a share of
             if (!v) return;                                       // the character height or points)
             double d = v->getUnit() == librevenge::RVNG_PERCENT ? v->getDouble() : -points(v);
             if (d > -10000 && d < 100) out = (float)d;
         };
-        spacing(p["fo:margin-top"], m_before);
-        spacing(p["fo:margin-bottom"], m_after);
+        spacing(p["fo:margin-top"], m_para.before);
+        spacing(p["fo:margin-bottom"], m_para.after);
         if (const RVNGProperty *lh = p["fo:line-height"]) {
             double sp = lh->getDouble();
             if (lh->getUnit() == librevenge::RVNG_PERCENT) {
-                if (sp > 0.01 && sp < 100) m_spacing = (float)sp;
+                if (sp > 0.01 && sp < 100) m_para.spacing = (float)sp;
             } else {
                 double pt = points(lh);
-                if (pt > 0.01 && pt < 10000) m_lineHeight = (float)pt;
+                if (pt > 0.01 && pt < 10000) m_para.lineHeight = (float)pt;
             }
         }
-        if (is(p, "fo:text-align", "center")) m_align = 1;
-        else if (is(p, "fo:text-align", "end") || is(p, "fo:text-align", "right")) m_align = 2;
-        m_text->lines.emplace_back();
-        m_text->lines.back().align = m_align;
-        m_text->lines.back().spacing = m_spacing;
-        m_text->lines.back().lineHeight = m_lineHeight;
+        if (is(p, "fo:text-align", "center")) m_para.align = 1;
+        else if (is(p, "fo:text-align", "end") || is(p, "fo:text-align", "right")) m_para.align = 2;
+        m_text->lines.push_back(Line::like(m_para));
         m_text->lines.back().paragraph = true;
-        m_text->lines.back().before = m_before;
-        m_text->lines.back().after = m_after;
         m_paragraphOpened = true;
     }
     void closeParagraph() override {}
@@ -629,8 +629,7 @@ private:
     }
     std::unique_ptr<Text> m_text;
     Span m_span;
-    int m_align = 0;
-    float m_spacing = 1, m_lineHeight = 0, m_before = 1, m_after = 0;
+    Line m_para;   // the open paragraph's settings (alignment, spacings), for its lines
     bool m_paragraphOpened = false;   // the last line is a paragraph of libcdr's (not a line break)
     bool m_inPage = false, m_inMaster = false;
 
@@ -690,15 +689,11 @@ private:
 
     void newLine() {
         if (!m_text) return;
-        m_text->lines.emplace_back();
-        m_text->lines.back().align = m_align;
-        m_text->lines.back().spacing = m_spacing;
-        m_text->lines.back().lineHeight = m_lineHeight;
-        m_text->lines.back().paragraph = true;   // (libcdr: a paragraph's end, CorelDRAW's CR)
-        m_text->lines.back().before = m_before;
-        m_text->lines.back().after = m_after;
-        m_text->lines.back().emptyFace = m_span.face;
-        m_text->lines.back().emptySize = m_span.size;
+        Line l = Line::like(m_para);
+        l.paragraph = true;   // (libcdr: a paragraph's end, CorelDRAW's CR)
+        l.emptyFace = m_span.face;
+        l.emptySize = m_span.size;
+        m_text->lines.push_back(std::move(l));
         m_paragraphOpened = false;
     }
     // the text in spans of one face each: characters the span's font lacks come from a fallback font
@@ -776,13 +771,8 @@ private:
                 out.push_back(l);
                 return;
             }
-        Line cur;
-        cur.align = l.align;
-        cur.spacing = l.spacing;
-        cur.lineHeight = l.lineHeight;
+        Line cur = Line::like(l);
         cur.paragraph = l.paragraph;
-        cur.before = l.before;
-        cur.after = l.after;
         float x = 0;
         auto flush = [&]() {
             while (!cur.spans.empty()) {   // (no trailing spaces: they would shift a centred line)
@@ -793,12 +783,7 @@ private:
             }
             measure(cur);
             out.push_back(std::move(cur));
-            cur = Line();
-            cur.align = l.align;
-            cur.spacing = l.spacing;
-            cur.lineHeight = l.lineHeight;
-            cur.before = l.before;
-            cur.after = l.after;
+            cur = Line::like(l);
             x = 0;
         };
         for (const Span &s : l.spans) {
