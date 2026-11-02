@@ -1992,13 +1992,13 @@ struct Flat {
         return P.dashIndex[key] = idx;
     }
 
-    // a new item, or the last one if it can take more of the same (up to 128 path commands:
+    // a new item, or the last one if it can take more of the same (up to 32 path commands:
     // plutovg's time grows faster than a path's size)
     size_t item(uint8_t kind, uint32_t rgba, float width, int dsh) {
         if (!items.empty()) {
             Item &it = items.back();
             if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh &&
-                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 128)
+                (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 32)
                 return items.size() - 1;
         }
         Item it{};
@@ -2184,6 +2184,48 @@ uint32_t on_background(uint32_t rgba, int background) {
     return a | (uint32_t)(r * k) << 16 | (uint32_t)(g * k) << 8 | (uint32_t)(b * k);
 }
 
+// A hairline's segments as quads one device pixel wide (filled: much cheaper than plutovg's
+// stroker, the same with butt caps), its curves cut into lines a fraction of a pixel close.
+void hairline_quads(plutovg_path_t *out, const plutovg_path_t *path, float hair, float scale) {
+    struct Q {
+        plutovg_path_t *out;
+        float h, scale, x, y, sx, sy;
+        void seg(float x1, float y1) {
+            float dx = x1 - x, dy = y1 - y, l = std::sqrt(dx * dx + dy * dy);
+            if (l > 0) {
+                float nx = -dy / l * h, ny = dx / l * h;
+                plutovg_path_move_to(out, x + nx, y + ny);
+                plutovg_path_line_to(out, x1 + nx, y1 + ny);
+                plutovg_path_line_to(out, x1 - nx, y1 - ny);
+                plutovg_path_line_to(out, x - nx, y - ny);
+                plutovg_path_close(out);
+            }
+            x = x1, y = y1;
+        }
+    } q{out, hair / 2, scale, 0, 0, 0, 0};
+    plutovg_path_reset(out);
+    plutovg_path_traverse(path, [](void *cl, plutovg_path_command_t cmd, const plutovg_point_t *p, int n) {
+        Q &q = *static_cast<Q *>(cl);
+        switch (cmd) {
+        case PLUTOVG_PATH_COMMAND_MOVE_TO: q.x = q.sx = p[0].x, q.y = q.sy = p[0].y; break;
+        case PLUTOVG_PATH_COMMAND_LINE_TO: q.seg(p[0].x, p[0].y); break;
+        case PLUTOVG_PATH_COMMAND_CUBIC_TO: {
+            float x0 = q.x, y0 = q.y;
+            float len = (std::hypot(p[0].x - x0, p[0].y - y0) + std::hypot(p[1].x - p[0].x, p[1].y - p[0].y) + std::hypot(p[2].x - p[1].x, p[2].y - p[1].y)) * q.scale;
+            int k = (int)std::min(256.0f, std::max(1.0f, std::ceil(std::sqrt(len))));
+            for (int i = 1; i <= k; i++) {
+                float t = (float)i / k, u = 1 - t;
+                float a = u * u * u, b = 3 * u * u * t, cc = 3 * u * t * t, dd = t * t * t;
+                q.seg(a * x0 + b * p[0].x + cc * p[1].x + dd * p[2].x, a * y0 + b * p[0].y + cc * p[1].y + dd * p[2].y);
+            }
+            break;
+        }
+        default: q.seg(q.sx, q.sy); break;   // (close)
+        }
+        (void)n;
+    }, &q);
+}
+
 // the part [t0, t1] of the line p + t d inside the rectangle; false if none
 bool clip_line(double px, double py, double dx, double dy, const double r[4], double &t0, double &t1) {
     double p[4] = {-dx, dx, -dy, dy}, q[4] = {px - r[0], r[2] - px, py - r[1], r[3] - py};
@@ -2256,24 +2298,24 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
         set_rgba(c, rgba, 0.4f);
         plutovg_canvas_fill_path(c, it.path);
     }
-    if (segs) {   // (stroked a few segments at a time: plutovg's time grows faster than their number)
+    if (segs) {
         plutovg_canvas_clip_path(c, it.path);
         set_rgba(c, rgba);
-        plutovg_canvas_set_line_width(c, hair);
-        plutovg_canvas_set_dash(c, 0, nullptr, 0);
+        plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
+        // (each line filled alone: plutovg's rasterizer keeps a scanline's cells in a list, so
+        // the time grows with the square of the lines crossing the same scanlines in one path)
         const plutovg_path_element_t *el;
-        int ne = plutovg_path_get_elements(lines, &el), n = 0;
-        plutovg_path_t *part = plutovg_path_create();
+        int ne = plutovg_path_get_elements(lines, &el);
+        plutovg_path_t *part = plutovg_path_create(), *quads = plutovg_path_create();
         for (int k = 0; k + 3 < ne; k += 4) {   // (move_to, point, line_to, point)
+            plutovg_path_reset(part);
             plutovg_path_move_to(part, el[k + 1].point.x, el[k + 1].point.y);
             plutovg_path_line_to(part, el[k + 3].point.x, el[k + 3].point.y);
-            if (++n == 4 || k + 4 >= ne) {
-                plutovg_canvas_stroke_path(c, part);
-                plutovg_path_reset(part);
-                n = 0;
-            }
+            hairline_quads(quads, part, hair, scale);
+            plutovg_canvas_fill_path(c, quads);
         }
         plutovg_path_destroy(part);
+        plutovg_path_destroy(quads);
     }
     plutovg_canvas_restore(c);
     plutovg_path_destroy(lines);
@@ -2618,10 +2660,17 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
         switch (it.kind) {
         case O_STROKE: {
             set_rgba(c, rgba);
+            const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
+            bool dashed = d && d->total * fs >= 4;   // (finer than that: drawn solid)
+            if (it.width <= hair && !dashed) {
+                hairline_quads(tmp, it.path, hair, fs);
+                plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
+                plutovg_canvas_fill_path(c, tmp);
+                break;
+            }
             plutovg_canvas_set_line_width(c, std::max(it.width, hair));
             plutovg_canvas_set_line_join(c, it.width > hair ? PLUTOVG_LINE_JOIN_MITER : PLUTOVG_LINE_JOIN_BEVEL);
-            const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
-            if (d && d->total * fs >= 4) {   // (finer than that: drawn solid)
+            if (dashed) {
                 dashes.assign(d->d.begin(), d->d.end());
                 for (size_t k = 0; k < dashes.size(); k += 2) dashes[k] = std::max(dashes[k], hair);
                 plutovg_canvas_set_dash(c, d->offset, dashes.data(), (int)dashes.size());
