@@ -471,13 +471,21 @@ public:
     static plutovg_path_t *buildPath(const RVNGPropertyListVector &dv) {
         const RVNGPropertyListVector *d = &dv;
         plutovg_path_t *path = plutovg_path_create();
+        bool open = false;   // a current point: a path that starts without a move starts at its first point (libvisio emits
+                             // such for a shape that overrides a few rows of its master's geometry; plutovg would start at 0, 0)
         for (unsigned long i = 0; i < d->count(); i++) {
             const RVNGPropertyList &e = (*d)[i];
             if (!e["librevenge:path-action"]) continue;
             RVNGString a = e["librevenge:path-action"]->getStr();
             float x = (float)points(e["svg:x"]), y = (float)points(e["svg:y"]);
-            switch (a.cstr()[0]) {
-            case 'M': plutovg_path_move_to(path, x, y); break;
+            char cmd = a.cstr()[0];
+            if (!open && cmd != 'M' && cmd != 'Z') {
+                plutovg_path_move_to(path, cmd == 'H' ? x : cmd == 'V' ? 0 : x, cmd == 'V' ? y : cmd == 'H' ? 0 : y);
+                open = true;
+                continue;
+            }
+            switch (cmd) {
+            case 'M': plutovg_path_move_to(path, x, y), open = true; break;
             case 'L': plutovg_path_line_to(path, x, y); break;
             case 'H': plutovg_path_line_to(path, x, currentY(path)); break;
             case 'V': plutovg_path_line_to(path, currentX(path), y); break;
