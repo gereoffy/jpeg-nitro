@@ -847,18 +847,34 @@ private:
         }
     }
 
-    void newLine() {
+    void newLine(bool paragraph = true) {
         if (!m_text) return;
         Line l = Line::like(m_para);
-        l.paragraph = true;   // (libcdr: a paragraph's end, CorelDRAW's CR)
+        l.paragraph = paragraph;   // (libcdr: a paragraph's end, CorelDRAW's CR; not: a line break in a paragraph)
         l.emptyFace = m_span.face;
         l.emptySize = m_span.size;
         m_text->lines.push_back(std::move(l));
         m_paragraphOpened = false;
     }
-    // the text in spans of one face each: characters the span's font lacks come from a fallback font
+    // the text in spans of one face each: characters the span's font lacks come from a fallback font.
+    // In libvisio's text Unicode's line and paragraph separators break the line (Visio's line
+    // breaks: libvisio passes them as they are from the binary files); libcdr's are left as they
+    // were (CorelDRAW's previews and PDF exports show such texts on one line)
     void appendText(const std::string &s) {
         if (m_text->lines.empty()) newLine();
+        for (size_t i = 0, start = 0; !corel && i <= s.size(); i++)
+            if (i == s.size() || (i + 2 < s.size() && (unsigned char)s[i] == 0xe2 && (unsigned char)s[i + 1] == 0x80 &&
+                                  ((unsigned char)s[i + 2] == 0xa8 || (unsigned char)s[i + 2] == 0xa9))) {
+                if (i == s.size() && start == 0) break;   // (none)
+                if (i > start) appendRun(s.substr(start, i - start));
+                if (i == s.size()) return;
+                newLine((unsigned char)s[i + 2] == 0xa9);
+                start = i + 3;
+                i += 2;
+            }
+        appendRun(s);
+    }
+    void appendRun(const std::string &s) {
         std::lock_guard<std::mutex> g(nf_lock());
         size_t start = 0;
         plutovg_font_face_t *runFace = m_span.face;
