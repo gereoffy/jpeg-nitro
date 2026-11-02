@@ -215,7 +215,7 @@ you look at the current one.
 | AVIF             | 41 web AVIFs, average     | **10 ms**  | ImageIO 32 ms                                    |
 | SVG              | 38 MB drawing             | **0.53 s** | WebKit 1.4 s, CoreSVG 2.4 s                      |
 | CorelDRAW        | 17.7 MB all-vector plan   | **1.8 s**  | libcdr's `cdr2xhtml` 5.4 s (SVG conversion only) |
-| DXF              | 7.5 MB floor plan         | **78 ms**  | ezdxf 8.7 s                                      |
+| DXF              | 7.5 MB floor plan         | **45 ms**  | ezdxf 8.7 s                                      |
 
 Measured on an Intel i9 desktop. On a 2020 M1 MacBook Air a 24 MP JPEG decodes in ~30 ms, three
 times faster than Apple's hardware JPEG decoder on the same machine. A folder of 24 MP photos plays

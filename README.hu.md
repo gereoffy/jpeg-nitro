@@ -222,7 +222,7 @@ előre dekódolja, amíg az aktuálisat nézed.
 | AVIF | 41 webes AVIF, átlag | **10 ms** | ImageIO 32 ms |
 | SVG | 38 MB-os rajz | **0,53 s** | WebKit 1,4 s, CoreSVG 2,4 s |
 | CorelDRAW | 17,7 MB-os, csak vektoros terv | **1,8 s** | libcdr `cdr2xhtml` 5,4 s (csak SVG-vé alakítás) |
-| DXF | 7,5 MB-os alaprajz | **78 ms** | ezdxf 8,7 s |
+| DXF | 7,5 MB-os alaprajz | **45 ms** | ezdxf 8,7 s |
 
 Asztali Intel i9-en mérve. Egy 2020-as M1-es MacBook Airen egy 24 MP-es JPEG ~30 ms alatt
 dekódolódik, háromszor gyorsabban, mint ugyanazon a gépen az Apple hardveres JPEG-dekódere. Egy

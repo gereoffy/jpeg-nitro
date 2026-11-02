@@ -19,7 +19,7 @@ Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); the
 | **nitroavif** | AVIF (AV1 in HEIF: 8–12-bit, 4:2:0 – 4:4:4, gray, alpha, grids, crop / rotation / mirroring) | own HEIF parsing (shared with nitroheic), AV1 by [dav1d](https://code.videolan.org/videolan/dav1d); grid tiles decoded in parallel, our own parallel colour conversion (chroma upsampled linearly) | 41 web AVIFs: **~10 ms** avg. (M1: 10.8 ms; Windows i5: 13 ms) | ImageIO ~32 ms (M1: 22 ms); WIC: only with a Store extension |
 | **nitrosvg** | SVG (without filters) | lunasvg parser + plutovg renderer, with font lookup in the system and user font folders | 38 MB SVG: **~0.53 s** | WebKit ~1.4 s, CoreSVG ~2.4 s |
 | **nitrocdr** | CorelDRAW 5 – X6 (CDR), CMX | our [libcdr fork](https://github.com/gereoffy/libcdr) with many fixes (text styles, line spacing, clipping, bitmap transparency) and a 2× faster librevenge; draws directly with plutovg | 17.7 MB all-vector CDR: **~1.8 s**, ~3× faster | original libcdr `cdr2xhtml` ~5.4 s (only converting to SVG) |
-| **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~40 ms** read + **~40 ms** drawn (2000 px); 1.1 GB DXF: 2.4 + 2.4 s | ezdxf (Python) ~8.7 s |
+| **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~25 ms** read + **~20 ms** drawn (2000 px); 1.1 GB DXF: 3.3 + 1.5 s | ezdxf (Python) ~8.7 s |
 
 Times measured on the Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacBook Air a
 24 MP JPEG decodes in ~30 ms, ~3× faster than Apple's hardware JPEG decoder on the same machine
@@ -533,8 +533,8 @@ on 34. Side by side with ezdxf's renderings the drawings match, except
 that ezdxf draws thicker lines and makes up the dimensions whose blocks LibreDWG's R10 conversions
 lost. Under ASan and UBSan every page of these, of the 8412 conversions of the whole collection and
 of 645 cut or corrupted copies opens without errors. On the Intel
-i9 a 243 MB DXF in the viewer (`--bench`, 4096 × 3622): read 84.3 ms, decode 814.8 ms, GPU upload
-15.8 ms.
+i9 a 243 MB DXF in the viewer (4096 × 3622): read 91.1 ms, decode 810.2 ms, key to on screen
+923.9 ms.
 
 Not supported: perspective views and non-rectangular viewport clipping, multileaders, multilines,
 3D solids (ACIS), external references (xrefs), the objects of AutoCAD Architecture / Mechanical
