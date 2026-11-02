@@ -738,6 +738,12 @@ private:
     // Line widths, positions and the bounding box. Artistic text (no frame): the first
     // baseline at (x, y), each line aligned on x. Frame text: lines from the frame's top,
     // aligned in its width. Both turn by 'rotate' about (x, y) / the frame's centre.
+    static void metrics(plutovg_font_face_t *face, float size, float &ascent, float &descent) {
+        float asc = 0, desc = 0, gap = 0;
+        plutovg_font_face_get_metrics(face, size, &asc, &desc, &gap, nullptr);
+        ascent = asc;
+        descent = -desc;
+    }
     // a line's width, size, ascent and descent from its spans (locked by the caller)
     static void measure(Line &l) {
         l.width = 0;
@@ -751,20 +757,15 @@ private:
             pen += s.width;
             l.size = std::max(l.size, s.size);
             if (s.face) {
-                float asc = 0, desc = 0, gap = 0;
-                plutovg_font_face_get_metrics(s.face, s.size, &asc, &desc, &gap, nullptr);
+                float asc, desc;
+                metrics(s.face, s.size, asc, desc);
                 l.ascent = std::max(l.ascent, asc);
-                l.descent = std::max(l.descent, -desc);
+                l.descent = std::max(l.descent, desc);
             }
         }
         if (l.spans.empty() && l.emptySize > 0) {   // an empty line: as high as the line break's font
             l.size = l.emptySize;
-            if (l.emptyFace) {
-                float asc = 0, desc = 0, gap = 0;
-                plutovg_font_face_get_metrics(l.emptyFace, l.size, &asc, &desc, &gap, nullptr);
-                l.ascent = asc;
-                l.descent = -desc;
-            }
+            if (l.emptyFace) metrics(l.emptyFace, l.size, l.ascent, l.descent);
         }
         if (l.size == 0) l.size = 12;
         if (l.ascent == 0) l.ascent = l.size * 0.8f;
