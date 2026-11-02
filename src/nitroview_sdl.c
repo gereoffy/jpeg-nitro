@@ -2418,7 +2418,7 @@ static int do_register(int on) {
             "image/svg+xml;image/vnd.dxf;image/wmf;image/emf;image/x-wmf;image/x-emf;"
 #endif
 #ifdef NV_CDR
-            "image/x-coreldraw;"
+            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;"
 #endif
             "\n"
             "StartupNotify=true\n", q, nh_decoder() ? "image/heic;image/heif;" : "");

@@ -25,6 +25,11 @@
     <mediatype>image/wmf</mediatype>
     <mediatype>image/emf</mediatype>
     <mediatype>image/x-adobe-dng</mediatype>
+    <mediatype>application/vnd.visio</mediatype>
+    <mediatype>application/vnd.ms-visio.drawing.main+xml</mediatype>
+    <mediatype>application/vnd.ms-visio.drawing.macroEnabled.main+xml</mediatype>
+    <mediatype>application/vnd.ms-visio.stencil.main+xml</mediatype>
+    <mediatype>application/vnd.ms-visio.template.main+xml</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
 </component>
