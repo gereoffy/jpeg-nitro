@@ -218,6 +218,7 @@ struct Style {
     std::vector<float> dashes;
     std::string markerStart, markerEnd;   // arrowheads: SVG path data in their own units (libcdr's)
     float markerUnit = 0;                 // one of those, in points; the tip at the line's end, y along it
+    plutovg_matrix_t markerPre[2] = {{1, 0, 0, 1, 0, 0}, {1, 0, 0, 1, 0, 0}};   // applied first (ODF markers, see parseStyle)
 };
 
 struct Span {
@@ -237,6 +238,8 @@ struct Span {
     float width = 0;
     std::string font;           // the font asked for (and its style), for characters its face lacks
     bool bold = false, italic = false;
+    bool background = false;    // a filled box behind it (fo:background-color: Visio's text block background)
+    Color backgroundColor;
 };
 // A span's text's width (unstretched): with character or word spacing the characters' own widths
 // (no kerning), a share of a space's width added after each character but a space, and a space
@@ -269,6 +272,7 @@ struct Line {
     float lineHeight = 0;   // or its spacing in points (> 0: instead of that)
     bool paragraph = false;   // the first line of a paragraph: before it, the paragraph spacing
     float before = 1, after = 0;   // the paragraph's spacing before / after it (1: 100%; < 0: points)
+    float padBefore = 0, padAfter = 0;   // or (ODF, libvisio) margins in points added to the line spacing
     plutovg_font_face_t *emptyFace = nullptr;   // an empty line's font: the line break's (libcdr gives
     float emptySize = 0;                        // a line break the text's size) or the empty paragraph's
     static Line like(const Line &o) {   // a new line with o's paragraph settings (no text, not a paragraph start)
@@ -278,11 +282,17 @@ struct Line {
         l.lineHeight = o.lineHeight;
         l.before = o.before;
         l.after = o.after;
+        l.padBefore = o.padBefore;
+        l.padAfter = o.padAfter;
         return l;
     }
 };
 struct Text {
     float x = 0, y = 0, w = 0, h = 0, rotate = 0;   // frame (w = h = 0: artistic text at x, y)
+    bool corel = true;      // CorelDRAW's paragraph spacing (libcdr), else ODF's (libvisio): see layout()
+    int valign = 0;         // the lines in the frame: 0 from its top, 1 centred, 2 from its bottom
+    float padL = 0, padT = 0, padR = 0, padB = 0;   // the frame's padding (fo:padding-*)
+    float fx = 0, fy = 0, fw = 0;   // the lines' frame: inside the padding, moved by the alignment (layout())
     std::vector<Line> lines;
 };
 
@@ -417,6 +427,7 @@ plutovg_font_face_t *fallback_font(const std::string &name, bool bold, bool ital
 class Painter : public librevenge::RVNGDrawingInterface {
 public:
     std::vector<Page> pages;
+    bool corel = true;   // the document is libcdr's (CorelDRAW's text spacing), else libvisio's
 
     void startDocument(const RVNGPropertyList &) override {}
     void endDocument() override {}
@@ -424,8 +435,9 @@ public:
     void defineEmbeddedFont(const RVNGPropertyList &) override {}
     void startPage(const RVNGPropertyList &p) override {
         pages.emplace_back();
-        pages.back().w = points(p["svg:width"], 595.0);
-        pages.back().h = points(p["svg:height"], 842.0);
+        double w = points(p["svg:width"]), h = points(p["svg:height"]);
+        pages.back().w = w > 0 ? w : 595;
+        pages.back().h = h > 0 ? h : 842;
         m_inPage = true;
     }
     void endPage() override { m_inPage = false; }
@@ -520,6 +532,13 @@ public:
         m_text->w = (float)points(p["svg:width"]);
         m_text->h = (float)points(p["svg:height"]);
         m_text->rotate = (float)number(p["librevenge:rotate"]);
+        m_text->corel = corel;
+        m_text->valign = is(p, "draw:textarea-vertical-align", "middle") ? 1 : is(p, "draw:textarea-vertical-align", "bottom") ? 2 : 0;
+        auto pad = [&](const char *key) { return (float)std::min(std::max(points(p[key]), 0.0), 10000.0); };
+        m_text->padL = pad("fo:padding-left");
+        m_text->padT = pad("fo:padding-top");
+        m_text->padR = pad("fo:padding-right");
+        m_text->padB = pad("fo:padding-bottom");
     }
     void endTextObject() override {
         if (!m_text) return;
@@ -567,8 +586,13 @@ public:
             double d = v->getUnit() == librevenge::RVNG_PERCENT ? v->getDouble() : -points(v);
             if (d > -10000 && d < 100) out = (float)d;
         };
-        spacing(p["fo:margin-top"], m_para.before);
-        spacing(p["fo:margin-bottom"], m_para.after);
+        if (corel) {
+            spacing(p["fo:margin-top"], m_para.before);
+            spacing(p["fo:margin-bottom"], m_para.after);
+        } else {   // (ODF: lengths added to the line spacing)
+            m_para.padBefore = (float)std::min(std::max(points(p["fo:margin-top"]), 0.0), 10000.0);
+            m_para.padAfter = (float)std::min(std::max(points(p["fo:margin-bottom"]), 0.0), 10000.0);
+        }
         if (const RVNGProperty *lh = p["fo:line-height"]) {
             double sp = lh->getDouble();
             if (lh->getUnit() == librevenge::RVNG_PERCENT) {
@@ -598,6 +622,10 @@ public:
         m_span.wordSpacing = (float)number(p["libcdr:word-spacing"], 1.0);
         m_span.color = color(p["fo:color"]);
         m_span.fill = !is(p, "draw:fill", "none");
+        if (p["fo:background-color"] && p["fo:background-color"]->getStr() != "none") {
+            m_span.background = true;
+            m_span.backgroundColor = color(p["fo:background-color"]);
+        }
         if (p["draw:stroke"] && !is(p, "draw:stroke", "none")) {
             m_span.stroke = true;
             m_span.strokeColor = color(p["svg:stroke-color"]);
@@ -826,11 +854,16 @@ private:
     void layout(Item &it) {
         Text &t = *it.text;
         std::lock_guard<std::mutex> g(nf_lock());
+        bool artistic = t.w == 0 && t.h == 0;
+        // the lines' frame: the text frame inside its padding (artistic text: its point)
+        t.fx = artistic ? t.x : t.x + t.padL;
+        t.fy = artistic ? t.y : t.y + t.padT;
+        t.fw = artistic ? 0 : std::max(t.w - t.padL - t.padR, 0.f);
         float maxw = 0, total = 0;
         std::vector<Line> lines;
         for (Line &l : t.lines) {
             measure(l);
-            if (t.w > 0 && l.width > t.w * 1.01f && l.spans.size()) wrap(l, t.w, lines);
+            if (t.fw > 0 && l.width > t.fw * 1.01f && l.spans.size()) wrap(l, t.fw, lines);
             else lines.push_back(std::move(l));
         }
         t.lines = std::move(lines);
@@ -840,8 +873,8 @@ private:
         // paragraph); artistic text has only the line spacing. An empty line is as high as the line
         // before it, but not higher than the text's own style (its line break's size, see libcdr):
         // so CorelDRAW's previews and PDF exports (after a large title, an empty line of the text's
-        // size; between its smaller characters, as they are).
-        bool artistic = t.w == 0 && t.h == 0;
+        // size; between its smaller characters, as they are). ODF text (libvisio): a paragraph's
+        // first line keeps the line spacing, the margins before and after it are added to that.
         for (size_t i = 0; i < t.lines.size(); i++) {
             Line &l = t.lines[i];
             if (i && l.spans.empty() && (l.emptySize <= 0 || t.lines[i - 1].size <= l.emptySize)) {
@@ -853,16 +886,23 @@ private:
             auto space = [&](float share, const Line &of) {   // (a share of a line's height, or < 0: points)
                 return share < 0 ? -share : share * (of.ascent + of.descent);
             };
+            float advance = l.lineHeight > 0 ? l.lineHeight : (p.descent + l.ascent) * l.spacing;
             if (i && l.paragraph && !artistic)
-                l.height = (l.before < 0 ? -l.before : l.before * (p.descent + l.ascent)) + space(p.after, p);
+                l.height = t.corel ? (l.before < 0 ? -l.before : l.before * (p.descent + l.ascent)) + space(p.after, p)
+                                   : advance + l.padBefore + p.padAfter;
             else
-                l.height = l.lineHeight > 0 ? l.lineHeight : (p.descent + l.ascent) * l.spacing;
+                l.height = advance;
             maxw = std::max(maxw, l.width);
             if (i) total += l.height;
         }
-        const Line &first = t.lines[0];
-        float top = artistic ? t.y - first.ascent : t.y;
-        float left = artistic ? t.x - maxw : t.x, right = artistic ? t.x + maxw : t.x + std::max(t.w, maxw);
+        const Line &first = t.lines[0], &last = t.lines.back();
+        // a frame's vertical alignment (Visio centres its text blocks): the lines moved down in it
+        if (!artistic && t.valign) {
+            float room = std::max(t.h - t.padT - t.padB, 0.f) - (first.ascent + total + last.descent);
+            t.fy += t.valign == 1 ? room / 2 : room;
+        }
+        float top = artistic ? t.y - first.ascent : t.fy;
+        float left = artistic ? t.x - maxw : t.fx, right = artistic ? t.x + maxw : t.fx + std::max(t.fw, maxw);
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
         rotatedBox(it, cx, cy, left, top, right, top + (first.ascent + first.descent) * first.spacing + total + first.size, t.rotate);
     }
@@ -938,13 +978,45 @@ private:
                 st->markerUnit = (float)points(p["libcdr:marker-unit"]);
                 if (p["libcdr:marker-start"]) st->markerStart = p["libcdr:marker-start"]->getStr().cstr();
                 if (p["libcdr:marker-end"]) st->markerEnd = p["libcdr:marker-end"]->getStr().cstr();
+            } else if (p["draw:marker-start-path"] || p["draw:marker-end-path"]) {
+                // ODF markers (libvisio): the path scaled to the marker's width by its own bounding box
+                // (as LibreOffice does; libvisio's viewboxes do not match its paths), its top centre at
+                // the line's end (its centre: draw:marker-*-center), y into the line
+                st->markerUnit = 1;
+                for (int k = 0; k < 2; k++) {
+                    const char *end = k ? "end" : "start";
+                    char key[40];
+                    snprintf(key, sizeof key, "draw:marker-%s-path", end);
+                    if (!p[key]) continue;
+                    std::string &data = k ? st->markerEnd : st->markerStart;
+                    data = p[key]->getStr().cstr();
+                    snprintf(key, sizeof key, "draw:marker-%s-width", end);
+                    double width = points(p[key]);
+                    snprintf(key, sizeof key, "draw:marker-%s-center", end);
+                    bool centre = p[key] && p[key]->getStr() == "true";
+                    plutovg_path_t *path = plutovg_path_create();
+                    plutovg_rect_t r = {0, 0, 0, 0};
+                    if (plutovg_path_parse(path, data.data(), (int)data.size())) plutovg_path_extents(path, &r, false);
+                    plutovg_path_destroy(path);
+                    if (!(r.w > 0) || !(r.h > 0) || !(width > 0) || width > 10000) {
+                        data.clear();
+                        continue;
+                    }
+                    float sc = (float)(width / r.w);
+                    st->markerPre[k] = {sc, 0, 0, -sc, -sc * (r.x + r.w / 2), sc * (r.y + (centre ? r.h / 2 : 0))};
+                }
             }
             if (is(p, "svg:stroke-linejoin", "round")) st->join = PLUTOVG_LINE_JOIN_ROUND;
             else if (is(p, "svg:stroke-linejoin", "bevel")) st->join = PLUTOVG_LINE_JOIN_BEVEL;
             if (is(p, "draw:stroke", "dash")) {   // ODF: dots1 x dots1-length, dots2 x dots2-length, all + distance
                 int n1 = p["draw:dots1"] ? p["draw:dots1"]->getInt() : 0, n2 = p["draw:dots2"] ? p["draw:dots2"]->getInt() : 0;
-                float l1 = (float)points(p["draw:dots1-length"]), l2 = (float)points(p["draw:dots2-length"]);
-                float gap = (float)points(p["draw:distance"]);
+                // (a length, or a percentage of the line's width: libvisio's; a hairline's as 1 pt)
+                auto dash = [&](const RVNGProperty *v) {
+                    if (v && v->getUnit() == librevenge::RVNG_PERCENT) return (float)(v->getDouble() * std::max(st->strokeWidth, 1.f));
+                    return (float)points(v);
+                };
+                float l1 = dash(p["draw:dots1-length"]), l2 = dash(p["draw:dots2-length"]);
+                float gap = dash(p["draw:distance"]);
                 for (int k = 0; k < n1 && k < 64; k++) st->dashes.insert(st->dashes.end(), {l1, gap});
                 for (int k = 0; k < n2 && k < 64; k++) st->dashes.insert(st->dashes.end(), {l2, gap});
                 bool visible = false;
@@ -1119,7 +1191,7 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
         }
     }
     if (!haveSecond) return;
-    auto draw = [&](const std::string &data, plutovg_point_t at, plutovg_point_t from) {
+    auto draw = [&](const std::string &data, const plutovg_matrix_t &pre, plutovg_point_t at, plutovg_point_t from) {
         float dx = at.x - from.x, dy = at.y - from.y, len = sqrtf(dx * dx + dy * dy);
         if (data.empty() || len <= 0) return;
         dx /= len, dy /= len;
@@ -1127,6 +1199,7 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
         if (plutovg_path_parse(m, data.data(), (int)data.size())) {
             float k = st.markerUnit;
             plutovg_matrix_t t = {-dy * k, dx * k, dx * k, dy * k, at.x, at.y};   // (x across, y along)
+            plutovg_path_transform(m, &pre);
             plutovg_path_transform(m, &t);
             // its closed parts are filled, its open ones (a bar across the tip, an open "<") outlined
             // with the line's own width (CorelDRAW 9's PDF export closes them, CorelDRAW does not)
@@ -1160,8 +1233,8 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
         }
         plutovg_path_destroy(m);
     };
-    draw(st.markerStart, first, second);
-    draw(st.markerEnd, last, before);
+    draw(st.markerStart, st.markerPre[0], first, second);
+    draw(st.markerEnd, st.markerPre[1], last, before);
 }
 
 void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
@@ -1212,15 +1285,19 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_rotate(c, (float)(t.rotate * M_PI / 180));
             plutovg_canvas_translate(c, -cx, -cy);
         }
-        float base = artistic ? t.y : t.y + t.lines[0].ascent;
+        float base = artistic ? t.y : t.fy + t.lines[0].ascent;
         for (size_t i = 0; i < t.lines.size(); i++) {
             const Line &l = t.lines[i];
             if (i) base += l.height;
             float x;
             if (artistic) x = l.align == 1 ? t.x - l.width / 2 : l.align == 2 ? t.x - l.width : t.x;
-            else x = l.align == 1 ? t.x + (t.w - l.width) / 2 : l.align == 2 ? t.x + t.w - l.width : t.x;
+            else x = l.align == 1 ? t.fx + (t.fw - l.width) / 2 : l.align == 2 ? t.fx + t.fw - l.width : t.fx;
             for (const Span &s : l.spans) {
                 if (s.face) {
+                    if (s.background) {   // (behind the line's height of it)
+                        setColor(c, s.backgroundColor, 1);
+                        plutovg_canvas_fill_rect(c, x, base - l.ascent, s.width, l.ascent + l.descent);
+                    }
                     plutovg_canvas_set_font(c, s.face, s.size);
                     setColor(c, s.color, 1);
                     // (the shift in the text's stretched em; the next span starts unshifted)
@@ -1274,6 +1351,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
             in.seek(0, librevenge::RVNG_SEEK_SET);
             if (libvisio::VisioDocument::isSupported(&in)) {   // Visio: VSD, VDX, VSDX (stencils and templates too)
                 in.seek(0, librevenge::RVNG_SEEK_SET);
+                painter.corel = false;
                 ok = libvisio::VisioDocument::parse(&in, &painter);
             }
         }
