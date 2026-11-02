@@ -2227,8 +2227,7 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
         }
         if (Block *b = target(paper)) P.entity(r, *b, nullptr);
     }
-    flushPoly();
-    if (!sections) return nullptr;
+    flushPoly();   // (a file of entities alone, without sections: they were read into the model space)
 
     // the model space (its entities, or the *Model_Space block), else the paper space
     const Block *top = &P.model;
