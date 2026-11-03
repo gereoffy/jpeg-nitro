@@ -12,6 +12,9 @@
 #include "nitro_font.h"
 #include "nitrodxf.h"
 #include "nitrometa.h"
+extern "C" {
+#include "nitrotiff.h"
+}
 
 #include <libcdr/libcdr.h>
 #include <libvisio/libvisio.h>
@@ -239,6 +242,22 @@ std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
     return nullptr;
 }
 
+// A BMP whose pixels' offset points into its header, colour masks or palette (a BI_BITFIELDS
+// one's offset left at 54, before its masks): GDI takes the pixels from right after them, as
+// here (a copy with the offset set); stb_image would refuse it. Empty if the offset is fine.
+static std::vector<unsigned char> bmpOffsetFixed(const unsigned char *b, size_t n) {
+    auto u32 = [b](size_t o) { return (uint32_t)b[o] | (uint32_t)b[o + 1] << 8 | (uint32_t)b[o + 2] << 16 | (uint32_t)b[o + 3] << 24; };
+    if (n < 54 || b[0] != 'B' || b[1] != 'M') return {};
+    uint32_t header = u32(14), bits = b[28] | b[29] << 8, compression = u32(30), colours = u32(46);
+    if (header < 40 || header > 124) return {};
+    uint64_t start = 14 + (uint64_t)header + (header == 40 && (compression == 3 || compression == 6) ? (compression == 6 ? 16 : 12) : 0) +
+                     4 * (uint64_t)(colours ? colours : bits <= 8 ? 1u << bits : 0);
+    if (u32(10) >= start || start >= n) return {};
+    std::vector<unsigned char> fixed(b, b + n);
+    for (int k = 0; k < 4; k++) fixed[10 + k] = (unsigned char)(start >> 8 * k);
+    return fixed;
+}
+
 std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   // a BMP (or other stb_image format), a WMF / EMF or an OLE object
     if (n >= 8 && !memcmp(b, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8)) return olePicture(b, n, depth);
     auto img = std::make_shared<Image>();
@@ -246,6 +265,24 @@ std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   
     if (!img->s) img->s = psdGray(b, n);
     if (!img->s) img->meta = nitrometa_load(b, n);
     if (!img->s && !img->meta) img->s = plutovg_surface_load_from_image_data(b, (int)n);
+    nt_info ti;   // (a TIFF: Visio's pictures of the 2000s)
+    if (!img->s && !img->meta && n >= 8 && (!memcmp(b, "II*", 4) || !memcmp(b, "MM\0*", 4)) && !nt_read_info(b, n, &ti) && ti.width > 0 &&
+        ti.height > 0 && (uint64_t)ti.width * ti.height <= (64u << 20)) {
+        img->s = plutovg_surface_create(ti.width, ti.height);
+        unsigned char *d = img->s ? plutovg_surface_get_data(img->s) : nullptr;
+        int stride = img->s ? plutovg_surface_get_stride(img->s) : 0;
+        if (d && !nt_decode(b, n, &ti, d, (size_t)stride, 1)) {
+            for (int y = 0; y < ti.height; y++)   // (opaque: X is no alpha)
+                for (int x = 0; x < ti.width; x++) d[(size_t)y * stride + x * 4 + 3] = 255;
+        } else {
+            plutovg_surface_destroy(img->s);
+            img->s = nullptr;
+        }
+    }
+    if (!img->s && !img->meta) {
+        std::vector<unsigned char> fixed = bmpOffsetFixed(b, n);
+        if (!fixed.empty()) img->s = plutovg_surface_load_from_image_data(fixed.data(), (int)fixed.size());
+    }
     return img->s || img->meta ? img : nullptr;
 }
 
