@@ -1657,6 +1657,28 @@ struct nitrocdr {
     int background = 0;   // (nitrocdr_set_background)
 };
 
+// A VSDX package (a stencil's) whose pages have no shape: they need not be read (libvisio reads
+// the masters for them too: the larger part of the time)
+static bool vsdxPagesEmpty(librevenge::RVNGInputStream &in) {
+    if (!in.isStructured()) return false;
+    bool pages = false;
+    for (unsigned i = 0, n = in.subStreamCount(); i < n; i++) {
+        const char *name = in.subStreamName(i);
+        size_t len = name ? strlen(name) : 0;
+        if (len < 20 || strncmp(name, "visio/pages/page", 16) || strcmp(name + len - 4, ".xml")) continue;
+        std::unique_ptr<librevenge::RVNGInputStream> s(in.getSubStreamById(i));
+        if (!s) return false;
+        s->seek(0, librevenge::RVNG_SEEK_END);
+        unsigned long size = (unsigned long)s->tell(), got = 0;
+        s->seek(0, librevenge::RVNG_SEEK_SET);
+        const char *d = size ? (const char *)s->read(size, got) : nullptr;
+        for (unsigned long k = 0; d && k + 7 <= got; k++)   // ("<Shape" but not "<Shapes")
+            if (d[k] == '<' && !memcmp(d + k + 1, "Shape", 5) && d[k + 6] != 's') return false;
+        pages = true;
+    }
+    return pages;
+}
+
 nitrocdr *nitrocdr_load(const void *data, size_t len) {
     librevenge::RVNGStringStream in(static_cast<const unsigned char *>(data), (unsigned)len);
     Painter painter;
@@ -1675,7 +1697,9 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
             if (libvisio::VisioDocument::isSupported(&in)) {   // Visio: VSD, VDX, VSDX (stencils and templates too)
                 in.seek(0, librevenge::RVNG_SEEK_SET);
                 painter.corel = false;
-                ok = libvisio::VisioDocument::parse(&in, &painter);
+                bool skipped = vsdxPagesEmpty(in);   // (pages without shapes: not read)
+                in.seek(0, librevenge::RVNG_SEEK_SET);
+                ok = !skipped && libvisio::VisioDocument::parse(&in, &painter);
                 bool empty = true;
                 for (const Page &pg : painter.pages) empty &= pg.items.empty();
                 if (empty) {   // a stencil, or a document with its shapes in its own stencil only: the masters, a page each
@@ -1683,6 +1707,11 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
                     masters->corel = false;
                     in.seek(0, librevenge::RVNG_SEEK_SET);
                     if (!libvisio::VisioDocument::parseStencils(&in, masters.get()) || masters->pages.empty()) masters.reset();
+                    else ok = true;
+                }
+                if (skipped && !masters) {   // (no masters either: its empty pages)
+                    in.seek(0, librevenge::RVNG_SEEK_SET);
+                    ok = libvisio::VisioDocument::parse(&in, &painter);
                 }
             }
         }
