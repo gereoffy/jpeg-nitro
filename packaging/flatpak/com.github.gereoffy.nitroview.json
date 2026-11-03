@@ -91,8 +91,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/libvisio/archive/2a61b726e327b811592a840ec426c0525be903c9.tar.gz",
-          "sha256": "0e2a0f7639c3e6566415df8fae697683208fddb9186c41dc0eb239c03eeba2a8",
+          "url": "https://github.com/gereoffy/libvisio/archive/f010815f637825e66bf91040c882b710b3bcfb40.tar.gz",
+          "sha256": "5bb91c272994b14799ec30d4f52e4a3ae453d0a91382f41a15aba49b723d5d33",
           "dest": "third_party/libvisio"
         },
         {
