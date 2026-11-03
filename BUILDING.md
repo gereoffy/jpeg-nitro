@@ -220,7 +220,12 @@ fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`
 - `nitrodng.c/.h`: DNG raw development (lossless JPEG, demosaicing, colour)
 - `nitrowebp.c/.h`: lossy WebP (VP8) decoder
 - `nitrotiff.c/.h`, `tiff.h`: TIFF decoder (strips / tiles in parallel)
-- `nitrosvg.cpp/.h`: SVG with lunasvg; `nitrodxf.cpp/.h`: DXF, our own reader; `nitrodwg.cpp/.h`: DWG (R13 – R2000), our own reader, for nitrodxf; `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files); `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface); nitrodxf, nitrometa and nitrocdr draw with plutovg; `nitroalloc.cpp`: their mimalloc hookup
+- `nitrosvg.cpp/.h`: SVG with lunasvg and plutovg
+- `nitrodxf.cpp/.h`: DXF, our own reader, drawn with plutovg
+- `nitrodwg.cpp/.h`: DWG (R13 – R2018, not R2007), our own reader, for nitrodxf
+- `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files), drawn with plutovg
+- `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface), drawn with plutovg
+- `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 
 **The library**
