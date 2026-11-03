@@ -9,6 +9,9 @@ librevenge changes for nitrocdr (scripts/get-deps.sh applies this after download
 - RVNGPropertyList::insert(name, string) tries the number / unit parsers (slow: boost::spirit
   rebuilding its tables) only for strings that can start a number
 Together with the libcdr fork's use of them, a big ArchiCAD plan (17 MB CDR) loads 2.7 x faster.
+And a fix:
+- RVNGOLEStream: a damaged header's block size exponent clamped to 30, not 31 (compute_block_size
+  asserts it is below 31: the viewer aborted on such a file; valid() refuses it anyway)
 
 --- a/inc/librevenge/RVNGProperty.h
 +++ b/inc/librevenge/RVNGProperty.h
@@ -246,3 +249,21 @@ Together with the libcdr fork's use of them, a big ArchiCAD plan (17 MB CDR) loa
  RVNGPropertyListVector &RVNGPropertyListVector::operator=(const RVNGPropertyListVector &vect)
  {
  	m_impl->m_vector = vect.m_impl->m_vector;
+--- a/src/lib/RVNGOLEStream.cpp
++++ b/src/lib/RVNGOLEStream.cpp
+@@ -777,11 +777,11 @@
+ 		return;
+ 	m_revision = (unsigned) readU16(buffer+0x18);
+ 	m_shift_bbat      = (unsigned int) readU16(buffer + 0x1e);
+-	if (m_shift_bbat > 31)
+-		m_shift_bbat = 31;
++	if (m_shift_bbat > 30)   // (compute_block_size takes at most 30; valid() refuses such a file)
++		m_shift_bbat = 30;
+ 	m_shift_sbat      = (unsigned int) readU16(buffer + 0x20);
+-	if (m_shift_sbat > 31)
+-		m_shift_sbat = 31;
++	if (m_shift_sbat > 30)
++		m_shift_sbat = 30;
+ 	m_num_bat      = (unsigned int) readU32(buffer + 0x2c);
+ 	m_start_dirent = (unsigned int) readU32(buffer + 0x30);
+ 	m_threshold    = (unsigned int) readU32(buffer + 0x38);

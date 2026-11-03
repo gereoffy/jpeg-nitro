@@ -611,6 +611,12 @@ public:
             RVNGString a = e["librevenge:path-action"]->getStr();
             float x = (float)points(e["svg:x"]), y = (float)points(e["svg:y"]);
             char cmd = a.cstr()[0];
+            // (a damaged file's NaN or huge numbers: left out, plutovg would convert them to int)
+            auto sane = [](double v) { return std::fabs(v) < 1e9; };
+            bool ok = sane(x) && sane(y);
+            for (const char *k : {"svg:x1", "svg:y1", "svg:x2", "svg:y2", "svg:rx", "svg:ry", "librevenge:rotate"})
+                if (e[k]) ok &= sane(number(e[k]));
+            if (!ok) continue;
             if (!open && cmd != 'M' && cmd != 'Z') {
                 plutovg_path_move_to(path, cmd == 'H' ? x : cmd == 'V' ? 0 : x, cmd == 'V' ? y : cmd == 'H' ? 0 : y);
                 open = true;
