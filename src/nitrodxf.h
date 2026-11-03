@@ -24,8 +24,9 @@ nitrodxf *nitrodxf_load(const void *data, size_t len);
 void nitrodxf_free(nitrodxf *dxf);
 
 int nitrodxf_pages(const nitrodxf *dxf);
-// The background it is drawn over: 0 white (the default; AutoCAD's white lines black, light colours
-// darkened), 1 AutoCAD's dark model space, 2 black. Set before rendering, not while it renders.
+// The background it is drawn over: 0 white (the default; AutoCAD's foreground colour black, the
+// other colours x 0.8), 1 AutoCAD's dark model space, 2 black. Set before rendering, not while it
+// renders.
 void nitrodxf_set_background(nitrodxf *dxf, int background);
 // Size of a page's shown area in drawing units: its extents (far-off stray objects left out)
 // with a small margin; 0 x 0 if there is no such page. Render coordinates below start at its top

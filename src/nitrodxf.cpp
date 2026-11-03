@@ -539,6 +539,9 @@ enum { LT_BYLAYER = -1, LT_BYBLOCK = -2, LT_CONTINUOUS = -3 };
 const uint32_t BACKGROUNDS[3] = {0xffffff, 0x212830, 0x000000};
 const uint32_t WIPEOUT = 0x01000000;   // (an item's rgba: the background colour, whichever it is)
 
+// A true colour: white as fefefe (ffffff is the foreground colour, 7; see on_background)
+uint32_t true_white(uint32_t rgb) { return rgb == 0xffffff ? 0xfefefe : rgb; }
+
 uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
     static uint32_t t[256];
     static bool init;
@@ -557,7 +560,7 @@ uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
             }
             t[k] = (uint32_t)std::lround(rgb[0]) << 16 | (uint32_t)std::lround(rgb[1]) << 8 | (uint32_t)std::lround(rgb[2]);
         }
-        static const uint32_t grays[6] = {0x333333, 0x505050, 0x696969, 0x828282, 0xbebebe, 0xffffff};
+        static const uint32_t grays[6] = {0x333333, 0x505050, 0x696969, 0x828282, 0xbebebe, 0xfefefe};   // (255: see on_background)
         for (int k = 0; k < 6; k++) t[250 + k] = grays[k];
         init = true;
     }
@@ -1963,11 +1966,11 @@ struct Flat {
     uint32_t rgb(uint32_t col, int layer, const Ctx &parent) {
         switch (col & 0xff000000u) {
         case COL_ACI: return aci_rgb((int)(col & 255));
-        case COL_RGB: return col & 0xffffff;
+        case COL_RGB: return true_white(col & 0xffffff);
         case COL_BYBLOCK: return parent.rgb;
         default: {
             uint32_t lc = P.layers[layer].color;
-            return (lc & 0xff000000u) == COL_RGB ? lc & 0xffffff : aci_rgb((int)(lc & 255));
+            return (lc & 0xff000000u) == COL_RGB ? true_white(lc & 0xffffff) : aci_rgb((int)(lc & 255));
         }
         }
     }
@@ -2198,17 +2201,15 @@ void set_rgba(plutovg_canvas_t *c, uint32_t rgba, float alpha = 1) {
     plutovg_canvas_set_rgba(c, (rgba >> 16 & 255) / 255.0f, (rgba >> 8 & 255) / 255.0f, (rgba & 255) / 255.0f, (rgba >> 24) / 255.0f * alpha);
 }
 
-// An item's colour on the background: on white, AutoCAD's white (colour 7) is black and light
-// colours are darkened enough to be seen (yellow, light grey ...).
+// An item's colour on the background: on white, AutoCAD's foreground colour (7, ffffff here) is
+// black and every other colour a little darker (x 0.8: a white one, 255 or a true colour, light
+// grey then, as a fill still under what is drawn over it).
 uint32_t on_background(uint32_t rgba, int background) {
     if (rgba == WIPEOUT) return 0xff000000u | BACKGROUNDS[background];
     if (background != 0) return rgba;
     uint32_t r = rgba >> 16 & 255, g = rgba >> 8 & 255, b = rgba & 255, a = rgba & 0xff000000u;
     if ((rgba & 0xffffff) == 0xffffff) return a;
-    double lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-    if (lum <= 0.55) return rgba;
-    double k = 0.55 / lum;
-    return a | (uint32_t)(r * k) << 16 | (uint32_t)(g * k) << 8 | (uint32_t)(b * k);
+    return a | (r * 4 / 5) << 16 | (g * 4 / 5) << 8 | (b * 4 / 5);
 }
 
 // A hairline's segments as quads one device pixel wide (filled: much cheaper than plutovg's
@@ -2805,7 +2806,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
                                            m[0] * gp.x + m[2] * gp.y + m[4], m[1] * gp.x + m[3] * gp.y + m[5]};
                     plutovg_path_add_path(tmp, dxf->glyphs[gp.glyph].path, &gm);
                 }
-                uint32_t col = run.color == 0 ? ot.rgba : 0xff000000u | ((run.color & 0xff000000u) == COL_RGB ? run.color & 0xffffff : aci_rgb((int)(run.color & 255)));
+                uint32_t col = run.color == 0 ? ot.rgba : 0xff000000u | ((run.color & 0xff000000u) == COL_RGB ? true_white(run.color & 0xffffff) : aci_rgb((int)(run.color & 255)));
                 set_rgba(c, on_background(col, dxf->background));
                 plutovg_canvas_fill_path(c, tmp);
             }
