@@ -19,6 +19,9 @@ typedef struct nitrocdr nitrocdr;
 // NULL if it is not a drawing libcdr or libvisio can read, or it has no page.
 nitrocdr *nitrocdr_load(const void *data, size_t len);
 void nitrocdr_free(nitrocdr *cdr);
+// The threads loading may decode a document's pictures with (the viewers' -j; 0, the default: as
+// many as the CPU's threads). Any thread.
+void nitrocdr_set_threads(int n);
 
 int nitrocdr_pages(const nitrocdr *cdr);
 // The background it is drawn over: 0 white (the default), 1 dark grey (AutoCAD's), 2 black, as for

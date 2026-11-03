@@ -160,7 +160,12 @@ void nv_vector_size(const NvVector *v, int page, double *w, double *h) {
 // stops the render.
 static _Atomic int g_split, g_threads;
 
-void nv_vector_set_threads(int n) { atomic_store(&g_threads, n > 0 ? n : 0); }
+void nv_vector_set_threads(int n) {
+    atomic_store(&g_threads, n > 0 ? n : 0);
+#ifdef NV_CDR
+    nitrocdr_set_threads(n);   // (a CorelDRAW / Visio document's pictures, decoded while it loads)
+#endif
+}
 
 int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx) {

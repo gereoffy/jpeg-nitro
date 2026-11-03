@@ -47,7 +47,8 @@ void nv_vector_size(const NvVector *v, int page, double *w, double *h);
 int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx);
 // The threads a render may use (the viewers' -j): n bands at most, 1 on the calling thread alone;
-// 0 (the default): as many as the CPU's threads.
+// 0 (the default): as many as the CPU's threads. (Also those a CorelDRAW / Visio document's
+// pictures are decoded with while it loads.)
 void nv_vector_set_threads(int n);
 
 // The size a page is rendered at in full: the long side 1024..4096 pixels (small icons enlarged,

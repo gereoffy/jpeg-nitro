@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +28,8 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 #ifndef M_PI   // (not defined by mingw's math.h)
 #define M_PI 3.14159265358979323846
@@ -77,6 +80,8 @@ Color color(const RVNGProperty *p, Color def = Color()) {   // "#rrggbb"
 }
 
 // --- display list --------------------------------------------------------------
+
+std::atomic<int> g_threads{0};   // (nitrocdr_set_threads)
 
 struct Image {
     plutovg_surface_t *s = nullptr;   // a bitmap, or
@@ -787,24 +792,76 @@ public:
 
 private:
     std::shared_ptr<Style> m_style = std::make_shared<Style>();
-    // decoded images by their data: libcdr passes the same buffer for each use of a bitmap (a
-    // label sheet repeats one 2000 x 2000 logo 72 times: decoded once, not 72 x 16 MB); the
-    // kept RVNGBinaryData keeps the buffer, so its address is not reused by another image
+    // the images by their data: libcdr passes the same buffer for each use of a bitmap (a label
+    // sheet repeats one 2000 x 2000 logo 72 times: decoded once, not 72 x 16 MB; the kept
+    // RVNGBinaryData keeps the buffer, so its address is not reused by another image), libvisio
+    // a copy of its own for each shape: the same picture also by its bytes (hashed, then
+    // compared). They are decoded at the end of the document, all at once (decodeImages).
     struct CachedImage {
         librevenge::RVNGBinaryData data;
         std::shared_ptr<Image> img;
     };
     std::map<std::pair<const unsigned char *, unsigned long>, CachedImage> m_images;
+    std::unordered_multimap<uint64_t, CachedImage> m_contents;
+    std::vector<CachedImage> m_pending;
+    static uint64_t contentHash(const unsigned char *b, size_t n) {
+        uint64_t h = n * 0x9e3779b97f4a7c15ull;
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            uint64_t w;
+            memcpy(&w, b + i, 8);
+            h = (h ^ w) * 0x9e3779b97f4a7c15ull;
+            h ^= h >> 29;
+        }
+        for (; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+        return h;
+    }
     std::shared_ptr<Image> cachedImage(const RVNGProperty *p) {
         const librevenge::RVNGBinaryData *d = p ? p->getBinaryData() : nullptr;
         if (!d || !d->size()) return nullptr;
         auto key = std::make_pair(d->getDataBuffer(), d->size());
         auto f = m_images.find(key);
         if (f != m_images.end()) return f->second.img;
-        std::shared_ptr<Image> img = image(p);
+        uint64_t h = contentHash(d->getDataBuffer(), d->size());
+        auto same = m_contents.equal_range(h);
+        for (auto c = same.first; c != same.second; ++c)
+            if (c->second.data.size() == d->size() && !memcmp(c->second.data.getDataBuffer(), d->getDataBuffer(), d->size())) {
+                m_images[key] = CachedImage{*d, c->second.img};
+                return c->second.img;
+            }
+        auto img = std::make_shared<Image>();   // (empty until decodeImages)
         m_images[key] = CachedImage{*d, img};
+        m_contents.emplace(h, CachedImage{*d, img});
+        m_pending.push_back(CachedImage{*d, img});
         return img;
     }
+
+public:
+    // the document's images decoded, at once (as many threads as nitrocdr_set_threads allows):
+    // one that can't be decoded stays empty
+    void decodeImages() {
+        size_t n = m_pending.size();
+        if (!n) return;
+        unsigned t = (unsigned)g_threads.load();
+        if (!t) t = std::max(1u, std::thread::hardware_concurrency());
+        std::atomic<size_t> next{0};
+        auto work = [&] {
+            for (size_t i; (i = next++) < n;) {
+                const CachedImage &c = m_pending[i];
+                if (std::shared_ptr<Image> img = picture(c.data.getDataBuffer(), c.data.size())) {
+                    std::swap(c.img->s, img->s);
+                    std::swap(c.img->meta, img->meta);
+                }
+            }
+        };
+        std::vector<std::thread> threads;
+        for (size_t k = 1; k < std::min<size_t>(t, n); k++) threads.emplace_back(work);
+        work();
+        for (std::thread &th : threads) th.join();
+        m_pending.clear();
+    }
+
+private:
     std::unique_ptr<Text> m_text;
     std::vector<Line> m_lists;   // the open list levels' labels (an ordered one: none)
     Span m_span;
@@ -1378,6 +1435,7 @@ bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, fl
         return true;
     }
     case FILL_BITMAP: {
+        if (!st.tile->s) return false;   // (not decoded: no fill)
         int iw = plutovg_surface_get_width(st.tile->s), ih = plutovg_surface_get_height(st.tile->s);
         float tw = st.tileRel ? st.tileW * w : st.tileW, th = st.tileRel ? st.tileH * h : st.tileH;
         if (iw <= 0 || ih <= 0 || tw <= 0 || th <= 0) return false;
@@ -1610,6 +1668,11 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
         }
     }
     if (!ok || painter.pages.empty()) return nullptr;
+    painter.decodeImages();
+    for (Page &pg : painter.pages)   // (a picture that could not be decoded: left out)
+        pg.items.erase(std::remove_if(pg.items.begin(), pg.items.end(),
+                                      [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta; }),
+                       pg.items.end());
     // the shown area is the drawing's bounding box (+ a small margin), not the page set in the
     // file: a small logo on an A4 page fills the view, a scan much larger than its page shows
     // in full (an empty page keeps its size). A drawing of several pages gets one area, the
@@ -1661,6 +1724,8 @@ void nitrocdr_free(nitrocdr *cdr) {
 }
 
 int nitrocdr_pages(const nitrocdr *cdr) { return (int)cdr->pages.size(); }
+
+void nitrocdr_set_threads(int n) { g_threads = n > 0 ? n : 0; }
 
 void nitrocdr_set_background(nitrocdr *cdr, int background) {
     if (cdr && background >= 0 && background <= 2) cdr->background = background;
