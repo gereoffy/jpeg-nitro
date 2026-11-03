@@ -23,7 +23,7 @@ built in automatically once their libraries are present.
 
 | dependency | for | option |
 |---|---|---|
-| [lunasvg](https://github.com/sammycage/lunasvg) with plutovg | SVG; DXF and WMF / EMF (nitrodxf and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all three out |
+| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; DXF and WMF / EMF (nitrodxf and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all three out |
 | [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out; `MIMALLOC=0`: the C++ code with the system malloc |
 | libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code | part of `CDR` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
@@ -33,9 +33,9 @@ built in automatically once their libraries are present.
 
 dav1d is built with meson + ninja in a Python virtual environment (`third_party/tools/venv`),
 universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it for the
-Windows viewer (`third_party/dav1d-win`). The script applies two patches: `patches/lunasvg.patch`
-(a repeated closepath lost the rest of the path; masks zoomed in far allocated layers the size of
-the whole element) and `patches/librevenge.patch` (embedded images pass through without base64).
+Windows viewer (`third_party/dav1d-win`). The script applies two patches: `patches/librevenge.patch`
+(embedded images pass through without base64) and `patches/libxml2.patch` (on Windows the hash
+tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in our forks.
 
 ## macOS
 
