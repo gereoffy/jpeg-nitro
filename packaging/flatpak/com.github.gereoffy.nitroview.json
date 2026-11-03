@@ -62,13 +62,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/sammycage/lunasvg/archive/90d6ff333862acf3f5551ffbbcb1e45957661881.tar.gz",
-          "sha256": "bd87c3954771089836516e94ffbf1a57cc029a5d1afa8537fbd898dfe9f70f17",
-          "dest": "third_party/lunasvg"
-        },
-        {
-          "type": "patch",
-          "path": "../../patches/lunasvg.patch",
+          "url": "https://github.com/gereoffy/lunasvg/archive/1439165b02eab96dbce7e6deb4d94d65acdd7417.tar.gz",
+          "sha256": "e5019de94fda99836e9be062d6a787950a6ae27c9fbd12ddc2f009670de312c5",
           "dest": "third_party/lunasvg"
         },
         {

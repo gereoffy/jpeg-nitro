@@ -21,7 +21,7 @@ mkdir -p third_party && cd third_party
 TP=$PWD
 LJT_VER=3.1.2
 NASM_VER=2.16.03
-LUNASVG_COMMIT=90d6ff333862acf3f5551ffbbcb1e45957661881   # 2026-10-15 (also in packaging/flatpak/*.json, with its sha256)
+LUNASVG_COMMIT=1439165b02eab96dbce7e6deb4d94d65acdd7417   # 2026-11-03, github.com/gereoffy/lunasvg (and in packaging/flatpak/*.json, with its sha256)
 LIBCDR_COMMIT=20e4d64e4df41ab695de68572a543f3e8d40829a    # 2026-11-02, github.com/gereoffy/libcdr (and in packaging/flatpak/*.json)
 LIBVISIO_COMMIT=1c3a3619d65e024385a9cb4a5436d7bc1d02fd7c  # 2026-11-02, github.com/gereoffy/libvisio (and in packaging/flatpak/*.json)
 LIBXML2_VER=2.13.8
@@ -42,15 +42,14 @@ if [ ! -f wuffs.c ]; then
   curl -fsSL -o wuffs.c https://raw.githubusercontent.com/google/wuffs/main/release/c/wuffs-unsupported-snapshot.c
 fi
 
-# + patches/lunasvg.patch (fixes not upstream yet; re-applied when the patch changes)
-LUNASVG_STAMP=$LUNASVG_COMMIT-$(cksum < ../patches/lunasvg.patch | cut -d' ' -f1)
-if [ ! -f lunasvg/.stamp-$LUNASVG_STAMP ]; then
+# SVG: lunasvg (with its copy of plutovg) from our fork (the fixes nitroview needs, one commit
+# each: github.com/gereoffy/lunasvg)
+if [ ! -f lunasvg/.stamp-$LUNASVG_COMMIT ]; then
   rm -rf lunasvg lunasvg-$LUNASVG_COMMIT
-  curl -fsSL -o lunasvg.tar.gz https://github.com/sammycage/lunasvg/archive/$LUNASVG_COMMIT.tar.gz
+  curl -fsSL -o lunasvg.tar.gz https://github.com/gereoffy/lunasvg/archive/$LUNASVG_COMMIT.tar.gz
   tar xf lunasvg.tar.gz && rm lunasvg.tar.gz
-  (cd lunasvg-$LUNASVG_COMMIT && patch -p1 -s < ../../patches/lunasvg.patch)
   mv lunasvg-$LUNASVG_COMMIT lunasvg
-  touch lunasvg/.stamp-$LUNASVG_STAMP
+  touch lunasvg/.stamp-$LUNASVG_COMMIT
 fi
 
 # CorelDRAW: libcdr from our fork (LibreOffice's libcdr with the fixes nitroview needs, one

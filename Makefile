@@ -340,7 +340,7 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 
 # optional SVG rendering: lunasvg + plutovg (third_party/lunasvg, MIT) + src/nitrosvg.cpp, DXF
 # (src/nitrodxf.cpp, drawn with the same plutovg; DWG: src/nitrodwg.cpp) and the fonts of the vector renderers
-# (src/nitro_font.cpp: lunasvg asks it for every font, patches/lunasvg.patch; nitrodxf and
+# (src/nitro_font.cpp: lunasvg asks it for every font, our fork's lunasvg_set_font_face_resolver; nitrodxf and
 # nitrocdr draw with the same faces), one static library, compiled once (in parallel);
 # $(1): compiler flags (architecture, CPU)
 SVG_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
@@ -355,7 +355,7 @@ define svg_lib
 	@printf '%s\n' $(SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 -fno-exceptions -fno-rtti $(1) -O3 -w $(SVG_DEFS) -c "$$0" -o $(@D)/svgobj/$$(basename "$$0").o'
 	@rm -f $@ && $(AR) rcs $@ $(@D)/svgobj/*.o
 endef
-SVG_STAMP = $(wildcard $(LUNA)/.stamp-*)   # changes with the lunasvg commit / patches/lunasvg.patch
+SVG_STAMP = $(wildcard $(LUNA)/.stamp-*)   # changes with the lunasvg commit
 
 # optional CorelDRAW and Visio rendering: libcdr + libvisio + librevenge (its core and streams;
 # the SVG generator is part of the core: libcdr renders full colour pattern fills with it) +

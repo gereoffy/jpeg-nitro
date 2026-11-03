@@ -39,9 +39,8 @@ using librevenge::RVNGPropertyList;
 using librevenge::RVNGPropertyListVector;
 using librevenge::RVNGString;
 
-// every plutovg call that may touch a face runs under nitro_font's lock: the faces are shared
-// with nitrosvg and nitrodxf, and their glyph caches have no lock of their own (a render: only
-// its texts, so several renders, the bands of one, draw the rest at once)
+// a face is loaded under nitro_font's lock (shared with nitrosvg and nitrodxf); a render draws
+// unlocked, its texts too (plutovg's glyph caches take several threads at once, our lunasvg fork)
 
 // --- properties --------------------------------------------------------------
 
@@ -1521,8 +1520,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
         }
     } else {
-        std::lock_guard<std::mutex> g(nf_lock());   // (the faces' glyph caches)
-        const Text &t = *it.text;
+        const Text &t = *it.text;   // (unlocked: plutovg's glyph caches take several readers at once)
         bool artistic = t.w == 0 && t.h == 0;
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
         if (t.rotate != 0) {

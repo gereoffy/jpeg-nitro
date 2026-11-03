@@ -4,7 +4,8 @@
 // nitro_font: the fonts of the vector renderers (nitrosvg through lunasvg, nitrodxf, nitrocdr).
 // One index of the installed font files (the system's and the user's font directories, read once
 // on first use), their faces loaded once with plutovg and shared by the three renderers, and the
-// one lock they load and draw under: plutovg's faces have glyph caches without a lock of their own.
+// one lock the index and the loading take (lunasvg renders under it too; nitrodxf and nitrocdr
+// draw without it: plutovg's glyph caches take several threads at once, our lunasvg fork).
 #pragma once
 #include <plutovg.h>
 
@@ -12,8 +13,8 @@
 #include <mutex>
 #include <string>
 
-// Held around every plutovg or lunasvg call that may touch a face (loading a drawing with text,
-// rendering it), and by the callers of the functions below.
+// Held around loading a drawing with text and around lunasvg's calls, and by the callers of the
+// functions below.
 std::mutex &nf_lock();
 
 // The closest face of a family (its name as the font file gives it; the case does not matter) by
