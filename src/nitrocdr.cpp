@@ -40,7 +40,8 @@ using librevenge::RVNGPropertyListVector;
 using librevenge::RVNGString;
 
 // every plutovg call that may touch a face runs under nitro_font's lock: the faces are shared
-// with nitrosvg and nitrodxf, and their glyph caches have no lock of their own
+// with nitrosvg and nitrodxf, and their glyph caches have no lock of their own (a render: only
+// its texts, so several renders, the bands of one, draw the rest at once)
 
 // --- properties --------------------------------------------------------------
 
@@ -1317,6 +1318,8 @@ static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y,
         // conical / square: no such gradient in plutovg; drawn into an image over the box, once
         // (512 pixels along its longer side: the colours change slowly)
         int iw = w >= h ? 512 : std::max(8, (int)(512 * w / h)), ih = h >= w ? 512 : std::max(8, (int)(512 * h / w));
+        static std::mutex tiles;   // (several renders at once: the bands of one)
+        std::lock_guard<std::mutex> g(tiles);
         if (!st.gradTile || plutovg_surface_get_width(st.gradTile->s) != iw || plutovg_surface_get_height(st.gradTile->s) != ih) {
             auto img = std::make_shared<Image>();
             img->s = plutovg_surface_create(iw, ih);
@@ -1518,6 +1521,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
         }
     } else {
+        std::lock_guard<std::mutex> g(nf_lock());   // (the faces' glyph caches)
         const Text &t = *it.text;
         bool artistic = t.w == 0 && t.h == 0;
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
@@ -1678,8 +1682,7 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
         for (int x = 0; x < w; x++) row[x] = bg;
     }
-    std::lock_guard<std::mutex> g(nf_lock());
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
+    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);   // (unlocked: drawItem locks texts)
     plutovg_canvas_t *c = plutovg_canvas_create(surface);
     plutovg_canvas_scale(c, (float)scale, (float)scale);
     x0 += cdr->pages[page].x;   // (the shown area's origin)

@@ -4,6 +4,7 @@
 // nitro_vector: the vector drawings for the four viewers (see nitro_vector.h)
 #include "nitro_vector.h"
 #include "nitro_load.h"   // nv_has_ext, NV_MODE_*
+#include "nitro_os.h"     // nitro_parallel, nitro_ncpu
 #ifdef NV_SVG
 #include "nitrosvg.h"
 #include "nitrodxf.h"
@@ -152,9 +153,28 @@ void nv_vector_size(const NvVector *v, int page, double *w, double *h) {
     v->size(v->doc, page, w, h);
 }
 
+// In bands of 128 rows at least, as many as the CPU's threads, rendered at once (each band skips
+// what is outside it; SVG renders whole: lunasvg's calls take turns). One split render at a time:
+// another one meanwhile (a zoomed view's detail while a page renders) is drawn whole on its own
+// thread rather than waiting for the bands' threads. Every band asks cancelled; a stopped one
+// stops the render.
+static _Atomic int g_split;
+
 int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx) {
-    return v->render(v->doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+    int bands = v->mode == NV_MODE_SVG ? 1 : MIN(nitro_ncpu(), h / 128), idle = 0;
+    if (bands < 2 || !atomic_compare_exchange_strong(&g_split, &idle, 1))
+        return v->render(v->doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+    int rcs[256] = {0}, *rc = rcs;
+    if (bands > 256) bands = 256;
+    nitro_parallel((size_t)bands, ^(size_t i) {
+        int b0 = (int)((long)h * (long)i / bands), b1 = (int)((long)h * (long)(i + 1) / bands);
+        rc[i] = v->render(v->doc, page, bgra + (size_t)b0 * pitch, w, b1 - b0, pitch, scale, x0, y0 + b0 / scale, cancelled, ctx);
+    });
+    atomic_store(&g_split, 0);
+    for (int i = 0; i < bands; i++)
+        if (rcs[i]) return rcs[i];
+    return 0;
 }
 
 double nv_vector_page_size(const NvVector *v, int page, int tw, int th, int max_tex, int *pw, int *ph) {
