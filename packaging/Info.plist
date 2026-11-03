@@ -134,7 +134,7 @@
             <key>UTTypeConformsTo</key>     <array><string>public.image</string><string>public.data</string></array>
             <key>UTTypeTagSpecification</key>
             <dict>
-                <key>public.filename-extension</key> <array><string>vsdx</string><string>vsdm</string><string>vdx</string><string>vssx</string><string>vstx</string></array>
+                <key>public.filename-extension</key> <array><string>vsdx</string><string>vsdm</string><string>vdx</string><string>vssx</string><string>vssm</string><string>vsx</string><string>vstx</string><string>vstm</string><string>vtx</string></array>
             </dict>
         </dict>
     </array>

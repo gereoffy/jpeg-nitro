@@ -23,7 +23,7 @@ const char *const nv_vector_exts[] = {
     "svg", "dxf", "dwg", "wmf", "emf",
 #endif
 #ifdef NV_CDR
-    "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vss", "vssx",
+    "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
 #endif
     NULL};
 
@@ -113,7 +113,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
 #endif
 #ifdef NV_CDR
     static const char *const cdr_exts[] = {"cdr", "cmx", NULL};
-    static const char *const visio_exts[] = {"vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vss", "vssx", NULL};
+    static const char *const visio_exts[] = {"vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx", NULL};
     if (!v->doc && (nv_has_ext(name, cdr_exts) || nv_has_ext(name, visio_exts)) && (v->doc = nitrocdr_load(data, len))) {
         nitrocdr_set_background(v->doc, v->background);
         v->render = cdr_render;

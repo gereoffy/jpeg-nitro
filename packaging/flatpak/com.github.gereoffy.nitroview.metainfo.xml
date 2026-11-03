@@ -30,7 +30,9 @@
     <mediatype>application/vnd.ms-visio.drawing.main+xml</mediatype>
     <mediatype>application/vnd.ms-visio.drawing.macroEnabled.main+xml</mediatype>
     <mediatype>application/vnd.ms-visio.stencil.main+xml</mediatype>
+    <mediatype>application/vnd.ms-visio.stencil.macroEnabled.main+xml</mediatype>
     <mediatype>application/vnd.ms-visio.template.main+xml</mediatype>
+    <mediatype>application/vnd.ms-visio.template.macroEnabled.main+xml</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
 </component>

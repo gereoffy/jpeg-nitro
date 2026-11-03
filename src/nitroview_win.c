@@ -2082,7 +2082,8 @@ static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfi
                                               L".svg", L".dxf", L".dwg", L".wmf", L".emf",
 #endif
 #ifdef NV_CDR
-                                              L".cdr", L".cmx", L".vsd", L".vsdx", L".vsdm", L".vdx", L".vst", L".vstx", L".vss", L".vssx",
+                                              L".cdr", L".cmx", L".vsd", L".vsdx", L".vsdm", L".vdx", L".vst", L".vstx", L".vstm", L".vtx", L".vss", L".vssx",
+                                              L".vssm", L".vsx",
 #endif
                                               NULL};
 #define PROGID L"NitroView.Image"

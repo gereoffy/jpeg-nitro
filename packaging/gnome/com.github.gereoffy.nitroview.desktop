@@ -6,5 +6,5 @@ Exec=nitroview-gnome %F
 Icon=com.github.gereoffy.nitroview
 Terminal=false
 Categories=Graphics;Viewer;
-MimeType=image/jpeg;image/png;image/vnd.adobe.photoshop;image/tiff;image/gif;image/bmp;image/webp;image/heic;image/heif;image/avif;image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;image/x-adobe-dng;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;
+MimeType=image/jpeg;image/png;image/vnd.adobe.photoshop;image/tiff;image/gif;image/bmp;image/webp;image/heic;image/heif;image/avif;image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;image/x-adobe-dng;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.stencil.macroEnabled.main+xml;application/vnd.ms-visio.template.main+xml;application/vnd.ms-visio.template.macroEnabled.main+xml;
 StartupNotify=true
