@@ -108,7 +108,7 @@ int main(int argc, char **argv) {
     g_application_add_main_option(G_APPLICATION(application), "slideshow", 's', G_OPTION_FLAG_NONE,
                                   G_OPTION_ARG_INT, "Slideshow interval in milliseconds", "MS");
     g_application_add_main_option(G_APPLICATION(application), "threads", 'j', G_OPTION_FLAG_NONE,
-                                  G_OPTION_ARG_INT, "Limit decoder threads", "N");
+                                  G_OPTION_ARG_INT, "Limit the threads that decode and draw", "N");
 
     g_signal_connect(application, "startup", G_CALLBACK(startup_cb), NULL);
     g_signal_connect(application, "activate", G_CALLBACK(activate_cb), NULL);

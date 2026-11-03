@@ -2186,9 +2186,10 @@ int main(int argc, const char **argv) {
             else if (!strcmp(argv[i], "--zoomtest")) zoomtest = YES;
             else if (!strcmp(argv[i], "--inputtest")) inputtest = YES;
             else if (!strcmp(argv[i], "--auto") && i + 1 < argc) auto_ms = atof(argv[++i]);   // page every N ms, then quit
-            else if (!strcmp(argv[i], "-j") && i + 1 < argc) {   // decoder threads
+            else if (!strcmp(argv[i], "-j") && i + 1 < argc) {   // decoder and vector render threads
                 g_nthreads = atoi(argv[++i]);
                 nj_set_max_workers(g_nthreads);
+                nv_vector_set_threads(g_nthreads);
             }
             else if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--slideshow")) && i + 1 < argc) slide_ms = atof(argv[++i]);
             else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { args = nil; break; }
@@ -2204,7 +2205,7 @@ int main(int argc, const char **argv) {
                 "  -f, --fullscreen      start in full screen\n"
                 "  -s, --slideshow MS    slideshow: next image after MS milliseconds on screen\n"
                 "                        (waits for slow images, stops at the last one; P pauses)\n"
-                "  -j N                  use N decoder threads (default: all logical CPUs)\n"
+                "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
                 "  --bench               load all files without a window, print timings\n"
                 "  --selftest            compare GPU colour conversion with libjpeg-turbo%s\n"
                 "  -h, --help            this help\n"

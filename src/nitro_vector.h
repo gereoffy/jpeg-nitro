@@ -46,6 +46,9 @@ void nv_vector_size(const NvVector *v, int page, double *w, double *h);
 // (DXF and CorelDRAW; an SVG renders to its end), and it returns nonzero.
 int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx);
+// The threads a render may use (the viewers' -j): n bands at most, 1 on the calling thread alone;
+// 0 (the default): as many as the CPU's threads.
+void nv_vector_set_threads(int n);
 
 // The size a page is rendered at in full: the long side 1024..4096 pixels (small icons enlarged,
 // huge drawings reduced), at least the target tw x th (the screen, when shown fitted to it; 0:

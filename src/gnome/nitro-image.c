@@ -126,6 +126,7 @@ int nitro_image_get_dng_ev3(void) { return g_atomic_int_get(&dng_ev3); }
 void nitro_image_set_threads(int threads) {
     decode_threads = MAX(threads, 0);
     nj_set_max_workers(decode_threads);
+    nv_vector_set_threads(decode_threads);
 }
 
 static uint8_t *image_get(size_t len, size_t *cap, void *ctx) {

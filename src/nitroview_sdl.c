@@ -2480,7 +2480,7 @@ static void usage(void) {
         "  -f, --fullscreen      start in full screen\n"
         "  -s, --slideshow MS    slideshow: next image after MS milliseconds on screen\n"
         "                        (waits for slow images, stops at the last one; P pauses)\n"
-        "  -j N                  use N decoder threads (default: all logical CPUs; progressive JPEG: 4)\n"
+        "  -j N                  use N threads to decode and draw (default: all logical CPUs; progressive JPEG: 4)\n"
         "  --bench               load all files (a hidden window), print timings\n"
         "  --selftest            compare the GPU output with stb_image's decoding\n"
         "  --register            add nitroview to the desktop's applications (\"Open with\"), current user\n"
@@ -2523,7 +2523,7 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "-f") || !strcmp(a, "--fullscreen")) full = 1;
         else if (!strcmp(a, "--bench")) bench = 1;
         else if (!strcmp(a, "--selftest")) selftest = 1;
-        else if (!strcmp(a, "-j") && i + 1 < argc) { g_nthreads = atoi(argv[++i]); nj_set_max_workers(g_nthreads); }
+        else if (!strcmp(a, "-j") && i + 1 < argc) { g_nthreads = atoi(argv[++i]); nj_set_max_workers(g_nthreads); nv_vector_set_threads(g_nthreads); }
         else if ((!strcmp(a, "-s") || !strcmp(a, "--slideshow")) && i + 1 < argc) slide_ms = atof(argv[++i]);
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) help = 1;
         else if (!strcmp(a, "-n") || !strcmp(a, "--new-window")) {}   // (the other viewers' option: always a new window here)

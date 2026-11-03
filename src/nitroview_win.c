@@ -2275,7 +2275,7 @@ static void usage(void) {
         "  -f, --fullscreen      start in full screen\n"
         "  -s, --slideshow MS    slideshow: next image after MS milliseconds on screen\n"
         "                        (waits for slow images, stops at the last one; P pauses)\n"
-        "  -j N                  use N decoder threads (default: all logical CPUs)\n"
+        "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
         "  --bench               load all files without a window, print timings\n"
         "  --selftest            compare the GPU output with Windows' own decoding (WIC)\n"
         "  -n, --new-window      don't pass the files to a running nitroview\n"
@@ -2329,7 +2329,7 @@ int wmain(int argc, wchar_t **argv) {
         if (!wcscmp(a, L"-f") || !wcscmp(a, L"--fullscreen")) full = 1;
         else if (!wcscmp(a, L"--bench")) bench = 1;
         else if (!wcscmp(a, L"--selftest")) selftest = 1;
-        else if (!wcscmp(a, L"-j") && i + 1 < argc) { g_nthreads = _wtoi(argv[++i]); nj_set_max_workers(g_nthreads); }
+        else if (!wcscmp(a, L"-j") && i + 1 < argc) { g_nthreads = _wtoi(argv[++i]); nj_set_max_workers(g_nthreads); nv_vector_set_threads(g_nthreads); }
         else if ((!wcscmp(a, L"-s") || !wcscmp(a, L"--slideshow")) && i + 1 < argc) slide_ms = _wtof(argv[++i]);
         else if (!wcscmp(a, L"-h") || !wcscmp(a, L"--help") || !wcscmp(a, L"/?")) help = 1;
         else if (!wcscmp(a, L"-n") || !wcscmp(a, L"--new-window")) newwin = 1;
