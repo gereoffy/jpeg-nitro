@@ -2079,7 +2079,7 @@ static int create_window(const wchar_t *first) {
 static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
                                               L".heif", L".avif", L".tif", L".tiff", L".webp", L".gif", L".bmp", L".cr2", L".nef", L".nrw", L".arw", L".raf", L".dng",
 #ifdef NV_SVG
-                                              L".svg", L".dxf", L".wmf", L".emf",
+                                              L".svg", L".dxf", L".dwg", L".wmf", L".emf",
 #endif
 #ifdef NV_CDR
                                               L".cdr", L".cmx", L".vsd", L".vsdx", L".vsdm", L".vdx", L".vst", L".vstx", L".vss", L".vssx",

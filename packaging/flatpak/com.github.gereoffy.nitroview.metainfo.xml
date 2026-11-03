@@ -22,6 +22,7 @@
     <mediatype>image/avif</mediatype>
     <mediatype>image/svg+xml</mediatype>
     <mediatype>image/vnd.dxf</mediatype>
+    <mediatype>image/vnd.dwg</mediatype>
     <mediatype>image/wmf</mediatype>
     <mediatype>image/emf</mediatype>
     <mediatype>image/x-adobe-dng</mediatype>

@@ -19,7 +19,7 @@
 
 const char *const nv_vector_exts[] = {
 #ifdef NV_SVG
-    "svg", "dxf", "wmf", "emf",
+    "svg", "dxf", "dwg", "wmf", "emf",
 #endif
 #ifdef NV_CDR
     "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vss", "vssx",
@@ -80,7 +80,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     if (!v) return NULL;
     v->background = atomic_load(&g_background);
 #ifdef NV_SVG
-    static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", NULL};
+    static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
     const uint8_t *p = data;   // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
     while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n')) i++;

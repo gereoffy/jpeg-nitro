@@ -12,6 +12,7 @@
 // render() replays the items that touch the view; hairlines are one device pixel wide.
 // What is 3D is shown from the top (x, y of the world coordinates).
 #include "nitrodxf.h"
+#include "nitrodwg.h"
 #include "nitro_font.h"
 
 #include <plutovg.h>
@@ -178,8 +179,14 @@ double pow10i(int e) {
     return e >= 0 && e <= 22 ? t[e] : std::pow(10.0, e);
 }
 
-// a decimal number (the DXF way: no hex, no inf; a decimal comma too); def if there is none
+// a decimal number (the DXF way: no hex, no inf; a decimal comma too); def if there is none.
+// (A DWG's real: '\1' and its 8 bytes, nitrodwg.h.)
 double num(sv s, double def = 0) {
+    if (s.size() == 9 && s[0] == '\1') {
+        double v;
+        memcpy(&v, s.data() + 1, 8);
+        return std::isfinite(v) ? v : def;
+    }
     const char *p = s.data(), *e = p + s.size();
     while (p < e && (*p == ' ' || *p == '\t')) p++;
     bool neg = false;
@@ -234,9 +241,11 @@ struct Pair {
     sv v;
 };
 
-// group code / value line pairs of an ASCII DXF
+// group code / value line pairs of an ASCII DXF (or a DWG's, from nitrodwg)
 struct Reader {
     const char *p, *end;
+    const nitrodwg_pairs *dwg = nullptr;
+    size_t at = 0;
     Pair cur{-1, {}};
     bool ok = false;
     sv line() {
@@ -268,6 +277,13 @@ struct Reader {
     // starts again (a 0 group with a type name).
     bool next() {
         ok = false;
+        if (dwg) {
+            if (at >= dwg->code.size()) return false;
+            uint32_t b = at ? dwg->end[at - 1] : 0;
+            cur = {dwg->code[at], sv(dwg->text.data() + b, dwg->end[at] - b)};
+            at++;
+            return ok = true;
+        }
         bool lost = false;
         while (p < end) {
             sv c = trim(line());
@@ -324,6 +340,8 @@ int codepage(sv name) {
     static const struct { const char *name; int cp; } names[] = {{"BIG5", 950}, {"GB2312", 936}, {"KSC5601", 949}, {"JOHAB", 1361}};
     for (const auto &e : names)
         if (u.find(e.name) != std::string::npos) return e.cp;
+    size_t iso = u.find("8859-");   // ("ISO8859-2": 28592, as Windows numbers it)
+    if (iso != std::string::npos && iso + 5 < u.size() && u[iso + 5] >= '1' && u[iso + 5] <= '9') return 28590 + (u[iso + 5] - '0');
     for (size_t i = 0; i < u.size(); i++)
         if (u[i] >= '0' && u[i] <= '9') return atoi(u.c_str() + i);
     return 1252;   // (ANSI, "undefined", ASCII)
@@ -357,7 +375,11 @@ struct Conv {
         }
 #else
         auto it = cds.find(page);
-        iconv_t cd = it != cds.end() ? it->second : (cds[page] = iconv_open("UTF-32LE", ("CP" + std::to_string(page)).c_str()));
+        if (it == cds.end()) {   // (ISO 8859 and Mac Roman by their names, for macOS's iconv)
+            std::string name = page > 28590 && page < 28600 ? "ISO-8859-" + std::to_string(page - 28590) : page == 10000 ? "MACINTOSH" : "CP" + std::to_string(page);
+            it = cds.emplace(page, iconv_open("UTF-32LE", name.c_str())).first;
+        }
+        iconv_t cd = it->second;
         if (cd == (iconv_t)-1) return latin1();
         iconv(cd, nullptr, nullptr, nullptr, nullptr);
         char *src = const_cast<char *>(s.data());
@@ -2476,6 +2498,11 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     const char *p = static_cast<const char *>(data);
     if (!p || len < 8 || (len >= 18 && !memcmp(p, "AutoCAD Binary DXF", 18))) return nullptr;
     Reader rd{p, p + len};
+    nitrodwg_pairs dwg;   // (a DWG: its pairs, read from here)
+    if (!memcmp(p, "AC10", 4)) {
+        if (!nitrodwg_read(data, len, dwg)) return nullptr;
+        rd.dwg = &dwg;
+    }
     if (!rd.next() || (rd.cur.code != 0 && rd.cur.code != 999)) return nullptr;
     std::unique_ptr<nitrodxf> doc(new nitrodxf);
     Parser P;

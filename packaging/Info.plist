@@ -40,6 +40,7 @@
                 <string>com.adobe.raw-image</string>
                 <string>public.svg-image</string>
                 <string>com.autodesk.dxf</string>
+                <string>com.autodesk.dwg</string>
                 <string>com.microsoft.windows-metafile</string>
                 <string>com.microsoft.enhanced-metafile</string>
                 <string>com.corel.cdr</string>
@@ -59,7 +60,7 @@
             </array>
         </dict>
     </array>
-    <!-- CorelDRAW, DXF, WMF / EMF and Visio files have no system type: declared here (imported, so a CorelDRAW / AutoCAD / Office / Visio install wins) -->
+    <!-- CorelDRAW, DXF, DWG, WMF / EMF and Visio files have no system type: declared here (imported, so a CorelDRAW / AutoCAD / Office / Visio install wins) -->
     <key>UTImportedTypeDeclarations</key>
     <array>
         <dict>
@@ -69,6 +70,15 @@
             <key>UTTypeTagSpecification</key>
             <dict>
                 <key>public.filename-extension</key> <array><string>dxf</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>     <string>com.autodesk.dwg</string>
+            <key>UTTypeDescription</key>    <string>AutoCAD DWG drawing</string>
+            <key>UTTypeConformsTo</key>     <array><string>public.image</string><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key> <array><string>dwg</string></array>
             </dict>
         </dict>
         <dict>
