@@ -1649,6 +1649,7 @@ struct nitrocdr {
 nitrocdr *nitrocdr_load(const void *data, size_t len) {
     librevenge::RVNGStringStream in(static_cast<const unsigned char *>(data), (unsigned)len);
     Painter painter;
+    std::unique_ptr<Painter> masters;
     bool ok = false;
     if (libcdr::CDRDocument::isSupported(&in)) {
         in.seek(0, librevenge::RVNG_SEEK_SET);
@@ -1664,12 +1665,21 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
                 in.seek(0, librevenge::RVNG_SEEK_SET);
                 painter.corel = false;
                 ok = libvisio::VisioDocument::parse(&in, &painter);
+                bool empty = true;
+                for (const Page &pg : painter.pages) empty &= pg.items.empty();
+                if (empty) {   // a stencil, or a document with its shapes in its own stencil only: the masters, a page each
+                    masters.reset(new Painter);
+                    masters->corel = false;
+                    in.seek(0, librevenge::RVNG_SEEK_SET);
+                    if (!libvisio::VisioDocument::parseStencils(&in, masters.get()) || masters->pages.empty()) masters.reset();
+                }
             }
         }
     }
-    if (!ok || painter.pages.empty()) return nullptr;
-    painter.decodeImages();
-    for (Page &pg : painter.pages)   // (a picture that could not be decoded: left out)
+    Painter &pt = masters ? *masters : painter;
+    if (!ok || pt.pages.empty()) return nullptr;
+    pt.decodeImages();
+    for (Page &pg : pt.pages)   // (a picture that could not be decoded: left out)
         pg.items.erase(std::remove_if(pg.items.begin(), pg.items.end(),
                                       [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta; }),
                        pg.items.end());
@@ -1680,11 +1690,11 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     // building) stays in place when paging. Pages of different sizes (a Visio document of posters)
     // are shown each in its own area.
     bool sameSize = true;
-    for (const Page &pg : painter.pages)
-        sameSize &= std::fabs(pg.pageW - painter.pages[0].pageW) < 1 && std::fabs(pg.pageH - painter.pages[0].pageH) < 1;
+    for (const Page &pg : pt.pages)
+        sameSize &= std::fabs(pg.pageW - pt.pages[0].pageW) < 1 && std::fabs(pg.pageH - pt.pages[0].pageH) < 1;
     double ux0 = 1e30, uy0 = 1e30, ux1 = -1e30, uy1 = -1e30;
     std::vector<std::array<double, 4>> boxes;
-    for (const Page &pg : painter.pages) {
+    for (const Page &pg : pt.pages) {
         double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
         for (const Item &it : pg.items) {
             x0 = std::min(x0, (double)it.bx0);
@@ -1699,10 +1709,10 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
         ux1 = std::max(ux1, x1);
         uy1 = std::max(uy1, y1);
     }
-    for (size_t i = 0; i < painter.pages.size(); i++) {
-        Page &pg = painter.pages[i];
+    for (size_t i = 0; i < pt.pages.size(); i++) {
+        Page &pg = pt.pages[i];
         double x0 = boxes[i][0], y0 = boxes[i][1], x1 = boxes[i][2], y1 = boxes[i][3];
-        if (painter.pages.size() > 1 && sameSize && ux1 > ux0 && uy1 > uy0) {
+        if (pt.pages.size() > 1 && sameSize && ux1 > ux0 && uy1 > uy0) {
             x0 = ux0;
             y0 = uy0;
             x1 = ux1;
@@ -1715,7 +1725,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
         pg.w = x1 - x0 + 2 * m;
         pg.h = y1 - y0 + 2 * m;
     }
-    return new nitrocdr{std::move(painter.pages), 0};
+    return new nitrocdr{std::move(pt.pages), 0};
 }
 
 void nitrocdr_free(nitrocdr *cdr) {
