@@ -168,7 +168,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok ([ / ]), a rejtett rétegek kimaradnak, mint a CorelDRAW-ban; a megjelenített terület a rajz befoglaló kerete, nem a lap | a nyílhegyek és a Corel saját vektoros és bitképes mintakitöltései kimaradnak |
 | **Visio** (VSD 5 – 2010, VSDX / VSDM 2013+, VDX; stencilek és sablonok: VSS, VSSX, VST, VSTX) | alakzatok, összekötők a vonalvégeikkel, szöveg (bekezdések, igazítás, háttér), bitképek, többoldalas dokumentumok ([ / ]); libvisio, a CorelDRAW-val közös rajzolóval | a sraffozott kitöltések még kimaradnak; a szövegmezők a tárolt értéküket mutatják |
 | **WMF / EMF** (Windows-metafájlok) | a GDI-rajz: alakzatok, Bézier-görbék, ívek, útvonalak, tollak és ecsetek (szaggatás, sraffozás, minták), szöveg a rendszer betűtípusaival (a karakterkészletek átalakítva), DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk; saját olvasó, a Visio-stencilekbe ágyazott képekhez is (a hálózati eszközök ikonjai) | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
-| **DXF** (AutoCAD R12 – 2018) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
+| **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2000) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként; DWG: lásd [DWG](#dwg) | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés
@@ -188,6 +188,18 @@ HEIC-fájlokat. A saját HEVC-dekóderünk, a nitrohevc (csak intra, a H.265 sza
 deblocking és az SAO szűrő kimarad, fotókon ez nem látszik) csak a saját kezűleg, `make NITROHEVC=1`-gyel
 fordított buildben van benne ([BUILDING.md](BUILDING.md#macos)), saját használatra: a szabadalmak
 kérdése ekkor a tiéd.
+
+### DWG
+
+A DWG-rajzokat saját olvasó, a nitrodwg nyitja meg: az objektumokat úgy olvassa, ahogy az ACadSharp
+(C#, MIT), az Open Design Alliance formátumleírásával ellenőrizve, és úgy adja át a nitrodxf-nek,
+ahogy ugyanennek a rajznak a DXF-je tenné. A LibreDWG-t nem használjuk (GPL); a `dwg2dxf`-je a
+teszteléskor referencia volt. 7371 rajzból 4305 pixelre azonos; a többi többnyire ott tér el, ahol a
+LibreDWG elveszít valamit: minden névtelen blokkot ugyanúgy nevez el (a méretezések és a régi
+sraffozások ilyenkor mind ugyanazt az egy blokkot mutatják), egy blokkot és a beszúrásait máshogy
+nevez el, és elhagyja a polyline-ok szélességét és az ékezetes betűket. Az R2004-es és újabb rajzok
+még nem nyílnak meg; az R2007-esek és az R12-es vagy régebbiek nem is fognak (ezeket DXF-be kell
+konvertálni).
 
 ### Sérült fájlok
 

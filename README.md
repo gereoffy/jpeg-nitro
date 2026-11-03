@@ -162,7 +162,7 @@ The GNOME viewer was contributed by Ferenc Czirok. Windows touchpad gestures are
 | **CorelDRAW** (CDR 5 – X6, CMX)          | drawings, text (with similar fonts where the original is missing), embedded bitmaps, multi-page documents ([ / ]), hidden layers skipped as in CorelDRAW; the shown area is the drawing's bounding box, not the page | arrowheads and Corel's own vector and bitmap pattern fills are left out                                                                              |
 | **Visio** (VSD 5 – 2010, VSDX / VSDM 2013+, VDX; stencils and templates: VSS, VSSX, VST, VSTX) | shapes, connectors with their line ends, text (paragraphs, alignment, backgrounds), bitmaps, multi-page documents ([ / ]); libvisio, drawn by the same code as CorelDRAW | hatch fills are not drawn yet; text fields show their stored value |
 | **WMF / EMF** (Windows metafiles)       | the GDI drawing: shapes, Bézier curves, arcs, paths, pens and brushes (dashes, hatches, patterns), text with the system's fonts (character sets converted), DIB bitmaps with their masks, gradient fills, clipping, world transforms; our own reader, also for the pictures embedded in Visio stencils (the network device icons) | EMF+ records (GDI+ drawings) are not read: a dual file shows its GDI part, an EMF+-only one is empty; raster operations other than copy and mask pairs are approximated |
-| **DXF** (AutoCAD R12 – 2018)            | the model space and each layout's sheet with its viewports, as separate pages | multileaders, multilines, 3D solids, referenced images, external references (xrefs) and the objects of AutoCAD Architecture / Mechanical are not drawn; line weights are ignored; binary DXF does not open |
+| **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2000) | the model space and each layout's sheet with its viewports, as separate pages; DWG: see [DWG](#dwg) | multileaders, multilines, 3D solids, referenced images, external references (xrefs) and the objects of AutoCAD Architecture / Mechanical are not drawn; line weights are ignored; binary DXF does not open |
 | **everything else** (GIF, BMP, …)        | through the operating system's decoder (ImageIO, WIC, GTK's loaders; stb_image in the SDL viewer)                                                                                                                    |                                                                                                                                      |
 
 Vector drawings are rendered first in full, so paging, fitting and zooming out work as for photos.
@@ -181,6 +181,17 @@ SDL viewer then shows no HEIC files at all. Our own HEVC decoder, nitrohevc (int
 from the H.265 specification; it leaves out the deblocking and SAO filters, which cannot be seen on
 photos), is only in a build you make yourself with `make NITROHEVC=1` ([BUILDING.md](BUILDING.md#macos)),
 for your own use: the patents are then your concern.
+
+### DWG
+
+DWG drawings open with our own reader, nitrodwg: it reads the objects as ACadSharp (C#, MIT) does,
+checked against the Open Design Alliance's specification of the format, and hands them to nitrodxf
+as the same drawing's DXF would. LibreDWG is not used (it is GPL); its `dwg2dxf` was the reference
+in testing. Of 7371 drawings 4305 look the same pixel for pixel; most of the rest differ where
+LibreDWG loses something: it gives every anonymous block the same name (dimensions and old hatches
+then all show one block), names a block and its inserts differently, and drops polyline widths and
+accented letters. R2004 and later drawings do not open yet; R2007 and R12 or older ones will not
+(convert those to DXF).
 
 ### Damaged files
 
