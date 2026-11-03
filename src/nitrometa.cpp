@@ -598,6 +598,15 @@ public:
     bool inPath = false, pathOpen = false;
     PathP path;
 
+    // a WMF's PostScript version (Office's): GDI draws a shape's gradient or picture XORed, the
+    // shape black, the same XORed again; a PostScript printer skips the GDI-only records (between
+    // POSTSCRIPT_IGNORE escapes) and clips to the shape (BEGIN_PATH .. END_PATH, CLIP_TO_PATH).
+    // Played that way when the file clips so: XOR can't be drawn here
+    bool psClip = false, psIgnore = false, psOpen = false;
+    PathP psPath;                                 // the shapes from BEGIN_PATH to END_PATH (device space)
+    bool psEvenodd = true;
+    std::vector<std::vector<Clip>> psSaved;       // CLIP_SAVE's
+
     // a transparent bitmap drawn as two blits: the mask (SRCAND), then the picture (SRCPAINT); or
     // the other way round, a 1-bit mask ORed (SRCPAINT: white where the picture shows), then the
     // picture ANDed (SRCAND: white where it does not). The first one waits for the second (and is
@@ -607,6 +616,7 @@ public:
 
     // --- the display list ---
     void addItem(Item &&it) {
+        if (psIgnore && it.kind != Item::CLIP) return;
         drawn = true;
         if (it.kind != Item::CLIP && !(std::fabs(it.bx0) < 1e15f && std::fabs(it.by0) < 1e15f && std::fabs(it.bx1) < 1e15f && std::fabs(it.by1) < 1e15f))
             return;   // (a damaged file's coordinates beyond any view, or not numbers at all)
@@ -723,6 +733,7 @@ public:
         }
         PathP p = newPath();
         plutovg_path_add_path(p.get(), lp, &pm);
+        if (psOpen && psPath && !psIgnore) plutovg_path_add_path(psPath.get(), p.get(), nullptr);
         if (doFill) fill(p, dc.brush, dc.fillMode == 1);
         if (doStroke) stroke(p, dc.pen);
     }
@@ -1316,6 +1327,14 @@ bool Player::playWmf(Bytes b, size_t o) {
     std::string embedded;   // an enhanced metafile in comment records (a dual WMF)
     size_t embeddedSize = 0;
     size_t records = 0;
+    for (size_t at = o; at + 8 <= b.n && !psClip && records < 8u << 20; records++) {   // (a CLIP_TO_PATH escape: played as PostScript)
+        uint32_t size = b.u32(at);
+        uint16_t fn = b.u16(at + 4);
+        if (size < 3 || fn == 0) break;
+        psClip = fn == 0x0626 && b.u16(at + 6) == 0x1001;
+        at += (size_t)size * 2;
+    }
+    records = 0;
     while (o + 6 <= b.n) {
         uint32_t size = b.u32(o);
         uint16_t fn = b.u16(o + 4);
@@ -1554,10 +1573,29 @@ bool Player::playWmf(Bytes b, size_t o) {
             if (img) blit(dx0, dy, w, h, img, sx, sy, w, h, SRCCOPY);
             break;
         }
-        case 0x0626: {   // Escape: an enhanced metafile embedded in comments (a dual file)
-            // function, byte count, "WMFC", type 1, version, checksum, flags, chunks, this chunk's
-            // size, the remaining bytes, the whole size, the chunk
-            if (r.u16(0) != 0x000f || r.u32(4) != 0x43464d57 || r.u32(8) != 1) break;   // MFCOMMENT, "WMFC"
+        case 0x0626: {   // Escape: function, byte count, data
+            uint16_t esc = r.u16(0), arg = r.u16(4);
+            if (psClip && (esc == 0x0026 || (esc >= 0x1000 && esc <= 0x1002))) {
+                if (esc == 0x0026) psIgnore = arg != 0;   // POSTSCRIPT_IGNORE: 1 on, 0 off
+                else if (psIgnore) break;
+                else if (esc == 0x1000) psPath = newPath(), psOpen = true;   // BEGIN_PATH
+                else if (esc == 0x1002 && psOpen) {   // END_PATH: render mode, fill mode (1 alternate, 2 winding), ...
+                    psOpen = false;
+                    psEvenodd = r.n < 7 || r.u8(6) != 2;
+                    if (!plutovg_path_get_elements(psPath.get(), nullptr)) psPath = nullptr;
+                } else if (esc == 0x1001) {   // CLIP_TO_PATH: save, restore, inclusive, exclusive
+                    if (arg == 0 && psSaved.size() < 64) psSaved.push_back(dc.clips);
+                    else if (arg == 1 && !psSaved.empty()) dc.clips = std::move(psSaved.back()), psSaved.pop_back();
+                    else if (arg == 2 && psPath) {   // (the path may still be open: it ends here)
+                        if (plutovg_path_get_elements(psPath.get(), nullptr) && dc.clips.size() < 64) dc.clips.push_back({psPath, psEvenodd});
+                        psPath = nullptr, psOpen = false;
+                    }
+                }
+                break;
+            }
+            // an enhanced metafile embedded in comments (a dual file): "WMFC", type 1, version,
+            // checksum, flags, chunks, this chunk's size, the remaining bytes, the whole size, the chunk
+            if (esc != 0x000f || r.u32(4) != 0x43464d57 || r.u32(8) != 1) break;   // MFCOMMENT, "WMFC"
             if (embedded.empty()) embeddedSize = r.u32(34);
             size_t chunk = r.u32(26);
             if (!r.has(38, chunk) || embedded.size() + chunk > embeddedSize || embeddedSize > 256u << 20) break;
