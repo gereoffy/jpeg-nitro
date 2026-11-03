@@ -3,13 +3,17 @@
 // The DWG structures as ACadSharp reads them (MIT, Copyright (c) 2021 Albert Domenech,
 // https://github.com/DomCR/ACadSharp) and the Open Design Specification for .dwg files 5.4.1.
 //
-// nitrodwg: AutoCAD DWG drawings R13 - R2000 (AC1012, AC1014, AC1015) as the group code / value
-// pairs of their DXF (nitrodwg.h). The file header's section locators lead to the header
-// variables (the few nitrodxf uses), the classes and the object map (handle -> file offset).
-// The table entries, block headers and layouts are read first, then each block's entities in
-// their order (the entities' next links), an insert with its attributes and a polyline with its
-// vertices, as in a DXF. What nitrodxf doesn't draw is left out; a damaged object is skipped,
-// not the drawing.
+// nitrodwg: AutoCAD DWG drawings R13 - R2000 (AC1012, AC1014, AC1015) and R2004 - R2018 (AC1018,
+// AC1024, AC1027, AC1032; not R2007, AC1021) as the group code / value pairs of their DXF
+// (nitrodwg.h). Up to R2000 the file header's section locators lead to the sections in the file;
+// from R2004 on they are pages, LZ77-compressed, found through the page map and the section map.
+// The sections: the header variables (the few nitrodxf uses), the classes and the object map
+// (handle -> offset in the objects). The table entries, block headers and layouts are read
+// first, then each block's entities in their order (up to R2000 along the entities' next links,
+// from R2004 the block's list), an insert with its attributes and a polyline with its vertices,
+// as in a DXF. From R2010 on an object's strings (UTF-16) and handles are in streams of their
+// own at its end. What nitrodxf doesn't draw is left out; a damaged object is skipped, not the
+// drawing.
 #include "nitrodwg.h"
 
 #include <algorithm>
@@ -33,12 +37,22 @@ const double DEG = 180 / M_PI;
 
 // --- the bit stream ----------------------------------------------------------------
 
+void utf8_put(std::string &o, uint32_t c) {
+    if (c < 0x80) o += (char)c;
+    else if (c < 0x800) o += (char)(0xc0 | c >> 6), o += (char)(0x80 | (c & 63));
+    else if (c < 0x10000) o += (char)(0xe0 | c >> 12), o += (char)(0x80 | (c >> 6 & 63)), o += (char)(0x80 | (c & 63));
+    else o += (char)(0xf0 | c >> 18), o += (char)(0x80 | (c >> 12 & 63)), o += (char)(0x80 | (c >> 6 & 63)), o += (char)(0x80 | (c & 63));
+}
+
 // The bit codes of the specification (B, BB, BS, BL, BD, DD, RC ... H) on a byte range, MSB
-// first. Reading past its end gives zeros and sets bad.
+// first. Reading past its end gives zeros and sets bad. Its strings (TV) may be in a stream of
+// their own (R2007+: tx, in UTF-16; none: an object without strings).
 struct Bits {
     const uint8_t *d = nullptr;
     size_t end = 0, pos = 0;   // in bits
     bool bad = false;
+    Bits *tx = nullptr;
+    bool u16 = false, none = false;
     Bits() {}
     Bits(const uint8_t *data, size_t endByte, size_t startByte) : d(data), end(endByte * 8), pos(startByte * 8) {
         if (pos > end) pos = end, bad = true;
@@ -221,18 +235,70 @@ struct Bits {
             return 0;
         }
     }
-    std::string TV() {   // R13 - R2004: in the drawing's code page
-        int n = BS();
+    std::string TV() {   // R13 - R2004: in the drawing's code page; R2007+ UTF-16 (here: UTF-8)
+        if (tx) return tx->TV();
         std::string s;
-        if (n <= 0) return s;
-        if ((size_t)n * 8 > left()) {
+        if (none) return s;
+        int n = BS() & 0xffff;
+        if (!n) return s;
+        if ((size_t)n * (u16 ? 16 : 8) > left()) {
             bad = true;
             return s;
         }
+        if (u16) return utf16(n);
         s.reserve((size_t)n);
         for (int k = 0; k < n; k++)
             if (char c = (char)RC()) s.push_back(c);
         return s;
+    }
+    std::string utf16(int n) {   // n UTF-16 units -> UTF-8
+        std::string s;
+        for (int k = 0; k < n; k++) {
+            uint32_t c = RS();
+            if (c >= 0xd800 && c < 0xdc00 && k + 1 < n) {
+                uint32_t lo = RS();
+                k++;
+                if (lo >= 0xdc00 && lo < 0xe000) c = 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00);
+                else c = 0xfffd;
+            }
+            if (c) utf8_put(s, c);
+        }
+        return s;
+    }
+    // The string stream of an object (R2007+) whose data ends at bit last: its size (in bits)
+    // before that, and a flag at last.
+    void strings(const Bits &obj, size_t last) {
+        *this = obj;
+        tx = nullptr;
+        u16 = true;
+        none = false;
+        seek(last);
+        if (!B()) {
+            none = true;
+            return;
+        }
+        if (last < 16) {
+            bad = true;
+            return;
+        }
+        size_t at = last - 16;
+        seek(at);
+        size_t size = RS();
+        if (size & 0x8000) {
+            if (at < 16) {
+                bad = true;
+                return;
+            }
+            at -= 16;
+            seek(at);
+            size = (size & 0x7fff) | (size_t)RS() << 15;
+        }
+        if (size > at) {
+            bad = true;
+            return;
+        }
+        end = at;
+        seek(at - size);
     }
 };
 
@@ -261,8 +327,8 @@ struct Eed {   // an extended data item
     int64_t i = 0;
 };
 
-struct Obj {   // an object being read: its data (with the strings) and handle streams
-    Bits b, h;
+struct Obj {   // an object being read: its data (up to R2004 with the strings), handle and string streams
+    Bits b, h, t;
     uint64_t handle = 0;
     int type = 0;
     size_t start = 0;   // (the bit of its type: the handle stream's offsets are from here)
@@ -291,12 +357,16 @@ struct Dwg {
     bool r2007p() const { return ver >= 1021; }
     bool r2010p() const { return ver >= 1024; }
     bool r2013p() const { return ver >= 1027; }
+    bool r2018p() const { return ver >= 1032; }
 
-    // the sections (R13 - R2000: the file header's locators)
-    struct Loc {
-        size_t seeker = 0, size = 0;
-    } loc[6];
-    int codepage = 30;
+    // the sections: the header variables, the classes, the object map, the objects (R13 - R2000:
+    // in the file, from the file header's locators; R2004+: decompressed from their pages)
+    struct Buf {
+        const uint8_t *p = nullptr;
+        size_t n = 0;
+    } hdr, cls, hmap, objs;
+    std::vector<uint8_t> store[4];
+    int codepage = 30, maint = 0;
     std::unordered_map<int, int> classes;   // class number -> T_ ...
     std::vector<std::pair<uint64_t, uint64_t>> map;   // (handle, file offset), by handle
     std::vector<uint8_t> written;                     // (map's entities written)
@@ -401,8 +471,13 @@ struct Dwg {
 
     // --- sections
 
-    uint32_t rl(size_t at) const { return at + 4 <= len ? (uint32_t)(d[at] | d[at + 1] << 8 | d[at + 2] << 16 | (uint32_t)d[at + 3] << 24) : 0; }
+    static uint32_t rl(const uint8_t *p, size_t n, size_t at) {
+        return at + 4 <= n ? (uint32_t)(p[at] | p[at + 1] << 8 | p[at + 2] << 16 | (uint32_t)p[at + 3] << 24) : 0;
+    }
+    uint32_t rl(size_t at) const { return rl(d, len, at); }
+    static uint64_t rll(const uint8_t *p, size_t n, size_t at) { return rl(p, n, at) | (uint64_t)rl(p, n, at + 4) << 32; }
 
+    // R13 - R2000: the section locators (number, seeker, size)
     bool fileHeader() {
         if (len < 0x19) return false;
         codepage = d[0x13] | d[0x14] << 8;
@@ -410,31 +485,191 @@ struct Dwg {
         for (uint32_t i = 0; i < n && i < 16; i++) {
             size_t at = 0x19 + (size_t)i * 9;
             if (at + 9 > len) return false;
-            int num = d[at];
-            if (num < 6) loc[num] = {rl(at + 1), rl(at + 5)};
+            size_t seeker = rl(at + 1);
+            Buf b{seeker && seeker < len ? d + seeker : nullptr, seeker < len ? len - seeker : 0};
+            if (d[at] == 0) hdr = b;
+            else if (d[at] == 1) cls = b;
+            else if (d[at] == 2) hmap = b;
         }
-        return loc[2].seeker > 0 && loc[2].seeker < len;
+        objs = {d, len};   // (the object map's offsets: in the file)
+        return hmap.p != nullptr;
+    }
+
+    // R2004+ (as ACadSharp reads them): the encrypted header at 0x80 leads to the page map (page
+    // number -> file offset) and the section map (each section's pages: number, size, offset
+    // in the section); a page has a header of its own, then its data, LZ77-compressed.
+    bool fileHeader18() {
+        if (len < 0x100) return false;
+        maint = d[0x0b];
+        codepage = d[0x13] | d[0x14] << 8;
+        uint8_t h[0x6c];
+        uint32_t seed = 1;
+        for (int i = 0; i < 0x6c; i++) {
+            seed = seed * 0x343fd + 0x269ec3;
+            h[i] = d[0x80 + i] ^ (uint8_t)(seed >> 16);
+        }
+        if (memcmp(h, "AcFssFcAJMB", 11) != 0) return false;
+        std::vector<uint8_t> pm, sm;
+        if (!systemPage(rll(h, sizeof h, 84) + 0x100, pm)) return false;
+        std::unordered_map<int32_t, size_t> pages;
+        size_t total = 0x100;
+        for (size_t at = 0; at + 8 <= pm.size();) {
+            int32_t num = (int32_t)rl(pm.data(), pm.size(), at);
+            uint32_t size = rl(pm.data(), pm.size(), at + 4);
+            at += num >= 0 ? 8 : 24;
+            if (num >= 0) pages[num] = total;
+            total += size;
+            if (total > len) break;
+        }
+        auto smap = pages.find((int32_t)rl(h, sizeof h, 92));
+        if (smap == pages.end() || !systemPage(smap->second, sm)) return false;
+        const uint8_t *m = sm.data();
+        size_t mn = sm.size(), at = 20;
+        uint32_t nsec = rl(m, mn, 0);
+        static const char *const wanted[] = {"AcDb:Header", "AcDb:Classes", "AcDb:Handles", "AcDb:AcDbObjects"};
+        for (uint32_t k = 0; k < nsec && at + 96 <= mn; k++) {
+            uint64_t size = rll(m, mn, at);
+            uint32_t count = rl(m, mn, at + 8), pageSize = rl(m, mn, at + 12), compressed = rl(m, mn, at + 20), encrypted = rl(m, mn, at + 28);
+            char name[65];
+            memcpy(name, m + at + 32, 64);
+            name[64] = 0;
+            at += 96;
+            if (count > (mn - at) / 16) return false;
+            int which = -1;
+            for (int w = 0; w < 4; w++)
+                if (!strcmp(name, wanted[w])) which = w;
+            if (which >= 0 && !encrypted && size <= std::min<uint64_t>(1ull << 31, (uint64_t)len * 256 + (1 << 20))) {
+                std::vector<uint8_t> &sec = store[which];
+                sec.assign((size_t)size, 0);
+                for (uint32_t q = 0; q < count; q++) {
+                    auto pg = pages.find((int32_t)rl(m, mn, at + q * 16));
+                    uint64_t off = rll(m, mn, at + q * 16 + 8);
+                    if (pg != pages.end() && off < size) dataPage(pg->second, compressed == 2, sec, (size_t)off, pageSize);
+                }
+                Buf &b = which == 0 ? hdr : which == 1 ? cls : which == 2 ? hmap : objs;
+                b = {sec.data(), sec.size()};
+            }
+            at += (size_t)count * 16;
+        }
+        return hmap.p && objs.p;
+    }
+    // a page of the page map / section map: type, decompressed and compressed size, compression, checksum
+    bool systemPage(uint64_t at, std::vector<uint8_t> &out) {
+        if (at > len || len - at < 20) return false;
+        uint32_t size = rl(at + 4), csize = rl(at + 8);
+        if (csize > len - at - 20 || size > (1u << 28)) return false;
+        out.assign(size, 0);
+        return lz77(d + at + 20, csize, out, 0, size);
+    }
+    // a page of a section's data: its header (32 bytes, encrypted with its offset), its data
+    void dataPage(size_t at, bool compressed, std::vector<uint8_t> &sec, size_t off, size_t pageSize) {
+        if (at > len || len - at < 32) return;
+        uint32_t mask = 0x4164536bu ^ (uint32_t)at;
+        size_t csize = rl(at + 8) ^ mask;
+        if (csize > len - at - 32) return;
+        const uint8_t *src = d + at + 32;
+        if (compressed) lz77(src, csize, sec, off, pageSize);
+        else memcpy(sec.data() + off, src, std::min(csize, sec.size() - off));
+    }
+
+    // R2004+'s LZ77 (ACadSharp's DwgLZ77AC18Decompressor): src into out[at, at + max), up to
+    // where that is full (a page may hold more than its section); false if damaged
+    static bool lz77(const uint8_t *src, size_t sn, std::vector<uint8_t> &out, size_t at, size_t max) {
+        if (at >= out.size()) return false;
+        size_t i = 0, o = at, stop = at + std::min(max, out.size() - at);
+        bool bad = false, full = false;
+        auto rd = [&]() -> unsigned {
+            if (i < sn) return src[i++];
+            bad = true;
+            return 0x11;
+        };
+        auto lit = [&](size_t n) -> unsigned {   // n literal bytes, then the next opcode
+            if (n > sn - i) {
+                bad = true;
+                return 0x11;
+            }
+            size_t k = std::min(n, stop - o);
+            memcpy(out.data() + o, src + i, k);
+            i += n, o += k;
+            if (k < n) {
+                full = true;
+                return 0x11;
+            }
+            return rd();
+        };
+        auto run = [&](unsigned low, size_t add) {   // a count: the low bits, or 0 and the bytes that follow
+            size_t n = low;
+            if (!n) {
+                unsigned c;
+                while ((c = rd()) == 0 && !bad) n += 255;
+                n += c + add;
+            }
+            return n;
+        };
+        unsigned op = rd();
+        if (op > 0x11) op = lit(op - 17);
+        if ((op & 0xf0) == 0 && !bad) op = lit(run(op & 15, 15) + 3);
+        while (op != 0x11 && !bad) {
+            size_t off = 0;
+            long n;
+            if (op < 0x10 || op >= 0x40) {
+                n = (long)(op >> 4) - 1;
+                off = ((op >> 2 & 3) | rd() << 2) + 1;
+            } else {
+                bool far = op < 0x20;
+                n = (long)run(op & (far ? 7 : 31), far ? 7 : 31) + 2;
+                off = far ? (op & 8) << 11 : 0;
+                op = rd();
+                off |= op >> 2;
+                off |= rd() << 6;
+                off += far ? 0x4000 : 1;
+            }
+            if (n > 0) {
+                if (off > o) return false;
+                size_t k = std::min((size_t)n, stop - o);
+                if (off >= k) memcpy(out.data() + o, out.data() + o - off, k), o += k;
+                else
+                    for (size_t q = 0; q < k; q++, o++) out[o] = out[o - off];   // (overlapping: a repeated pattern)
+                if (o == stop) return true;
+            }
+            size_t lc = op & 3;
+            if (!lc) {
+                op = rd();
+                if ((op & 0xf0) == 0) lc = run(op & 15, 15) + 3;
+            }
+            if (lc) op = lit(lc);
+        }
+        return !bad || full;
     }
 
     // a section's bit data (after its start sentinel and size)
-    bool section(int i, Bits &b) {
-        const Loc &l = loc[i];
-        if (!l.seeker || l.seeker + 20 > len) return false;
-        size_t size = rl(l.seeker + 16), from = l.seeker + 20;
-        b = Bits(d, std::min(len, from + size), from);
+    bool section(const Buf &s, Bits &b) {
+        if (!s.p || s.n < 20) return false;
+        size_t size = rl(s.p, s.n, 16);   // (R2010+: maybe after 4 more bytes)
+        b = Bits(s.p, std::min(s.n, 24 + size), 20);
         return true;
     }
 
     // Header variables up to DIMASZ (those after it aren't used)
     void header() {
-        Bits b;
-        if (!section(0, b)) return;
+        Bits b, t, hs;   // (R2007+: the strings and handles in streams of their own)
+        if (!section(hdr, b)) return;
+        if ((r2010p() && maint > 3) || r2018p()) b.RL();
+        Bits *h = &b;
+        if (r2007p()) {
+            size_t at = b.pos, last = at + b.RL() - 1;
+            t.strings(b, last);
+            hs = b;
+            hs.seek(last + 1);
+            b.tx = &t;
+            h = &hs;
+        }
         if (r2013p()) b.BLL();
         for (int k = 0; k < 4; k++) b.BD();
         for (int k = 0; k < 4; k++) b.TV();
         b.BL(), b.BL();
         if (r13_14()) b.BS();
-        if (!r2004p()) b.H(0);
+        if (!r2004p()) h->H(0);
         b.B(), b.B();
         if (r13_14()) b.B();
         for (int k = 0; k < 7; k++) b.B();   // PLINEGEN ... LIMCHECK
@@ -466,24 +701,24 @@ struct Dwg {
         if (r2004p()) b.BL(), b.BL(), b.BL();
         for (int k = 0; k < 4; k++) b.BL();   // TDINDWG, TDUSRTIMER
         cmc(b);
-        b.H(0);   // HANDSEED
-        b.H(0), b.H(0), b.H(0);
-        if (r2007p()) b.H(0);
-        b.H(0), b.H(0);
+        b.H(0);   // HANDSEED (in the data, always)
+        h->H(0), h->H(0), h->H(0);
+        if (r2007p()) h->H(0);
+        h->H(0), h->H(0);
         if (r2000p()) b.BD();
         b.BD3(), b.BD3(), b.BD3(), b.RD2(), b.RD2(), b.BD();   // the paper space's
-        b.BD3(), b.BD3(), b.BD3(), b.H(0);
+        b.BD3(), b.BD3(), b.BD3(), h->H(0);
         if (r2000p()) {
-            b.H(0), b.BS(), b.H(0);
+            h->H(0), b.BS(), h->H(0);
             for (int k = 0; k < 6; k++) b.BD3();
         }
         b.BD3();
         extmin = b.BD3();
         extmax = b.BD3();
         b.RD2(), b.RD2(), b.BD();
-        b.BD3(), b.BD3(), b.BD3(), b.H(0);
+        b.BD3(), b.BD3(), b.BD3(), h->H(0);
         if (r2000p()) {
-            b.H(0), b.BS(), b.H(0);
+            h->H(0), b.BS(), h->H(0);
             for (int k = 0; k < 6; k++) b.BD3();
             b.TV(), b.TV();
         }
@@ -492,7 +727,7 @@ struct Dwg {
             b.RC(), b.RC(), b.B(), b.B(), b.RC(), b.RC(), b.RC(), b.B();
             for (int k = 0; k < 4; k++) b.RC();
             for (int k = 0; k < 6; k++) b.BS();
-            b.H(0);
+            h->H(0);
         }
         double sc = b.BD(), asz = b.BD();
         if (b.bad) return;
@@ -509,16 +744,26 @@ struct Dwg {
         if (f & 1) b.TV();
         if (f & 2) b.TV();
         if (v == 0xc0000000u) return 256;
-        if ((v >> 24) == 0xc3) return v & 0xff;   // (an index)
-        if ((v >> 24) == 0xc2 && rgb) *rgb = 0x1000000 | (v & 0xffffff);
+        if (v & 0x1000000) return v & 0xff;   // (an index)
+        if (rgb) *rgb = 0x1000000 | (v & 0xffffff);
         return c;
     }
 
     void readClasses() {
-        Bits b;
-        if (!section(1, b)) return;
-        size_t stop = b.end / 8;
-        while (!b.bad && (b.pos + 7) / 8 < stop) {
+        Bits b, t;
+        if (!section(cls, b)) return;
+        if ((r2010p() && maint > 3) || ver > 1027) b.RL();
+        size_t stop = b.end;
+        if (r2007p()) {   // (the strings: at the end, up to a flag)
+            size_t at = b.pos, last = at + b.RL() - 1;
+            t.strings(b, last);
+            stop = t.none ? last : t.pos;
+            b.tx = &t;
+            b.BL();
+            b.B();
+        }
+        if (ver == 1018) b.BS(), b.RC(), b.RC(), b.B();
+        while (!b.bad && (r2007p() ? b.pos < stop : (b.pos + 7) / 8 < stop / 8)) {
             int num = b.BS();
             b.BS();
             b.TV(), b.TV();
@@ -540,25 +785,26 @@ struct Dwg {
     // the object map: sections of (handle, offset) deltas, the size big-endian (not more than
     // 2032 bytes, as a rule)
     void readMap() {
-        size_t at = loc[2].seeker;
-        while (at + 2 <= len) {
-            size_t size = (size_t)d[at] << 8 | d[at + 1];
+        const uint8_t *m = hmap.p;
+        size_t at = 0, n = hmap.n;
+        while (at + 2 <= n) {
+            size_t size = (size_t)m[at] << 8 | m[at + 1];
             if (size <= 2) break;
-            size_t from = at + 2, stop = std::min(len, from + size - 2);
-            Bits b(d, len, from);   // (the last pair may end past it)
-            uint64_t h = 0;
-            int64_t off = 0;
+            size_t from = at + 2, stop = std::min(n, from + size - 2);
+            Bits b(m, n, from);   // (the last pair may end past it)
+            uint64_t h = 0, off = 0;   // (unsigned: a damaged map wraps around, harmlessly)
             while (b.pos / 8 < stop && !b.bad) {
                 uint64_t dh = b.MC();
                 int64_t doff = b.MCs();
                 if (b.bad) break;
                 h += dh;
-                off += doff;
-                if (dh && off > 0 && (uint64_t)off < len) map.push_back({h, (uint64_t)off});
+                off += (uint64_t)doff;
+                if (dh && off && off < objs.n) map.push_back({h, off});
             }
             at = b.pos / 8 + 2;
         }
-        std::stable_sort(map.begin(), map.end(), [](const auto &x, const auto &y) { return x.first < y.first; });   // (sorted already, as a rule)
+        auto less = [](const auto &x, const auto &y) { return x.first < y.first; };
+        if (!std::is_sorted(map.begin(), map.end(), less)) std::stable_sort(map.begin(), map.end(), less);   // (sorted already, as a rule)
         map.erase(std::unique(map.begin(), map.end(), [](const auto &x, const auto &y) { return x.first == y.first; }), map.end());
         written.assign(map.size(), 0);
     }
@@ -581,16 +827,28 @@ struct Dwg {
     bool open(uint64_t handle, Obj &o) {
         size_t i = find(handle);
         if (i == map.size()) return false;
-        Bits s(d, len, (size_t)map[i].second);
+        Bits s(objs.p, objs.n, (size_t)map[i].second);
         uint32_t size = s.MS();
+        uint64_t hbits = r2010p() ? s.MC() : 0;   // (R2010+: the handles' size, before the type)
         size_t from = s.pos / 8;
-        if (s.bad || !size || size > len - from) return false;
-        o.b = Bits(d, from + size, from);
+        if (s.bad || !size || size > objs.n - from || hbits > (uint64_t)size * 8) return false;
+        o.b = Bits(objs.p, from + size, from);
         o.h = o.b;
         o.start = o.b.pos;
         o.handle = handle;
         o.eed.clear();
-        o.type = o.b.BS();
+        if (r2010p()) {   // (the strings: before the handles)
+            size_t hat = o.start + (size_t)size * 8 - (size_t)hbits;
+            o.h.seek(hat);
+            o.t.strings(o.b, hat - 1);
+            o.b.tx = &o.t;
+            switch (o.b.BB()) {
+            case 0: o.type = o.b.RC(); break;
+            case 1: o.type = 0x1f0 + o.b.RC(); break;
+            default: o.type = o.b.RS(); break;
+            }
+        } else
+            o.type = o.b.BS();
         if (o.type == 0x1f2) o.type = T_OTHER_ENTITY;   // (ACAD_PROXY_ENTITY)
         else if (o.type >= 500) {
             auto c = classes.find(o.type);
@@ -616,10 +874,16 @@ struct Dwg {
                 switch (e.code) {
                 case 1000:
                 case 1001: {
-                    int n = b.RC();
-                    b.RS();
-                    for (int k = 0; k < n && b.pos + 8 <= stop; k++)
-                        if (char c = (char)b.RC()) e.s.push_back(c);
+                    if (r2007p()) {   // (UTF-16)
+                        int n = b.RS();
+                        if ((size_t)n * 16 > stop - b.pos) n = (int)((stop - b.pos) / 16);
+                        e.s = b.utf16(n);
+                    } else {
+                        int n = b.RC();
+                        b.RS();
+                        for (int k = 0; k < n && b.pos + 8 <= stop; k++)
+                            if (char c = (char)b.RC()) e.s.push_back(c);
+                    }
                     e.code = 1000;
                     break;
                 }
@@ -671,7 +935,7 @@ struct Dwg {
 
     // a non-entity's common data, up to its own
     bool objHead(Obj &o) {
-        if (r2000p()) handles_at(o, o.b.RL());
+        if (r2000p() && !r2010p()) handles_at(o, o.b.RL());
         o.b.H(0);
         eed(o);
         if (r13_14()) handles_at(o, o.b.RL());
@@ -684,26 +948,32 @@ struct Dwg {
         if (r2013p()) o.b.B();
         return !o.b.bad && !o.h.bad;
     }
-    void xrefBits(Obj &o) {
-        o.b.B();
+    void xrefBits(Obj &o) {   // (R2007+: the xref index only)
+        if (!r2007p()) o.b.B();
         o.b.BS();
-        o.b.B();
+        if (!r2007p()) o.b.B();
     }
 
     // an entity's common data, up to its own
     bool entHead(Obj &o, Ent &e) {
-        Bits &b = o.b, &h = o.h;
-        if (r2000p()) handles_at(o, b.RL());
+        Bits &b = o.b;
+        if (r2000p() && !r2010p()) handles_at(o, b.RL());
         b.H(0);
         eed(o);
-        if (b.B()) b.skip((size_t)b.RL() * 8);   // (proxy graphics)
+        if (b.B()) b.skip((size_t)(r2010p() ? b.BLL() : b.RL()) * 8);   // (proxy graphics)
         if (r13_14()) handles_at(o, b.RL());
+        return entMode(o, e);
+    }
+    // ... from its entity mode on (also an R2018 multi-line attribute's MTEXT)
+    bool entMode(Obj &o, Ent &e) {
+        Bits &b = o.b, &h = o.h;
         if (b.BB() == 0) e.owner = h.H(o.handle);
         int n = b.BL();
         if (n < 0 || (size_t)n > h.left() / 8) return false;
         for (int k = 0; k < n; k++) h.H(o.handle);
         bool noXdic = r2004p() && b.B();
         if (!noXdic) h.H(o.handle);
+        if (r2013p()) b.B();
         if (r13_14()) {
             e.layer = h.H(o.handle);
             if (!b.B()) e.ltype = h.H(o.handle), e.ltflags = 3;
@@ -713,7 +983,21 @@ struct Dwg {
             h.H(o.handle);
             e.next = h.H(o.handle);
         }
-        e.color = b.BS();
+        if (r2004p()) {   // (the colour's flags in its high byte: 0x8000 RGB, 0x4000 a book's, 0x2000 transparency)
+            int c = b.BS() & 0xffff;
+            e.color = c & 0xfff;
+            if (c & 0x4000) e.color = 0;   // (a book's colour: BYBLOCK here)
+            else if (c & 0x8000) {
+                uint32_t v = (uint32_t)b.BL();
+                if (v >> 24 == 0xc3) e.color = v & 0xff;
+                else if (v >> 24 == 0xc1) e.color = 0;
+                else if (v >> 24 == 0xc0) e.color = 256;
+                else e.rgb = 0x1000000 | (v & 0xffffff);
+            }
+            if (c & 0x2000) b.BL();
+            if (c & 0x4000) h.H(o.handle);
+        } else
+            e.color = b.BS();
         e.ltscale = b.BD();
         if (r13_14()) {
             e.invisible = b.BS() & 1;
@@ -722,7 +1006,14 @@ struct Dwg {
         e.layer = h.H(o.handle);
         e.ltflags = (int)b.BB();
         if (e.ltflags == 3) e.ltype = h.H(o.handle);
+        if (r2007p()) {
+            if (b.BB() == 3) h.H(o.handle);   // (material)
+            b.RC();                            // (shadows)
+        }
         if (b.BB() == 3) h.H(o.handle);   // (plot style)
+        if (r2010p())
+            for (int k = 0; k < 3; k++)
+                if (b.B()) h.H(o.handle);   // (visual styles)
         e.invisible = b.BS() & 1;
         b.RC();   // (line weight)
         return !b.bad && !h.bad;
@@ -1161,6 +1452,22 @@ struct Dwg {
         int flags = 0;
         if (t != T_TEXT) {
             if (r2010p()) b.RC();
+            int type = r2018p() ? b.RC() : 1;
+            if (type == 2 || type == 4) {   // (R2018 multi-line: an MTEXT in it, then its own data; its text above too)
+                Ent me;
+                MText m;
+                if (!entMode(o, me)) {
+                    b.bad = true;
+                    return;
+                }
+                readMText(o, m);
+                int n = b.BS();
+                if (n > 0) {
+                    b.skip((size_t)n * 8);
+                    o.h.H(o.handle);
+                    b.BS();
+                }
+            }
             tag = b.TV();
             b.BS();
             flags = b.RC();
@@ -1190,38 +1497,69 @@ struct Dwg {
         }
     }
 
-    void mtext(Obj &o, const Ent &e) {
+    struct MText {
+        P3 at, n, x;
+        double w = 0, h = 0, spacing = 1;
+        int attach = 1, dir = 1, sstyle = 1;
+        std::string value;
+        uint64_t style = 0;
+    };
+    void readMText(Obj &o, MText &m) {   // (its data, after the entity's)
         Bits &b = o.b;
-        P3 at = b.BD3(), n = b.BD3(), x = b.BD3();
-        double w = b.BD();
+        m.at = b.BD3(), m.n = b.BD3(), m.x = b.BD3();
+        m.w = b.BD();
         if (r2007p()) b.BD();
-        double h = b.BD();
-        int attach = b.BS(), dir = b.BS();
+        m.h = b.BD();
+        m.attach = b.BS(), m.dir = b.BS();
         b.BD(), b.BD();
-        std::string value;   // (a raw line feed: a paragraph, as \P in a DXF)
-        for (char c : b.TV())
-            if (c == '\n') value += "\\P";
-            else if (c != '\r') value += c;
-        uint64_t st = o.h.H(o.handle);
-        double spacing = 1;
-        int sstyle = 1;
+        for (char c : b.TV())   // (a raw line feed: a paragraph, as \P in a DXF)
+            if (c == '\n') m.value += "\\P";
+            else if (c != '\r') m.value += c;
+        m.style = o.h.H(o.handle);
         if (r2000p()) {
-            sstyle = b.BS();
-            spacing = b.BD();
+            m.sstyle = b.BS();
+            m.spacing = b.BD();
             b.B();
         }
+        if (r2004p()) {   // (a background)
+            int f = b.BL();
+            if ((f & 1) || (ver > 1027 && (f & 16))) {
+                b.BD();
+                cmc(b);
+                b.BL();
+            }
+        }
+        if (r2018p() && !b.B()) {   // (not annotative: its context)
+            b.BS(), b.B();
+            o.h.H(o.handle);
+            b.BL();
+            b.BD3(), b.BD3();
+            for (int k = 0; k < 4; k++) b.BD();
+            if (b.BS()) {   // (columns)
+                int n = b.BL();
+                b.BD(), b.BD();
+                bool autoHeight = b.B();
+                b.B();
+                if (!autoHeight && n > 0 && (size_t)n <= b.left() / 2)
+                    for (int k = 0; k < n; k++) b.BD();
+            }
+        }
+    }
+    void mtext(Obj &o, const Ent &e) {
+        MText m;
+        readMText(o, m);
         common("MTEXT", o, e);
-        pt(10, at);
-        pt(210, n);
-        pt(11, x);
-        real(40, h);
-        real(41, w);
-        inum(71, attach);
-        inum(72, dir);
-        str(1, value);
-        str(7, name(st));
-        inum(73, sstyle);
-        real(44, spacing);
+        pt(10, m.at);
+        pt(210, m.n);
+        pt(11, m.x);
+        real(40, m.h);
+        real(41, m.w);
+        inum(71, m.attach);
+        inum(72, m.dir);
+        str(1, m.value);
+        str(7, name(m.style));
+        inum(73, m.sstyle);
+        real(44, m.spacing);
     }
 
     void insert(Obj &o, const Ent &e) {
@@ -1873,18 +2211,18 @@ bool nitrodwg_read(const void *data, size_t len, nitrodwg_pairs &out) {
     const uint8_t *d = static_cast<const uint8_t *>(data);
     if (!d || len < 0x40 || memcmp(d, "AC10", 4) != 0) return false;
     int ver = atoi(std::string(reinterpret_cast<const char *>(d) + 2, 4).c_str());
-    if (ver != 1012 && ver != 1014 && ver != 1015) return false;
+    if (ver != 1012 && ver != 1014 && ver != 1015 && ver != 1018 && ver != 1024 && ver != 1027 && ver != 1032) return false;
     Dwg g(d, len, out);
     g.ver = ver;
-    if (!g.fileHeader()) return false;
+    if (!(ver >= 1018 ? g.fileHeader18() : g.fileHeader())) return false;
     g.header();
     g.readClasses();
     g.readMap();
     if (g.map.empty()) return false;
     g.readTables();
-    out.code.reserve(len / 4);
-    out.end.reserve(len / 4);
-    out.text.reserve(len * 2);
+    out.code.reserve(g.objs.n / 4);
+    out.end.reserve(g.objs.n / 4);
+    out.text.reserve(g.objs.n * 2);
     g.emit();
     return out.text.size() < 0xf0000000u;
 }

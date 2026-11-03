@@ -223,6 +223,11 @@ int inum(sv s, int def = 0) {
     double v = num(s, def);
     return v > 2e9 ? 2000000000 : v < -2e9 ? -2000000000 : (int)v;
 }
+// a true colour (420, 421): its low 24 bits (LibreDWG's DXFs keep the DWG's flags in the high byte)
+uint32_t truecolor(sv s) {
+    double v = num(s);
+    return v >= 0 && v < 4294967296.0 ? (uint32_t)v & 0xffffff : 0;
+}
 sv trim(sv s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.remove_suffix(1);
@@ -839,7 +844,7 @@ struct Parser {
 
     uint32_t color(const Rec &r) {   // 62 (index) / 420 (true colour) of an entity
         const Pair *t = r.find(420);
-        if (t) return COL_RGB | ((uint32_t)inum(t->v) & 0xffffff);
+        if (t) return COL_RGB | truecolor(t->v);
         int c = r.i(62, 256);
         if (c == 0) return COL_BYBLOCK;
         if (c < 0) c = -c;
@@ -855,7 +860,7 @@ struct Parser {
             int c = r.i(62, 7);
             l.off = c < 0;
             const Pair *t = r.find(420);
-            l.color = t ? COL_RGB | ((uint32_t)inum(t->v) & 0xffffff) : COL_ACI | (uint32_t)(c == 0 ? 7 : std::min(255, std::abs(c)));
+            l.color = t ? COL_RGB | truecolor(t->v) : COL_ACI | (uint32_t)(c == 0 ? 7 : std::min(255, std::abs(c)));
             l.frozen = r.i(70) & 1;
             int lt = ltype(r.s(6));
             l.ltype = lt < 0 ? LT_CONTINUOUS : lt;
@@ -1794,7 +1799,7 @@ struct Parser {
         uint32_t gradient = 0;
         if (r.i(450) == 1) {   // gradient fill: its first colour
             const Pair *c = r.find(421);
-            gradient = c ? COL_RGB | ((uint32_t)inum(c->v) & 0xffffff) : 0;
+            gradient = c ? COL_RGB | truecolor(c->v) : 0;
         }
         bool solid = solidFill || gradient || pat.empty();
         Prim p = prim(solid ? K_FILL_EO : K_HATCH, r, b);

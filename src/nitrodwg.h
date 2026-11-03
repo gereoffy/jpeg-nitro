@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitrodwg: AutoCAD DWG drawings (R13 - R2000) for nitrodxf (internal, C++). The objects are
-// decoded into the group code / value pairs a DXF of the same drawing would have, in a DXF's
-// order (header, tables, blocks, entities, layouts), so nitrodxf reads them as it reads a DXF.
+// nitrodwg: AutoCAD DWG drawings (R13 - R2018, not R2007) for nitrodxf (internal, C++). The
+// objects are decoded into the group code / value pairs a DXF of the same drawing would have, in
+// a DXF's order (header, tables, blocks, entities, layouts), so nitrodxf reads them as it reads a
+// DXF.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
