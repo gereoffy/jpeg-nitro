@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <map>
@@ -286,6 +287,7 @@ struct Span {
     float size = 12;
     float scaleX = 1;   // horizontal stretch (CorelDRAW text squeezed to fit, style:text-scale)
     float shiftX = 0, shiftY = 0;   // moved from its place, in em (up positive; libcdr:shift-x / -y)
+    float rise = 0;   // its baseline raised (lowered: < 0) in points: a superscript / subscript (style:text-position)
     float rotate = 0;   // turned about its place, in degrees counter-clockwise (libcdr:rotate)
     float letterSpacing = 0, wordSpacing = 1;   // the character spacing / a space's width: shares of a
                                                 // space's width (libcdr:letter-spacing / -word-spacing)
@@ -434,6 +436,8 @@ static const char *substitute(const std::string &family) {
                                            // Bitstream scripts: like ones macOS has, then Windows'
                                            {"Lydian Csv", "Apple Chancery"}, {"CommercialScript", "Snell Roundhand"},
                                            {"Apple Chancery", "Lucida Handwriting"}, {"Snell Roundhand", "Lucida Handwriting"},
+                                           // Microsoft's old name of Segoe UI (Visio 2007's posters)
+                                           {"Segoe", "Segoe UI"},
                                            {"Arial", "Liberation Sans"}, {"Helvetica", "Liberation Sans"},
                                            {"Times New Roman", "Liberation Serif"}, {"Times", "Liberation Serif"},
                                            {"Courier New", "Liberation Mono"}, {"Courier", "Liberation Mono"}};
@@ -736,6 +740,21 @@ public:
         if (sx > 0.01 && sx < 100) m_span.scaleX = (float)sx;
         m_span.shiftX = (float)number(p["libcdr:shift-x"]);
         m_span.shiftY = (float)number(p["libcdr:shift-y"]);
+        // (ODF's superscript / subscript, libvisio's: "super" / "sub", or the raise and the size in
+        // percent; 58 % of the size, raised or lowered by a third of the full size, as LibreOffice)
+        if (p["style:text-position"]) {
+            std::string pos = p["style:text-position"]->getStr().cstr();
+            float raise = 0, scale = .58f;
+            if (!pos.compare(0, 5, "super")) raise = .33f;
+            else if (!pos.compare(0, 3, "sub")) raise = -.33f;
+            else raise = (float)atof(pos.c_str()) / 100;
+            size_t sp = pos.find(' ');
+            if (sp != std::string::npos && atof(pos.c_str() + sp + 1) > 0) scale = (float)atof(pos.c_str() + sp + 1) / 100;
+            if (raise != 0 && raise > -1 && raise < 1 && scale > .05f && scale <= 1) {
+                m_span.rise = raise * m_span.size;
+                m_span.size *= scale;
+            }
+        }
         m_span.rotate = (float)number(p["libcdr:rotate"]);
         m_span.letterSpacing = (float)number(p["libcdr:letter-spacing"]);
         m_span.wordSpacing = (float)number(p["libcdr:word-spacing"], 1.0);
@@ -1085,7 +1104,9 @@ private:
         // size; between its smaller characters, as they are). ODF text (libvisio): a paragraph's
         // first line keeps the line spacing, the margins before and after it are added to that;
         // Visio's percentage is of the font size (120 % of 10 pt text: lines 12 pt apart, whatever
-        // the font's own height; its frames are sized so).
+        // the font's own height; its frames are sized so): each line a box of that height, its
+        // baseline at the font's ascent share of it, a line below another as far as the first box's
+        // part below its baseline and its own part above (a 10 pt line after 14 pt ones takes less).
         for (size_t i = 0; i < t.lines.size(); i++) {
             Line &l = t.lines[i];
             if (i && l.spans.empty() && (l.emptySize <= 0 || t.lines[i - 1].size <= l.emptySize)) {
@@ -1097,7 +1118,11 @@ private:
             auto space = [&](float share, const Line &of) {   // (a share of a line's height, or < 0: points)
                 return share < 0 ? -share : share * (of.ascent + of.descent);
             };
-            float advance = l.lineHeight > 0 ? l.lineHeight : t.corel ? (p.descent + l.ascent) * l.spacing : std::max(l.size, p.size) * l.spacing;
+            auto box = [](const Line &x) { return x.lineHeight > 0 ? x.lineHeight : x.size * x.spacing; };   // (ODF)
+            auto above = [&](const Line &x) {   // (the part of its box above its baseline)
+                return x.ascent + x.descent > 0 ? box(x) * x.ascent / (x.ascent + x.descent) : box(x) * .8f;
+            };
+            float advance = t.corel ? (l.lineHeight > 0 ? l.lineHeight : (p.descent + l.ascent) * l.spacing) : box(p) - above(p) + above(l);
             if (i && l.paragraph && !artistic)
                 l.height = t.corel ? (l.before < 0 ? -l.before : l.before * (p.descent + l.ascent)) + space(p.after, p)
                                    : advance + l.padBefore + p.padAfter;
@@ -1527,7 +1552,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                     plutovg_canvas_set_font(c, s.face, s.size);
                     setColor(c, s.color, 1);
                     // (the shift in the text's stretched em; the next span starts unshifted)
-                    float sx = x + s.shiftX * s.size * s.scaleX, sy = base - s.shiftY * s.size;
+                    float sx = x + s.shiftX * s.size * s.scaleX, sy = base - s.shiftY * s.size - s.rise;
                     bool turned = s.scaleX != 1 || s.rotate != 0;
                     if (turned) {
                         plutovg_canvas_save(c);
