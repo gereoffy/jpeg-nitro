@@ -367,6 +367,7 @@ plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
     Index &ix = index();
     const std::vector<int> *faces = family_faces(ix, family);
     if (!faces) return nullptr;
+    weight = std::clamp(weight, 1, 1000);   // (a damaged file's)
     int best = -1;
     long bestScore = 0;
     for (int k : *faces) {
