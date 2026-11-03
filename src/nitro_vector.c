@@ -12,6 +12,7 @@
 #endif
 #ifdef NV_CDR
 #include "nitrocdr.h"
+#include "nitrodio.h"
 #endif
 #include <math.h>
 #include <stdatomic.h>
@@ -23,7 +24,7 @@ const char *const nv_vector_exts[] = {
     "svg", "dxf", "dwg", "wmf", "emf",
 #endif
 #ifdef NV_CDR
-    "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
+    "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx", "drawio", "dio",
 #endif
     NULL};
 
@@ -74,18 +75,35 @@ static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t p
 }
 static void cdr_size(void *doc, int page, double *w, double *h) { nitrocdr_size(doc, page, w, h); }
 static void cdr_free(void *doc) { nitrocdr_free(doc); }
+static int dio_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                      int (*cancelled)(void *), void *ctx) {
+    return nitrodio_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+}
+static void dio_size(void *doc, int page, double *w, double *h) { nitrodio_size(doc, page, w, h); }
+static void dio_free(void *doc) { nitrodio_free(doc); }
 #endif
 
 NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     NvVector *v = calloc(1, sizeof *v);
     if (!v) return NULL;
     v->background = atomic_load(&g_background);
+#ifdef NV_CDR
+    static const char *const dio_exts[] = {"drawio", "dio", NULL};   // (before SVG: its text starts with '<' too)
+    if (nv_has_ext(name, dio_exts) && (v->doc = nitrodio_load(data, len))) {
+        nitrodio_set_background(v->doc, v->background);
+        v->render = dio_render;
+        v->size = dio_size;
+        v->free = dio_free;
+        v->pages = nitrodio_pages(v->doc);
+        v->mode = NV_MODE_DRAWIO;
+    }
+#endif
 #ifdef NV_SVG
     static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
     const uint8_t *p = data;   // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
     while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n')) i++;
-    if ((nv_has_ext(name, svg_exts) || (i < len && p[i] == '<')) && (v->doc = nitrosvg_load(data, len))) {
+    if (!v->doc && (nv_has_ext(name, svg_exts) || (i < len && p[i] == '<')) && (v->doc = nitrosvg_load(data, len))) {
         nitrosvg_set_background(v->doc, v->background);
         v->render = svg_render;
         v->size = svg_size;

@@ -369,7 +369,7 @@ CDR_C    = $(wildcard $(LCMS)/src/*.c)
 XML_C    = $(addprefix $(LIBXML2)/,parser.c parserInternals.c SAX2.c tree.c xmlreader.c xmlIO.c xmlstring.c encoding.c entities.c \
              error.c dict.c hash.c list.c globals.c threads.c uri.c valid.c chvalid.c buf.c xmlmemory.c)
 XML_DEFS := -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include -I$(LIBXML2)
-CDR_CXX  = $(wildcard $(LIBCDR)/src/lib/*.cpp) $(wildcard $(LIBVISIO)/src/lib/*.cpp) src/nitrocdr.cpp \
+CDR_CXX  = $(wildcard $(LIBCDR)/src/lib/*.cpp) $(wildcard $(LIBVISIO)/src/lib/*.cpp) src/nitrocdr.cpp src/nitrodio.cpp \
            $(addprefix $(LIBREVENGE)/src/lib/,RVNGBinaryData.cpp RVNGMemoryStream.cpp RVNGProperty.cpp RVNGPropertyList.cpp \
              RVNGPropertyListVector.cpp RVNGString.cpp RVNGStringVector.cpp RVNGSVGDrawingGenerator.cpp \
              RVNGStreamImplementation.cpp \
@@ -402,7 +402,7 @@ endef
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
 %/libnitrosvg.a: src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h $(SVG_DEPS)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h src/nitrotiff.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h \
+%/libnitrocdr.a: src/nitrocdr.h src/nitrodio.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h src/nitrotiff.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h \
                  patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_DEPS)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)

@@ -52,3 +52,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+The shapes of draw.io diagrams in src/nitrodio.cpp (the outlines of the cloud, actor and
+document shapes, the default stylesheet) follow mxGraph / draw.io
+(https://github.com/jgraph/drawio), Copyright (c) JGraph Ltd, licensed under the Apache
+License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).

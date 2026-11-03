@@ -47,6 +47,7 @@
                 <string>com.corel.cmx</string>
                 <string>com.microsoft.visio.drawing</string>
                 <string>com.microsoft.visio.drawing-xml</string>
+                <string>com.jgraph.drawio</string>
             </array>
         </dict>
         <dict>
@@ -79,6 +80,15 @@
             <key>UTTypeTagSpecification</key>
             <dict>
                 <key>public.filename-extension</key> <array><string>dwg</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>     <string>com.jgraph.drawio</string>
+            <key>UTTypeDescription</key>    <string>draw.io diagram</string>
+            <key>UTTypeConformsTo</key>     <array><string>public.xml</string><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key> <array><string>drawio</string><string>dio</string></array>
             </dict>
         </dict>
         <dict>
