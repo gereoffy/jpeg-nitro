@@ -356,6 +356,9 @@ define svg_lib
 	@rm -f $@ && $(AR) rcs $@ $(@D)/svgobj/*.o
 endef
 SVG_STAMP = $(wildcard $(LUNA)/.stamp-*)   # changes with the lunasvg commit
+# (and every source and header it is built from: an edit in third_party rebuilds it too)
+SVG_DEPS  = $(SVG_C) $(SVG_CXX) $(wildcard $(LUNA)/include/*.h $(LUNA)/source/*.h $(LUNA)/plutovg/include/*.h $(LUNA)/plutovg/source/*.h) \
+            $(SVG_STAMP)
 
 # optional CorelDRAW and Visio rendering: libcdr + libvisio + librevenge (its core and streams;
 # the SVG generator is part of the core: libcdr renders full colour pattern fills with it) +
@@ -375,6 +378,8 @@ CDR_DEFS := -DBOOST_ALL_NO_LIB -DBOOST_ERROR_CODE_HEADER_ONLY -DLIBREVENGE_BUILD
             -I$(LIBCDR)/inc -I$(LIBREVENGE)/inc -I$(LCMS)/include -I$(BOOST) -I$(LUNA)/plutovg/include \
             -I$(LIBVISIO)/inc -Ipatches/libvisio -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include
 CDR_STAMP = $(wildcard $(LIBCDR)/.stamp-* $(LIBREVENGE)/.stamp-* $(LCMS)/.version-* $(LIBVISIO)/.stamp-* $(LIBXML2)/.stamp-*)
+CDR_DEPS  = $(CDR_C) $(XML_C) $(CDR_CXX) $(wildcard $(LIBCDR)/src/lib/*.h $(LIBVISIO)/src/lib/*.h $(LIBVISIO)/inc/libvisio/*.h \
+            $(LIBCDR)/inc/libcdr/*.h $(LIBREVENGE)/src/lib/*.h $(LIBREVENGE)/inc/*/*.h) $(CDR_STAMP)
 # zlib's inflate for the builds whose system has no zlib (Windows, the portable Linux build)
 ZLIB_C   := $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
 define cdr_lib
@@ -395,9 +400,10 @@ endef
 # the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
 %/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
-%/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitrodwg.cpp src/nitrodwg.h src/nitrometa.cpp src/nitrometa.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
+%/libnitrosvg.a: src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h $(SVG_DEPS)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_STAMP)
+%/libnitrocdr.a: src/nitrocdr.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h src/nitrotiff.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h \
+                 patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_DEPS)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 	$(call mimalloc_objs,$(TCPU))
