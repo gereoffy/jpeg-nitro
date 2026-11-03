@@ -6,8 +6,8 @@
 // <root> lists the cells in drawing order: layers (children of the root cell), vertices and
 // edges, their geometry (<mxGeometry>, relative to the parent vertex; an edge's label cells
 // placed along it) and a style string ("name;key=value;..." over draw.io's default stylesheet).
-// The connectors are routed here: straight through their waypoints, or orthogonally (a simple
-// router, not mxGraph's own).
+// The connectors are routed here as mxGraph routes them (see Builder::edge): straight through
+// their waypoints, or by the edge style's orthogonal connector.
 #include "nitrodio.h"
 #include "nitro_font.h"
 
@@ -842,139 +842,495 @@ struct Builder {
 
     // --- edges ---
 
-    enum Dir { NONE, H, V };
-    // a point on the perimeter of a terminal's shape, towards 'to' (from its centre)
-    static Pt perimeter(const Box &b, const std::string &shape, Pt to) {
-        Pt c = b.centre();
-        double dx = to.x - c.x, dy = to.y - c.y;
-        if ((dx == 0 && dy == 0) || b.w <= 0 || b.h <= 0) return c;
-        if (shape == "ellipse" || shape == "doubleEllipse") {
-            double a = b.w / 2, e = b.h / 2, t = 1 / std::sqrt(dx * dx / (a * a) + dy * dy / (e * e));
-            return {c.x + dx * t, c.y + dy * t};
+    // The routing follows mxGraph's (mxGraphView, mxEdgeStyle, mxPerimeter; Apache-2.0): the fixed
+    // ends first (a connection constraint, or a dangling end's point), then the edge style's
+    // points between them (OrthConnector, SegmentConnector, ElbowConnector ...), then the floating
+    // ends on their terminals' perimeters, towards the neighbouring point.
+
+    struct Term {   // a terminal vertex
+        Box b;
+        std::string perimeter;   // rectanglePerimeter (the default), ellipsePerimeter, rhombusPerimeter
+        const Style *style = nullptr;
+    };
+
+    // mxPerimeter: the point of the terminal's perimeter towards next (orthogonal: straight across
+    // from next where it lies beside the terminal)
+    static Pt perimeterPoint(const Term &t, Pt next, bool orthogonal) {
+        const Box &b = t.b;
+        if (b.w <= 0 && b.h <= 0) return b.centre();
+        double cx = b.x + b.w / 2, cy = b.y + b.h / 2, px = next.x, py = next.y;
+        if (t.perimeter == "ellipsePerimeter") {
+            double a = b.w / 2, e = b.h / 2, dx = std::trunc(px - cx), dy = std::trunc(py - cy);
+            if (dx == 0 && dy != 0) return {cx, cy + e * dy / std::fabs(dy)};
+            if (dx == 0 && dy == 0) return {px, py};
+            if (orthogonal) {
+                if (py >= b.y && py <= b.y + b.h && e > 0) {
+                    double ty = py - cy, tx = std::sqrt(std::max(0.0, a * a * (1 - ty * ty / (e * e))));
+                    return {px <= b.x ? cx - tx : cx + tx, py};
+                }
+                if (px >= b.x && px <= b.x + b.w && a > 0) {
+                    double tx = px - cx, ty = std::sqrt(std::max(0.0, e * e * (1 - tx * tx / (a * a))));
+                    return {px, py <= b.y ? cy - ty : cy + ty};
+                }
+            }
+            double d = dy / dx, h = cy - d * cx, E = a * a * d * d + e * e, f = -2 * cx * E;
+            double g = a * a * d * d * cx * cx + e * e * cx * cx - a * a * e * e, det = std::sqrt(std::max(0.0, f * f - 4 * E * g));
+            if (E == 0) return b.centre();
+            double x1 = (-f + det) / (2 * E), x2 = (-f - det) / (2 * E), y1 = d * x1 + h, y2 = d * x2 + h;
+            return std::hypot(x1 - px, y1 - py) < std::hypot(x2 - px, y2 - py) ? Pt{x1, y1} : Pt{x2, y2};
         }
-        if (shape == "rhombus") {
-            double t = 1 / (std::fabs(dx) / (b.w / 2) + std::fabs(dy) / (b.h / 2));
-            return {c.x + dx * t, c.y + dy * t};
+        if (t.perimeter == "rhombusPerimeter") {
+            if (cx == px) return {cx, cy > py ? b.y : b.y + b.h};
+            if (cy == py) return {cx > px ? b.x : b.x + b.w, cy};
+            double tx = cx, ty = cy;
+            if (orthogonal) {
+                if (px >= b.x && px <= b.x + b.w) tx = px;
+                else if (py >= b.y && py <= b.y + b.h) ty = py;
+            }
+            auto cross = [&](double x1, double y1, double x2, double y2) {   // (px, py)-(tx, ty) with a side of the rhombus
+                double x3 = px, y3 = py, x4 = tx, y4 = ty;
+                double den = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
+                if (den == 0) return Pt{cx, cy};
+                double ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / den;
+                return Pt{x1 + ua * (x2 - x1), y1 + ua * (y2 - y1)};
+            };
+            if (px < cx) return py < cy ? cross(cx, b.y, b.x, cy) : cross(cx, b.y + b.h, b.x, cy);
+            return py < cy ? cross(cx, b.y, b.x + b.w, cy) : cross(cx, b.y + b.h, b.x + b.w, cy);
         }
-        double t = std::min(dx != 0 ? (b.w / 2) / std::fabs(dx) : 1e30, dy != 0 ? (b.h / 2) / std::fabs(dy) : 1e30);
-        return {c.x + dx * t, c.y + dy * t};
+        double alpha = std::atan2(py - cy, px - cx), beta = M_PI / 2 - alpha, t2 = std::atan2(b.h, b.w);
+        Pt p;
+        if (alpha < -M_PI + t2 || alpha > M_PI - t2) p = {b.x, cy - b.w * std::tan(alpha) / 2};
+        else if (alpha < -t2) p = {cx - b.h * std::tan(beta) / 2, b.y};
+        else if (alpha < t2) p = {b.x + b.w, cy + b.w * std::tan(alpha) / 2};
+        else p = {cx + b.h * std::tan(beta) / 2, b.y + b.h};
+        if (orthogonal) {
+            if (px >= b.x && px <= b.x + b.w) p.x = px;
+            else if (py >= b.y && py <= b.y + b.h) p.y = py;
+            if (px < b.x) p.x = b.x;
+            else if (px > b.x + b.w) p.x = b.x + b.w;
+            if (py < b.y) p.y = b.y;
+            else if (py > b.y + b.h) p.y = b.y + b.h;
+        }
+        return p;
     }
-    // a terminal's fixed connection point (exitX / entryX ...); false if the style sets none
-    static bool constraint(const Style &s, const char *px, const Box &b, Pt &p, Dir &d) {
-        std::string kx = std::string(px) + "X", ky = std::string(px) + "Y", kdx = std::string(px) + "Dx", kdy = std::string(px) + "Dy";
-        const std::string &vx = str(s, kx.c_str()), &vy = str(s, ky.c_str());
+
+    // a connection constraint's point (exitX / exitY, entryX ..., projected on the perimeter
+    // unless exitPerimeter=0); false if the style sets none
+    static bool constraintPoint(const Style &s, bool source, const Term &t, Pt &p) {
+        const char *kx = source ? "exitX" : "entryX", *ky = source ? "exitY" : "entryY";
+        const std::string &vx = str(s, kx), &vy = str(s, ky);
         if (vx.empty() || vy.empty()) return false;
         double fx = strtod(vx.c_str(), nullptr), fy = strtod(vy.c_str(), nullptr);
-        if (!std::isfinite(fx) || !std::isfinite(fy)) return false;
-        p = {b.x + fx * b.w + num(s, kdx.c_str(), 0), b.y + fy * b.h + num(s, kdy.c_str(), 0)};
-        d = fx <= 0 || fx >= 1 ? H : fy <= 0 || fy >= 1 ? V : NONE;
+        if (!std::isfinite(fx) || !std::isfinite(fy) || std::fabs(fx) > 1e6 || std::fabs(fy) > 1e6) return false;
+        p = {t.b.x + fx * t.b.w + num(s, source ? "exitDx" : "entryDx", 0), t.b.y + fy * t.b.h + num(s, source ? "exitDy" : "entryDy", 0)};
+        if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = perimeterPoint(t, p, false);
         return true;
+    }
+
+    static bool contains(const Box &b, double x, double y) { return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h; }
+
+    // mxEdgeStyle.SegmentConnector: segments through the hints, alternately horizontal and
+    // vertical
+    static void segmentConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, std::vector<Pt> hints,
+                                 std::vector<Pt> &result) {
+        const double tol = 1;
+        const Pt *lastPushed = nullptr;
+        Pt lastValue;
+        auto push = [&](Pt q) {
+            if (!lastPushed || std::fabs(lastValue.x - q.x) >= tol || std::fabs(lastValue.y - q.y) >= 1) {
+                result.push_back(q);
+                lastValue = q;
+                lastPushed = &lastValue;
+            }
+        };
+        bool horizontal = true;
+        bool haveHint = false;
+        Pt hint;
+        Pt pt;
+        bool havePt = true;
+        if (p0) pt = *p0;
+        else if (source) pt = source->b.centre();
+        else havePt = false;
+        if (!hints.empty() && havePt) {
+            if (std::fabs(hints[0].x - pt.x) < tol) hints[0].x = pt.x;
+            if (std::fabs(hints[0].y - pt.y) < tol) hints[0].y = pt.y;
+            if (pe) {
+                if (std::fabs(hints.back().x - pe->x) < tol) hints.back().x = pe->x;
+                if (std::fabs(hints.back().y - pe->y) < tol) hints.back().y = pe->y;
+            }
+            hint = hints[0];
+            haveHint = true;
+            const Term *currentTerm = p0 ? nullptr : source;
+            const Pt *currentPt = p0;
+            Pt currentHint = hint;
+            for (int i = 0; i < 2; i++) {
+                bool fixedVert = currentPt && currentPt->x == currentHint.x, fixedHoz = currentPt && currentPt->y == currentHint.y;
+                bool inHoz = currentTerm && currentHint.y >= currentTerm->b.y && currentHint.y <= currentTerm->b.y + currentTerm->b.h;
+                bool inVert = currentTerm && currentHint.x >= currentTerm->b.x && currentHint.x <= currentTerm->b.x + currentTerm->b.w;
+                bool hozChan = fixedHoz || (!currentPt && inHoz), vertChan = fixedVert || (!currentPt && inVert);
+                if (!(i == 0 && ((hozChan && vertChan) || (fixedVert && fixedHoz)))) {
+                    if (currentPt && !fixedHoz && !fixedVert && (inHoz || inVert)) {
+                        horizontal = !inHoz;
+                        break;
+                    }
+                    if (vertChan || hozChan) {
+                        horizontal = hozChan;
+                        if (i == 1) horizontal = hints.size() % 2 == 0 ? hozChan : vertChan;
+                        break;
+                    }
+                }
+                currentTerm = pe ? nullptr : target;
+                currentPt = pe;
+                currentHint = hints.back();
+                if (fixedVert && fixedHoz) hints.erase(hints.begin());
+                if (hints.empty()) break;
+            }
+            if (horizontal && ((p0 && p0->y != hint.y) || (!p0 && source && (hint.y < source->b.y || hint.y > source->b.y + source->b.h))))
+                push({pt.x, hint.y});
+            else if (!horizontal && ((p0 && p0->x != hint.x) || (!p0 && source && (hint.x < source->b.x || hint.x > source->b.x + source->b.w))))
+                push({hint.x, pt.y});
+            if (horizontal) pt.y = hint.y;
+            else pt.x = hint.x;
+            for (const Pt &h : hints) {
+                horizontal = !horizontal;
+                hint = h;
+                if (horizontal) pt.y = hint.y;
+                else pt.x = hint.x;
+                push(pt);
+            }
+        } else if (havePt) {
+            hint = pt;
+            haveHint = true;
+            horizontal = true;
+        }
+        bool haveEnd = true;
+        if (pe) pt = *pe;
+        else if (target) pt = target->b.centre();
+        else haveEnd = false;
+        if (haveEnd && haveHint) {
+            if (horizontal && ((pe && pe->y != hint.y) || (!pe && target && (hint.y < target->b.y || hint.y > target->b.y + target->b.h))))
+                push({pt.x, hint.y});
+            else if (!horizontal && ((pe && pe->x != hint.x) || (!pe && target && (hint.x < target->b.x || hint.x > target->b.x + target->b.w))))
+                push({hint.x, pt.y});
+        }
+        if (!p0 && source)   // (bends inside the source of a floating end)
+            while (result.size() > 1 && contains(source->b, result[1].x, result[1].y)) result.erase(result.begin() + 1);
+        if (!pe && target)
+            while (result.size() > 1 && contains(target->b, result.back().x, result.back().y)) result.pop_back();
+        if (!hints.empty() && pe && !result.empty() && std::fabs(pe->x - result.back().x) <= tol && std::fabs(pe->y - result.back().y) <= tol) {
+            result.pop_back();
+            if (!result.empty()) {
+                if (std::fabs(result.back().x - pe->x) < tol) result.back().x = pe->x;
+                if (std::fabs(result.back().y - pe->y) < tol) result.back().y = pe->y;
+            }
+        }
+    }
+
+    // mxEdgeStyle.SideToSide / TopToBottom: one elbow in the middle (or at the hint)
+    static void sideToSide(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, std::vector<Pt> &result) {
+        Box s = source ? source->b : Box{}, t = target ? target->b : Box{};
+        if (p0) s = {p0->x, p0->y, 0, 0};
+        if (pe) t = {pe->x, pe->y, 0, 0};
+        if ((!source && !p0) || (!target && !pe)) return;
+        const Pt *pt = hints.empty() ? nullptr : &hints[0];
+        double l = std::max(s.x, t.x), r = std::min(s.x + s.w, t.x + t.w);
+        double x = pt ? pt->x : std::round(r + (l - r) / 2);
+        double y1 = s.y + s.h / 2, y2 = t.y + t.h / 2;
+        if (pt) {
+            if (pt->y >= s.y && pt->y <= s.y + s.h) y1 = pt->y;
+            if (pt->y >= t.y && pt->y <= t.y + t.h) y2 = pt->y;
+        }
+        if (!contains(t, x, y1) && !contains(s, x, y1)) result.push_back({x, y1});
+        if (!contains(t, x, y2) && !contains(s, x, y2)) result.push_back({x, y2});
+        if (result.size() == 1) {
+            if (pt) {
+                if (!contains(t, x, pt->y) && !contains(s, x, pt->y)) result.push_back({x, pt->y});
+            } else {
+                double tt = std::max(s.y, t.y), bb = std::min(s.y + s.h, t.y + t.h);
+                result.push_back({x, tt + (bb - tt) / 2});
+            }
+        }
+    }
+    static void topToBottom(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, std::vector<Pt> &result) {
+        Box s = source ? source->b : Box{}, t = target ? target->b : Box{};
+        if (p0) s = {p0->x, p0->y, 0, 0};
+        if (pe) t = {pe->x, pe->y, 0, 0};
+        if ((!source && !p0) || (!target && !pe)) return;
+        const Pt *pt = hints.empty() ? nullptr : &hints[0];
+        double tt = std::max(s.y, t.y), bb = std::min(s.y + s.h, t.y + t.h);
+        double x = s.x + s.w / 2;
+        if (pt && pt->x >= s.x && pt->x <= s.x + s.w) x = pt->x;
+        double y = pt ? pt->y : std::round(bb + (tt - bb) / 2);
+        if (!contains(t, x, y) && !contains(s, x, y)) result.push_back({x, y});
+        x = pt && pt->x >= t.x && pt->x <= t.x + t.w ? pt->x : t.x + t.w / 2;
+        if (!contains(t, x, y) && !contains(s, x, y)) result.push_back({x, y});
+        if (result.size() == 1) {
+            if (pt) {
+                if (!contains(t, pt->x, y) && !contains(s, pt->x, y)) result.push_back({pt->x, y});
+            } else {
+                double l = std::max(s.x, t.x), r = std::min(s.x + s.w, t.x + t.w);
+                result.push_back({l + (r - l) / 2, y});
+            }
+        }
+    }
+    static void elbowConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, const Style &s,
+                               std::vector<Pt> &result) {
+        bool vertical = false, horizontal = false;
+        if (source && target) {
+            const Box &a = source->b, &b = target->b;
+            if (!hints.empty()) {
+                const Pt &pt = hints[0];
+                double left = std::min(a.x, b.x), right = std::max(a.x + a.w, b.x + b.w), top = std::min(a.y, b.y), bottom = std::max(a.y + a.h, b.y + b.h);
+                vertical = pt.y < top || pt.y > bottom;
+                horizontal = pt.x < left || pt.x > right;
+            } else {
+                double left = std::max(a.x, b.x), right = std::min(a.x + a.w, b.x + b.w);
+                vertical = left == right;
+                if (!vertical) {
+                    double top = std::max(a.y, b.y), bottom = std::min(a.y + a.h, b.y + b.h);
+                    horizontal = top == bottom;
+                }
+            }
+        }
+        if (!horizontal && (vertical || str(s, "elbow") == "vertical")) topToBottom(source, target, p0, pe, hints, result);
+        else sideToSide(source, target, p0, pe, hints, result);
+    }
+
+    // mxEdgeStyle.OrthConnector: a local orthogonal router between the terminals by the route
+    // patterns of the sides the edge leaves and enters; hints, or ends too close for the jetties:
+    // the SegmentConnector
+    enum { DIR_W = 1, DIR_N = 2, DIR_S = 4, DIR_E = 8, DIR_ALL = 15 };
+    static int reversePort(int c) { return (c & DIR_W) << 3 | (c & DIR_N) << 1 | (c & DIR_S) >> 1 | (c & DIR_E) >> 3; }
+    static int portConstraint(const Style &edge, const Term *t, bool source) {
+        std::string v = str(edge, source ? "sourcePortConstraint" : "targetPortConstraint");
+        if (v.empty() && t && t->style) v = str(*t->style, "portConstraint");
+        if (v.empty()) return DIR_ALL;
+        int m = 0;
+        if (v.find("north") != std::string::npos) m |= DIR_N;
+        if (v.find("south") != std::string::npos) m |= DIR_S;
+        if (v.find("east") != std::string::npos) m |= DIR_E;
+        if (v.find("west") != std::string::npos) m |= DIR_W;
+        return m ? m : DIR_ALL;
+    }
+    static double jetty(const Style &s, bool source) {
+        std::string v = str(s, source ? "sourceJettySize" : "targetJettySize");
+        if (v.empty()) v = str(s, "jettySize");
+        if (v.empty()) return 10;
+        if (v == "auto") {
+            const std::string &type = str(s, source ? "startArrow" : "endArrow");
+            if (!type.empty() && type != "none") {
+                double size = num(s, source ? "startSize" : "endSize", 6);
+                return std::max(2.0, std::ceil((size + 10) / 10)) * 10;
+            }
+            return 20;
+        }
+        double d = strtod(v.c_str(), nullptr);
+        return std::isfinite(d) && std::fabs(d) < 1e6 ? d : 10;
+    }
+    static void orthConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, const Style &s,
+                              std::vector<Pt> &result) {
+        static const std::vector<int> routePatterns[4][4] = {
+            {{513, 2308, 2081, 2562}, {513, 1090, 514, 2184, 2114, 2561}, {513, 1090, 514, 2564, 2184, 2562}, {513, 2308, 2561, 1090, 514, 2568, 2308}},
+            {{514, 1057, 513, 2308, 2081, 2562}, {514, 2184, 2114, 2561}, {514, 2184, 2562, 1057, 513, 2564, 2184}, {514, 1057, 513, 2568, 2308, 2561}},
+            {{1090, 514, 1057, 513, 2308, 2081, 2562}, {2114, 2561}, {1090, 2562, 1057, 513, 2564, 2184}, {1090, 514, 1057, 513, 2308, 2561, 2568}},
+            {{2081, 2562}, {1057, 513, 1090, 514, 2184, 2114, 2561}, {1057, 513, 1090, 514, 2184, 2562, 2564}, {1057, 2561, 1090, 514, 2568, 2308}}};
+        static const int dirVectors[7][2] = {{-1, 0}, {0, -1}, {1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 0}};
+        double sourceBuffer = jetty(s, true), targetBuffer = jetty(s, false);
+        if (source && target == source) sourceBuffer = targetBuffer = std::max(sourceBuffer, targetBuffer);
+        double totalBuffer = sourceBuffer + targetBuffer;
+        bool tooShort = p0 && pe && (pe->x - p0->x) * (pe->x - p0->x) + (pe->y - p0->y) * (pe->y - p0->y) < totalBuffer * totalBuffer;
+        if (tooShort || !hints.empty()) {
+            segmentConnector(source, target, p0, pe, hints, result);
+            return;
+        }
+        if ((!source && !p0) || (!target && !pe)) return;
+        int pc[2] = {source ? portConstraint(s, source, true) : DIR_ALL, target ? portConstraint(s, target, false) : DIR_ALL};
+        double geo[2][4] = {{source ? source->b.x : p0->x, source ? source->b.y : p0->y, source ? source->b.w : 0, source ? source->b.h : 0},
+                            {target ? target->b.x : pe->x, target ? target->b.y : pe->y, target ? target->b.w : 0, target ? target->b.h : 0}};
+        double buffer[2] = {sourceBuffer, targetBuffer};
+        double limits[2][9] = {};
+        for (int i = 0; i < 2; i++) {
+            limits[i][1] = geo[i][0] - buffer[i];
+            limits[i][2] = geo[i][1] - buffer[i];
+            limits[i][4] = geo[i][0] + geo[i][2] + buffer[i];
+            limits[i][8] = geo[i][1] + geo[i][3] + buffer[i];
+        }
+        double dx = geo[0][0] + geo[0][2] / 2 - (geo[1][0] + geo[1][2] / 2), dy = geo[0][1] + geo[0][3] / 2 - (geo[1][1] + geo[1][3] / 2);
+        int quad = 0;
+        if (dx < 0) quad = dy < 0 ? 2 : 1;
+        else if (dy <= 0) quad = dx == 0 ? 2 : 3;
+        int dir[2] = {0, 0};
+        double constraint[2][2] = {{0.5, 0.5}, {0.5, 0.5}};
+        for (int i = 0; i < 2; i++) {
+            const Pt *term = i == 0 ? (source ? p0 : nullptr) : (target ? pe : nullptr);
+            if (!term) continue;
+            constraint[i][0] = geo[i][2] != 0 ? (term->x - geo[i][0]) / geo[i][2] : 0.5;
+            if (std::fabs(term->x - geo[i][0]) <= 1) dir[i] = DIR_W;
+            else if (std::fabs(term->x - geo[i][0] - geo[i][2]) <= 1) dir[i] = DIR_E;
+            constraint[i][1] = geo[i][3] != 0 ? (term->y - geo[i][1]) / geo[i][3] : 0.5;
+            if (std::fabs(term->y - geo[i][1]) <= 1) dir[i] = DIR_N;
+            else if (std::fabs(term->y - geo[i][1] - geo[i][3]) <= 1) dir[i] = DIR_S;
+        }
+        double sourceTopDist = geo[0][1] - (geo[1][1] + geo[1][3]), sourceLeftDist = geo[0][0] - (geo[1][0] + geo[1][2]);
+        double sourceBottomDist = geo[1][1] - (geo[0][1] + geo[0][3]), sourceRightDist = geo[1][0] - (geo[0][0] + geo[0][2]);
+        double seps[5] = {0, std::max(sourceLeftDist - totalBuffer, 0.0), std::max(sourceTopDist - totalBuffer, 0.0),
+                          std::max(sourceRightDist - totalBuffer, 0.0), std::max(sourceBottomDist - totalBuffer, 0.0)};
+        int horPref[2], vertPref[2];
+        horPref[0] = sourceLeftDist >= sourceRightDist ? DIR_W : DIR_E;
+        vertPref[0] = sourceTopDist >= sourceBottomDist ? DIR_N : DIR_S;
+        horPref[1] = reversePort(horPref[0]);
+        vertPref[1] = reversePort(vertPref[0]);
+        double prefH = std::max(sourceLeftDist, sourceRightDist), prefV = std::max(sourceTopDist, sourceBottomDist);
+        int pref[2][2] = {{0, 0}, {0, 0}};
+        bool prefSet = false;
+        for (int i = 0; i < 2; i++) {
+            if (dir[i]) continue;
+            if (!(horPref[i] & pc[i])) horPref[i] = reversePort(horPref[i]);
+            if (!(vertPref[i] & pc[i])) vertPref[i] = reversePort(vertPref[i]);
+            pref[i][0] = vertPref[i];
+            pref[i][1] = horPref[i];
+        }
+        if (prefV > 0 && prefH > 0) {
+            if ((horPref[0] & pc[0]) && (vertPref[1] & pc[1])) {
+                pref[0][0] = horPref[0], pref[0][1] = vertPref[0], pref[1][0] = vertPref[1], pref[1][1] = horPref[1];
+                prefSet = true;
+            } else if ((vertPref[0] & pc[0]) && (horPref[1] & pc[1])) {
+                pref[0][0] = vertPref[0], pref[0][1] = horPref[0], pref[1][0] = horPref[1], pref[1][1] = vertPref[1];
+                prefSet = true;
+            }
+        }
+        if (prefV > 0 && !prefSet) {
+            pref[0][0] = vertPref[0], pref[0][1] = horPref[0], pref[1][0] = vertPref[1], pref[1][1] = horPref[1];
+            prefSet = true;
+        }
+        if (prefH > 0 && !prefSet) {
+            pref[0][0] = horPref[0], pref[0][1] = vertPref[0], pref[1][0] = horPref[1], pref[1][1] = vertPref[1];
+            prefSet = true;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (dir[i]) continue;
+            if (!(pref[i][0] & pc[i])) pref[i][0] = pref[i][1];
+            int d = pref[i][0] & pc[i];
+            d |= (pref[i][1] & pc[i]) << 8;
+            d |= (pref[1 - i][i] & pc[i]) << 16;
+            d |= (pref[1 - i][1 - i] & pc[i]) << 24;
+            if (!(d & 0xF)) d = d << 8;
+            if (!(d & 0xF00)) d = (d & 0xF) | d >> 8;
+            if (!(d & 0xF0000)) d = (d & 0xFFFF) | ((d & 0xF000000) >> 8);
+            dir[i] = d & 0xF;
+            if (pc[i] == DIR_W || pc[i] == DIR_N || pc[i] == DIR_E || pc[i] == DIR_S) dir[i] = pc[i];
+        }
+        int sourceIndex = (dir[0] == DIR_E ? 3 : dir[0]) - quad, targetIndex = (dir[1] == DIR_E ? 3 : dir[1]) - quad;
+        if (sourceIndex < 1) sourceIndex += 4;
+        if (targetIndex < 1) targetIndex += 4;
+        if (sourceIndex < 1 || sourceIndex > 4 || targetIndex < 1 || targetIndex > 4) return;
+        const std::vector<int> &route = routePatterns[sourceIndex - 1][targetIndex - 1];
+        double wp[12][2] = {};
+        wp[0][0] = geo[0][0], wp[0][1] = geo[0][1];
+        switch (dir[0]) {
+        case DIR_W: wp[0][0] -= sourceBuffer, wp[0][1] += constraint[0][1] * geo[0][3]; break;
+        case DIR_S: wp[0][0] += constraint[0][0] * geo[0][2], wp[0][1] += geo[0][3] + sourceBuffer; break;
+        case DIR_E: wp[0][0] += geo[0][2] + sourceBuffer, wp[0][1] += constraint[0][1] * geo[0][3]; break;
+        case DIR_N: wp[0][0] += constraint[0][0] * geo[0][2], wp[0][1] -= sourceBuffer; break;
+        }
+        int currentIndex = 0;
+        int lastOrientation = (dir[0] & (DIR_E | DIR_W)) ? 0 : 1, initialOrientation = lastOrientation;
+        for (int code : route) {
+            int nextDirection = code & 0xF;
+            int directionIndex = (nextDirection == DIR_E ? 3 : nextDirection) + quad;
+            if (directionIndex > 4) directionIndex -= 4;
+            if (directionIndex < 1 || directionIndex > 4) return;
+            const int *direction = dirVectors[directionIndex - 1];
+            int currentOrientation = directionIndex % 2 > 0 ? 0 : 1;
+            if (currentOrientation != lastOrientation) {
+                if (++currentIndex >= 12) return;
+                wp[currentIndex][0] = wp[currentIndex - 1][0];
+                wp[currentIndex][1] = wp[currentIndex - 1][1];
+            }
+            bool tar = code & 2048, sou = code & 1024;
+            int side = ((code & 480) >> 5) << quad;
+            if (side > 0xF) side >>= 4;
+            bool center = code & 512;
+            if ((sou || tar) && side < 9) {
+                int st = sou ? 0 : 1;
+                double limit = center && currentOrientation == 0 ? geo[st][0] + constraint[st][0] * geo[st][2]
+                               : center                          ? geo[st][1] + constraint[st][1] * geo[st][3]
+                                                                 : limits[st][side];
+                if (currentOrientation == 0) {
+                    double delta = (limit - wp[currentIndex][0]) * direction[0];
+                    if (delta > 0) wp[currentIndex][0] += direction[0] * delta;
+                } else {
+                    double delta = (limit - wp[currentIndex][1]) * direction[1];
+                    if (delta > 0) wp[currentIndex][1] += direction[1] * delta;
+                }
+            } else if (center) {
+                wp[currentIndex][0] += direction[0] * std::fabs(seps[directionIndex] / 2);
+                wp[currentIndex][1] += direction[1] * std::fabs(seps[directionIndex] / 2);
+            }
+            if (currentIndex > 0 && wp[currentIndex][currentOrientation] == wp[currentIndex - 1][currentOrientation]) currentIndex--;
+            else lastOrientation = currentOrientation;
+        }
+        for (int i = 0; i <= currentIndex; i++) {
+            if (i == currentIndex) {   // (the last point: only if the turns fit the ends' orientations)
+                int targetOrientation = (dir[1] & (DIR_E | DIR_W)) ? 0 : 1;
+                int sameOrient = targetOrientation == initialOrientation ? 0 : 1;
+                if (sameOrient != (currentIndex + 1) % 2) break;
+            }
+            Pt q{wp[i][0], wp[i][1]};
+            if (result.empty() || result.back().x != q.x || result.back().y != q.y) result.push_back(q);
+        }
     }
 
     void edge(Cell &c) {
         const Style &s = c.style;
         Pt o = origin(c.parent);
-        std::vector<Pt> pts;
-        for (Pt p : c.points) pts.push_back({o.x + p.x, o.y + p.y});
+        std::vector<Pt> hints;
+        for (Pt p : c.points) hints.push_back({o.x + p.x, o.y + p.y});
         Cell *src = find(c.source), *dst = find(c.target);
         if (src && !src->vertex) src = nullptr;   // (an edge ending on an edge: at its point, if any)
         if (dst && !dst->vertex) dst = nullptr;
-        Box sb, tb;
-        std::string sshape, tshape;
-        if (src) sb = absBox(*src), sshape = str(src->style, "shape");
-        if (dst) tb = absBox(*dst), tshape = str(dst->style, "shape");
-        Pt sp{o.x + c.sourcePoint.x, o.y + c.sourcePoint.y}, tp{o.x + c.targetPoint.x, o.y + c.targetPoint.y};
-        if (!src && !c.hasSource) return;
-        if (!dst && !c.hasTarget) return;
-        Dir sd = NONE, td = NONE;
-        bool sFixed = src && constraint(s, "exit", sb, sp, sd), tFixed = dst && constraint(s, "entry", tb, tp, td);
+        Term st, tt;
+        if (src) st = {absBox(*src), str(src->style, "perimeter"), &src->style};
+        if (dst) tt = {absBox(*dst), str(dst->style, "perimeter"), &dst->style};
+        const Term *source = src ? &st : nullptr, *target = dst ? &tt : nullptr;
+        if (!source && !c.hasSource) return;
+        if (!target && !c.hasTarget) return;
+        // the fixed ends
+        Pt sp, tp;
+        bool haveS = false, haveT = false;
+        if (source) haveS = constraintPoint(s, true, st, sp);
+        else sp = {o.x + c.sourcePoint.x, o.y + c.sourcePoint.y}, haveS = true;
+        if (target) haveT = constraintPoint(s, false, tt, tp);
+        else tp = {o.x + c.targetPoint.x, o.y + c.targetPoint.y}, haveT = true;
+        // the route between them
         const std::string &es = str(s, "edgeStyle");
-        bool ortho = es == "orthogonalEdgeStyle" || es == "elbowEdgeStyle" || es == "entityRelationEdgeStyle" || es == "segmentEdgeStyle" ||
-                     es == "sideToSideEdgeStyle" || es == "topToBottomEdgeStyle" || es == "isometricEdgeStyle";
-        std::vector<Pt> route;
-        if (!ortho) {
-            Pt toS = !pts.empty() ? pts.front() : dst ? (tFixed ? tp : tb.centre()) : tp;
-            Pt toT = !pts.empty() ? pts.back() : src ? (sFixed ? sp : sb.centre()) : sp;
-            if (src && !sFixed) sp = perimeter(sb, sshape, toS);
-            if (dst && !tFixed) tp = perimeter(tb, tshape, toT);
-            route.push_back(sp);
-            route.insert(route.end(), pts.begin(), pts.end());
-            route.push_back(tp);
-        } else
-            route = orthogonal(c, src ? &sb : nullptr, dst ? &tb : nullptr, sp, tp, sFixed, tFixed, sd, td, pts, es);
-        // (the duplicates out)
-        std::vector<Pt> r;
-        for (Pt p : route)
-            if (r.empty() || std::fabs(p.x - r.back().x) > 1e-6 || std::fabs(p.y - r.back().y) > 1e-6) r.push_back(p);
-        if (r.size() < 2) return;
+        std::vector<Pt> mid;
+        bool orth = true;
+        const Pt *p0 = haveS ? &sp : nullptr, *pe = haveT ? &tp : nullptr;
+        if (es == "orthogonalEdgeStyle") orthConnector(source, target, p0, pe, hints, s, mid);
+        else if (es == "elbowEdgeStyle") elbowConnector(source, target, p0, pe, hints, s, mid);
+        else if (es == "sideToSideEdgeStyle" || es == "entityRelationEdgeStyle") sideToSide(source, target, p0, pe, hints, mid);
+        else if (es == "topToBottomEdgeStyle") topToBottom(source, target, p0, pe, hints, mid);
+        else if (es == "segmentEdgeStyle" || es == "isometricEdgeStyle") segmentConnector(source, target, p0, pe, hints, mid);
+        else mid = hints, orth = str(s, "orthogonal") == "1";
+        // the floating ends: the target first, towards its neighbour (the other end, or its centre)
+        if (!haveT && target) {
+            Pt next = !mid.empty() ? mid.back() : haveS ? sp : source ? source->b.centre() : tt.b.centre();
+            tp = perimeterPoint(tt, next, orth);
+            haveT = true;
+        }
+        if (!haveS && source) {
+            Pt next = !mid.empty() ? mid.front() : tp;
+            sp = perimeterPoint(st, next, orth);
+            haveS = true;
+        }
+        std::vector<Pt> r{sp};
+        for (Pt p : mid)
+            if (std::fabs(p.x - r.back().x) > 1e-6 || std::fabs(p.y - r.back().y) > 1e-6) r.push_back(p);
+        if (std::fabs(tp.x - r.back().x) > 1e-6 || std::fabs(tp.y - r.back().y) > 1e-6) r.push_back(tp);
+        if (r.size() < 2) return;   // (no length: nothing drawn)
         c.route = r;
         drawEdge(c, r);
-    }
-
-    // A simple orthogonal router: from the source's side (its exit, else the one facing the
-    // target), through the waypoints, into the target's side, an elbow between consecutive points
-    std::vector<Pt> orthogonal(Cell &c, const Box *sb, const Box *tb, Pt sp, Pt tp, bool sFixed, bool tFixed, Dir sd, Dir td,
-                               const std::vector<Pt> &pts, const std::string &es) {
-        Pt sref = sb ? sb->centre() : sp, tref = tb ? tb->centre() : tp;
-        bool vertical = es == "topToBottomEdgeStyle" || (es == "elbowEdgeStyle" && str(c.style, "elbow") == "vertical");
-        auto facing = [&](const Box *b, Pt from, Pt to, Dir &d) -> Pt {   // the side of b facing 'to'
-            double dx = to.x - from.x, dy = to.y - from.y;
-            if (d == NONE) d = es == "elbowEdgeStyle" || es == "sideToSideEdgeStyle" || es == "entityRelationEdgeStyle" ? (vertical ? V : H)
-                               : vertical ? V : std::fabs(dx) * (b ? b->h : 1) >= std::fabs(dy) * (b ? b->w : 1) ? H : V;
-            if (!b) return from;
-            Pt ce = b->centre();
-            if (d == H) return {dx >= 0 ? b->x + b->w : b->x, ce.y};
-            return {ce.x, dy >= 0 ? b->y + b->h : b->y};
-        };
-        if (pts.empty() && sb && tb && !sFixed && !tFixed) {   // (side by side or above each other: one straight segment if they overlap)
-            double ox0 = std::max(sb->x, tb->x), ox1 = std::min(sb->x + sb->w, tb->x + tb->w);
-            double oy0 = std::max(sb->y, tb->y), oy1 = std::min(sb->y + sb->h, tb->y + tb->h);
-            bool apartV = tb->y >= sb->y + sb->h || sb->y >= tb->y + tb->h, apartH = tb->x >= sb->x + sb->w || sb->x >= tb->x + tb->w;
-            if (ox1 > ox0 && apartV && !(es == "elbowEdgeStyle" && !vertical)) {
-                double x = (ox0 + ox1) / 2;
-                bool down = tb->y > sb->y;
-                return {{x, down ? sb->y + sb->h : sb->y}, {x, down ? tb->y : tb->y + tb->h}};
-            }
-            if (oy1 > oy0 && apartH && !vertical) {
-                double y = (oy0 + oy1) / 2;
-                bool right = tb->x > sb->x;
-                return {{right ? sb->x + sb->w : sb->x, y}, {right ? tb->x : tb->x + tb->w, y}};
-            }
-        }
-        if (!sFixed) sp = facing(sb, sref, pts.empty() ? tref : pts.front(), sd);
-        else if (sd == NONE) facing(nullptr, sp, pts.empty() ? tref : pts.front(), sd);
-        if (!tFixed) tp = facing(tb, tref, pts.empty() ? sp : pts.back(), td);
-        else if (td == NONE) facing(nullptr, tp, pts.empty() ? sp : pts.back(), td);
-        std::vector<Pt> r{sp};
-        Dir d = sd;
-        for (Pt q : pts) {   // (to each waypoint: along the current direction, then across)
-            Pt cur = r.back();
-            if (d == H) {
-                if (std::fabs(cur.y - q.y) > 1e-6) r.push_back({q.x, cur.y}), d = V;
-            } else {
-                if (std::fabs(cur.x - q.x) > 1e-6) r.push_back({cur.x, q.y}), d = H;
-            }
-            r.push_back(q);
-        }
-        Pt cur = r.back();
-        if (d == H && td == H) {   // (a step halfway)
-            if (std::fabs(cur.y - tp.y) > 1e-6) {
-                double mx = (cur.x + tp.x) / 2;
-                r.push_back({mx, cur.y});
-                r.push_back({mx, tp.y});
-            }
-        } else if (d == V && td == V) {
-            if (std::fabs(cur.x - tp.x) > 1e-6) {
-                double my = (cur.y + tp.y) / 2;
-                r.push_back({cur.x, my});
-                r.push_back({tp.x, my});
-            }
-        } else if (d == H)
-            r.push_back({tp.x, cur.y});
-        else
-            r.push_back({cur.x, tp.y});
-        r.push_back(tp);
-        return r;
     }
 
     // a marker at an end of an edge (its tip at p, pointing along u away from the line); how far
@@ -986,6 +1342,10 @@ struct Builder {
         std::string t = thin ? type.substr(0, type.size() - 4) : type;
         if (thin) half = len / 3;
         Pt n{-u.y, u.x};
+        // (the tip set back by the stroke's miter, as mxMarker does: the outlined tip just touches the terminal)
+        double set = t == "classic" || t == "block" || t == "open" ? sw * 1.118 : t == "diamond" ? sw * 0.7071 : 0;
+        Pt tip = p;
+        p = {p.x - u.x * set, p.y - u.y * set};
         Pt back{p.x - u.x * len, p.y - u.y * len};
         PathP path = newPath();
         plutovg_path_t *q = path.get();
@@ -1027,6 +1387,7 @@ struct Builder {
         it.path = path;
         if (fill) it.fill = colour, retreat = std::max(retreat - sw / 2, 0.0);
         else retreat = t == "open" ? retreat : 0;
+        retreat += std::hypot(p.x - tip.x, p.y - tip.y);
         it.stroke = colour;
         it.width = (float)sw;
         add(std::move(it), (float)sw);
