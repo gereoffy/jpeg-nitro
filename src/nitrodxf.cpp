@@ -2468,36 +2468,6 @@ bool finish_page(Flat &F, Page &pg) {
     return true;
 }
 
-// A page's display list as a hash (FNV-1a): the same pages (layouts showing the same) are kept once.
-uint64_t page_hash(const nitrodxf *doc, const Page &pg) {
-    uint64_t h = 14695981039346656037ull;
-    auto add = [&](const void *p, size_t n) {
-        for (size_t i = 0; i < n; i++) h = (h ^ static_cast<const uint8_t *>(p)[i]) * 1099511628211ull;
-    };
-    double area[6] = {pg.ax0, pg.ay0, pg.ax1, pg.ay1, pg.ox, pg.oy};
-    add(area, sizeof area);
-    for (const Item &it : pg.items) {
-        add(&it.kind, 1), add(&it.rgba, 4), add(&it.width, 4), add(&it.dash, 4);
-        if (it.kind == O_CLIP) add(&it.bx0, 4), add(&it.by0, 4), add(&it.bx1, 4), add(&it.by1, 4);
-        else if (it.kind == O_TEXT) {
-            const OText &t = doc->otexts[(size_t)it.aux];
-            add(&t.text, sizeof t.text), add(t.m, sizeof t.m);
-        } else if (it.kind == O_XLINE || it.kind == O_RAY)
-            add(&doc->xlines[(size_t)it.aux * 4], 4 * sizeof(float));
-        if (it.path) {
-            const plutovg_path_element_t *el;
-            int n = plutovg_path_get_elements(it.path, &el);
-            add(el, (size_t)n * sizeof *el);
-        }
-        if (it.kind == O_HATCH)
-            for (const OPatLine &pl : doc->opatterns[(size_t)it.aux]) {
-                add(&pl, 6 * sizeof(float));
-                add(pl.dashes.data(), pl.dashes.size() * sizeof(float));
-            }
-    }
-    return h;
-}
-
 } // namespace
 
 nitrodxf *nitrodxf_load(const void *data, size_t len) {
@@ -2629,9 +2599,20 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
     if (inventor) srcs.push_back(nullptr);   // (only if no sheet shows)
     std::sort(P.idwViews.begin(), P.idwViews.end());
     size_t points = 0, work = 0;
-    std::vector<uint64_t> hashes;   // (the pages': 0 until one could be the same as another)
-    auto same = [&](const Page &a, const Page &b) {
-        return a.items.size() == b.items.size() && a.ax0 == b.ax0 && a.ay0 == b.ay0 && a.ax1 == b.ax1 && a.ay1 == b.ay1 && a.ox == b.ox && a.oy == b.oy;
+    auto same = [&](const Page &a, const Page &b) {   // (the same area, and items of the same kind, colour, box and text)
+        if (a.items.size() != b.items.size() || a.ax0 != b.ax0 || a.ay0 != b.ay0 || a.ax1 != b.ax1 || a.ay1 != b.ay1 || a.ox != b.ox || a.oy != b.oy)
+            return false;
+        for (size_t i = 0; i < a.items.size(); i++) {
+            const Item &x = a.items[i], &y = b.items[i];
+            if (x.kind != y.kind || x.rgba != y.rgba || x.width != y.width || x.dash != y.dash || x.bx0 != y.bx0 || x.by0 != y.by0 ||
+                x.bx1 != y.bx1 || x.by1 != y.by1)
+                return false;
+            if (x.kind == O_TEXT) {   // (its text, and where)
+                const OText &s = doc->otexts[(size_t)x.aux], &t = doc->otexts[(size_t)y.aux];
+                if (s.text != t.text || memcmp(s.m, t.m, sizeof s.m)) return false;
+            }
+        }
+        return true;
     };
     for (const Block *src : srcs) {
         if (doc->pages.size() >= 64 || (!src && inventor && !doc->pages.empty())) break;
@@ -2645,17 +2626,11 @@ nitrodxf *nitrodxf_load(const void *data, size_t len) {
             F.expand(*ms, M2(), ctx, 0);
         points = F.points, work = F.work;
         bool keep = finish_page(F, pg);
-        uint64_t h = 0;
-        for (size_t i = 0; keep && i < doc->pages.size(); i++)   // (hashed only to tell pages alike in size apart)
-            if (same(doc->pages[i], pg)) {
-                if (!hashes[i]) hashes[i] = page_hash(doc.get(), doc->pages[i]) | 1;
-                if (!h) h = page_hash(doc.get(), pg) | 1;
-                keep = h != hashes[i];
-            }
-        if (keep) {
-            hashes.push_back(h);
-            doc->pages.push_back(std::move(pg));
-        } else
+#ifndef NITRODXF_ALL_PAGES   // (else repeated pages too)
+        for (size_t i = 0; keep && i < doc->pages.size(); i++) keep = !same(doc->pages[i], pg);
+#endif
+        if (keep) doc->pages.push_back(std::move(pg));
+        else
             for (Item &it : pg.items) plutovg_path_destroy(it.path);
     }
     if (doc->pages.empty()) return nullptr;
