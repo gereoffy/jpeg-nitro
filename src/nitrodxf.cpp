@@ -2655,22 +2655,11 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
 
 static constexpr double kFar = 1 << 24;   // device pixels out of the view
 
-int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
-                    int (*cancelled)(void *ctx), void *ctx) {
-    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    const Page &pg = dxf->pages[(size_t)page];
-    uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
-    plutovg_canvas_t *c = plutovg_canvas_create(surface);
-    double vx0 = pg.ax0 + x0, vy1 = pg.ay1 - y0;   // the view in drawing units (around the origin)
-    plutovg_matrix_t mt = {(float)scale, 0, 0, (float)-scale, (float)(-scale * vx0), (float)(scale * vy1)};
-    plutovg_canvas_set_matrix(c, &mt);
+// a page's items drawn on a canvas whose matrix maps drawing units to device pixels, scale of
+// them to a unit; view: the part seen, viewH: the height a relative $PDSIZE is of (drawing units)
+static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, double scale, const double view[4], double viewH,
+                     int (*cancelled)(void *ctx), void *ctx) {
     float hair = (float)(1 / scale), fs = (float)scale;
-    double view[4] = {vx0 - 2 * hair, vy1 - h / scale - 2 * hair, vx0 + w / scale + 2 * hair, vy1 + 2 * hair};
     plutovg_path_t *tmp = plutovg_path_create();
     std::vector<float> dashes;
     plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
@@ -2734,7 +2723,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
                 int mode;
                 float r, hair;
             } pc{tmp, mode, 0, hair};
-            double size = dxf->pdsize > 0 ? dxf->pdsize : (dxf->pdsize < 0 ? -dxf->pdsize / 100 : 0.05) * h / scale;
+            double size = dxf->pdsize > 0 ? dxf->pdsize : (dxf->pdsize < 0 ? -dxf->pdsize / 100 : 0.05) * viewH;
             pc.r = (float)(size / 2);
             plutovg_path_reset(tmp);
             plutovg_path_traverse(it.path, [](void *cl, plutovg_path_command_t cmd, const plutovg_point_t *pts, int n) {
@@ -2809,7 +2798,54 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
         }
     }
     plutovg_path_destroy(tmp);
+    return rc || cancel();   // (a hatch may have stopped)
+}
+
+int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx) {
+    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    const Page &pg = dxf->pages[(size_t)page];
+    uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
+        for (int x = 0; x < w; x++) row[x] = bg;
+    }
+    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
+    plutovg_canvas_t *c = plutovg_canvas_create(surface);
+    double vx0 = pg.ax0 + x0, vy1 = pg.ay1 - y0;   // the view in drawing units (around the origin)
+    plutovg_matrix_t mt = {(float)scale, 0, 0, (float)-scale, (float)(-scale * vx0), (float)(scale * vy1)};
+    plutovg_canvas_set_matrix(c, &mt);
+    double hair = 1 / scale;
+    double view[4] = {vx0 - 2 * hair, vy1 - h / scale - 2 * hair, vx0 + w / scale + 2 * hair, vy1 + 2 * hair};
+    int rc = draw_page(dxf, pg, c, scale, view, h / scale, cancelled, ctx);
     plutovg_canvas_destroy(c);
     plutovg_surface_destroy(surface);
-    return rc || cancel();   // (a hatch may have stopped)
+    return rc;
+}
+
+void nitrodxf_draw(const nitrodxf *dxf, int page, plutovg_canvas_t *c, float x, float y, float w, float h) {
+    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || !(w > 0) || !(h > 0)) return;
+    const Page &pg = dxf->pages[(size_t)page];
+    double aw = pg.ax1 - pg.ax0, ah = pg.ay1 - pg.ay0;
+    if (!(aw > 0) || !(ah > 0)) return;
+    plutovg_canvas_save(c);
+    plutovg_canvas_clip_rect(c, x, y, w, h);
+    double k = std::min(w / aw, h / ah), ox = x + (w - k * aw) / 2, oy = y + (h - k * ah) / 2;   // (fitted, centred)
+    plutovg_matrix_t cm, mt = {(float)k, 0, 0, (float)-k, (float)(ox - k * pg.ax0), (float)(oy + k * pg.ay1)};
+    plutovg_canvas_get_matrix(c, &cm);
+    plutovg_matrix_multiply(&mt, &mt, &cm);   // (drawing units -> the rectangle -> device)
+    plutovg_canvas_set_matrix(c, &mt);
+    double scale = std::sqrt(std::fabs((double)mt.a * mt.d - (double)mt.b * mt.c));
+    plutovg_matrix_t inv;
+    plutovg_surface_t *s = plutovg_canvas_get_surface(c);
+    double view[4] = {pg.ax0, pg.ay0, pg.ax1, pg.ay1};
+    if (scale > 0 && s && plutovg_matrix_invert(&mt, &inv)) {   // (the part of the surface it covers)
+        plutovg_rect_t r = {0, 0, (float)plutovg_surface_get_width(s), (float)plutovg_surface_get_height(s)};
+        plutovg_matrix_map_rect(&inv, &r, &r);
+        double hair = 2 / scale;
+        view[0] = std::max(view[0], (double)r.x - hair), view[1] = std::max(view[1], (double)r.y - hair);
+        view[2] = std::min(view[2], (double)(r.x + r.w) + hair), view[3] = std::min(view[3], (double)(r.y + r.h) + hair);
+        if (view[0] < view[2] && view[1] < view[3]) draw_page(dxf, pg, c, scale, view, ah, nullptr, nullptr);
+    }
+    plutovg_canvas_restore(c);
 }

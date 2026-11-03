@@ -10,6 +10,7 @@
 // whatever lies outside the target.
 #include "nitrocdr.h"
 #include "nitro_font.h"
+#include "nitrodxf.h"
 #include "nitrometa.h"
 
 #include <libcdr/libcdr.h>
@@ -85,10 +86,12 @@ std::atomic<int> g_threads{0};   // (nitrocdr_set_threads)
 
 struct Image {
     plutovg_surface_t *s = nullptr;   // a bitmap, or
-    nitrometa *meta = nullptr;        // a WMF / EMF picture (the icons of Visio's stencils)
+    nitrometa *meta = nullptr;        // a WMF / EMF picture (the icons of Visio's stencils), or
+    nitrodxf *dxf = nullptr;          // an AutoCAD drawing (an OLE object without its picture)
     ~Image() {
         plutovg_surface_destroy(s);
         nitrometa_free(meta);
+        nitrodxf_free(dxf);
     }
 };
 // libcdr's own bitmaps: uncompressed 32-bit BMPs (B G R A, bottom-up), alpha all 0 when opaque;
@@ -225,6 +228,11 @@ std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
                 if (img) return img;
             }
         }
+    }
+    if (stream("Contents", s) && s.size() > 6 && !memcmp(s.data(), "AC10", 4)) {   // (an AutoCAD drawing's DWG)
+        auto img = std::make_shared<Image>();
+        img->dxf = nitrodxf_load(s.data(), s.size());
+        if (img->dxf) return img;
     }
     if ((stream("Ole10Native", s) || stream("\x01Ole10Native", s)) && s.size() > 4)   // (its size, the file)
         return picture(&s[4], std::min<size_t>(u32(&s[0]), s.size() - 4), depth + 1);
@@ -851,6 +859,7 @@ public:
                 if (std::shared_ptr<Image> img = picture(c.data.getDataBuffer(), c.data.size())) {
                     std::swap(c.img->s, img->s);
                     std::swap(c.img->meta, img->meta);
+                    std::swap(c.img->dxf, img->dxf);
                 }
             }
         };
@@ -1569,6 +1578,8 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
         plutovg_canvas_translate(c, -cx, -cy);
         if (it.img->meta) {
             nitrometa_draw(it.img->meta, c, it.x, it.y, it.w, it.h);
+        } else if (it.img->dxf) {
+            nitrodxf_draw(it.img->dxf, 0, c, it.x, it.y, it.w, it.h);
         } else {
             int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s);
             plutovg_matrix_t m;
@@ -1681,7 +1692,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     pt.decodeImages();
     for (Page &pg : pt.pages)   // (a picture that could not be decoded: left out)
         pg.items.erase(std::remove_if(pg.items.begin(), pg.items.end(),
-                                      [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta; }),
+                                      [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta && !it.img->dxf; }),
                        pg.items.end());
     // the shown area is the drawing's bounding box (+ a small margin), not the page set in the
     // file: a small logo on an A4 page fills the view, a scan much larger than its page shows

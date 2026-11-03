@@ -40,6 +40,11 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h);
 int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx);
 
+// Draws a page's shown area fitted into the rectangle x, y, w, h of a canvas (its current matrix;
+// no background: a drawing embedded in a Visio document). Thread-safe as nitrodxf_render.
+struct plutovg_canvas;   // (plutovg.h: the renderers' canvas; the viewers need no plutovg)
+void nitrodxf_draw(const nitrodxf *dxf, int page, struct plutovg_canvas *canvas, float x, float y, float w, float h);
+
 #ifdef __cplusplus
 }
 #endif

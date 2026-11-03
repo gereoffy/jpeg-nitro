@@ -397,7 +397,7 @@ endef
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
 %/libnitrosvg.a: src/nitrosvg.cpp src/nitrosvg.h src/nitrodxf.cpp src/nitrodxf.h src/nitrodwg.cpp src/nitrodwg.h src/nitrometa.cpp src/nitrometa.h src/nitro_font.cpp src/nitro_font.h $(SVG_STAMP)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_STAMP)
+%/libnitrocdr.a: src/nitrocdr.cpp src/nitrocdr.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_STAMP)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)
 	$(call mimalloc_objs,$(TCPU))
