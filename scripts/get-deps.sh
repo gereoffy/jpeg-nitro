@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 mkdir -p third_party && cd third_party
 TP=$PWD
 LJT_VER=3.1.2
-NASM_VER=2.16.03
+NASM_VER=3.02   # (3.01+: Mach-O objects with their platform, see macho-min.asm below)
 LUNASVG_COMMIT=1439165b02eab96dbce7e6deb4d94d65acdd7417   # 2026-11-03, github.com/gereoffy/lunasvg (and in packaging/flatpak/*.json, with its sha256)
 LIBCDR_COMMIT=20e4d64e4df41ab695de68572a543f3e8d40829a    # 2026-11-02, github.com/gereoffy/libcdr (and in packaging/flatpak/*.json)
 LIBVISIO_COMMIT=1c3a3619d65e024385a9cb4a5436d7bc1d02fd7c  # 2026-11-02, github.com/gereoffy/libvisio (and in packaging/flatpak/*.json)
@@ -122,11 +122,18 @@ if [ ! -f boost/.version-$BOOST_VER ]; then
   touch boost/.version-$BOOST_VER
 fi
 
-if [ ! -x tools/nasm/bin/nasm ]; then
+if [ ! -f tools/nasm/.version-$NASM_VER ]; then
+  rm -rf tools/nasm
   curl -fsSL -o nasm.tar.xz https://www.nasm.us/pub/nasm/releasebuilds/$NASM_VER/nasm-$NASM_VER.tar.xz
-  tar xf nasm.tar.xz
+  tar xf nasm.tar.xz && rm nasm.tar.xz
   (cd nasm-$NASM_VER && ./configure -q --prefix="$TP/tools/nasm" && make -j"$JOBS" -s && make install -s)
+  rm -rf nasm-$NASM_VER
+  touch tools/nasm/.version-$NASM_VER
 fi
+# macOS: NASM's objects say which platform they are for (else the linker warns about each one,
+# "no platform load command found"), pre-included by libjpeg-turbo's and dav1d's builds
+NASM_MACHO=$TP/tools/nasm/macho-min.asm
+echo "%pragma macho build_version macos, ${MACOS_MIN%%.*}, ${MACOS_MIN#*.}" > "$NASM_MACHO"
 
 CMAKE=$(command -v cmake || true)
 if [ -z "$CMAKE" ]; then
@@ -142,15 +149,17 @@ build_ljt() {   # arch prefix
     arm64|aarch64) PROC=aarch64; CPU=$([ "$(uname -s)" = Darwin ] && echo "-mcpu=apple-m1" || echo "-mcpu=native") ;;
     *) PROC=$A; CPU="" ;;
   esac
-  local MAC=()
+  local MAC=() NASM=()
+  [ "$PROC" = x86_64 ] && NASM=(-DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm")   # (the SIMD code of x86 only)
   [ "$(uname -s)" = Darwin ] && MAC=(-DCMAKE_OSX_ARCHITECTURES="$A" -DCMAKE_SYSTEM_PROCESSOR="$PROC" -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOS_MIN)
+  [ "$(uname -s)" = Darwin ] && [ "$PROC" = x86_64 ] && NASM+=(-DCMAKE_ASM_NASM_FLAGS="-P$NASM_MACHO")
   [ -d libjpeg-turbo-$LJT_VER ] || {
     curl -fsSL -o ljt.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LJT_VER/libjpeg-turbo-$LJT_VER.tar.gz
     tar xf ljt.tar.gz
   }
-  (cd libjpeg-turbo-$LJT_VER &&
-   "$CMAKE" -S . -B build-$A -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF "${MAC[@]}" \
-     -DCMAKE_ASM_NASM_COMPILER="$TP/tools/nasm/bin/nasm" -DCMAKE_INSTALL_PREFIX="$TP/$P" -DCMAKE_INSTALL_LIBDIR=lib \
+  (cd libjpeg-turbo-$LJT_VER && rm -rf build-$A &&
+   "$CMAKE" -S . -B build-$A -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DCMAKE_POLICY_DEFAULT_CMP0219=OLD "${MAC[@]}" ${NASM[@]+"${NASM[@]}"} \
+     -DCMAKE_INSTALL_PREFIX="$TP/$P" -DCMAKE_INSTALL_LIBDIR=lib \
      -DCMAKE_C_FLAGS="-O3 $CPU" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null &&
    "$CMAKE" --build build-$A -j"$JOBS" >/dev/null &&
    "$CMAKE" --install build-$A >/dev/null)
@@ -158,14 +167,14 @@ build_ljt() {   # arch prefix
 
 if [ "$(uname -s)" = Darwin ]; then
   # macOS: both architectures in one (universal) library, for the universal nitroview.app
-  if [ ! -f ljt/.universal-macos$MACOS_MIN ]; then   # (older versions built only the host architecture)
+  if [ ! -f ljt/.universal-macos$MACOS_MIN-nasm$NASM_VER ]; then   # (older versions built only the host architecture)
     build_ljt x86_64 ljt-x86_64
     build_ljt arm64 ljt-arm64
     rm -rf ljt && cp -R ljt-x86_64 ljt
     for L in libturbojpeg.a libjpeg.a; do
       lipo -create ljt-x86_64/lib/$L ljt-arm64/lib/$L -output ljt/lib/$L
     done
-    touch ljt/.universal-macos$MACOS_MIN
+    touch ljt/.universal-macos$MACOS_MIN-nasm$NASM_VER
   fi
 elif [ ! -f ljt/lib/libturbojpeg.a ]; then
   build_ljt "$(uname -m)" ljt
@@ -207,7 +216,7 @@ dav1d_source() {
     tar xf dav1d.tar.xz && rm dav1d.tar.xz
   fi
 }
-DAV1D_STAMP=dav1d/.version-$DAV1D_VER$([ "$(uname -s)" = Darwin ] && echo "-macos$MACOS_MIN")
+DAV1D_STAMP=dav1d/.version-$DAV1D_VER$([ "$(uname -s)" = Darwin ] && echo "-macos$MACOS_MIN-nasm$NASM_VER")
 if [ "${DAV1D:-1}" = 1 ] && [ ! -f "$DAV1D_STAMP" ]; then
   rm -rf dav1d dav1d-x86_64 dav1d-arm64
   dav1d_source
@@ -217,6 +226,7 @@ if [ "${DAV1D:-1}" = 1 ] && [ ! -f "$DAV1D_STAMP" ]; then
       cat > dav1d-$DAV1D_VER/$A.cross <<EOT
 [binaries]
 c = ['clang', '-arch', '$A', '-mmacosx-version-min=$MACOS_MIN']
+nasm = ['$TP/tools/nasm/bin/nasm', '-P$NASM_MACHO']
 ar = 'ar'
 strip = 'strip'
 [built-in options]
