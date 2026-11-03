@@ -13,15 +13,17 @@ Also runs on Apple Silicon (M1 MacBook Air, see [below](#apple-silicon-m1)); the
 | **nitropng** | PNG (non-interlaced; palette, 1–16-bit, transparency key too) | speculative parallel inflate (back-references into not yet known data resolved later, Adler-32 verified) + "wavefront" filter reversal | 38 real PNGs: **~43 ms** avg. | Wuffs ~171 ms, ImageIO ~318 ms |
 | **nitropsd** | Photoshop PSD/PSB (8-bit RGB / gray) | merged image: RLE rows in parallel, ZIP via nitropng's inflate; reads only the merged image of huge layered files | 24 MP RLE: **~5 ms** | ImageIO ~170 ms |
 | **nitroheic** (macOS) | HEIC (8-bit 4:2:0 HEVC, iPhone grids) | own HEIF parsing; the 48 independent HEVC tiles of an iPhone photo decoded in parallel by VideoToolbox into Y/Cb/Cr for the GPU | 12 MP iPhone photo: **~33 ms** | ImageIO ~200 ms |
-| **nitrodng** | DNG raw (Bayer; lossless JPEG or uncompressed) | own raw development: lossless JPEG in parallel (a single strip too: speculative Huffman decoding, as in nitrojpeg), black / white levels, white balance, Malvar–He–Cutler demosaicing, colour matrix, tone curve | 20 MP DNG: **~8 ms**; 25 MP in one lossless JPEG strip: ~22 ms | ImageIO 210–510 ms / 490–630 ms |
+| **nitrodng** | DNG raw (Bayer; lossless JPEG or uncompressed) | own raw development: lossless JPEG in parallel (a single strip too: speculative Huffman decoding, as in nitrojpeg), black / white levels, white balance, Malvar–He–Cutler demosaicing, color matrix, tone curve | 20 MP DNG: **~8 ms**; 25 MP in one lossless JPEG strip: ~22 ms | ImageIO 210–510 ms / 490–630 ms |
 | **nitrowebp** | lossy WebP (VP8) | own VP8 decoder (RFC 6386): the coefficient tokens (one serial stream) on one thread, the modes and the reconstruction on others; Y/Cb/Cr for the GPU | 42 MP WebP: **~100 ms**; 137 everyday WebPs: **27 ms** avg. | ImageIO ~360 ms; 54 ms |
 | **nitrotiff** | TIFF (none, PackBits, LZW, Deflate, CCITT G3 / G4; 1–16-bit gray, palette, RGB, CMYK, alpha; strips / tiles, chunky / planar) | strips and tiles in parallel (Deflate also through nitropng's parallel inflate); uncompressed: converted straight from the file, in parallel | 13 MP 16-bit scan (73 MB): **~2 ms**; 17 MP LZW: **~6 ms** | ImageIO ~31 ms; ~46 ms |
-| **nitroavif** | AVIF (AV1 in HEIF: 8–12-bit, 4:2:0 – 4:4:4, gray, alpha, grids, crop / rotation / mirroring) | own HEIF parsing (shared with nitroheic), AV1 by [dav1d](https://code.videolan.org/videolan/dav1d); grid tiles decoded in parallel, our own parallel colour conversion (chroma upsampled linearly) | 41 web AVIFs: **~10 ms** avg. (M1: 10.8 ms; Windows i5: 13 ms) | ImageIO ~32 ms (M1: 22 ms); WIC: only with a Store extension |
+| **nitroavif** | AVIF (AV1 in HEIF: 8–12-bit, 4:2:0 – 4:4:4, gray, alpha, grids, crop / rotation / mirroring) | own HEIF parsing (shared with nitroheic), AV1 by [dav1d](https://code.videolan.org/videolan/dav1d); grid tiles decoded in parallel, our own parallel color conversion (chroma upsampled linearly) | 41 web AVIFs: **~10 ms** avg. (M1: 10.8 ms; Windows i5: 13 ms) | ImageIO ~32 ms (M1: 22 ms); WIC: only with a Store extension |
 | **nitrosvg** | SVG (without filters) | lunasvg parser + plutovg renderer, with font lookup in the system and user font folders | 38 MB SVG: **~0.53 s** | WebKit ~1.4 s, CoreSVG ~2.4 s |
 | **nitrocdr** | CorelDRAW 5 – X6 (CDR), CMX | our [libcdr fork](https://github.com/gereoffy/libcdr) with many fixes (text styles, line spacing, clipping, bitmap transparency) and a 2× faster librevenge; draws directly with plutovg | 17.7 MB all-vector CDR: **~1.8 s**, ~3× faster | original libcdr `cdr2xhtml` ~5.4 s (only converting to SVG) |
-| **nitrocdr** (Visio) | Visio VSD 5 – 2010, VSDX / VSDM, VDX, stencils and templates | LibreOffice's libvisio (ICU replaced with iconv; libxml2's reader for the XML forms) through the same painter | 60 real drawings (network and rack diagrams): 1–31 ms each | |
+| **nitrocdr** (Visio) | Visio VSD 5 – 2010, VSDX / VSDM, VDX, stencils and templates | our [libvisio fork](https://github.com/gereoffy/libvisio) (ICU replaced with iconv; libxml2's reader for the XML forms) through the same painter; the pictures decoded in parallel | network and rack diagrams: a few ms each; a 15 MB VSD with pictures: **~85 ms** | |
 | **nitrometa** | WMF (placeable or not), EMF | our own reader: the GDI records played into a display list of device-space paths (text as glyph outlines), drawn with plutovg | 521 WMFs and 34 EMFs: a few ms each, the largest (a 0.8 MB EMF of 35 000 records) 22 ms read + 43 ms drawn (600 px) | |
-| **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~25 ms** read + **~20 ms** drawn (2000 px); 1.1 GB DXF: 2.9 + 1.5 s | ezdxf (Python) ~8.7 s |
+| **nitrodxf** | AutoCAD DXF (ASCII, R12 – 2018) | our own reader: the model space and each layout flattened (blocks expanded) into a display list of float paths, drawn with plutovg | 7.5 MB floor plan: **~11 ms** read + **~6 ms** drawn (2000 px; 21 ms on one thread); 1.1 GB DXF: 2.9 + 1.5 s | ezdxf (Python) ~8.7 s |
+| **nitrodwg** | AutoCAD DWG R13 – R2018 (not R2007) | our own reader, as ACadSharp reads the format: the objects handed to nitrodxf as its DXF records | the same floor plan as a 1 MB DWG: **~14 ms** read + **~6 ms** drawn | LibreDWG `dwg2dxf` ~125 ms (only converting to DXF) |
+| **nitrodio** | draw.io (.drawio, .dio) | our own reader of the mxGraph XML (libxml2, zlib), the connectors routed as mxGraph routes them, drawn with plutovg | 59 network diagrams: ~1 ms read, a few ms drawn | |
 
 Times measured on the Intel i9. The decoders are fast on ARM too (NEON): on a 2020 M1 MacBook Air a
 24 MP JPEG decodes in ~30 ms, ~3× faster than Apple's hardware JPEG decoder on the same machine
@@ -35,7 +37,7 @@ with the read time, the decode time and the key → on-screen latency.
 
 Other modes:
 - `--bench files…`: load everything without a window (read, decode, GPU) and print timings.
-- `--selftest files…`: compare the GPU colour conversion with libjpeg-turbo's output.
+- `--selftest files…`: compare the GPU color conversion with libjpeg-turbo's output.
 - `--zoomtest files…`: replays zoom/pan key sequences offscreen and checks that at 100% every
   drawn pixel equals the decoded image (plus edge clamping and zoom snapping).
 - `--inputtest files…`: sends synthesized mouse and wheel events and checks paging and zoom.
@@ -44,7 +46,7 @@ Other modes:
 - `NV_DEBUG_TIME=1` (SDL viewer): one more line per image with where its time went: the time since
   start, the delay of the key or wheel event from the window system's time stamp (and the key
   repeats among the events), event → draw, the upload and conversion when the image was not yet
-  converted ahead, draw, swap; a line for each neighbour converted ahead of time; and at start the
+  converted ahead, draw, swap; a line for each neighbor converted ahead of time; and at start the
   window system, driver and display in use.
 
 ## Results (50 photos, mostly 6000×4000, 17 MB on average)
@@ -66,7 +68,7 @@ rate), also from an SSD with nothing cached.
 | VideoToolbox (JPEG; no HW JPEG on this machine, runs in software) | 157 |
 | libjpeg-turbo 3.1.2 (AVX2), BGRX | 124 |
 | libjpeg-turbo, fast DCT + fast upsampling | 112 |
-| libjpeg-turbo → YUV planes (no colour conversion) | 107 |
+| libjpeg-turbo → YUV planes (no color conversion) | 107 |
 | libjpeg-turbo, 1/2 scale | 100 |
 | libjpeg-turbo, 1/4 scale | 96 |
 | nitrojpeg, own engine, **1 thread** → YUV | 103 |
@@ -75,7 +77,7 @@ rate), also from an SSD with nothing cached.
 
 1/4 scale barely helps, so most of the time goes into Huffman decoding, which is
 inherently sequential in JPEG. Most camera JPEGs have no restart markers, so libjpeg-turbo
-can't parallelise within one image. The RX 580 has no hardware JPEG decoder.
+can't parallelize within one image. The RX 580 has no hardware JPEG decoder.
 
 ### Apple Silicon (M1)
 
@@ -219,8 +221,8 @@ the viewer before nitrodng, through Apple ImageIO, on the i9.
 | Oppo Find X6 Pro, uncompressed 16-bit | 12.6 MP | 27.5 MB | **11** | **19.5** | ~150 |
 | Canon EOS 350D via Adobe DNG Converter, 140 lossless JPEG tiles | 8 MP | 6 MB | **13–16** | **18** | 170–190 |
 
-On the i5 the average went from 119 to 44 ms/image: the development (demosaicing, colour matrix,
-curve) vectorised 2–3×, and a single lossless JPEG strip or tile is decoded in parallel like
+On the i5 the average went from 119 to 44 ms/image: the development (demosaicing, color matrix,
+curve) vectorized 2–3×, and a single lossless JPEG strip or tile is decoded in parallel like
 nitrojpeg's Huffman data (the Ricoh from ~210 to ~70 ms, the DJI FC4382 from ~125 to 42 ms).
 
 ### TIFF (nitrotiff)
@@ -235,13 +237,13 @@ profile is used, as ImageIO did.
 
 `bench/bgrxverify` (macOS) compares it with ImageIO: 63 scans, faxes, icons and documents plus 33
 variants made with ImageMagick and libtiff (every compression, tiles, planar, 16-bit, alpha, fill
-order) are pixel-identical (palettes ±1: the 16-bit colour map's rounding; CMYK differs: ImageIO
+order) are pixel-identical (palettes ±1: the 16-bit color map's rounding; CMYK differs: ImageIO
 converts with the profile). The output is the same on Linux and with any thread count; damaged
 files (truncated, mutated directories) run clean under AddressSanitizer. In the viewer (i9, the 63
 real TIFFs) the decode went from 14.0 to 3.1 ms/image: a 13 MP 16-bit scan from ~58 to ~2.3 ms,
 a 17 MP LZW drawing from ~46 to ~6 ms; single-strip G4 faxes stay sequential (~2 ms).
 
-### How nitrojpeg parallelises a single image
+### How nitrojpeg parallelizes a single image
 
 The Huffman stream is decoded **once**, without libjpeg-turbo:
 
@@ -250,12 +252,12 @@ The Huffman stream is decoded **once**, without libjpeg-turbo:
 2. **Files without restart markers: speculative full decoding.** The bit stream is cut into
    ~512 chunks (`32 × CPUs`, ~200 KB of coefficients each, which fits in L2). Every chunk is
    decoded by a thread that starts at an arbitrary byte offset, writing coefficients right
-   away. Huffman codes self-synchronise with the true decoding path after a few MCUs.
+   away. Huffman codes self-synchronize with the true decoding path after a few MCUs.
 3. **Stitching, in order, pipelined.** When the true path starts an MCU at a bit position
    that the next chunk also recorded as an MCU start, both paths are identical from there.
    This gives the chunk's MCU index and per-component DC offset; the few MCUs before the
    sync point are discarded.
-4. **Dequantisation + IDCT** with AVX2. The algorithm is libjpeg's "ISLOW" IDCT (jidctint.c),
+4. **Dequantization + IDCT** with AVX2. The algorithm is libjpeg's "ISLOW" IDCT (jidctint.c),
    so the output is bit-identical. As soon as a chunk is stitched, the thread that decoded it
    runs its IDCT while the coefficients are still in cache.
 5. **Files with restart markers:** no speculation; the intervals are decoded in parallel with
@@ -264,13 +266,13 @@ The Huffman stream is decoded **once**, without libjpeg-turbo:
    and YCbCr→RGB run in a GPU compute kernel, the GPU builds mipmaps, and the image is drawn
    with trilinear filtering.
 
-Measured synchronisation (`bench/verify`, 512 chunks, first 256 sync points per image,
+Measured synchronization (`bench/verify`, 512 chunks, first 256 sync points per image,
 40 images = 10240 cases): on average a chunk joins the true path after 2.40 "garbage" MCUs
 (~922 bits, ~115 bytes). In 40% of the cases after 1 MCU; the worst case was 21 MCUs
-(8754 bits), and synchronisation never failed.
+(8754 bits), and synchronization never failed.
 
 **Accuracy:** the parallel output is **bit-identical** to single-threaded libjpeg-turbo on all
-50 test images (`bench/verify`, with both the scalar and the AVX2 IDCT). The GPU colour
+50 test images (`bench/verify`, with both the scalar and the AVX2 IDCT). The GPU color
 conversion differs by at most ±1 (rounding, `--selftest`). Unsupported files (CMYK, RGB,
 arithmetic coding, >16384 px) and damaged or cut-off files go to the system's decoder in the viewer
 (ImageIO, WIC, GTK). Of ~4100 JPEGs downloaded over the years none does.
@@ -328,7 +330,7 @@ A progressive JPEG comes in many scans (usually 9–10): the DC coefficients, ba
 coefficients, then refinement scans that add one more bit to every coefficient. Each scan is its
 own Huffman stream, decoded one after the other by the usual decoders. Measured scan by scan
 (libjpeg-turbo) on 1521 progressive web images and 50 24 MP photos converted with
-`jpegtran -progressive`, the Y AC refinements take ~60% of the time and the output (IDCT, colour)
+`jpegtran -progressive`, the Y AC refinements take ~60% of the time and the output (IDCT, color)
 6–15%. Decoding the independent scans in parallel would give only 1.3–1.6×: the Y scans depend on
 each other. But a scan only needs *the same block rows* of the earlier scans of the same
 coefficients, so nitrojpeg runs the scans as a pipeline (a wavefront): every scan advances by a few
@@ -348,8 +350,8 @@ more):
 The output is bit-identical to libjpeg-turbo on all of them (`bench/verify` checks progressive
 files against its Y/Cb/Cr planes, with all threads and with one). 12 more web images (not in the
 table) are low-quality previews without the last scans, some with only the DC (8×8 blocks of one
-colour each): nitrojpeg decodes what is there, as Apple ImageIO does. libjpeg-turbo also estimates
-the missing low AC coefficients from the neighbouring blocks ("block smoothing", softer but
+color each): nitrojpeg decodes what is there, as Apple ImageIO does. libjpeg-turbo also estimates
+the missing low AC coefficients from the neighboring blocks ("block smoothing", softer but
 blurred); nitrojpeg doesn't, `bench/verify` compares these with libjpeg-turbo without smoothing
 (identical, also on 270 test files cut back to their first scans). Damaged or cut-off files go to
 the system's decoder.
@@ -373,7 +375,7 @@ PNG = deflate (LZ77 + Huffman) + per-row filters, both sequential by design:
    Linux every parallel loop of the decoders with no more items than performance cores runs on
    those (`src/nitro_os.h`; also WebP's three jobs: +15% on the M1).
 3. The unfiltered rows go straight to the GPU, which reads them in place (skipping the filter
-   byte), premultiplies alpha and converts to RGBA — no CPU colour conversion.
+   byte), premultiplies alpha and converts to RGBA — no CPU color conversion.
 
 `bench/pngverify` checks the output byte-for-byte against zlib + a straightforward filter
 reversal (all 33 supported test PNGs identical), `bench/pngrobust` runs damaged PNGs with ASan +
@@ -394,7 +396,7 @@ as PNG:
 PNG is deflate (LZ77 + Huffman with per-block tables) plus per-row filters. A thread starting
 in the middle of the stream does not know the previous 32 KB of output that back-references
 point to, and 97% of the rows used the Paeth filter, which depends on the previous row. Both
-can be parallelised in principle: speculative inflate with placeholder back-references resolved
+can be parallelized in principle: speculative inflate with placeholder back-references resolved
 later (as in *pugz*), and a "wavefront" filter reversal where row *r* trails row *r−1*. That
 could bring a 24 MP PNG to perhaps 20–40 ms (the estimate at the time — see nitropng above
 for what it became).
@@ -404,7 +406,7 @@ for what it became).
 
 AV1 stills in a HEIF container, as webshops and CDNs send them more and more. The HEIF structure is
 read by our own code (`src/heif.h`, shared with nitroheic), AV1 is decoded by
-[dav1d](https://code.videolan.org/videolan/dav1d) (VideoLAN, BSD-2-Clause), the colour conversion is
+[dav1d](https://code.videolan.org/videolan/dav1d) (VideoLAN, BSD-2-Clause), the color conversion is
 ours, in parallel: 8 / 10 / 12-bit, 4:2:0 / 4:2:2 / 4:4:4 / gray, BT.601 / 709 / 2020 / RGB
 matrices, full or limited range, alpha over black, grids of tiles decoded in parallel. Both Linux
 viewers use it (GTK has no AVIF loader without an extra package), and so do the macOS and Windows
@@ -414,7 +416,7 @@ a grid of layered tiles (two Apple test files).
 Decoding 41 AVIFs saved from
 webshops and news sites (300×200 … 3000×3000), ms/image: i9 (macOS) ImageIO 31.7 → nitroavif 10.0, M1
 22.4 → 10.8, i5-9600K (Windows) 13.0 (WIC without the Store extension: none of them). The same pixels within ±1 for 4:4:4 and for luma,
-4:2:0 chroma differs at colour edges because ImageIO repeats chroma samples where we interpolate
+4:2:0 chroma differs at color edges because ImageIO repeats chroma samples where we interpolate
 linearly (as for JPEG). Checked on the AOM test files ([av1-avif](https://github.com/AOMediaCodec/av1-avif))
 and [Link-U's samples](https://github.com/link-u/avif-sample-images) against their PNG references:
 every bit depth, chroma format, monochrome, limited-range alpha, grids, layered images (a1op, data
@@ -435,8 +437,8 @@ interlaced ones go to the system's decoder (on macOS with `make WUFFS=1` to
 (Apple ImageIO cannot read ZIP-compressed PSDs at all). Big layered PSDs are mostly layer data (the
 merged image is often only 13–23% of the file), so the viewer reads just the header, the image
 resources (ICC profile) and the merged image. Merged transparency (negative layer count): Photoshop
-stores the colour matted with white — in a test file every partially transparent pixel had every
-channel ≥ 255 − alpha — so nitropsd shows it over black as max(0, colour + alpha − 255). ImageIO
+stores the color matted with white — in a test file every partially transparent pixel had every
+channel ≥ 255 − alpha — so nitropsd shows it over black as max(0, color + alpha − 255). ImageIO
 does not remove the matte (light fringes on soft edges). A 4th channel with a positive layer count
 is a saved selection, not transparency. Files saved without "Maximize Compatibility" contain only a
 white placeholder instead of the merged image; the layers are not composited, so they show white (as
@@ -457,17 +459,18 @@ pixel-identical with ImageIO (`bench/bgrxverify`; a 26 MP 16-bit RGB from ~940 t
 
 ### SVG and CorelDRAW
 
-**SVG** (nitrosvg, with [lunasvg](https://github.com/sammycage/lunasvg) fetched by
+**SVG** (nitrosvg, with [lunasvg](https://github.com/gereoffy/lunasvg), our fork, fetched by
 `scripts/get-deps.sh`): rendered by lunasvg over white, first in full with the long side 1024–4096
 pixels (small icons are enlarged, huge drawings reduced; fitted to the screen, in full screen or
 after key 0, at least the screen's size, the prefetched images too, so they are sharp right away),
 so paging, fitting and zooming out work as for photos. Zoomed in beyond that, the visible part is
 rendered again at screen resolution once the zoom or position has been still for ~80 ms (typically
 5–40 ms); until then the previous rendering is scaled, so pinching stays smooth and the picture
-sharpens when it stops. Supported: shapes, paths, gradients, clipping, masks, patterns, `<style>`
+sharpens when it stops. The other vector drawings are drawn in horizontal bands of at least 128 rows
+in parallel (`-j n` limits these threads too); a render no longer needed is canceled. Supported: shapes, paths, gradients, clipping, masks, patterns, `<style>`
 style sheets, text (with the system fonts), embedded images; before parsing, nitrosvg also fixes
 three things lunasvg would get wrong: `svg:`-prefixed elements (LibreOffice), CSS
-`var(--x, fallback)` colours (VS Code's images: the fallback, or without one the inherited value;
+`var(--x, fallback)` colors (VS Code's images: the fallback, or without one the inherited value;
 black squares otherwise) and SVG 1.1 line breaks in text (old exporters split words over lines). Not
 supported: filters (drop shadows and blurs are left out), HTML labels in `<foreignObject>` (draw.io
 diagrams), SVG fonts and symbol-only sprite files, which draw nothing. Of 883 SVGs collected from a
@@ -485,7 +488,7 @@ the sharp detail work as for SVG ([ and ] switch between the pages, keeping the 
 position). libcdr comes from our fork, [gereoffy/libcdr](https://github.com/gereoffy/libcdr), which
 has the fixes this needed, one commit each: open paths are not filled; text keeps its rotation, its
 horizontal stretch, bold and italic, its exact size and the shifts that place the words of imported
-PDF text, and is placed at its real origin; `CMYK100` colours (CorelDRAW 2022) are not white;
+PDF text, and is placed at its real origin; `CMYK100` colors (CorelDRAW 2022) are not white;
 objects on hidden layers are skipped (an imported PDF keeps its switched-off layers as hidden
 layers); symbol definitions do not make an extra page; bitmaps keep their transparent background and
 are cut to their own outline (the wall hatch of imported plans); texts lost in CorelDRAW 5 and 7–X5
@@ -493,38 +496,65 @@ files show; and ICU is replaced by iconv (code pages; without a charset, windows
 has ő/ű). Fonts come from /Library/Fonts, /System/Library/Fonts and ~/Library/Fonts (Bitstream names
 such as "Futura Lt BT" map to the family); a missing font is replaced by a similar one, so its text
 may run a little longer or shorter. Lines are never thinner than one device pixel, as in CorelDRAW.
-Not supported: arrowheads, Corel's own vector and bitmap pattern fills.
+Arrowheads, gradients, two-color and bitmap pattern fills are drawn as CorelDRAW 9 draws them (a
+test drawing saved as versions 5, 7 and 9). Not supported: full-color (vector) pattern fills.
 
 On 216
 CDRs collected from a Mac (architectural plans from ArchiCAD PDFs, network maps, logos) every file
 opens; on an Intel i9 the median takes 20 ms, the 76 files over 1 MB 230 ms on average, the
 biggest plan 1.8 s (mostly libcdr's parsing). On macOS and in the Linux SDL viewer the C++ code
-(libcdr, librevenge, lunasvg) allocates through [mimalloc](https://github.com/microsoft/mimalloc):
+(libcdr, libvisio, librevenge, lunasvg, nitrodxf, nitrodwg, nitrodio) allocates through [mimalloc](https://github.com/microsoft/mimalloc):
 loading a big plan makes millions of small allocations, and with it plans load 20–25% faster on
 Intel and Apple Silicon too (`make MIMALLOC=0`: the system malloc); 193 CDRs on the M1 under Linux,
 16% faster than with glibc's malloc.
 
-### DXF
+### Visio
+
+**Visio** (nitrocdr with libvisio, from our fork [gereoffy/libvisio](https://github.com/gereoffy/libvisio),
+fixes one commit each): VSD 5 – 2010, VSDX / VSDM, VDX, stencils and templates, drawn by the
+CorelDRAW painter. A stencil, or a document whose pages draw nothing, shows its masters, a page
+each. The pictures inside (bitmaps, TIFF, WMF / EMF, OLE objects' pictures; an AutoCAD drawing
+embedded as OLE is drawn by nitrodxf) are decoded once per content, in parallel. Not supported:
+hatch fills; text fields show their stored value.
+
+### draw.io
+
+**draw.io** (nitrodio, `src/nitrodio.cpp`, our own): the mxGraph XML of a .drawio file, a page per
+diagram (compressed or not), over draw.io's default stylesheet and built-in shapes; the connectors
+are routed as mxGraph routes them (its orthogonal and segment connectors, the elbow styles, the
+perimeter projection), labels are plain text or HTML of which bold, italic and the line breaks are
+kept. Not supported: the stencil libraries' icons and pictures (their frame is drawn). All 59 test
+diagrams open; the ones compared with draw.io's own rendering match it.
+
+### WMF / EMF
+
+**WMF / EMF** (nitrometa, `src/nitrometa.cpp`, our own): the GDI records played into a display list
+(text as glyph outlines), files and the pictures inside Visio and CorelDRAW drawings alike; a WMF
+that clips with PostScript escapes (Office's and Visio's icons, whose GDI form needs XOR) is played
+as a PostScript printer plays it. Not supported: EMF+ records.
+
+### DXF and DWG
 
 **DXF** (nitrodxf, `src/nitrodxf.cpp`, our own): AutoCAD's text DXF, R12 to 2018, read in one pass
 into its tables (layers, line types, text styles, dimension styles) and blocks of primitives in
 their own coordinates: lines, arcs, ellipses and polyline bulges as cubic Béziers, splines evaluated
 into short lines, hatch boundaries, text as glyph runs. Then each page is flattened (the model
 space, then every layout's sheet: its paper space over the model space seen through each viewport,
-clipped, at its scale, twist and view direction; a repeated page once): every block reference (and
-block array) is expanded with its transform, ByLayer / ByBlock colours and line types resolved, into
-a display list of float paths around the page's centre, batched by colour and line type for fewer
-plutovg calls; drawing replays only the items that touch the view. As in
-AutoCAD's model space, lines are one device pixel wide (line weights are ignored; wide polylines
-keep their width). Text: the drawing's code page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv
-(on Windows its own converter), MTEXT
-formatting (fonts, heights, colours, stacked fractions) and word wrapping; AutoCAD's SHX fonts are
+clipped, at its scale, twist and view direction; a page identical to an earlier one is left out
+unless built with `NITRODXF_ALL_PAGES`): every block reference (and block array) is expanded with
+its transform, ByLayer / ByBlock colors and line types resolved, into a display list of float paths
+around the page's center, batched by color and line type for fewer plutovg calls; drawing replays
+only the items that touch the view. As in AutoCAD's model space, lines are one device pixel wide
+(line weights are ignored; wide polylines keep their width). On a white background the colors are a
+fifth darker (white turns light gray); the foreground color, ACI 7, stays black. Text: the drawing's
+code page (`$DWGCODEPAGE`, UTF-8 from R2007) through iconv (on Windows its own converter), MTEXT
+formatting (fonts, heights, colors, stacked fractions) and word wrapping; AutoCAD's SHX fonts are
 not on the system, so a sans serif stands in for them, scaled to the same capital height. Hatch
 patterns are generated for the visible part only, and drawn as a tone where they are denser than the
-pixels. The shown area is a page's extents without far-off stray objects (a few items far
-outside where almost everything is, which AutoCAD's "zoom extents" would include). Damaged files:
-reading continues at the next intact record; block arrays and nested blocks are limited, so a
-broken file cannot explode.
+pixels. The shown area is a page's extents without far-off stray objects (a few items far outside
+where almost everything is, which AutoCAD's "zoom extents" would include). Damaged files: reading
+continues at the next intact record; block arrays and nested blocks are limited, so a broken file
+cannot explode.
 
 Test files: 311 DXFs (R9 – 2007), 360 DWGs converted to DXF with LibreDWG's `dwg2dxf` (up to 40
 of each version R10 – 2018; with a fix for Autodesk Inventor drawings, whose sheets it drops:
@@ -538,10 +568,17 @@ of 645 cut or corrupted copies opens without errors. On the Intel
 i9 a 243 MB DXF in the viewer (4096 × 3622): read 91.1 ms, decode 810.2 ms, key to on screen
 923.9 ms.
 
+**DWG** (nitrodwg, `src/nitrodwg.cpp`, our own, as ACadSharp reads the format, checked against the
+Open Design Alliance's specification): R13 – R2000, and R2004 – R2018 with their compressed and
+encrypted sections; the objects are handed to nitrodxf as the same drawing's DXF records, so
+everything above applies. Of the collection's 8341 DWGs (R13 – R2018) 4848 render pixel for pixel
+as their LibreDWG conversion; most of the rest differ where LibreDWG loses something (see the
+README's DWG section). Under ASan and UBSan 7200 damaged copies open without errors. R2007 and R12
+or older drawings do not open.
+
 Not supported: perspective views and non-rectangular viewport clipping, multileaders, multilines,
 3D solids (ACIS), external references (xrefs), the objects of AutoCAD Architecture / Mechanical
-(LibreDWG drops them), the contents of referenced images (only their frame), binary DXF. DWG is not read; it can
-be converted to DXF (AutoCAD, the ODA File Converter, LibreDWG's `dwg2dxf`).
+(LibreDWG drops them), the contents of referenced images (only their frame), binary DXF.
 
 ### Damaged files
 
@@ -549,23 +586,23 @@ be converted to DXF (AutoCAD, the ODA File Converter, LibreDWG's `dwg2dxf`).
 (truncation from 0 bytes to length−1, random byte and bit errors, zeroed or 0xFF-filled
 blocks, markers inserted into the data, header damage, cut or duplicated sections) plus
 garbage and text files, and runs them through the viewer's decode path built with
-AddressSanitizer and UBSan: 4372 cases, 0 errors. The pipeline's synchronisation was also
+AddressSanitizer and UBSan: 4372 cases, 0 errors. The pipeline's synchronization was also
 checked with ThreadSanitizer (on valid and damaged files).
 
 ### Display and prefetching
 
 - A background thread decodes 3 images ahead in the paging direction and 2 behind, and
-  uploads/converts the neighbours on the GPU in advance.
+  uploads/converts the neighbors on the GPU in advance.
 - Metal buffers and textures are reused (allocating the 128 MB texture per image cost ~6 ms).
 - A shared (system memory) buffer read directly by the conversion kernel was the fastest
   (8 ms vs 10 ms with managed buffers / textures).
 - The decoder's large buffers (clean bit stream, coefficients) are reused from image to image.
 - The GNOME viewer decodes on a background thread with the same prefetch (3 ahead, 2 behind); its
-  JPEG colour conversion is multi-threaded and gives exactly libjpeg-turbo's RGB (`bench/rgbverify`),
+  JPEG color conversion is multi-threaded and gives exactly libjpeg-turbo's RGB (`bench/rgbverify`),
   PNG rows go to GTK without a copy, and the EXIF orientation is applied when drawing.
-- Colour management on macOS costs nothing: the decoded pixel values are left as they are and the
-  display layer is tagged with the image's colour space (the embedded ICC profile, sRGB without one),
-  so macOS converts to the monitor's profile itself and wide-gamut colours are kept.
+- Color management on macOS costs nothing: the decoded pixel values are left as they are and the
+  display layer is tagged with the image's color space (the embedded ICC profile, sRGB without one),
+  so macOS converts to the monitor's profile itself and wide-gamut colors are kept.
 
 ### The parallel loop: from GCD to a pthread pool
 
@@ -577,12 +614,12 @@ tests; ThreadSanitizer with four threads decoding every format at once: clean, a
 VideoToolbox's own output buffers, whose writes it cannot see, the same with GCD). Tested on Linux (see
 [Three machines](#three-machines-macos-and-linux)).
 
-## Further optimisation ideas (measured)
+## Further optimization ideas (measured)
 
 **Huffman tables are mostly the same.** Cameras and phones use the example tables of the JPEG
 standard (Annex K): all 43 Sony A6300 photos, all 92 iPhone photos and 168 of the 178 Canon 50D
-photos (the other 10 were re-saved in Photoshop, which writes optimised tables); of 2341 JPEGs
-from the web, 1506 (~2/3) too, the rest mostly have their own optimised tables. Caching the
+photos (the other 10 were re-saved in Photoshop, which writes optimized tables); of 2341 JPEGs
+from the web, 1506 (~2/3) too, the rest mostly have their own optimized tables. Caching the
 decoding tables would gain nothing, though: building them takes ~8 µs per image, 0.1–0.4% of the
 decode. The time goes into *using* them.
 

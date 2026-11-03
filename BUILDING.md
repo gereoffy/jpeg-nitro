@@ -18,14 +18,14 @@ optional dependencies below add formats.
 ## Optional dependencies
 
 `scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is
-installed system-wide). The Makefile uses what it finds there: SVG (with DXF), CorelDRAW (with Visio) and AVIF are
-built in automatically once their libraries are present.
+installed system-wide). The Makefile uses what it finds there: SVG (with DXF / DWG and WMF / EMF), CorelDRAW (with Visio and
+draw.io) and AVIF are built in automatically once their libraries are present.
 
 | dependency | for | option |
 |---|---|---|
-| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; DXF and WMF / EMF (nitrodxf and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all three out |
-| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out; `MIMALLOC=0`: the C++ code with the system malloc |
-| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code | part of `CDR` |
+| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; DXF, DWG and WMF / EMF (nitrodxf, nitrodwg and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all four out |
+| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out, with Visio and draw.io; `MIMALLOC=0`: the C++ code with the system malloc |
+| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `CDR` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
 | libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
@@ -34,8 +34,10 @@ built in automatically once their libraries are present.
 dav1d is built with meson + ninja in a Python virtual environment (`third_party/tools/venv`),
 universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it for the
 Windows viewer (`third_party/dav1d-win`). The script applies two patches: `patches/librevenge.patch`
-(embedded images pass through without base64) and `patches/libxml2.patch` (on Windows the hash
-tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in our forks.
+(embedded images pass through without base64, property lists are moved instead of copied, a damaged
+OLE header is refused) and `patches/libxml2.patch` (on Windows the hash tables' seed without
+bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in our forks, fetched by their
+pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and dav1d's x86 assembly.
 
 ## macOS
 
@@ -53,8 +55,9 @@ Options on the make command line (the defaults depend on what `scripts/get-deps.
 | `TURBOJPEG=1` | the JPEGs nitrojpeg does not decode (damaged or cut-off, CMYK, arithmetic coding) go to libjpeg-turbo before ImageIO: about 2× faster on them, 1.2 MB more; `--selftest` needs it |
 | `WUFFS=1` | interlaced PNGs through Wuffs before ImageIO |
 | `DAV1D=0` | AVIF through ImageIO instead of nitroavif + dav1d |
-| `SVG=0`, `CDR=0` | without SVG and DXF / CorelDRAW |
-| `MIMALLOC=0` | the SVG / CorelDRAW code with the system malloc instead of mimalloc |
+| `SVG=0` | without SVG, DXF / DWG and WMF / EMF (and so without `CDR` too) |
+| `CDR=0` | without CorelDRAW, Visio and draw.io |
+| `MIMALLOC=0` | the vector drawings' code with the system malloc instead of mimalloc |
 | `NITROHEVC=1` | HEIC with our own HEVC decoder, nitrohevc, instead of the system's (off by default, see [HEIC](README.md#heic)) |
 | `MAC_ARCHS=x86_64` | `make app` for one architecture only |
 
@@ -77,7 +80,7 @@ make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang
 
 cross-compiles `nitroview.exe` (with its icon), `bench/nbench.exe` and `bench/psdverify.exe`:
 static, only system DLLs, Windows 10 or later, built for AVX2 (x86-64-v3). `WINARCH=x86-64-v2` builds
-for CPUs without AVX2 (switching it rebuilds everything Windows, the SVG / CorelDRAW libraries too).
+for CPUs without AVX2 (switching it rebuilds everything Windows, the vector libraries too).
 AVIF needs dav1d built for Windows first: `WINCC=… scripts/get-deps.sh` with the same compiler. The
 `SVG`, `CDR` and `NITROHEVC` options apply here too.
 
@@ -125,7 +128,7 @@ build and the portable Linux build make their own copy per target): all the deco
 
 - `nv_read_image()` reads what is needed of the file: a PSD's merged image only, a camera raw's
   embedded JPEG only, otherwise the whole file.
-- `nv_decode()` recognises the format and decodes it with its decoder into one buffer, and fills
+- `nv_decode()` recognizes the format and decodes it with its decoder into one buffer, and fills
   an `NvImage` that says what is in it: YUV planes (JPEG, HEIC, AVIF, WebP), a PSD's planes, 8-bit
   BGRX pixels (TIFF, DNG, palette / 16-bit PNG) or a PNG's unfiltered rows, plus the EXIF
   orientation and the ICC profile.
@@ -209,56 +212,8 @@ where libjpeg-turbo decodes the bands, the CPU BGRX output and the single-thread
 fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`, `--selftest`,
 `--zoomtest`, …): [BENCHMARKING.md](BENCHMARKING.md#the-viewers-test-and-benchmark-modes).
 
-## Files
 
-**Decoders** (`src/`)
-- `nitrojpeg.c/.h`: parallel JPEG decoder (own Huffman decoding, AVX2 / NEON IDCT); with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
-- `nitropng.c/.h`: parallel PNG decoder; `png_wuffs.c/.h`: the optional Wuffs path for interlaced PNGs
-- `nitropsd.c/.h`: parallel PSD / PSB merged-image decoder
-- `nitroheic.c/.h`: HEIC (HEIF) reading, the tiles handled in parallel; `nitrohevc.c/.h`: our optional HEVC intra decoder (`NITROHEVC=1`)
-- `nitroavif.c/.h`: AVIF (AV1 through dav1d, our colour conversion); `heif.h`: the HEIF structure, shared with nitroheic
-- `nitrodng.c/.h`: DNG raw development (lossless JPEG, demosaicing, colour)
-- `nitrowebp.c/.h`: lossy WebP (VP8) decoder
-- `nitrotiff.c/.h`, `tiff.h`: TIFF decoder (strips / tiles in parallel)
-- `nitrosvg.cpp/.h`: SVG with lunasvg and plutovg
-- `nitrodxf.cpp/.h`: DXF, our own reader, drawn with plutovg
-- `nitrodwg.cpp/.h`: DWG (R13 – R2018, not R2007), our own reader, for nitrodxf
-- `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files), drawn with plutovg
-- `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface), drawn with plutovg
-- `nitroalloc.cpp`: the vector renderers' mimalloc hookup
-- `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
+## Licenses
 
-**The library**
-- `src/nitro_load.c/.h`: file → decoded image with the decoders above (the library's face, what the viewers use); `src/nitro_convert.c/.h`: its planes → RGB
-- `examples/nitroconvert.c`: the example program on the library, any image → BMP
-- `src/nitro_prefetch.c/.h`, `src/nitro_view.h`, `src/nitro_vector.c/.h`: the viewers' shared prefetching loader, zoom arithmetic, and vector drawings (SVG, DXF, CorelDRAW behind one interface: loading, pages, rendering, the background setting)
-- `src/nitro_font.cpp/.h` (in libnitrosvg.a): the vector renderers' fonts, one index of the installed font files and their faces for nitrosvg (lunasvg asks it for every font), nitrodxf and nitrocdr, and the lock they draw under
-
-**The viewers**
-- `src/nitroview.m`: Cocoa + Metal; `src/shaders.metal`: its GPU shaders (colour conversion, drawing), embedded at build time; `packaging/Info.plist`, `packaging/icon.png`
-- `src/nitroview_win.c`: Win32 + Direct3D 11 + WIC; `packaging/nitroview.ico/.rc`: its icon
-- `src/gnome/`: GTK 4 + libadwaita; `packaging/gnome/`: desktop integration; `packaging/flatpak/`: the Flatpak manifest
-- `src/nitroview_sdl.c`: SDL3 + OpenGL
-- `scripts/get-deps.sh`: downloads and builds the optional dependencies; `patches/`: the lunasvg and librevenge fixes it applies
-
-**Tests and benchmarks** (`bench/`)
-- `bench.m`: decoder benchmark (macOS, all decoders); `nbench.c`: the portable one (nitrojpeg / nitropng / nitropsd)
-- `verify.c`: bit-exactness and sync statistics vs libjpeg-turbo; `rgbverify.c`: nitro_convert's RGB vs libjpeg-turbo's; `bgrxverify.m`: nitrotiff's and nitropng's BGRX vs ImageIO
-- `robust.c`, `pngrobust.c`, `psdrobust.c`: damaged files under ASan
-- `pngbench.m`, `pngsplit.c`: PNG decoder comparison and time split; `pngverify.c`: nitropng byte-exactness vs zlib
-- `mkpsd.py`: test PSD writer (every compression); `psdverify.c`: all compressions vs raw
-- `freqprobe.c`: clock measurement; `sustain.c`: sustained load; `ab.sh`: noise-resistant A/B comparison
-- `results/`: measured results
-
-## Third-party licences
-
-The viewer is MIT ([LICENSE](LICENSE)); the optional dependencies downloaded by
-`scripts/get-deps.sh` have their own licences: libjpeg-turbo (BSD-style / IJG / zlib), Wuffs
-(Apache-2.0), stb_image (public domain / MIT), SDL3 (zlib), dav1d (BSD-2-Clause), lunasvg and
-plutovg (MIT; plutovg's rasterizer is FreeType's smooth rasterizer, FreeType License: portions of
-this software are copyright © 2014 The FreeType Project (www.freetype.org), all rights reserved),
-libcdr, libvisio and librevenge (MPL-2.0; our libcdr changes are in github.com/gereoffy/libcdr, the
-libvisio and librevenge ones in patches/), libxml2 (MIT), lcms2 (MIT), boost (Boost Software License),
-mimalloc (MIT). The inverse DCT
-implements the algorithm of jidctint.c from the Independent JPEG Group's libjpeg: this software is
-based in part on the work of the Independent JPEG Group.
+The viewer is MIT; the code it takes from others and the licenses of the optional dependencies are
+in [LICENSE](LICENSE).

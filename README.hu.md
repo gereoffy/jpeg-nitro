@@ -8,8 +8,8 @@ A **NitroView** nagyon gyors képnéző **macOS-re, Windowsra és Linuxra**. Fot
 Photoshop-fájlokat, nyers (raw) képeket és vektoros rajzokat nyit meg, és saját dekóderekre épül,
 amelyek minden képet több CPU-magon dekódolnak: egy 24 megapixeles JPEG egy asztali Intel
 processzoron kb. 11 ms alatt nyílik meg, tízszer gyorsabban, mint a rendszer dekóderével, így egy
-fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. Az SVG-, CorelDRAW- és AutoCAD
-DXF-rajzok bármekkora nagyításban élesek.
+fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. A vektoros
+rajzok bármekkora nagyításban élesek.
 
 Felhasználói felülete gyakorlatilag nincs: egy ablak a képpel, lapozni és nagyítani billentyűkkel
 és az egérrel lehet.
@@ -64,7 +64,7 @@ nitroview [-f] [-s ms] [-j n] kep.jpg ... | konyvtar/
 Adj neki fájlokat, egy mappát vagy egyetlen fájlt: ez utóbbinál a lapozás a mappája többi képén halad
 végig, a fájlkezelő sorrendjében (a mappát csak az első lapozáskor olvassa be, így a macOS csak akkor
 kér hozzáférési engedélyt a mappához, ha tényleg lapozol). A `-f` teljes képernyőn indít, a `-s ms`
-diavetítést, a `-j n` a dekóder szálainak számát korlátozza. Paraméterek nélkül (vagy `-h`-val) a
+diavetítést, a `-j n` a dekódolás és a rajzolás szálainak számát korlátozza. Paraméterek nélkül (vagy `-h`-val) a
 program kiírja az összes kapcsolót; a windowsos és az SDL-es néző fájl nélkül indítva
 fájlválasztó ablakot nyit.
 
@@ -75,15 +75,14 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas CDR/DXF-rajz előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io) előző / következő oldala (címsor: [page 2/5]) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
 | 2 … 8 | 200% … 800%, pixelpontosan: egy képpixel = N×N képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
 | W | vissza a kép saját méretére (kis képek 100%-on), az ablak újra követi a képek méretét |
-| E / Shift + E | DNG nyers képek: világosabb / sötétebb 1/3 EV-vel (±3 EV-ig; lapozáskor megmarad, a címsorban látszik) |
-| | SVG-, DXF- és CorelDRAW-rajzok: a következő / előző háttér: fehér, sötétszürke, fekete (lapozáskor megmarad) |
+| E / Shift + E | DNG: 1/3 EV-vel világosabb / sötétebb (±3 EV-ig); vektoros rajzok: háttérszín váltása; lapozáskor megmarad |
 | Del (Macen ⌘ + Backspace is) | törlés: a fájl a mellette lévő (rejtett) `.delete` mappába kerül, jön a következő kép; semmi nem vész el |
 | U / Ctrl + Z (Macen ⌘ Z) | az utolsó törlés visszavonása: a fájl visszakerül a helyére |
 | F / Enter | teljes képernyő be/ki |
@@ -155,7 +154,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 
 | formátum | mit nyit meg | korlátok |
 |---|---|---|
-| **JPEG** | baseline és progresszív, bármilyen chroma-mintavételezés, szürkeárnyalatos; bitre egyezik a libjpeg-turbóval | CMYK, aritmetikai kódolás, sérült vagy csonka fájlok: ezeket a rendszer dekódere nyitja meg |
+| **JPEG** | baseline és progresszív, bármilyen chroma-mintavételezés, szürkeárnyalatos | CMYK, aritmetikai kódolás, sérült vagy csonka fájlok: ezeket a rendszer dekódere nyitja meg |
 | **PNG** | minden nem interlaced PNG: 8 / 16 bites, palettás, 1 / 2 / 4 bites, átlátszósági kulcs, alfa (fekete háttéren) | interlaced PNG (ritka): a rendszer dekódere nyitja meg |
 | **HEIC** | iPhone-fotók (8 bites 4:2:0 HEVC, a csempézettek is), a rendszer HEVC-dekóderével: lásd [HEIC](#heic) | |
 | **AVIF** | 8 / 10 / 12 bit, 4:2:0 / 4:2:2 / 4:4:4 / szürke, alfa, rácsok, vágás / forgatás / tükrözés (az AV1-et a [dav1d](https://code.videolan.org/videolan/dav1d) bontja ki) | a réteges csempékből álló rácsot nem dekódolja (két Apple-tesztfájl), a rendszer dekóderére hagyja |
@@ -165,10 +164,10 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **DNG** | a nyers adatból teljes felbontásban előhívva (Bayer, veszteségmentes JPEG vagy tömörítetlen): gyors betekintés, hogy mi van a képen, nem raw-konverter; E / Shift + E az expozícióhoz | a zajszűrés, az objektívkorrekció és a többi DNG-opkód nem érvényesül |
 | **fényképezőgépes raw** (CR2, NEF, NRW, ARW, RAF) | a gép által a fájlba tett teljes méretű JPEG (a fájlnak csak ez a része olvasódik be) | |
 | **SVG** | alakzatok, útvonalak, színátmenetek, vágás, maszk, minta, `<style>` stíluslap, szöveg a rendszer betűtípusaival, beágyazott képek | a szűrők kimaradnak (árnyék, elmosás); a `<foreignObject>`-beli HTML (draw.io) nem jelenik meg; az SVG-betűtípusok és a csak szimbólumokat tartalmazó sprite-fájlok nem rajzolnak semmit |
-| **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok ([ / ]), a rejtett rétegek kimaradnak, mint a CorelDRAW-ban; a megjelenített terület a rajz befoglaló kerete, nem a lap | a nyílhegyek és a Corel saját vektoros és bitképes mintakitöltései kimaradnak |
-| **Visio** (VSD 5 – 2010, VSDX / VSDM 2013+, VDX; stencilek és sablonok: VSS, VSSX, VSSM, VSX, VST, VSTX, VSTM, VTX) | alakzatok, összekötők a vonalvégeikkel, szöveg (bekezdések, igazítás, háttér), bitképek, többoldalas dokumentumok ([ / ]); libvisio, a CorelDRAW-val közös rajzolóval | a sraffozott kitöltések még kimaradnak; a szövegmezők a tárolt értéküket mutatják |
-| **draw.io** (.drawio, .dio) | alakzatok, összekötők úgy vezetve, ahogy a draw.io vezeti őket, feliratok (félkövér, dőlt, sortörés), többoldalas diagramok; saját olvasó | a stencilkönyvtárak ikonjai és a képek csak keretként jelennek meg; a feliratok egyéb HTML-formázása elvész |
-| **WMF / EMF** (Windows-metafájlok) | a GDI-rajz: alakzatok, Bézier-görbék, ívek, útvonalak, tollak és ecsetek (szaggatás, sraffozás, minták), szöveg a rendszer betűtípusaival (a karakterkészletek átalakítva), DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk; saját olvasó, a Visio-stencilekbe ágyazott képekhez is (a hálózati eszközök ikonjai) | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
+| **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok; a megjelenített terület a rajz befoglaló kerete, nem a lap | a Corel teljes színű (vektoros) mintakitöltései kimaradnak |
+| **Visio** (VSD / VSDX; stencilek és sablonok) | alakzatok, szöveg, beágyazott képek, többoldalas dokumentumok | a sraffozott kitöltések még kimaradnak; a szövegmezők a tárolt értéküket mutatják |
+| **draw.io** (.drawio, .dio) | alakzatok, összekötők úgy vezetve, ahogy a draw.io vezeti őket, feliratok (félkövér, dőlt, sortörés), többoldalas diagramok | a stencilkönyvtárak ikonjai és a képek csak keretként jelennek meg; a feliratok egyéb HTML-formázása elvész |
+| **WMF / EMF** (Windows-metafájlok) | a GDI-rajz, szöveg a rendszer betűtípusaival, DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
 | **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2018, az R2007 nem) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként; DWG: lásd [DWG](#dwg) | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
@@ -201,6 +200,10 @@ sraffozások ilyenkor mind ugyanazt az egy blokkot mutatják), egy blokkot és a
 nevez el, elhagyja a polyline-ok szélességét, az ékezetes betűket és egyes színeket, a true color
 színeket pedig úgy írja ki, hogy egy DXF-olvasó rosszul értelmezi. Az R2007-es és az R12-es vagy
 régebbi rajzok nem nyílnak meg (ezeket DXF-be kell konvertálni).
+
+Fehér háttéren a DXF- és DWG-rajzok színei egy ötöddel sötétebbek (a fehérből világosszürke lesz),
+így a világos vonalak is látszanak; az előtérszín (fehér háttéren fekete) nem változik. Az azonos
+tartalmú lapok csak egyszer szerepelnek.
 
 ### Sérült fájlok
 
@@ -237,7 +240,9 @@ előre dekódolja, amíg az aktuálisat nézed.
 | AVIF | 41 webes AVIF, átlag | **10 ms** | ImageIO 32 ms |
 | SVG | 38 MB-os rajz | **0,53 s** | WebKit 1,4 s, CoreSVG 2,4 s |
 | CorelDRAW | 17,7 MB-os, csak vektoros terv | **1,8 s** | libcdr `cdr2xhtml` 5,4 s (csak SVG-vé alakítás) |
-| DXF | 7,5 MB-os alaprajz | **45 ms** | ezdxf 8,7 s |
+| DXF | 7,5 MB-os alaprajz | **17 ms** | ezdxf 8,7 s |
+| DWG | 1 MB-os alaprajz | **20 ms** | |
+| Visio | 15 MB, 6 oldal, képekkel | **87 ms** | |
 
 Asztali Intel i9-en mérve. Egy 2020-as M1-es MacBook Airen egy 24 MP-es JPEG ~30 ms alatt
 dekódolódik, háromszor gyorsabban, mint ugyanazon a gépen az Apple hardveres JPEG-dekódere. Egy
@@ -249,11 +254,9 @@ mérés: [BENCHMARKING.md](BENCHMARKING.md) (angolul).
 
 [BUILDING.md](BUILDING.md) (angolul): a nézők fordítása minden platformon, a make-opciók, és a
 `libnitro`, a dekóderek egyetlen könyvtárként a saját programodhoz (egy százsoros példaprogrammal,
-amely bármilyen általa dekódolt képet BMP-vé alakít).
+amely bármilyen általa dekódolt képet BMP-vé alakít). [FILES.md](FILES.md) (angolul): melyik forrásfájl mi.
 
 ## Licenc
 
-MIT, lásd [LICENSE](LICENSE). Az opcionális külső összetevőknek (libjpeg-turbo, dav1d, SDL3, lunasvg
-és plutovg, libcdr és librevenge, lcms2, boost, mimalloc, stb_image, Wuffs) saját licencük van:
-[BUILDING.md](BUILDING.md#third-party-licences). Ez a szoftver részben az Independent JPEG Group
-munkáján alapul.
+MIT, lásd [LICENSE](LICENSE), a mástól átvett kóddal és az opcionális függőségek licenceivel együtt.
+Ez a szoftver részben az Independent JPEG Group munkáján alapul.

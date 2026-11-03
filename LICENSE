@@ -28,6 +28,36 @@ work of the Independent JPEG Group.
 
 ---
 
+The draw.io reader in src/nitrodio.cpp follows mxGraph and draw.io
+(https://github.com/jgraph/mxgraph, https://github.com/jgraph/drawio): the outlines of the
+cloud, actor and document shapes, the default stylesheet, and the routing of the connectors
+(ported from mxEdgeStyle, mxPerimeter and mxGraphView). Copyright (c) JGraph Ltd, licensed under
+the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+
+---
+
+The optional dependencies are not in this repository: scripts/get-deps.sh downloads them, and
+the builds that use them link them in, under their own licenses:
+
+- libjpeg-turbo: BSD-style / IJG / zlib
+- Wuffs: Apache-2.0
+- stb_image: public domain / MIT
+- SDL3: zlib
+- dav1d: BSD-2-Clause
+- lunasvg and plutovg (our fork: https://github.com/gereoffy/lunasvg): MIT; plutovg's rasterizer
+  is FreeType's smooth rasterizer, under the FreeType License: portions of this software are
+  copyright (c) 2014 The FreeType Project (www.freetype.org), all rights reserved
+- libcdr (our fork: https://github.com/gereoffy/libcdr): MPL-2.0
+- libvisio (our fork: https://github.com/gereoffy/libvisio): MPL-2.0
+- librevenge (our changes in patches/): MPL-2.0
+- libxml2 (our configuration and changes in patches/): MIT
+- lcms2: MIT
+- zlib (the Windows and portable Linux builds; the others use the system's): zlib
+- boost (headers only): Boost Software License
+- mimalloc: MIT
+
+---
+
 The DWG reader in src/nitrodwg.cpp reads the files as ACadSharp
 (https://github.com/DomCR/ACadSharp) does, under its license:
 
@@ -52,10 +82,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-The draw.io diagrams in src/nitrodio.cpp are drawn as mxGraph / draw.io draws them (the outlines
-of the cloud, actor and document shapes, the default stylesheet; the connectors' routing ported
-from mxEdgeStyle, mxPerimeter and mxGraphView: https://github.com/jgraph/mxgraph), following
-mxGraph / draw.io
-(https://github.com/jgraph/drawio), Copyright (c) JGraph Ltd, licensed under the Apache
-License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
