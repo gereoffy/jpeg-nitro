@@ -1168,10 +1168,12 @@ private:
             x = 0;
             room = width;
         };
-        auto same = [](const Span &a, const Span &b) {
+        auto same = [](const Span &a, const Span &b) {   // (the merged span keeps the first piece's settings)
             return a.face == b.face && a.size == b.size && !memcmp(&a.color, &b.color, sizeof a.color) && a.font == b.font &&
                    a.scaleX == b.scaleX && a.letterSpacing == b.letterSpacing && a.wordSpacing == b.wordSpacing &&
-                   a.fill == b.fill && a.stroke == b.stroke && a.background == b.background;
+                   a.rise == b.rise && a.rotate == b.rotate && a.fill == b.fill && a.stroke == b.stroke &&
+                   !memcmp(&a.strokeColor, &b.strokeColor, sizeof a.strokeColor) && a.strokeWidth == b.strokeWidth &&
+                   a.background == b.background && !memcmp(&a.backgroundColor, &b.backgroundColor, sizeof a.backgroundColor);
         };
         for (size_t k = 0; k < words.size(); k++) {
             float w = 0, full = 0;
