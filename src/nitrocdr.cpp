@@ -9,6 +9,7 @@
 // points (y down); render() replays it with plutovg for any scale / offset, skipping
 // whatever lies outside the target.
 #include "nitrocdr.h"
+#include "nitro_draw.h"
 #include "nitro_font.h"
 #include "nitrodxf.h"
 #include "nitrometa.h"
@@ -1002,14 +1003,10 @@ private:
         it.kind = Item::PATH;
         it.style = m_style;
         it.path.reset(path);
-        plutovg_rect_t r;
-        plutovg_path_extents(path, &r, false);
         // (miters: a corner's reaches twice the width from its vertex at most, drawItem's miter limit; arrowheads)
         float m = m_style->stroke ? std::max(std::max(m_style->strokeWidth, 0.5f) * 2, m_style->markerReach) : 0;
-        it.bx0 = r.x - m;
-        it.by0 = r.y - m;
-        it.bx1 = r.x + r.w + m;
-        it.by1 = r.y + r.h + m;
+        nd::Box b = nd::pathBox(path, m);
+        it.bx0 = b.x0, it.by0 = b.y0, it.bx1 = b.x1, it.by1 = b.y1;
         add(std::move(it));
     }
 
@@ -1023,18 +1020,8 @@ private:
     }
 
     static void rotatedBox(Item &it, float cx, float cy, float x0, float y0, float x1, float y1, float deg) {
-        float c = cosf(deg * (float)M_PI / 180), s = sinf(deg * (float)M_PI / 180);
-        float xs[4] = {x0, x1, x1, x0}, ys[4] = {y0, y0, y1, y1};
-        it.bx0 = it.by0 = 1e30f;
-        it.bx1 = it.by1 = -1e30f;
-        for (int k = 0; k < 4; k++) {
-            float dx = xs[k] - cx, dy = ys[k] - cy;
-            float x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
-            it.bx0 = std::min(it.bx0, x);
-            it.by0 = std::min(it.by0, y);
-            it.bx1 = std::max(it.bx1, x);
-            it.by1 = std::max(it.by1, y);
-        }
+        nd::Box b = nd::turnedBox(cx, cy, x0, y0, x1, y1, deg * (float)M_PI / 180);
+        it.bx0 = b.x0, it.by0 = b.y0, it.bx1 = b.x1, it.by1 = b.y1;
     }
 
     void newLine(bool paragraph = true) {
@@ -1890,38 +1877,19 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     bool sameSize = true;
     for (const Page &pg : pt.pages)
         sameSize &= std::fabs(pg.pageW - pt.pages[0].pageW) < 1 && std::fabs(pg.pageH - pt.pages[0].pageH) < 1;
-    double ux0 = 1e30, uy0 = 1e30, ux1 = -1e30, uy1 = -1e30;
-    std::vector<std::array<double, 4>> boxes;
+    nd::Union all;   // (of every page's: the area same-sized pages share)
+    std::vector<nd::Union> boxes;
     for (const Page &pg : pt.pages) {
-        double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
-        for (const Item &it : pg.items) {
-            x0 = std::min(x0, (double)it.bx0);
-            y0 = std::min(y0, (double)it.by0);
-            x1 = std::max(x1, (double)it.bx1);
-            y1 = std::max(y1, (double)it.by1);
-        }
-        boxes.push_back({x0, y0, x1, y1});
-        if (x1 <= x0 || y1 <= y0) continue;
-        ux0 = std::min(ux0, x0);
-        uy0 = std::min(uy0, y0);
-        ux1 = std::max(ux1, x1);
-        uy1 = std::max(uy1, y1);
+        nd::Union u;
+        for (const Item &it : pg.items) u.add(it.bx0, it.by0, it.bx1, it.by1);
+        boxes.push_back(u);
+        if (u.valid()) all.add(u.x0, u.y0, u.x1, u.y1);
     }
     for (size_t i = 0; i < pt.pages.size(); i++) {
         Page &pg = pt.pages[i];
-        double x0 = boxes[i][0], y0 = boxes[i][1], x1 = boxes[i][2], y1 = boxes[i][3];
-        if (pt.pages.size() > 1 && sameSize && ux1 > ux0 && uy1 > uy0) {
-            x0 = ux0;
-            y0 = uy0;
-            x1 = ux1;
-            y1 = uy1;
-        }
-        if (x1 <= x0 || y1 <= y0) continue;
-        double m = std::max(2.0, 0.015 * std::max(x1 - x0, y1 - y0));
-        pg.x = x0 - m;
-        pg.y = y0 - m;
-        pg.w = x1 - x0 + 2 * m;
-        pg.h = y1 - y0 + 2 * m;
+        const nd::Union &u = pt.pages.size() > 1 && sameSize && all.valid() ? all : boxes[i];
+        if (!u.valid()) continue;
+        u.page(std::max(2.0, 0.015 * std::max(u.x1 - u.x0, u.y1 - u.y0)), pg.x, pg.y, pg.w, pg.h);
     }
     return new nitrocdr{std::move(pt.pages), 0};
 }
@@ -1959,24 +1927,18 @@ void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h) {
 
 int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx) {
-    if (page < 0 || page >= (int)cdr->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};   // (opaque)
-    uint32_t bg = backgrounds[cdr->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);   // (unlocked: drawItem locks texts)
-    plutovg_canvas_t *c = plutovg_canvas_create(surface);
+    if (page < 0 || page >= (int)cdr->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
+    nd::Target t(bgra, w, h, pitch, nd::background(cdr->background));   // (unlocked: drawItem locks texts)
+    plutovg_canvas_t *c = t.canvas;
     plutovg_canvas_scale(c, (float)scale, (float)scale);
     x0 += cdr->pages[page].x;   // (the shown area's origin)
     y0 += cdr->pages[page].y;
     plutovg_canvas_translate(c, (float)-x0, (float)-y0);
-    float vx0 = (float)x0, vy0 = (float)y0, vx1 = (float)(x0 + w / scale), vy1 = (float)(y0 + h / scale);
+    double view[4] = {x0, y0, x0 + w / scale, y0 + h / scale};
     size_t n = 0;
     int rc = 0;
     for (const Item &it : cdr->pages[page].items) {
-        bool shown = it.bx1 >= vx0 && it.bx0 <= vx1 && it.by1 >= vy0 && it.by0 <= vy1;
+        bool shown = nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, scale);
         // (asked every 256th item, and before a picture: an embedded DWG, a long WMF or an SVG rendered
         // for the band's scale takes a while)
         if (((++n & 255) == 0 || (shown && it.kind == Item::IMAGE)) && cancelled && cancelled(ctx)) {
@@ -1985,7 +1947,5 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
         }
         if (shown) drawItem(c, it, (float)scale);
     }
-    plutovg_canvas_destroy(c);
-    plutovg_surface_destroy(surface);
     return rc;
 }

@@ -400,9 +400,9 @@ endef
 # the libraries, in whichever target directory, with its TCPU / TPORT (see build/% above)
 %/libnitro.a: $(LIB_SRC) src/nitroavif.c $(LIB_HDR) build/.config-$(CONFIG)
 	$(call nitro_lib,-O3 $(TCPU) $(TPORT))
-%/libnitrosvg.a: src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h $(SVG_DEPS)
+%/libnitrosvg.a: src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h $(SVG_DEPS)
 	$(call svg_lib,$(TCPU))
-%/libnitrocdr.a: src/nitrocdr.h src/nitrodio.h src/nitro_font.h src/nitrodxf.h src/nitrometa.h src/nitrotiff.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h \
+%/libnitrocdr.a: src/nitrocdr.h src/nitrodio.h src/nitro_font.h src/nitro_draw.h src/nitrodxf.h src/nitrometa.h src/nitrotiff.h patches/libvisio/tokens.h patches/libvisio/tokenhash.h \
                  patches/libxml2/config.h patches/libxml2/libxml/xmlversion.h $(CDR_DEPS)
 	$(call cdr_lib,$(TCPU))
 %/mimalloc.o %/nitroalloc.o: src/nitroalloc.cpp $(wildcard $(MI)/.version-*)

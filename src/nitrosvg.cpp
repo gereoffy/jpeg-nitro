@@ -2,6 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // nitrosvg: C interface to lunasvg. See nitrosvg.h.
 #include "nitrosvg.h"
+#include "nitro_draw.h"
 #include "nitro_font.h"
 
 #include <lunasvg.h>
@@ -158,13 +159,8 @@ void nitrosvg_size(const nitrosvg *svg, double *w, double *h) {
 }
 
 int nitrosvg_render(nitrosvg *svg, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
-    if (w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    static const uint32_t backgrounds[4] = {0xffffffff, 0xff212830, 0xff000000, 0};   // (opaque; none)
-    uint32_t bg = backgrounds[svg->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
+    if (!nd::renderArgs(w, h, pitch, scale)) return -1;
+    nd::fill(bgra, w, h, pitch, nd::background(svg->background));
     std::lock_guard<std::mutex> g(nf_lock());
     lunasvg::Bitmap bitmap(bgra, w, h, (int)pitch);   // ARGB32 premultiplied = BGRA bytes (little endian)
     if (bitmap.isNull()) return -1;

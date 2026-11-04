@@ -9,6 +9,7 @@
 // The connectors are routed here as mxGraph routes them (see Builder::edge): straight through
 // their waypoints, or by the edge style's orthogonal connector.
 #include "nitrodio.h"
+#include "nitro_draw.h"
 #include "nitro_font.h"
 
 #include <libxml/parser.h>
@@ -678,9 +679,8 @@ struct Builder {
 
     void add(Item &&it, float margin) {
         if (!it.label) {
-            plutovg_rect_t r;
-            plutovg_path_extents(it.path.get(), &r, false);
-            it.bx0 = r.x - margin, it.by0 = r.y - margin, it.bx1 = r.x + r.w + margin, it.by1 = r.y + r.h + margin;
+            nd::Box b = nd::pathBox(it.path.get(), margin);
+            it.bx0 = b.x0, it.by0 = b.y0, it.bx1 = b.x1, it.by1 = b.y1;
         }
         for (float v : {it.bx0, it.by0, it.bx1, it.by1})   // (NaN or far off: plutovg converts its coordinates to integers)
             if (!(std::fabs(v) < 1e8f)) return;
@@ -708,13 +708,8 @@ struct Builder {
         it.label = l;
         float x0 = l->x0, y0 = l->y0, x1 = l->x1, y1 = l->y1;
         if (l->turned) {   // (the box of the turned one: its corners turned)
-            float c = cosf(l->angle), s = sinf(l->angle), bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
-            for (float px : {x0, x1})
-                for (float py : {y0, y1}) {
-                    float dx = px - l->cx, dy = py - l->cy, rx = l->cx + dx * c - dy * s, ry = l->cy + dx * s + dy * c;
-                    bx0 = std::min(bx0, rx), by0 = std::min(by0, ry), bx1 = std::max(bx1, rx), by1 = std::max(by1, ry);
-                }
-            x0 = bx0, y0 = by0, x1 = bx1, y1 = by1;
+            nd::Box b = nd::turnedBox(l->cx, l->cy, x0, y0, x1, y1, l->angle);
+            x0 = b.x0, y0 = b.y0, x1 = b.x1, y1 = b.y1;
         }
         it.bx0 = x0 - 2, it.by0 = y0 - 2, it.bx1 = x1 + 2, it.by1 = y1 + 2;
         add(std::move(it), 0);
@@ -1577,13 +1572,9 @@ bool readModel(xmlNode *model, Page &page) {
     readCells(root, b);
     b.build();
     if (page.items.empty()) return false;
-    double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
-    for (const Item &it : page.items) {
-        x0 = std::min(x0, (double)it.bx0), y0 = std::min(y0, (double)it.by0);
-        x1 = std::max(x1, (double)it.bx1), y1 = std::max(y1, (double)it.by1);
-    }
-    const double m = 10;
-    page.x = x0 - m, page.y = y0 - m, page.w = x1 - x0 + 2 * m, page.h = y1 - y0 + 2 * m;
+    nd::Union u;
+    for (const Item &it : page.items) u.add(it.bx0, it.by0, it.bx1, it.by1);
+    u.page(10, page.x, page.y, page.w, page.h);
     return page.w > 0 && page.h > 0 && page.w < 1e8 && page.h < 1e8;
 }
 
@@ -1667,9 +1658,7 @@ void nitrodio_size(const nitrodio *dio, int page, double *w, double *h) {
 }
 
 namespace {
-void setColour(plutovg_canvas_t *c, uint32_t rgba) {
-    plutovg_canvas_set_rgba(c, (rgba >> 16 & 255) / 255.f, (rgba >> 8 & 255) / 255.f, (rgba & 255) / 255.f, (rgba >> 24) / 255.f);
-}
+
 void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
     if (it.label) {
         const Label &l = *it.label;
@@ -1680,11 +1669,11 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_translate(c, -l.cx, -l.cy);
         }
         if (l.background >> 24) {
-            setColour(c, l.background);
+            nd::setRgba(c, l.background);
             plutovg_canvas_fill_rect(c, l.x0, l.y0, l.x1 - l.x0, l.y1 - l.y0);
         }
         for (const Run &r : l.runs) {
-            setColour(c, r.rgba);
+            nd::setRgba(c, r.rgba);
             plutovg_canvas_set_font(c, r.face, r.size);
             plutovg_canvas_fill_text(c, r.text.data(), (int)r.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, r.x, r.y);
         }
@@ -1697,12 +1686,12 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                                                 {1, {(it.fill2 >> 16 & 255) / 255.f, (it.fill2 >> 8 & 255) / 255.f, (it.fill2 & 255) / 255.f, (it.fill2 >> 24) / 255.f}}};
             plutovg_canvas_set_linear_gradient(c, it.gx0, it.gy0, it.gx1, it.gy1, PLUTOVG_SPREAD_METHOD_PAD, stops, 2, nullptr);
         } else
-            setColour(c, it.fill);
+            nd::setRgba(c, it.fill);
         plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
         plutovg_canvas_fill_path(c, it.path.get());
     }
     if (it.stroke >> 24) {
-        setColour(c, it.stroke);
+        nd::setRgba(c, it.stroke);
         plutovg_canvas_set_line_width(c, std::max(it.width, 1 / scale));   // (a pixel at least)
         plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
         plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
@@ -1715,20 +1704,14 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
 
 int nitrodio_render(nitrodio *dio, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx) {
-    if (!dio || page < 0 || page >= (int)dio->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    if (!dio || page < 0 || page >= (int)dio->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
     const Page &pg = dio->pages[(size_t)page];
-    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};
-    uint32_t bg = pg.background >> 24 ? pg.background : backgrounds[dio->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
-    plutovg_canvas_t *c = plutovg_canvas_create(surface);
+    nd::Target t(bgra, w, h, pitch, pg.background >> 24 ? pg.background : nd::background(dio->background));   // (the diagram's own first)
+    plutovg_canvas_t *c = t.canvas;
     plutovg_canvas_scale(c, (float)scale, (float)scale);
     x0 += pg.x, y0 += pg.y;
     plutovg_canvas_translate(c, (float)-x0, (float)-y0);
-    float vx0 = (float)x0, vy0 = (float)y0, vx1 = (float)(x0 + w / scale), vy1 = (float)(y0 + h / scale);
+    double view[4] = {x0, y0, x0 + w / scale, y0 + h / scale};
     size_t n = 0;
     int rc = 0;
     for (const Item &it : pg.items) {
@@ -1736,9 +1719,7 @@ int nitrodio_render(nitrodio *dio, int page, uint8_t *bgra, int w, int h, size_t
             rc = 1;
             break;
         }
-        if (it.bx1 >= vx0 && it.bx0 <= vx1 && it.by1 >= vy0 && it.by0 <= vy1) drawItem(c, it, (float)scale);
+        if (nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, scale)) drawItem(c, it, (float)scale);
     }
-    plutovg_canvas_destroy(c);
-    plutovg_surface_destroy(surface);
     return rc;
 }

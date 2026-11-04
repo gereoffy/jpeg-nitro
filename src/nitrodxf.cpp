@@ -12,6 +12,7 @@
 // render() replays the items that touch the view; hairlines are one device pixel wide.
 // What is 3D is shown from the top (x, y of the world coordinates).
 #include "nitrodxf.h"
+#include "nitro_draw.h"
 #include "nitrodwg.h"
 #include "nitro_font.h"
 
@@ -535,8 +536,6 @@ struct FaceInfo {
 enum : uint32_t { COL_ACI = 1u << 24, COL_RGB = 2u << 24, COL_BYLAYER = 3u << 24, COL_BYBLOCK = 4u << 24 };
 enum { LT_BYLAYER = -1, LT_BYBLOCK = -2, LT_CONTINUOUS = -3 };
 
-// the backgrounds (nitrodxf_set_background): paper white, AutoCAD's dark model space, black
-const uint32_t BACKGROUNDS[3] = {0xffffff, 0x212830, 0x000000};
 const uint32_t WIPEOUT = 0x01000000;   // (an item's rgba: the background colour, whichever it is)
 
 // A true colour: white as fefefe (ffffff is the foreground colour, 7; see on_background)
@@ -2202,27 +2201,18 @@ void extents(const std::vector<Item> &items, const std::vector<std::array<double
 
 // --- drawing -----------------------------------------------------------------
 
-void set_rgba(plutovg_canvas_t *c, uint32_t rgba, float alpha = 1) {
-    plutovg_canvas_set_rgba(c, (rgba >> 16 & 255) / 255.0f, (rgba >> 8 & 255) / 255.0f, (rgba & 255) / 255.0f, (rgba >> 24) / 255.0f * alpha);
-}
-
 // An item's colour on the background: on white, AutoCAD's foreground colour (7, ffffff here) is
 // black and every other colour a little darker (x 0.8: a white one, 255 or a true colour, light
 // grey then, as a fill still under what is drawn over it).
 uint32_t on_background(uint32_t rgba, int background) {
-    if (rgba == WIPEOUT) return 0xff000000u | BACKGROUNDS[background];
+    if (rgba == WIPEOUT) return nd::background(background);
     if (background != 0) return rgba;
     uint32_t r = rgba >> 16 & 255, g = rgba >> 8 & 255, b = rgba & 255, a = rgba & 0xff000000u;
     if ((rgba & 0xffffff) == 0xffffff) return a;
     return a | (r * 4 / 5) << 16 | (g * 4 / 5) << 8 | (b * 4 / 5);
 }
 
-// a render's "stop now" (nitrodxf_render's cancelled)
-struct Cancel {
-    int (*fn)(void *);
-    void *ctx;
-    bool operator()() const { return fn && fn(ctx); }
-};
+using nd::Cancel;   // (a render's "stop now": nitrodxf_render's cancelled)
 
 // A hairline's segments as quads one device pixel wide (filled: much cheaper than plutovg's
 // stroker, the same with butt caps), its curves cut into lines a fraction of a pixel close.
@@ -2348,12 +2338,12 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
     plutovg_canvas_save(c);
     plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_EVEN_ODD);
     if (tone) {
-        set_rgba(c, rgba, 0.4f);
+        nd::setRgba(c, rgba, 0.4f);
         plutovg_canvas_fill_path(c, it.path);
     }
     if (segs) {
         plutovg_canvas_clip_path(c, it.path);
-        set_rgba(c, rgba);
+        nd::setRgba(c, rgba);
         plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
         // filled in batches of a pattern line's dashes (a fill each took a second for a million
         // of them): its lines do not touch each other's pixels, while those of the pattern's other
@@ -2675,8 +2665,6 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
     *h = pg.ay1 - pg.ay0;
 }
 
-static constexpr double kFar = 1 << 24;   // device pixels out of the view
-
 // a page's items drawn on a canvas whose matrix maps drawing units to device pixels, scale of
 // them to a unit; view: the part seen, viewH: the height a relative $PDSIZE is of (drawing units)
 static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, double scale, const double view[4], double viewH,
@@ -2697,14 +2685,13 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
         if (it.kind == O_CLIP) clip[0] = it.bx0, clip[1] = it.by0, clip[2] = it.bx1, clip[3] = it.by1;
         else if (it.kind == O_UNCLIP) clip[0] = clip[1] = -FLT_MAX, clip[2] = clip[3] = FLT_MAX;
         else if (it.kind != O_XLINE && it.kind != O_RAY &&
-                 (std::min(it.bx1, clip[2]) < view[0] || std::max(it.bx0, clip[0]) > view[2] || std::min(it.by1, clip[3]) < view[1] ||
-                  std::max(it.by0, clip[1]) > view[3] ||
-                  std::max(view[0] - it.bx0, std::max(it.bx1 - view[2], std::max(view[1] - it.by0, it.by1 - view[3]))) * scale > kFar))
-            continue;   // (kFar: plutovg's fixed point would overflow; far-off strays of a damaged file)
+                 (!nd::touches(view, std::max(it.bx0, clip[0]), std::max(it.by0, clip[1]), std::min(it.bx1, clip[2]), std::min(it.by1, clip[3])) ||
+                  !nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale)))
+            continue;   // (within: plutovg's fixed point would overflow; far-off strays of a damaged file)
         uint32_t rgba = on_background(it.rgba, dxf->background);
         switch (it.kind) {
         case O_STROKE: {
-            set_rgba(c, rgba);
+            nd::setRgba(c, rgba);
             const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
             bool dashed = d && d->total * fs >= 4;   // (finer than that: drawn solid)
             if (it.width <= hair && !dashed) {
@@ -2729,7 +2716,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
         }
         case O_FILL:
         case O_FILL_EO:
-            set_rgba(c, rgba);
+            nd::setRgba(c, rgba);
             plutovg_canvas_set_fill_rule(c, it.kind == O_FILL_EO ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path);
             break;
@@ -2772,7 +2759,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
                 if (a->mode & 32) plutovg_path_add_circle(a->p, x, y, r);
                 if (a->mode & 64) plutovg_path_add_rect(a->p, x - r, y - r, 2 * r, 2 * r);
             }, &pc);
-            set_rgba(c, rgba);
+            nd::setRgba(c, rgba);
             plutovg_canvas_set_line_width(c, hair);
             plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_canvas_stroke_path(c, tmp);
@@ -2796,7 +2783,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
                     plutovg_path_add_path(tmp, dxf->glyphs[gp.glyph].path, &gm);
                 }
                 uint32_t col = run.color == 0 ? ot.rgba : 0xff000000u | ((run.color & 0xff000000u) == COL_RGB ? true_white(run.color & 0xffffff) : aci_rgb((int)(run.color & 255)));
-                set_rgba(c, on_background(col, dxf->background));
+                nd::setRgba(c, on_background(col, dxf->background));
                 plutovg_canvas_fill_path(c, tmp);
             }
             break;
@@ -2814,7 +2801,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
             plutovg_path_reset(tmp);
             plutovg_path_move_to(tmp, (float)(x[0] + x[2] * t0), (float)(x[1] + x[3] * t0));
             plutovg_path_line_to(tmp, (float)(x[0] + x[2] * t1), (float)(x[1] + x[3] * t1));
-            set_rgba(c, rgba);
+            nd::setRgba(c, rgba);
             plutovg_canvas_set_line_width(c, hair);
             plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_canvas_stroke_path(c, tmp);
@@ -2828,24 +2815,16 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
 
 int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx) {
-    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    if (!dxf || page < 0 || page >= (int)dxf->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
     const Page &pg = dxf->pages[(size_t)page];
-    uint32_t bg = 0xff000000u | BACKGROUNDS[dxf->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
-    plutovg_canvas_t *c = plutovg_canvas_create(surface);
+    nd::Target t(bgra, w, h, pitch, nd::background(dxf->background));
+    plutovg_canvas_t *c = t.canvas;
     double vx0 = pg.ax0 + x0, vy1 = pg.ay1 - y0;   // the view in drawing units (around the origin)
     plutovg_matrix_t mt = {(float)scale, 0, 0, (float)-scale, (float)(-scale * vx0), (float)(scale * vy1)};
     plutovg_canvas_set_matrix(c, &mt);
     double hair = 1 / scale;
     double view[4] = {vx0 - 2 * hair, vy1 - h / scale - 2 * hair, vx0 + w / scale + 2 * hair, vy1 + 2 * hair};
-    int rc = draw_page(dxf, pg, c, scale, view, h / scale, cancelled, ctx);
-    plutovg_canvas_destroy(c);
-    plutovg_surface_destroy(surface);
-    return rc;
+    return draw_page(dxf, pg, c, scale, view, h / scale, cancelled, ctx);
 }
 
 void nitrodxf_draw(const nitrodxf *dxf, int page, plutovg_canvas_t *c, float x, float y, float w, float h) {

@@ -13,6 +13,7 @@
 // (Visio, Office, CorelDRAW, printer drivers) rely on them: a WMF's bounding box or window is
 // its frame, the window stretched onto it when the two differ; an EMF's frame is rclFrame.
 #include "nitrometa.h"
+#include "nitro_draw.h"
 #include "nitro_font.h"
 
 #include <plutovg.h>
@@ -676,12 +677,8 @@ public:
         dc.world = sane ? w : M();
     }
     static void bbox(Item &it, float margin) {
-        plutovg_rect_t r;
-        plutovg_path_extents(it.path.get(), &r, false);
-        it.bx0 = r.x - margin;
-        it.by0 = r.y - margin;
-        it.bx1 = r.x + r.w + margin;
-        it.by1 = r.y + r.h + margin;
+        nd::Box b = nd::pathBox(it.path.get(), margin);
+        it.bx0 = b.x0, it.by0 = b.y0, it.bx1 = b.x1, it.by1 = b.y1;
     }
     void clipItem() {
         Item it;
@@ -1355,13 +1352,10 @@ public:
         itemsFrame();
     }
     void itemsFrame() {
-        double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
-        for (const Item &it : out.items) {
-            if (it.kind == Item::CLIP) continue;
-            x0 = std::min(x0, (double)it.bx0), y0 = std::min(y0, (double)it.by0);
-            x1 = std::max(x1, (double)it.bx1), y1 = std::max(y1, (double)it.by1);
-        }
-        if (x1 > x0 && y1 > y0) out.fx0 = x0, out.fy0 = y0, out.fx1 = x1, out.fy1 = y1;
+        nd::Union u;
+        for (const Item &it : out.items)
+            if (it.kind != Item::CLIP) u.add(it.bx0, it.by0, it.bx1, it.by1);
+        if (u.valid()) out.fx0 = u.x0, out.fy0 = u.y0, out.fx1 = u.x1, out.fy1 = u.y1;
     }
 
     // --- the records ---
@@ -2057,16 +2051,7 @@ bool Player::playEmf(Bytes b) {
 
 // --- drawing the list -----------------------------------------------------------
 
-struct Cancel {
-    int (*fn)(void *);
-    void *ctx;
-    bool operator()() const { return fn && fn(ctx); }
-};
-constexpr double kFar = 1 << 24;   // canvas pixels out of the view
-
-void setColor(plutovg_canvas_t *c, uint32_t rgb, float a) {
-    plutovg_canvas_set_rgba(c, (rgb >> 16 & 255) / 255.0f, (rgb >> 8 & 255) / 255.0f, (rgb & 255) / 255.0f, a);
-}
+using nd::Cancel;
 
 // plutovg samples a texture in 16.16 fixed point: a bitmap's pixels per canvas pixel in a sane range,
 // and (a tiled pattern's) pixel coordinates over the visible part of the item below 2^15
@@ -2091,8 +2076,8 @@ int clipFits(const plutovg_path_t *path, float hair, const double view[4]) {
     plutovg_rect_t r;
     plutovg_path_extents(path, &r, false);
     double x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
-    if (x1 < view[0] || x0 > view[2] || y1 < view[1] || y0 > view[3]) return -1;
-    if (std::max(std::max(view[0] - x0, x1 - view[2]), std::max(view[1] - y0, y1 - view[3])) / hair <= kFar) return 1;
+    if (!nd::touches(view, x0, y0, x1, y1)) return -1;
+    if (nd::within(view, x0, y0, x1, y1, 1 / hair)) return 1;
     return x0 <= view[0] && y0 <= view[1] && x1 >= view[2] && y1 >= view[3] ? 0 : -1;
 }
 
@@ -2122,9 +2107,7 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
             }
             continue;
         }
-        if (it.bx1 + 2 * hair < view[0] || it.bx0 - 2 * hair > view[2] || it.by1 + 2 * hair < view[1] || it.by0 - 2 * hair > view[3]) continue;
-        if (std::max(std::max(view[0] - it.bx0, it.bx1 - view[2]), std::max(view[1] - it.by0, it.by1 - view[3])) / hair > kFar)
-            continue;   // (plutovg's fixed point would overflow: far-off strays of a damaged file)
+        if (!nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, 1 / hair, 2 * hair)) continue;   // (or too far: plutovg's fixed point)
         plutovg_canvas_set_fill_rule(c, it.evenodd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
         if (it.img && !textureFits(it, base, view)) continue;
         switch (it.kind) {
@@ -2140,11 +2123,11 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
                 }
                 plutovg_canvas_set_linear_gradient(c, it.g[0], it.g[1], it.g[2], it.g[3], PLUTOVG_SPREAD_METHOD_PAD, stops, 2, nullptr);
             } else
-                setColor(c, it.rgb, it.opacity);
+                nd::setRgb(c, it.rgb, it.opacity);
             plutovg_canvas_fill_path(c, it.path.get());
             break;
         case Item::STROKE: {
-            setColor(c, it.rgb, it.opacity);
+            nd::setRgb(c, it.rgb, it.opacity);
             float w = std::max(it.width, hair);
             plutovg_canvas_set_line_width(c, w);
             plutovg_canvas_set_line_cap(c, it.width > 0 ? (plutovg_line_cap_t)it.cap : PLUTOVG_LINE_CAP_BUTT);
@@ -2165,7 +2148,7 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
         case Item::HATCH: {   // GDI's hatches: lines 8 device pixels apart, clipped to the shape
             plutovg_canvas_save(c);
             plutovg_canvas_clip_path(c, it.path.get());
-            setColor(c, it.rgb, 1);
+            nd::setRgb(c, it.rgb, 1);
             plutovg_canvas_set_line_width(c, hair);
             plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_path_reset(lines);
@@ -2259,21 +2242,11 @@ void nitrometa_set_background(nitrometa *meta, int background) {
 
 int nitrometa_render(nitrometa *meta, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0, int (*cancelled)(void *ctx),
                      void *ctx) {
-    if (!meta || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};
-    uint32_t bg = backgrounds[meta->background];
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
-        for (int x = 0; x < w; x++) row[x] = bg;
-    }
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(bgra, w, h, (int)pitch);
-    plutovg_canvas_t *c = plutovg_canvas_create(surface);
+    if (!meta || !nd::renderArgs(w, h, pitch, scale)) return -1;
+    nd::Target t(bgra, w, h, pitch, nd::background(meta->background));
     double s = scale * meta->unit;   // canvas pixels per device unit
     plutovg_matrix_t base = {(float)s, 0, 0, (float)s, (float)(-scale * (meta->fx0 * meta->unit + x0)), (float)(-scale * (meta->fy0 * meta->unit + y0))};
     double vx0 = meta->fx0 + x0 / meta->unit, vy0 = meta->fy0 + y0 / meta->unit;
     double view[4] = {vx0, vy0, vx0 + w / s, vy0 + h / s};
-    int rc = drawList(*meta, c, base, (float)(1 / s), view, Cancel{cancelled, ctx});
-    plutovg_canvas_destroy(c);
-    plutovg_surface_destroy(surface);
-    return rc;
+    return drawList(*meta, t.canvas, base, (float)(1 / s), view, Cancel{cancelled, ctx});
 }
