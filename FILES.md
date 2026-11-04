@@ -28,7 +28,7 @@
 - `examples/nitroconvert.c`: the example program on the library, any image → BMP
 - `src/nitro_prefetch.c/.h`: the viewers' shared prefetching loader
 - `src/nitro_view.h`: the viewers' shared zoom arithmetic
-- `src/nitro_vector.c/.h`: the viewers' vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io behind one interface: loading, pages, rendering in parallel bands, the thread limit, the background setting)
+- `src/nitro_vector.c/.h`: the viewers' vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io behind one interface: loading, pages, rendering in parallel bands, the thread limit, the background setting; what the four viewers do alike: a page rendered in full for the target size, the part rendered sharp when zoomed in, the window title's tail)
 - `src/nitro_draw.h`: what the display-list renderers share (the backgrounds, a render's canvas over the caller's buffer, the cancel callback, an item's box against the view and plutovg's fixed point, the boxes of paths and turned rectangles, the union of boxes a page's area is made of)
 - `src/nitro_font.cpp/.h` (in libnitrosvg.a): the vector renderers' fonts, one index of the installed font files and their faces for nitrosvg (lunasvg asks it for every font), nitrodxf, nitrometa, nitrocdr and nitrodio, and the lock they draw under
 

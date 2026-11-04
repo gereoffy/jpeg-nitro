@@ -3,10 +3,11 @@
 //
 // nitro_vector: the vector drawings for the four viewers, SVG (nitrosvg), DXF (nitrodxf) and
 // CorelDRAW CDR / CMX (nitrocdr), behind one interface: which files they are, loading one, its
-// pages and their size, rendering any part at any scale, the size a page is rendered at in
-// full, and the background they are drawn over (keys E / Shift+E). Compiled into each viewer
-// with its NV_SVG / NV_CDR; without either, nothing opens. The viewers keep what is theirs:
-// pixel buffers and textures, threads, the sharp detail drawn when zoomed in.
+// pages and their size, rendering any part at any scale, a page rendered in full (at the size
+// it is shown at: the target), the part rendered sharp when zoomed in, the background they are
+// drawn over (keys E / Shift+E) and the window title's tail. Compiled into each viewer with its
+// NV_SVG / NV_CDR; without either, nothing opens. The viewers keep what is theirs: pixel
+// buffers and textures, threads, when the sharp detail is asked for and how it is drawn.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
