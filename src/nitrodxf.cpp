@@ -1960,6 +1960,7 @@ struct Flat {
         int layer;
         uint32_t rgb;
         int ltype;
+        double ltscale = 1;   // the block inserts' scale around (AutoCAD scales their line types by it; a viewport's not: PSLTSCALE)
     };
 
     uint32_t rgb(uint32_t col, int layer, const Ctx &parent) {
@@ -2069,7 +2070,8 @@ struct Flat {
                 if (in.index < 0 || depth >= 32 || active[in.index]) continue;
                 const Block &child = P.blocks[in.index];
                 if (child.xref || child.prims.empty()) continue;
-                Ctx cc{layer, col, p.ltype == LT_BYLAYER ? L.ltype : p.ltype == LT_BYBLOCK ? ctx.ltype : p.ltype};
+                Ctx cc{layer, col, p.ltype == LT_BYLAYER ? L.ltype : p.ltype == LT_BYBLOCK ? ctx.ltype : p.ltype,
+                       ctx.ltscale * std::sqrt(std::fabs(det(in.m)))};
                 active[in.index] = 1;
                 for (int row = 0; row < in.rows; row++)
                     for (int c = 0; c < in.cols && work <= kMaxWork; c++, work++) {
@@ -2083,7 +2085,7 @@ struct Flat {
             switch (p.kind) {
             case K_STROKE: {
                 float w = p.width > 0 ? (float)(p.width * std::sqrt(std::fabs(det(m)))) : 0;
-                geo(pend[item(O_STROKE, rgba, w, dash(lt, P.ltscale * p.ltscale))], b, p, m);
+                geo(pend[item(O_STROKE, rgba, w, dash(lt, P.ltscale * p.ltscale * ctx.ltscale))], b, p, m);
                 break;
             }
             case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1)], b, p, m); break;
