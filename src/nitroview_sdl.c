@@ -3,7 +3,7 @@
 // nitroview for Linux: the same viewer as nitroview.m (macOS) and nitroview_win.c (Windows), on
 // SDL3 + OpenGL 3.3. It builds on macOS too (for testing; the native viewers stay the real ones).
 //
-//   nitroview-sdl [-f] [-s ms] [-j threads] file.jpg [more files, directories or wildcards...]
+//   nitroview-sdl [-f] [-s ms] [-j threads] file.jpg [more files or directories...]
 //   nitroview-sdl --bench files...     decode everything, print timings (a hidden window)
 //   nitroview-sdl --selftest files...  compare the GPU output with stb_image's decoding
 //   nitroview-sdl --register           add it to the desktop's applications ("Open with")
@@ -341,40 +341,36 @@ static char *join_path(const char *dir, const char *name) {
     return p;
 }
 
-// dir + pattern -> matching image files (or any file for an explicit wildcard), sorted
-static void list_dir(FileList *out, const char *dir, const char *pattern, int any_ext) {
-    int n = 0;
-    char **names = SDL_GlobDirectory(*dir ? dir : ".", pattern, SDL_GLOB_CASEINSENSITIVE, &n);
-    if (!names) return;
+static SDL_EnumerationResult SDLCALL list_entry(void *ud, const char *dirname, const char *name) {
+    (void)dirname;
+    FileList *out = ((void **)ud)[0];
+    const char *dir = ((void **)ud)[1];
+    if (!nv_is_image_name(name) && !nv_has_ext(name, g_more_exts) && !nv_has_ext(name, nv_vector_exts)) return SDL_ENUM_CONTINUE;
+    if (!nh_decoder() && nv_has_ext(name, heic_exts)) return SDL_ENUM_CONTINUE;   // (no HEVC decoder in this build)
+    char *p = *dir ? join_path(dir, name) : SDL_strdup(name);
+    SDL_PathInfo info;
+    if (p && SDL_GetPathInfo(p, &info) && info.type == SDL_PATHTYPE_FILE) fl_add(out, p);
+    SDL_free(p);
+    return SDL_ENUM_CONTINUE;
+}
+
+// dir -> its image files, sorted. The folder itself only, as the other viewers list it
+// (SDL_GlobDirectory took its subfolders too, sorted in among its files by name: the same picture
+// in two subfolders came twice in a row)
+static void list_dir(FileList *out, const char *dir) {
     int first = out->n;
-    for (int i = 0; i < n; i++) {
-        if (!any_ext && !nv_is_image_name(names[i]) && !nv_has_ext(names[i], g_more_exts) && !nv_has_ext(names[i], nv_vector_exts)) continue;
-        if (!any_ext && !nh_decoder() && nv_has_ext(names[i], heic_exts)) continue;   // (no HEVC decoder in this build)
-        char *p = *dir ? join_path(dir, names[i]) : SDL_strdup(names[i]);
-        SDL_PathInfo info;
-        if (p && SDL_GetPathInfo(p, &info) && info.type == SDL_PATHTYPE_FILE) fl_add(out, p);
-        SDL_free(p);
-    }
-    SDL_free(names);
+    void *ud[2] = {out, (void *)dir};
+    SDL_EnumerateDirectory(*dir ? dir : ".", list_entry, ud);
     qsort(out->v + first, (size_t)(out->n - first), sizeof *out->v, cmp_names);
 }
 
-// Arguments -> files: directories are listed, wildcards expanded (if the shell didn't).
+// Arguments -> files: directories are listed (each in its own order, one after the other).
 static void collect_files(FileList *out, char **args, int n) {
     for (int i = 0; i < n; i++) {
         const char *a = args[i];
-        if (strpbrk(a, "*?")) {
-            const char *name = base_name(a);
-            char *dir = SDL_strndup(a, (size_t)(name - a));
-            int before = out->n;
-            list_dir(out, dir, name, 1);
-            if (out->n == before) fprintf(stderr, "no match: %s\n", a);
-            SDL_free(dir);
-            continue;
-        }
         SDL_PathInfo info;
         if (!SDL_GetPathInfo(a, &info)) { fprintf(stderr, "no such file: %s\n", a); continue; }
-        if (info.type == SDL_PATHTYPE_DIRECTORY) list_dir(out, a, NULL, 0);
+        if (info.type == SDL_PATHTYPE_DIRECTORY) list_dir(out, a);
         else fl_add(out, a);
     }
 }
@@ -1192,6 +1188,7 @@ typedef struct {
     int vw, vh;                   // drawable size (device pixels)
     char **files;                 // (owned by the loader; same list)
     int nfiles, index, started, lazy_dir;
+    int mixed_dirs;               // the files are in more than one folder: the title shows their path
     int dir;                      // paging direction (+1 / -1): the neighbour converted first
     double request_time;
     int reported, was_ready, dirty, quit;
@@ -1292,13 +1289,23 @@ static void clamp_center(const Decoded *d, double s) {
     nv_clamp_center(iw, ih, V.vw, V.vh, s, &V.cx, &V.cy);
 }
 
+// After a new list: are its files in more than one folder?
+static void check_dirs(void) {
+    V.mixed_dirs = 0;
+    size_t d0 = V.nfiles ? (size_t)(base_name(V.files[0]) - V.files[0]) : 0;
+    for (int i = 1; i < V.nfiles && !V.mixed_dirs; i++) {
+        size_t d = (size_t)(base_name(V.files[i]) - V.files[i]);
+        V.mixed_dirs = d != d0 || strncmp(V.files[i], V.files[0], d);
+    }
+}
+
 static void update_title(void) {
     char t[1024];
     if (!V.nfiles) {
         SDL_SetWindowTitle(V.win, "nitroview - drop images here, or O to open files, Shift+O a folder");
         return;
     }
-    const char *name = base_name(V.files[V.index]);
+    const char *name = V.mixed_dirs ? V.files[V.index] : base_name(V.files[V.index]);
     Decoded *d = loader_get(V.index);
     if (d)
         snprintf(t, sizeof t, "%s  %.0f%%%s  (%d/%d)  %dx%d  decode %.1f ms", name, 100 * current_scale(d),
@@ -1471,7 +1478,7 @@ static void expand_directory(void) {
     const char *path = V.files[V.index], *name = base_name(path);
     char *dir = SDL_strndup(path, (size_t)(name - path));
     FileList l = {0};
-    list_dir(&l, dir, NULL, 0);
+    list_dir(&l, dir);
     SDL_free(dir);
     int k = -1;
     for (int i = 0; i < l.n; i++)
@@ -1483,6 +1490,7 @@ static void expand_directory(void) {
     nv_loader_replace(L, (void **)l.v, l.n, V.index, k);
     V.files = l.v;
     V.nfiles = l.n;
+    check_dirs();
     V.index = k;
     update_title();
 }
@@ -1565,6 +1573,7 @@ static void open_files(FileList *l, int lazy) {   // drag & drop, the Open dialo
     V.lazy_dir = lazy;
     V.files = l->v;
     V.nfiles = l->n;
+    check_dirs();
     V.started = 0;
     V.index = 0;
     V.shown_index = -1;
@@ -1577,7 +1586,7 @@ static void open_files(FileList *l, int lazy) {   // drag & drop, the Open dialo
 static void open_paths(char **args, int n) {
     FileList l = {0};
     collect_files(&l, args, n);
-    int lazy = n == 1 && !strpbrk(args[0], "*?") && !is_dir(args[0]);
+    int lazy = n == 1 && !is_dir(args[0]);
     if (l.n) {
         SDL_RestoreWindow(V.win);
         open_files(&l, lazy);
@@ -2553,9 +2562,10 @@ int main(int argc, char **argv) {
     if (loader_start(fl.v, fl.n)) { fprintf(stderr, "cannot start the decoder thread\n"); return 1; }
     V.files = fl.v;
     V.nfiles = fl.n;
+    check_dirs();
     V.shown_index = -1;
     if (fl.n) {
-        V.lazy_dir = nargs == 1 && !strpbrk(args[0], "*?") && !is_dir(args[0]);
+        V.lazy_dir = nargs == 1 && !is_dir(args[0]);
         go(0, 1);
     } else {
         update_title();
