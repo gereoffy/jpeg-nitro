@@ -13,8 +13,11 @@
 #include <stdint.h>
 #include "nitro_load.h"   // NvDecoder: the buffer callbacks a page is rendered into
 
-#if defined(NV_SVG) || defined(NV_CDR)
-#define NV_VECTOR 1   // a viewer with vector drawings: rendered again, sharp, when zoomed in
+// A viewer with vector drawings (rendered again, sharp, when zoomed in): -DNV_VECTOR from the
+// Makefile when libnitrovec.a holds any of the readers (SVG = 1 or CDR = 1); the library itself
+// is compiled with their NV_SVG / NV_CDR.
+#if (defined(NV_SVG) || defined(NV_CDR)) && !defined(NV_VECTOR)
+#define NV_VECTOR 1
 #endif
 
 #ifdef __cplusplus
@@ -24,6 +27,10 @@ extern "C" {
 // The file extensions of the drawings this build opens (NULL-terminated, lower case, without
 // the dot): what a viewer opens from a folder beside nv_image_exts, and lists in its file dialog.
 extern const char *const nv_vector_exts[];
+// Their formats for a message ("SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio and draw.io"; "" with
+// none) and their MIME types, each followed by ';' (a desktop file's MimeType list; "" with none).
+const char *nv_vector_formats(void);
+const char *nv_vector_mimes(void);
 
 // A loaded drawing, shared by the images made from it (its pages, the sharp detail of a zoomed-in
 // view rendered on another thread): reference counted, freed by whichever drops it last.

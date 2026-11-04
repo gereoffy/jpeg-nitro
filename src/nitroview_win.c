@@ -17,7 +17,7 @@
 // a buffer the decoder thread hands to Direct3D) -> compute shader (upsampling, YCbCr->RGB, PNG rows,
 // PSD planes) -> mipmaps -> trilinear scaled draw.
 // Anything else goes through WIC (damaged or CMYK JPEG, JPEG-compressed TIFF, lossless WebP, GIF, BMP ...).
-// SVG / DXF / CorelDRAW (optional, NV_SVG / NV_CDR): nitrosvg / nitrodxf / nitrocdr render it once in full as
+// The vector drawings (optional, NV_VECTOR: libnitrovec): nitro_vector renders a page once in full as
 // BGRA, and the visible part again, sharp, when zoomed in (as nitroview.m does).
 // Neighbouring images are decoded ahead in the background.
 #define COBJMACROS
@@ -2035,16 +2035,18 @@ static int create_window(const wchar_t *first) {
 // ---------------------------------------------------------------------------
 // file association (--register / --unregister): for the current user, no admin rights
 
+// the extensions registered: the images', then the drawings' this build renders (nv_vector_exts)
 static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
                                               L".heif", L".avif", L".tif", L".tiff", L".webp", L".gif", L".bmp", L".cr2", L".nef", L".nrw", L".arw", L".raf", L".dng",
-#ifdef NV_SVG
-                                              L".svg", L".dxf", L".dwg", L".wmf", L".emf",
-#endif
-#ifdef NV_CDR
-                                              L".cdr", L".cmx", L".vsd", L".vsdx", L".vsdm", L".vdx", L".vst", L".vstx", L".vstm", L".vtx", L".vss", L".vssx",
-                                              L".vssm", L".vsx", L".drawio", L".dio",
-#endif
                                               NULL};
+static const wchar_t *assoc_ext(int i) {   // the i-th of them, NULL past the last (a static buffer: until the next call)
+    static wchar_t w[16];
+    int n = (int)(sizeof g_assoc_exts / sizeof *g_assoc_exts) - 1;
+    if (i < n) return g_assoc_exts[i];
+    if (!nv_vector_exts[i - n]) return NULL;
+    swfmt(w, 16, L".%hs", nv_vector_exts[i - n]);
+    return w;
+}
 #define PROGID L"NitroView.Image"
 
 static int reg_str(const wchar_t *key, const wchar_t *name, const wchar_t *val) {
@@ -2065,8 +2067,8 @@ static int do_register(void) {
     bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationName", L"NitroView");
     bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationDescription", L"Very fast image viewer");
     bad |= reg_str(L"Software\\NitroView\\Capabilities", L"ApplicationIcon", icon);
-    for (int i = 0; g_assoc_exts[i]; i++) {
-        const wchar_t *e = g_assoc_exts[i];
+    for (int i = 0; assoc_ext(i); i++) {
+        const wchar_t *e = assoc_ext(i);
         swfmt(k, 256, L"Software\\Classes\\%ls\\OpenWithProgids", e);   // "Open with" list
         bad |= RegSetKeyValueW(HKEY_CURRENT_USER, k, PROGID, REG_NONE, NULL, 0) != ERROR_SUCCESS;
         bad |= reg_str(L"Software\\Classes\\Applications\\nitroview.exe\\SupportedTypes", e, L"");
@@ -2075,21 +2077,14 @@ static int do_register(void) {
     bad |= reg_str(L"Software\\RegisteredApplications", L"NitroView", L"Software\\NitroView\\Capabilities");
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
     if (bad) { fprintf(stderr, "could not write the registry\n"); return 1; }
+    char formats[128] = "";   // (the drawings this build renders)
+    if (*nv_vector_formats()) snprintf(formats, sizeof formats, ", %s", nv_vector_formats());
     printf("NitroView is registered for JPEG, PNG, PSD, HEIC, AVIF, TIFF, WebP, GIF, BMP, camera raws (DNG, CR2, NEF,\n"
            "ARW, RAF)%s (%s).\n"
            "Windows lets only you choose the default app: in the Settings page that opens now, pick NitroView\n"
            "(or right-click an image > Open with > Choose another app > NitroView, \"Always\").\n"
            "After moving nitroview.exe, run --register again; --unregister removes all of it.\n",
-#if defined(NV_SVG) && defined(NV_CDR)
-           ", SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio and draw.io",
-#elif defined(NV_SVG)
-           ", SVG, DXF / DWG and WMF / EMF",
-#elif defined(NV_CDR)
-           ", CorelDRAW, Visio and draw.io",
-#else
-           "",
-#endif
-           utf8(exe));
+           formats, utf8(exe));
     ShellExecuteW(NULL, L"open", L"ms-settings:defaultapps?registeredAppUser=NitroView", NULL, NULL, SW_SHOWNORMAL);
     return 0;
 }
@@ -2100,8 +2095,8 @@ static int do_unregister(void) {
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\nitroview.exe");
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\NitroView");
     RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", L"NitroView");
-    for (int i = 0; g_assoc_exts[i]; i++) {
-        swfmt(k, 256, L"Software\\Classes\\%ls\\OpenWithProgids", g_assoc_exts[i]);
+    for (int i = 0; assoc_ext(i); i++) {
+        swfmt(k, 256, L"Software\\Classes\\%ls\\OpenWithProgids", assoc_ext(i));
         RegDeleteKeyValueW(HKEY_CURRENT_USER, k, PROGID);
     }
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);

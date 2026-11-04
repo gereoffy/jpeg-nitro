@@ -15,8 +15,8 @@
 // (multi-threaded, into a host buffer, on the decoder thread) -> OpenGL: the planes as textures
 // -> a fragment shader into the RGBA texture (upsampling, YCbCr->RGB, PNG rows, PSD planes) ->
 // mipmaps -> trilinear scaled draw. Anything else goes through stb_image (16-bit / palette /
-// interlaced PNG, GIF, BMP, TGA, damaged or CMYK JPEG). SVG / DXF / CorelDRAW (optional, NV_SVG /
-// NV_CDR) as on Windows. Neighbouring images are decoded ahead in the background.
+// interlaced PNG, GIF, BMP, TGA, damaged or CMYK JPEG). The vector drawings (optional, NV_VECTOR:
+// libnitrovec) as on Windows. Neighbouring images are decoded ahead in the background.
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdint.h>
@@ -2402,15 +2402,8 @@ static int do_register(int on) {
             "Terminal=false\n"
             "Categories=Graphics;Viewer;\n"
             "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;"
-            "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;"
-#ifdef NV_SVG
-            "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
-#endif
-#ifdef NV_CDR
-            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;"
-#endif
-            "\n"
-            "StartupNotify=true\n", q, nh_decoder() ? "image/heic;image/heif;" : "");
+            "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;%s\n"
+            "StartupNotify=true\n", q, nh_decoder() ? "image/heic;image/heif;" : "", nv_vector_mimes());   // (the drawings this build renders)
         bad = !text || !SDL_CreateDirectory(apps) || !SDL_CreateDirectory(icons) || !SDL_SaveFile(desktop, text, strlen(text)) ||
               !SDL_SaveFile(icon, icon_png, icon_png_len);
         SDL_free(text);

@@ -29,6 +29,30 @@ const char *const nv_vector_exts[] = {
 #endif
     NULL};
 
+const char *nv_vector_formats(void) {
+#if defined(NV_SVG) && defined(NV_CDR)
+    return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio and draw.io";
+#elif defined(NV_SVG)
+    return "SVG, DXF / DWG and WMF / EMF";
+#elif defined(NV_CDR)
+    return "CorelDRAW, Visio and draw.io";
+#else
+    return "";
+#endif
+}
+
+const char *nv_vector_mimes(void) {
+    return
+#ifdef NV_SVG
+        "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
+#endif
+#ifdef NV_CDR
+        "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
+        "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;"
+#endif
+        "";
+}
+
 static _Atomic int g_background;   // (nv_vector_background)
 
 struct NvVector {
