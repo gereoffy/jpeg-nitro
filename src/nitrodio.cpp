@@ -1491,6 +1491,11 @@ struct Builder {
     }
 
     void build() {
+        std::unordered_map<std::string, std::vector<size_t>> children;   // (of every edge, in the cells' order)
+        for (size_t i = 0; i < cells.size(); i++) {
+            Cell *p = cells[i].vertex ? find(cells[i].parent) : nullptr;
+            if (p && p->edge) children[p->id].push_back(i);
+        }
         for (Cell &c : cells) {
             if (!shown(c) || layer(c)) continue;
             if (c.vertex) {
@@ -1499,8 +1504,10 @@ struct Builder {
                 vertex(c);
             } else if (c.edge) {
                 edge(c);
-                for (Cell &k : cells)   // (its label cells, after it)
-                    if (k.parent == c.id && k.vertex && !k.value.empty() && shown(k) && c.route.size() >= 2) edgeLabel(k, c, c.route);
+                auto f = children.find(c.id);   // (its label cells, after it)
+                if (f != children.end() && c.route.size() >= 2)
+                    for (size_t i : f->second)
+                        if (!cells[i].value.empty() && shown(cells[i])) edgeLabel(cells[i], c, c.route);
             }
         }
     }
