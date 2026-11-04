@@ -226,6 +226,23 @@ int nv_vector_too_small(int pw, int ph, int tw, int th, int max_tex) {
     return f > 1.01 && (pw > ph ? pw : ph) < max_tex;
 }
 
+uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDecoder *dec, NvPage *p) {
+    memset(p, 0, sizeof *p);
+    p->scale = nv_vector_page_size(v, page, tw, th, dec->max_tex, &p->w, &p->h);
+    if (!p->scale) return NULL;
+    size_t align = dec->align > 1 ? dec->align : 1;
+    p->pitch = ((size_t)p->w * 4 + align - 1) / align * align;
+    uint8_t *buf = dec->get(p->pitch * p->h, &p->cap, dec->ctx);
+    if (!buf) return NULL;
+    if (nv_vector_render(v, page, buf, p->w, p->h, p->pitch, p->scale, 0, 0, NULL, NULL)) {
+        dec->put(buf, p->cap, dec->ctx);
+        return NULL;
+    }
+    p->mode = v->mode;
+    p->background = v->background;
+    return buf;
+}
+
 int nv_vector_background(void) { return atomic_load(&g_background); }
 
 int nv_vector_cycle_background(int delta) {

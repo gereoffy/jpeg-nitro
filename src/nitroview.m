@@ -307,44 +307,6 @@ static Decoded *decode_imageio(NSData *data, Decoded *d, BufferPool *pool, size_
     return d;
 }
 
-#ifdef NV_VECTOR
-// Vector drawings (SVG, DXF, CorelDRAW: nitro_vector): a page rendered once in full here (the
-// size: nv_vector_page_size), over the background it was loaded with. Zoomed in further, the
-// viewer renders the visible part again at screen resolution (see ViewerView vectorDetail).
-// Shown fitted to the screen (full screen or key 0), the viewer sets the screen's size in
-// pixels here: images are then rendered at least that large, sharp from the start (the
-// prefetched ones too), not first enlarged and sharpened a moment later by vectorDetail.
-// d takes a reference to v.
-static _Atomic int g_vector_tw, g_vector_th;
-static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *pool, size_t align, double t1) {
-    int iw, ih;
-    double k = nv_vector_page_size(v, page, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), MAX_TEX, &iw, &ih);
-    id<MTLBuffer> buf = k ? bgra_buffer(d, iw, ih, pool, align) : nil;
-    if (!buf || nv_vector_render(v, page, buf.contents, iw, ih, d.pitch[0], k, 0, 0, NULL, NULL)) {
-        if (buf) [pool put:buf];
-        return nil;
-    }
-    d.vector = nv_vector_ref(v);
-    d.vectorScale = k;
-    d.pages = nv_vector_pages(v);
-    d.page = page;
-    d.background = nv_vector_background_of(v);
-    d.colorSpace = srgb_space();
-    d.orientation = 1;
-    bgra_done(d, buf, nv_vector_mode(v), t1);
-    return d;
-}
-// Another page of the drawing d shows (a new Decoded, nil if it cannot be drawn): [ and ]
-// (showPage), sharing the loaded document (loading a large plan takes seconds, drawing a page
-// much less).
-static Decoded *drawing_page(Decoded *d, int page, BufferPool *pool, size_t align) {
-    if (!d.vector || page < 0 || page >= d.pages) return nil;
-    Decoded *n = decode_drawing(d.vector, page, [Decoded new], pool, align, now_ms());
-    n.read_ms = d.read_ms;
-    return n;
-}
-#endif
-
 #ifdef NV_TURBOJPEG
 static Decoded *decode_turbojpeg(const uint8_t *bytes, size_t len, Decoded *d, BufferPool *pool, size_t align, double t1) {
     tjhandle h = tj3Init(TJINIT_DECOMPRESS);
@@ -411,6 +373,47 @@ static void pool_put(uint8_t *p, size_t cap, void *ctx) {
     if (m) [b->_pool put:m];
 }
 @end
+
+#ifdef NV_VECTOR
+// Vector drawings (SVG, DXF, CorelDRAW: nitro_vector): a page rendered once in full here
+// (nv_vector_render_page), over the background it was loaded with. Zoomed in further, the
+// viewer renders the visible part again at screen resolution (see ViewerView vectorDetail).
+// Shown fitted to the screen (full screen or key 0), the viewer sets the screen's size in
+// pixels here: images are then rendered at least that large, sharp from the start (the
+// prefetched ones too), not first enlarged and sharpened a moment later by vectorDetail.
+// d takes a reference to v.
+static _Atomic int g_vector_tw, g_vector_th;
+static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *pool, size_t align, double t1) {
+    DecodeBuffers *bufs = [[DecodeBuffers alloc] initWithPool:pool];
+    NvDecoder dec = {.get = pool_get, .put = pool_put, .ctx = (__bridge void *)bufs, .align = align, .max_tex = MAX_TEX};
+    NvPage p;
+    uint8_t *px = nv_vector_render_page(v, page, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), &dec, &p);
+    if (!px) return nil;
+    d.kind = KIND_BGRA;
+    d.width = p.w;
+    d.height = p.h;
+    d.pitch[0] = p.pitch;
+    d.bands = 1;
+    d.vector = nv_vector_ref(v);
+    d.vectorScale = p.scale;
+    d.pages = nv_vector_pages(v);
+    d.page = page;
+    d.background = p.background;
+    d.colorSpace = srgb_space();
+    d.orientation = 1;
+    bgra_done(d, [bufs take:px], p.mode, t1);
+    return d;
+}
+// Another page of the drawing d shows (a new Decoded, nil if it cannot be drawn): [ and ]
+// (showPage), sharing the loaded document (loading a large plan takes seconds, drawing a page
+// much less).
+static Decoded *drawing_page(Decoded *d, int page, BufferPool *pool, size_t align) {
+    if (!d.vector || page < 0 || page >= d.pages) return nil;
+    Decoded *n = decode_drawing(d.vector, page, [Decoded new], pool, align, now_ms());
+    n.read_ms = d.read_ms;
+    return n;
+}
+#endif
 
 // Decode one file into a Metal buffer: nitro_load's decoders, else (interlaced PNG, CMYK JPEG,
 // GIF, BMP ...) Wuffs / TurboJPEG when built in, and ImageIO. Runs on the decoder thread.

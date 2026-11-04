@@ -771,39 +771,33 @@ done:
 }
 
 
-#ifdef NV_VECTOR
+static uint8_t *pool_get(size_t len, size_t *cap, void *ctx) { return buf_get(len, cap); }
+static void pool_put(uint8_t *p, size_t cap, void *ctx) { buf_put(p, cap); }
 
-// Renders a page of v as the image of d, in full (the size: nv_vector_page_size), over the
-// background it was loaded with. Returns the pixels (pool buffer) or NULL; d takes a reference to v.
+#ifdef NV_VECTOR
+// Renders a page of v as the image of d, in full (nv_vector_render_page), over the background it
+// was loaded with. Returns the pixels (pool buffer) or NULL; d takes a reference to v.
 static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *cap) {
-    int iw, ih;
-    double k = nv_vector_page_size(v, page, (int)g_vec_tw, (int)g_vec_th, MAX_TEX, &iw, &ih);
-    if (!k) return NULL;
-    size_t pitch = (size_t)iw * 4;
-    uint8_t *buf = buf_get(pitch * ih, cap);
+    NvDecoder dec = {.get = pool_get, .put = pool_put, .align = 1, .max_tex = MAX_TEX};
+    NvPage p;
+    uint8_t *buf = nv_vector_render_page(v, page, (int)g_vec_tw, (int)g_vec_th, &dec, &p);
     if (!buf) return NULL;
-    if (nv_vector_render(v, page, buf, iw, ih, pitch, k, 0, 0, NULL, NULL)) {
-        buf_put(buf, *cap);
-        return NULL;
-    }
+    *cap = p.cap;
     d->kind = KIND_BGRA;
-    d->width = iw;
-    d->height = ih;
-    d->pitch[0] = pitch;
-    d->size = pitch * ih;
-    d->mode = nv_vector_mode(v);
+    d->width = p.w;
+    d->height = p.h;
+    d->pitch[0] = p.pitch;
+    d->size = p.pitch * p.h;
+    d->mode = p.mode;
     d->bands = 1;
     d->orientation = 1;
     d->vec = nv_vector_ref(v);
-    d->background = nv_vector_background_of(v);
+    d->background = p.background;
     d->page = page;
-    d->vscale = k;
+    d->vscale = p.scale;
     return buf;
 }
 #endif
-
-static uint8_t *pool_get(size_t len, size_t *cap, void *ctx) { return buf_get(len, cap); }
-static void pool_put(uint8_t *p, size_t cap, void *ctx) { buf_put(p, cap); }
 
 // Decodes one file (nitro_load's decoders, else WIC) and hands it to the GPU. NULL: cannot be decoded.
 static Decoded *decode_file(const wchar_t *wpath) {

@@ -10,6 +10,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include "nitro_load.h"   // NvDecoder: the buffer callbacks a page is rendered into
 
 #if defined(NV_SVG) || defined(NV_CDR)
 #define NV_VECTOR 1   // a viewer with vector drawings: rendered again, sharp, when zoomed in
@@ -59,6 +60,19 @@ double nv_vector_page_size(const NvVector *v, int page, int tw, int th, int max_
 // A page rendered pw x ph pixels is too small for a target of tw x th now (nv_vector_page_size
 // would render it larger): rendered again.
 int nv_vector_too_small(int pw, int ph, int tw, int th, int max_tex);
+
+// A page rendered in full, as the viewers show a drawing: the pixels of nv_vector_page_size (tw,
+// th and dec->max_tex), BGRA, over the background it was loaded with, in a buffer from dec's
+// callbacks (get, put, ctx and align as nv_decode uses them, nitro_load.h: the rows' pitch is
+// w * 4 rounded up to align). Returns the buffer and fills p; NULL if the page has no size, no
+// buffer came, or the render failed (the buffer is put back).
+typedef struct {
+    int w, h;               // the pixels
+    size_t pitch, cap;      // the rows' pitch; the buffer's size (from get)
+    double scale;           // pixels per document unit
+    int mode, background;   // nv_vector_mode, nv_vector_background_of
+} NvPage;
+uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDecoder *dec, NvPage *p);
 
 // The background the drawings loaded from now on are drawn over: 0 white, 1 dark grey (AutoCAD's
 // model space), 2 black. Any thread.

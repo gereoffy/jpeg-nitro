@@ -8,6 +8,7 @@
 #include "../nitrojpeg.h"    // nj_set_max_workers
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define NITRO_READ_PADDING 64
@@ -22,39 +23,47 @@ static gint dng_ev3;   // DNG exposure correction in 1/3 EV (key E / Shift+E)
 
 static int vector_cancelled(void *cancellable) { return g_cancellable_is_cancelled(cancellable); }
 
-GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
-                                double y0, GCancellable *cancellable) {
-    if (!vector || w <= 0 || h <= 0 || (gsize)w > G_MAXSIZE / 4 / (gsize)h) return NULL;
-    gsize stride = (gsize)w * 4;
-    guint8 *px = g_try_malloc(stride * (gsize)h);
-    if (!px) return NULL;
-    double k = scale * vector_scale;   // device pixels per document unit
-    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k, cancellable ? vector_cancelled : NULL, cancellable)) {
-        g_free(px);
-        return NULL;
-    }
-    GBytes *bytes = g_bytes_new_take(px, stride * (gsize)h);
+// A texture of w x h BGRA pixels (premultiplied) from malloc, stride bytes per row (freed with it).
+static GdkTexture *bgra_texture(guint8 *px, int w, int h, gsize stride) {
+    GBytes *bytes = g_bytes_new_with_free_func(px, stride * (gsize)h, free, px);
     GdkTexture *t = gdk_memory_texture_new(w, h, GDK_MEMORY_B8G8R8A8_PREMULTIPLIED, bytes, stride);
     g_bytes_unref(bytes);
     return t;
 }
 
-// A page rendered in full (the size: nv_vector_page_size), as the other viewers do (takes a
-// reference to vector).
+GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
+                                double y0, GCancellable *cancellable) {
+    if (!vector || w <= 0 || h <= 0 || (gsize)w > G_MAXSIZE / 4 / (gsize)h) return NULL;
+    gsize stride = (gsize)w * 4;
+    guint8 *px = malloc(stride * (gsize)h);
+    if (!px) return NULL;
+    double k = scale * vector_scale;   // device pixels per document unit
+    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k, cancellable ? vector_cancelled : NULL, cancellable)) {
+        free(px);
+        return NULL;
+    }
+    return bgra_texture(px, w, h, stride);
+}
+
+// A page rendered in full (nv_vector_render_page), as the other viewers do (takes a reference
+// to vector).
+static uint8_t *page_get(size_t len, size_t *cap, void *ctx) { *cap = len; return malloc(len); }
+static void page_put(uint8_t *p, size_t cap, void *ctx) { free(p); }
+
 static NitroImage *vector_image(NitroVector *vector, int page) {
-    int iw, ih;
-    double k = nv_vector_page_size(vector, page, 0, 0, 16384, &iw, &ih);
-    GdkTexture *t = k ? nitro_vector_render(vector, page, k, iw, ih, 1.0, 0, 0, NULL) : NULL;
-    if (!t) return NULL;
+    static const NvDecoder dec = {.get = page_get, .put = page_put, .align = 1, .max_tex = 16384};
+    NvPage p;
+    guint8 *px = nv_vector_render_page(vector, page, 0, 0, &dec, &p);
+    if (!px) return NULL;
     NitroImage *image = g_new0(NitroImage, 1);
-    image->texture = t;
+    image->texture = bgra_texture(px, p.w, p.h, p.pitch);
     image->vector = nv_vector_ref(vector);
     image->page = page;
-    image->vector_scale = k;
-    image->background = nv_vector_background_of(vector);
+    image->vector_scale = p.scale;
+    image->background = p.background;
     image->orientation = 1;
-    image->width = image->source_width = iw;
-    image->height = image->source_height = ih;
+    image->width = image->source_width = p.w;
+    image->height = image->source_height = p.h;
     return image;
 }
 
