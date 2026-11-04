@@ -171,11 +171,18 @@ struct DibPlace {
 // megabyte: a file of a few megabytes could hold gigabytes of surfaces)
 const size_t kMaxBitmapPixels = 64u << 20, kDocumentPixels = 256u << 20;
 
+// GDI's default palette (the 20 static colours), what the indices of a DIB_PAL_COLORS colour table
+// mean in a device context without a palette of its own
+const uint32_t kDefaultPalette[20] = {0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0, 0xc0dcc0, 0xa6caf0,
+                                      0xfffbf0, 0xa0a0a4, 0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff};
+
 // bits: the pixels when the record gives them apart from the header (else they follow the palette);
 // alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it;
-// budget: the document's pixels left (taken from); startScan, scans: SetDIBitsToDevice's band,
-// the rows the bits hold (scans 0: all that are there)
-SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, DibPlace *place = nullptr, uint32_t startScan = 0, uint32_t scans = 0) {
+// budget: the document's pixels left (taken from); palColors: the device context's palette when the
+// record's colour usage is DIB_PAL_COLORS (the colour table holds 16-bit indices into it), else
+// null; startScan, scans: SetDIBitsToDevice's band, the rows the bits hold (scans 0: all that are there)
+SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, const std::vector<uint32_t> *palColors, DibPlace *place = nullptr,
+                uint32_t startScan = 0, uint32_t scans = 0) {
     uint32_t hs = hdr.u32(0);
     int w, h, bpp;
     uint32_t comp = 0, used = 0;
@@ -215,10 +222,15 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, DibPlace *pla
     }
     size_t entries = bpp <= 8 ? (used && used <= (1u << bpp) ? used : 1u << bpp) : used;
     if (entries > 256) entries = 256;
+    if (palColors) palEntry = 2;   // (DIB_PAL_COLORS: 16-bit palette indices)
     uint32_t pal[256];
     for (size_t i = 0; i < entries && i < 256; i++) {
         size_t o = palOff + i * palEntry;
-        pal[i] = 0xff000000u | (uint32_t)hdr.u8(o + 2) << 16 | (uint32_t)hdr.u8(o + 1) << 8 | hdr.u8(o);
+        if (palColors) {
+            uint32_t idx = hdr.u16(o);
+            pal[i] = 0xff000000u | (palColors->empty() ? (idx < 20 ? kDefaultPalette[idx] : 0) : idx < palColors->size() ? (*palColors)[idx] : 0);
+        } else
+            pal[i] = 0xff000000u | (uint32_t)hdr.u8(o + 2) << 16 | (uint32_t)hdr.u8(o + 1) << 8 | hdr.u8(o);
     }
     for (size_t i = entries; i < 256; i++) pal[i] = 0xff000000u;
     if (!bits.p || !bits.n) bits = hdr.sub(palOff + entries * palEntry, hdr.n);
@@ -609,6 +621,8 @@ public:
         if ((v >> 24) == 1) return (v & 0xffff) < dc.palette.size() ? dc.palette[v & 0xffff] : 0;
         return colorref(v);
     }
+    // a DIB record's colour usage: with DIB_PAL_COLORS the DIB's colour table indexes the palette
+    const std::vector<uint32_t> *palOf(uint32_t usage) const { return usage == 1 ? &dc.palette : nullptr; }
 
     // --- state ---
     nitrometa &out;
@@ -1466,7 +1480,7 @@ bool Player::playWmf(Bytes b, size_t o) {
             Obj ob;
             ob.type = Obj::BRUSH;
             ob.brush.style = BS_DIBPATTERN;
-            ob.brush.pattern = decodeDib(r.sub(4, r.n), {}, false, pixelBudget);
+            ob.brush.pattern = decodeDib(r.sub(4, r.n), {}, false, pixelBudget, palOf(r.u16(2)));
             create(std::move(ob));
             break;
         }
@@ -1599,7 +1613,7 @@ bool Player::playWmf(Bytes b, size_t o) {
             if (noBitmap) break;
             DibPlace place;
             SurfP img = fn == 0x0922 || fn == 0x0b23 ? decodeDdb(r.sub(at, r.n), dc.textRgb, dc.bkRgb, pixelBudget)
-                                                     : decodeDib(r.sub(at, r.n), {}, false, pixelBudget, &place);
+                                                     : decodeDib(r.sub(at, r.n), {}, false, pixelBudget, fn == 0x0f43 ? palOf(r.u16(4)) : nullptr, &place);
             if (!img) break;
             if (!stretch) sw = dw, sh = dh;
             if (fn == 0x0f43) sy = dibSrcY(place, sy, sh);   // (the others blit from a bitmap selected into a DC: top-down)
@@ -1609,7 +1623,7 @@ bool Player::playWmf(Bytes b, size_t o) {
         case 0x0d33: {   // SetDIBitsToDevice: usage, scanCount, startScan, srcY, srcX, h, w, dstY, dstX, DIB
             double sy = r.i16(6), sx = r.i16(8), h = r.i16(10), w = r.i16(12), dy = r.i16(14), dx0 = r.i16(16);
             DibPlace place;
-            SurfP img = decodeDib(r.sub(18, r.n), {}, false, pixelBudget, &place, r.u16(4), r.u16(2));
+            SurfP img = decodeDib(r.sub(18, r.n), {}, false, pixelBudget, palOf(r.u16(0)), &place, r.u16(4), r.u16(2));
             if (img) blit(dx0, dy, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
@@ -1704,9 +1718,9 @@ bool Player::playEmf(Bytes b) {
         auto rect = [&](size_t at, double *v) {
             for (int i = 0; i < 4; i++) v[i] = r.i32(at + (size_t)i * 4);
         };
-        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha, DibPlace *place = nullptr, uint32_t startScan = 0,
-                       uint32_t scans = 0) {
-            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, pixelBudget, place, startScan, scans);
+        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, uint32_t usage, bool alpha, DibPlace *place = nullptr,
+                       uint32_t startScan = 0, uint32_t scans = 0) {
+            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, pixelBudget, palOf(usage), place, startScan, scans);
         };
         double v[4];
         switch (type) {
@@ -1831,7 +1845,7 @@ bool Player::playEmf(Bytes b) {
             Obj ob;
             ob.type = Obj::BRUSH;
             ob.brush.style = BS_DIBPATTERN;
-            ob.brush.pattern = dib(r.u32(16), r.u32(20), r.u32(24), r.u32(28), false);
+            ob.brush.pattern = dib(r.u32(16), r.u32(20), r.u32(24), r.u32(28), r.u32(12), false);
             if (type == 93 && ob.brush.pattern) {   // (a monochrome pattern in the text and background colours)
                 int w = plutovg_surface_get_width(ob.brush.pattern->s), h = plutovg_surface_get_height(ob.brush.pattern->s);
                 int stride = plutovg_surface_get_stride(ob.brush.pattern->s);
@@ -1943,7 +1957,7 @@ bool Player::playEmf(Bytes b) {
             }
             double sw = type == 76 ? w : r.i32(100), sh = type == 76 ? h : r.i32(104);
             bool alpha = type == 114 && (rop >> 24 & 1);   // AC_SRC_ALPHA
-            SurfP img = dib(r.u32(84), r.u32(88), r.u32(92), cb, alpha);
+            SurfP img = dib(r.u32(84), r.u32(88), r.u32(92), cb, r.u32(80), alpha);
             if (!img) break;
             if (type == 116) img = keyed(img, colorref(rop));
             blit(x, y, w, h, img, sx, sy, sw, sh, type == 76 || type == 77 ? rop : SRCCOPY, type == 114 ? (rop >> 16 & 255) / 255.0f : 1);
@@ -1952,9 +1966,9 @@ bool Player::playEmf(Bytes b) {
         case 78: {   // MaskBlt
             double x = r.i32(24), y = r.i32(28), w = r.i32(32), h = r.i32(36);
             double sx = r.i32(44), sy = r.i32(48);
-            SurfP img = dib(r.u32(84), r.u32(88), r.u32(92), r.u32(96), false);
+            SurfP img = dib(r.u32(84), r.u32(88), r.u32(92), r.u32(96), r.u32(80), false);
             if (!img) break;
-            SurfP mk = dib(r.u32(112), r.u32(116), r.u32(120), r.u32(124), false);
+            SurfP mk = dib(r.u32(112), r.u32(116), r.u32(120), r.u32(124), r.u32(108), false);
             if (mk) img = maskedBy(img, mk);
             blit(x, y, w, h, img, sx, sy, w, h, SRCCOPY);
             break;
@@ -1962,7 +1976,7 @@ bool Player::playEmf(Bytes b) {
         case 80: {   // SetDIBitsToDevice: ..., usage, start scan, scans
             double x = r.i32(24), y = r.i32(28), sx = r.i32(32), sy = r.i32(36), w = r.i32(40), h = r.i32(44);
             DibPlace place;
-            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place, r.u32(68), r.u32(72));
+            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), r.u32(64), false, &place, r.u32(68), r.u32(72));
             if (img) blit(x, y, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
@@ -1971,7 +1985,7 @@ bool Player::playEmf(Bytes b) {
             uint32_t rop = r.u32(68);
             double w = r.i32(72), h = r.i32(76);
             DibPlace place;
-            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place);
+            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), r.u32(64), false, &place);
             if (img) blit(x, y, w, h, img, sx, dibSrcY(place, sy, sh), sw, sh, rop);
             break;
         }
