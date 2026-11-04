@@ -1241,6 +1241,7 @@ public:
         const Font &f = dc.font;
         if ((options & 2) && rect) fillRect(rect[0], rect[1], rect[2], rect[3], Brush{BS_SOLID, dc.bkRgb});   // ETO_OPAQUE
         if (cps.empty()) return;
+        if (options & 0x10) return;   // ETO_GLYPH_INDEX: the font's glyph indices, not characters (a print-spooled file); nothing to draw without that font
         uint32_t rgb = dc.textRgb;
         if (!rop2Draws(rgb)) return;
         M m = matrix();
