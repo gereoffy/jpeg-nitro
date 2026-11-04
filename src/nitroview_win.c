@@ -121,13 +121,6 @@ static const wchar_t *base_name(const wchar_t *p) {
 typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;
 enum { MODE_WIC = -3, MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
 
-#ifdef NV_VECTOR
-// Shown fitted to the screen (full screen or key 0), the main thread sets the screen's size in
-// pixels here: vector images are then rendered at least that large (the prefetched ones too),
-// sharp from the start, not first enlarged and sharpened a moment later by the detail render.
-static volatile LONG g_vec_tw, g_vec_th;
-#endif
-
 typedef struct {
     Kind kind;
     int width, height, ncomp, orientation;
@@ -780,7 +773,7 @@ static void pool_put(uint8_t *p, size_t cap, void *ctx) { buf_put(p, cap); }
 static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *cap) {
     NvDecoder dec = {.get = pool_get, .put = pool_put, .align = 1, .max_tex = MAX_TEX};
     NvPage p;
-    uint8_t *buf = nv_vector_render_page(v, page, (int)g_vec_tw, (int)g_vec_th, &dec, &p);
+    uint8_t *buf = nv_vector_render_page(v, page, &dec, &p);
     if (!buf) return NULL;
     *cap = p.cap;
     d->kind = KIND_BGRA;
@@ -923,11 +916,11 @@ static void loader_reap(void) {   // main thread (textures live here)
 }
 
 #ifdef NV_VECTOR
-// The size vector images are rendered for changed (g_vec_tw): prefetched ones too small for it
-// are dropped and rendered again (the current one is sharpened by the detail render).
+// The size vector images are rendered for changed (nv_vector_set_target): prefetched ones too
+// small for it are dropped and rendered again (the current one is sharpened by the detail render).
 static int vec_too_small(const void *image, void *ctx) {
     const Decoded *d = image;
-    return d->vec && nv_vector_too_small(d->width, d->height, (int)g_vec_tw, (int)g_vec_th, MAX_TEX);
+    return d->vec && nv_vector_page_too_small(d->width, d->height, MAX_TEX);
 }
 static void loader_vector_target_changed(void) { nv_loader_drop(L, vec_too_small, NULL, 1, NULL, NULL); }
 #endif
@@ -1162,17 +1155,14 @@ static void zoom_fit(void) {
 // Fitted to the screen (full screen or key 0): vector images are rendered for its size.
 static void update_vector_target(void) {
 #ifdef NV_VECTOR
-    LONG tw = 0, th = 0;
+    int tw = 0, th = 0;
     if (V.hwnd && (V.fullscreen || V.fit_screen)) {
         MONITORINFO mi = {.cbSize = sizeof mi};
         GetMonitorInfoW(MonitorFromWindow(V.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
         tw = mi.rcMonitor.right - mi.rcMonitor.left;
         th = mi.rcMonitor.bottom - mi.rcMonitor.top;
     }
-    if (tw == g_vec_tw && th == g_vec_th) return;
-    InterlockedExchange(&g_vec_tw, tw);
-    InterlockedExchange(&g_vec_th, th);
-    loader_vector_target_changed();
+    if (nv_vector_set_target(tw, th)) loader_vector_target_changed();
 #endif
 }
 

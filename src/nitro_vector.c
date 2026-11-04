@@ -226,9 +226,22 @@ int nv_vector_too_small(int pw, int ph, int tw, int th, int max_tex) {
     return f > 1.01 && (pw > ph ? pw : ph) < max_tex;
 }
 
-uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDecoder *dec, NvPage *p) {
+static _Atomic int g_target_w, g_target_h;   // (nv_vector_set_target)
+
+int nv_vector_set_target(int tw, int th) {
+    if (tw == atomic_load(&g_target_w) && th == atomic_load(&g_target_h)) return 0;
+    atomic_store(&g_target_w, tw);
+    atomic_store(&g_target_h, th);
+    return 1;
+}
+
+int nv_vector_page_too_small(int pw, int ph, int max_tex) {
+    return nv_vector_too_small(pw, ph, atomic_load(&g_target_w), atomic_load(&g_target_h), max_tex);
+}
+
+uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPage *p) {
     memset(p, 0, sizeof *p);
-    p->scale = nv_vector_page_size(v, page, tw, th, dec->max_tex, &p->w, &p->h);
+    p->scale = nv_vector_page_size(v, page, atomic_load(&g_target_w), atomic_load(&g_target_h), dec->max_tex, &p->w, &p->h);
     if (!p->scale) return NULL;
     size_t align = dec->align > 1 ? dec->align : 1;
     p->pitch = ((size_t)p->w * 4 + align - 1) / align * align;

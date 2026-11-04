@@ -44,7 +44,7 @@ static void page_put(uint8_t *p, size_t cap, void *ctx) { free(p); }
 static NitroImage *vector_image(NitroVector *vector, int page) {
     static const NvDecoder dec = {.get = page_get, .put = page_put, .align = 1, .max_tex = 16384};
     NvPage p;
-    guint8 *px = nv_vector_render_page(vector, page, 0, 0, &dec, &p);
+    guint8 *px = nv_vector_render_page(vector, page, &dec, &p);
     if (!px) return NULL;
     NitroImage *image = g_new0(NitroImage, 1);
     image->texture = bgra_texture(px, p.w, p.h, p.pitch);

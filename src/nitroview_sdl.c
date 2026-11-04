@@ -207,12 +207,6 @@ static int gl_load(void) {
 typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind;
 enum { MODE_STB = -3, MODE_NITRODNG = NV_MODE_NITRODNG };   // (the rest: nitro_load.h)
 
-#ifdef NV_VECTOR
-// Shown fitted to the screen (full screen or key 0), the main thread sets the screen's size in
-// pixels here: vector images are then rendered at least that large (the prefetched ones too).
-static SDL_AtomicInt g_vec_tw, g_vec_th;
-#endif
-
 typedef struct {
     Kind kind;
     int width, height, ncomp, orientation;
@@ -968,7 +962,7 @@ static void pool_put(uint8_t *p, size_t cap, void *ctx) { buf_put(p, cap); }
 static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *cap) {
     NvDecoder dec = {.get = pool_get, .put = pool_put, .align = 1, .max_tex = g_max_tex};
     NvPage p;
-    uint8_t *buf = nv_vector_render_page(v, page, SDL_GetAtomicInt(&g_vec_tw), SDL_GetAtomicInt(&g_vec_th), &dec, &p);
+    uint8_t *buf = nv_vector_render_page(v, page, &dec, &p);
     if (!buf) return NULL;
     *cap = p.cap;
     d->kind = KIND_BGRA;
@@ -1118,11 +1112,11 @@ static int start_thread(SDL_ThreadFunction fn, const char *name, void *arg) {
 }
 
 #ifdef NV_VECTOR
-// The size vector images are rendered for changed (g_vec_tw): prefetched ones too small for it
-// are dropped and rendered again (the current one is sharpened by the detail render).
+// The size vector images are rendered for changed (nv_vector_set_target): prefetched ones too
+// small for it are dropped and rendered again (the current one is sharpened by the detail render).
 static int vec_too_small(const void *image, void *ctx) {
     const Decoded *d = image;
-    return d->vec && nv_vector_too_small(d->width, d->height, SDL_GetAtomicInt(&g_vec_tw), SDL_GetAtomicInt(&g_vec_th), g_max_tex);
+    return d->vec && nv_vector_page_too_small(d->width, d->height, g_max_tex);
 }
 static void loader_vector_target_changed(void) { nv_loader_drop(L, vec_too_small, NULL, 1, NULL, NULL); }
 #endif
@@ -1379,10 +1373,7 @@ static void update_vector_target(void) {
             th = (int)lround(m->h * m->pixel_density);
         }
     }
-    if (tw == SDL_GetAtomicInt(&g_vec_tw) && th == SDL_GetAtomicInt(&g_vec_th)) return;
-    SDL_SetAtomicInt(&g_vec_tw, tw);
-    SDL_SetAtomicInt(&g_vec_th, th);
-    loader_vector_target_changed();
+    if (nv_vector_set_target(tw, th)) loader_vector_target_changed();
 #endif
 }
 

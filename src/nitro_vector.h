@@ -61,10 +61,19 @@ double nv_vector_page_size(const NvVector *v, int page, int tw, int th, int max_
 // would render it larger): rendered again.
 int nv_vector_too_small(int pw, int ph, int tw, int th, int max_tex);
 
-// A page rendered in full, as the viewers show a drawing: the pixels of nv_vector_page_size (tw,
-// th and dec->max_tex), BGRA, over the background it was loaded with, in a buffer from dec's
-// callbacks (get, put, ctx and align as nv_decode uses them, nitro_load.h: the rows' pitch is
-// w * 4 rounded up to align). Returns the buffer and fills p; NULL if the page has no size, no
+// The target the pages are rendered for (nv_vector_render_page): the screen's size in pixels while
+// the viewer shows images fitted to it (full screen or key 0: the pages are then rendered at least
+// that large, the prefetched ones too, sharp from the start rather than enlarged and sharpened a
+// moment later by the detail render), else 0 x 0. Set by the main thread, read by any; returns
+// whether it changed (the viewer then drops the prefetched pages too small for it).
+int nv_vector_set_target(int tw, int th);
+// nv_vector_too_small for that target.
+int nv_vector_page_too_small(int pw, int ph, int max_tex);
+
+// A page rendered in full, as the viewers show a drawing: the pixels of nv_vector_page_size (for
+// the target, and dec->max_tex), BGRA, over the background it was loaded with, in a buffer from
+// dec's callbacks (get, put, ctx and align as nv_decode uses them, nitro_load.h: the rows' pitch
+// is w * 4 rounded up to align). Returns the buffer and fills p; NULL if the page has no size, no
 // buffer came, or the render failed (the buffer is put back).
 typedef struct {
     int w, h;               // the pixels
@@ -72,7 +81,7 @@ typedef struct {
     double scale;           // pixels per document unit
     int mode, background;   // nv_vector_mode, nv_vector_background_of
 } NvPage;
-uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDecoder *dec, NvPage *p);
+uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPage *p);
 
 // A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel): the
 // viewers render the visible part again at screen resolution, sharp, and draw it over the image.

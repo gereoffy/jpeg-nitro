@@ -378,16 +378,15 @@ static void pool_put(uint8_t *p, size_t cap, void *ctx) {
 // Vector drawings (SVG, DXF, CorelDRAW: nitro_vector): a page rendered once in full here
 // (nv_vector_render_page), over the background it was loaded with. Zoomed in further, the
 // viewer renders the visible part again at screen resolution (see ViewerView vectorDetail).
-// Shown fitted to the screen (full screen or key 0), the viewer sets the screen's size in
-// pixels here: images are then rendered at least that large, sharp from the start (the
-// prefetched ones too), not first enlarged and sharpened a moment later by vectorDetail.
+// Shown fitted to the screen (full screen or key 0), the viewer sets the screen's size as the
+// target (nv_vector_set_target): images are then rendered at least that large, sharp from the
+// start (the prefetched ones too), not first enlarged and sharpened a moment later by vectorDetail.
 // d takes a reference to v.
-static _Atomic int g_vector_tw, g_vector_th;
 static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *pool, size_t align, double t1) {
     DecodeBuffers *bufs = [[DecodeBuffers alloc] initWithPool:pool];
     NvDecoder dec = {.get = pool_get, .put = pool_put, .ctx = (__bridge void *)bufs, .align = align, .max_tex = MAX_TEX};
     NvPage p;
-    uint8_t *px = nv_vector_render_page(v, page, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), &dec, &p);
+    uint8_t *px = nv_vector_render_page(v, page, &dec, &p);
     if (!px) return nil;
     d.kind = KIND_BGRA;
     d.width = p.w;
@@ -620,8 +619,8 @@ typedef struct {
 // Multi-page documents: draws another page of image i in the background; it replaces the
 // decoded image and onDecoded reports it (nothing happens if i was paged away or evicted).
 - (void)showPage:(int)page of:(NSInteger)i;
-// The size vector images are rendered for changed (see g_vector_tw): prefetched ones too small
-// for it are dropped and rendered again (the current one is sharpened by vectorDetail).
+// The size vector images are rendered for changed (nv_vector_set_target): prefetched ones too
+// small for it are dropped and rendered again (the current one is sharpened by vectorDetail).
 - (void)vectorTargetChanged;
 // The DNG exposure correction (g_dng_ev3) or the vector background (nv_vector_background) changed:
 // prefetched DNGs / vector images are dropped and decoded again, the current one is replaced when its new
@@ -734,7 +733,7 @@ static void **retained_paths(NSArray<NSString *> *files) {   // the list as the 
 #ifdef NV_VECTOR
 static int vec_too_small(const void *image, void *ctx) {
     Decoded *d = (__bridge Decoded *)image;
-    return d.vector && nv_vector_too_small(d.width, d.height, atomic_load(&g_vector_tw), atomic_load(&g_vector_th), MAX_TEX);
+    return d.vector && nv_vector_page_too_small(d.width, d.height, MAX_TEX);
 }
 #endif
 - (void)vectorTargetChanged {
@@ -1105,10 +1104,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
     BOOL fit = self.window && (self.isFullScreen || _fitScreen);
     int tw = fit ? (int)lround(sc.frame.size.width * sc.backingScaleFactor) : 0;
     int th = fit ? (int)lround(sc.frame.size.height * sc.backingScaleFactor) : 0;
-    if (tw == atomic_load(&g_vector_tw) && th == atomic_load(&g_vector_th)) return;
-    atomic_store(&g_vector_tw, tw);
-    atomic_store(&g_vector_th, th);
-    [_loader vectorTargetChanged];
+    if (nv_vector_set_target(tw, th)) [_loader vectorTargetChanged];
 #endif
 }
 
