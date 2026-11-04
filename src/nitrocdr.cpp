@@ -1302,10 +1302,19 @@ private:
             float room = std::max(t.h - t.padT - t.padB, 0.f) - (first.ascent + total + last.descent);
             t.fy += t.valign == 1 ? room / 2 : room;
         }
+        // the box: the lines' ink, from the first one's ascent to the last one's descent (it was a
+        // line taller: an empty margin under a drawing's title), and what a span shifted, raised,
+        // outlined or turned (imported PDF text) reaches beyond that
+        float extra = 0;
+        for (const Line &l : t.lines)
+            for (const Span &s : l.spans) {
+                extra = std::max(extra, std::fabs(s.shiftY) * s.size + std::fabs(s.rise) + s.strokeWidth);
+                if (s.rotate != 0) extra = std::max(extra, s.width + s.size);
+            }
         float top = artistic ? t.y - first.ascent : t.fy;
         float left = artistic ? t.x - maxw : t.fx, right = artistic ? t.x + maxw : t.fx + std::max(t.fw, maxw);
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
-        rotatedBox(it, cx, cy, left, top, right, top + (first.ascent + first.descent) * first.spacing + total + first.size, t.rotate);
+        rotatedBox(it, cx, cy, left - extra, top - extra, right + extra, top + first.ascent + total + last.descent + extra, t.rotate);
     }
 
     std::shared_ptr<Style> parseStyle(const RVNGPropertyList &p) {
