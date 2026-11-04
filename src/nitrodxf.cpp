@@ -543,11 +543,10 @@ const uint32_t WIPEOUT = 0x01000000;   // (an item's rgba: the background colour
 uint32_t true_white(uint32_t rgb) { return rgb == 0xffffff ? 0xfefefe : rgb; }
 
 uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
-    static uint32_t t[256];
-    static bool init;
-    if (!init) {
+    static const std::array<uint32_t, 256> t = [] {   // (a static's initializer: once, whichever threads come first)
+        std::array<uint32_t, 256> p{};
         static const uint32_t low[10] = {0, 0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff, 0xffffff, 0x808080, 0xc0c0c0};
-        for (int k = 0; k < 10; k++) t[k] = low[k];
+        for (int k = 0; k < 10; k++) p[k] = low[k];
         static const int bright[5] = {255, 165, 127, 76, 38};
         for (int k = 10; k < 250; k++) {   // 24 hues in 15 degree steps, 5 brightnesses, full / half saturation
             int hue = (k - 10) / 10, shade = (k - 10) % 10;
@@ -558,12 +557,12 @@ uint32_t aci_rgb(int i) {   // the AutoCAD Color Index palette
                 double dist = std::min(hh, 360 - hh), w = dist <= 60 ? 1 : dist >= 120 ? 0 : (120 - dist) / 60;
                 rgb[ch] = vmin + (vmax - vmin) * w;
             }
-            t[k] = (uint32_t)std::lround(rgb[0]) << 16 | (uint32_t)std::lround(rgb[1]) << 8 | (uint32_t)std::lround(rgb[2]);
+            p[k] = (uint32_t)std::lround(rgb[0]) << 16 | (uint32_t)std::lround(rgb[1]) << 8 | (uint32_t)std::lround(rgb[2]);
         }
         static const uint32_t grays[6] = {0x333333, 0x505050, 0x696969, 0x828282, 0xbebebe, 0xfefefe};   // (255: see on_background)
-        for (int k = 0; k < 6; k++) t[250 + k] = grays[k];
-        init = true;
-    }
+        for (int k = 0; k < 6; k++) p[250 + k] = grays[k];
+        return p;
+    }();
     return t[i & 255];
 }
 
