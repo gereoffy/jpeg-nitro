@@ -63,6 +63,9 @@ double points(const RVNGProperty *p, double def = 0.0) {   // lengths: inch (def
     }
 }
 double number(const RVNGProperty *p, double def = 0.0) { return p ? p->getDouble() : def; }
+// (a damaged file's NaN or huge numbers: left out, plutovg would convert them to int; a 1e20 wide
+// picture made the drawing's area that wide, every shape in it a dot)
+bool sane(double v) { return std::fabs(v) < 1e9; }
 bool is(const RVNGPropertyList &l, const char *key, const char *value) {
     return l[key] && l[key]->getStr() == value;
 }
@@ -646,8 +649,6 @@ public:
             RVNGString a = e["librevenge:path-action"]->getStr();
             float x = (float)points(e["svg:x"]), y = (float)points(e["svg:y"]);
             char cmd = a.cstr()[0];
-            // (a damaged file's NaN or huge numbers: left out, plutovg would convert them to int)
-            auto sane = [](double v) { return std::fabs(v) < 1e9; };
             bool ok = sane(x) && sane(y);
             for (const char *k : {"svg:x1", "svg:y1", "svg:x2", "svg:y2", "svg:rx", "svg:ry", "librevenge:rotate"})
                 if (e[k]) ok &= sane(number(e[k]));
@@ -691,6 +692,7 @@ public:
         it.w = (float)points(p["svg:width"]);
         it.h = (float)points(p["svg:height"]);
         it.rotate = (float)number(p["librevenge:rotate"]);
+        if (!sane(it.x) || !sane(it.y) || !sane(it.w) || !sane(it.h) || !sane(it.rotate)) return;
         it.mirrorX = p["draw:mirror-horizontal"] && p["draw:mirror-horizontal"]->getInt();
         it.mirrorY = p["draw:mirror-vertical"] && p["draw:mirror-vertical"]->getInt();
         float cx = it.x + it.w / 2, cy = it.y + it.h / 2;
@@ -723,9 +725,13 @@ public:
         m_text->w = (float)points(p["svg:width"]);
         m_text->h = (float)points(p["svg:height"]);
         m_text->rotate = (float)number(p["librevenge:rotate"]);
+        if (!sane(m_text->x) || !sane(m_text->y) || !sane(m_text->w) || !sane(m_text->h) || !sane(m_text->rotate)) {
+            m_text.reset();   // (its text is left out: every call takes a text object or none)
+            return;
+        }
         m_text->corel = corel;
         m_text->valign = is(p, "draw:textarea-vertical-align", "middle") ? 1 : is(p, "draw:textarea-vertical-align", "bottom") ? 2 : 0;
-        auto pad = [&](const char *key) { return (float)std::min(std::max(points(p[key]), 0.0), 10000.0); };
+        auto pad = [&](const char *key) { return sane(points(p[key])) ? (float)std::min(std::max(points(p[key]), 0.0), 10000.0) : 0.f; };
         m_text->padL = pad("fo:padding-left");
         m_text->padT = pad("fo:padding-top");
         m_text->padR = pad("fo:padding-right");
@@ -772,7 +778,7 @@ public:
             double v = s->getUnit() == librevenge::RVNG_PERCENT ? s->getDouble() : -points(s);
             if (v > -1000 && v < 100 && v != 0) l.bulletSize = (float)v;
         }
-        l.labelWidth = (float)std::min(std::max(points(p["text:min-label-width"]), 0.0), 10000.0);
+        if (sane(points(p["text:min-label-width"]))) l.labelWidth = (float)std::min(std::max(points(p["text:min-label-width"]), 0.0), 10000.0);
         m_lists.push_back(std::move(l));
     }
     void closeOrderedListLevel() override { if (!m_lists.empty()) m_lists.pop_back(); }
@@ -800,7 +806,7 @@ public:
             spacing(p["fo:margin-top"], m_para.before);
             spacing(p["fo:margin-bottom"], m_para.after);
         } else {   // (ODF: lengths added to the line spacing; the indents)
-            auto len = [&](const char *key, double lo) { return (float)std::min(std::max(points(p[key]), lo), 10000.0); };
+            auto len = [&](const char *key, double lo) { return sane(points(p[key])) ? (float)std::min(std::max(points(p[key]), lo), 10000.0) : 0.f; };
             m_para.padBefore = len("fo:margin-top", 0);
             m_para.padAfter = len("fo:margin-bottom", 0);
             m_para.indent = len("fo:margin-left", 0);
@@ -827,10 +833,12 @@ public:
     void openSpan(const RVNGPropertyList &p) override {
         m_span = Span();
         m_span.size = (float)points(p["fo:font-size"], 12.0);
+        if (!sane(m_span.size) || m_span.size < 0) m_span.size = 12;   // (a VSDX's Size="NaN" reached plutovg)
         double sx = number(p["style:text-scale"], 1.0);
         if (sx > 0.01 && sx < 100) m_span.scaleX = (float)sx;
         m_span.shiftX = (float)number(p["libcdr:shift-x"]);
         m_span.shiftY = (float)number(p["libcdr:shift-y"]);
+        if (!sane(m_span.shiftX) || !sane(m_span.shiftY)) m_span.shiftX = m_span.shiftY = 0;
         // (ODF's superscript / subscript, libvisio's: "super" / "sub", or the raise and the size in
         // percent; 58 % of the size, raised or lowered by a third of the full size, as LibreOffice)
         if (p["style:text-position"]) {
@@ -849,6 +857,8 @@ public:
         m_span.rotate = (float)number(p["libcdr:rotate"]);
         m_span.letterSpacing = (float)number(p["libcdr:letter-spacing"]);
         m_span.wordSpacing = (float)number(p["libcdr:word-spacing"], 1.0);
+        if (!sane(m_span.rotate)) m_span.rotate = 0;
+        if (!sane(m_span.letterSpacing) || !sane(m_span.wordSpacing)) m_span.letterSpacing = 0, m_span.wordSpacing = 1;
         m_span.color = color(p["fo:color"]);
         m_span.fill = !is(p, "draw:fill", "none");
         if (p["fo:background-color"] && p["fo:background-color"]->getStr() != "none") {
@@ -859,6 +869,7 @@ public:
             m_span.stroke = true;
             m_span.strokeColor = color(p["svg:stroke-color"]);
             m_span.strokeWidth = (float)points(p["svg:stroke-width"]);
+            if (!sane(m_span.strokeWidth) || m_span.strokeWidth < 0) m_span.strokeWidth = 0;
         }
         std::string font = p["style:font-name"] ? p["style:font-name"]->getStr().cstr() : "Arial";
         m_span.font = font;
@@ -1347,6 +1358,8 @@ private:
                 st->tileH = st->tileRel ? (float)number(p["svg:height"]) : (float)points(p["svg:height"]);
                 st->refX = (float)number(p["draw:fill-image-ref-point-x"]);
                 st->refY = (float)number(p["draw:fill-image-ref-point-y"]);
+                if (!sane(st->tileW) || !sane(st->tileH)) st->tileW = st->tileH = 0;   // (no fill)
+                if (!sane(st->refX) || !sane(st->refY)) st->refX = st->refY = 0;
             }
         }
         if (p["draw:stroke"] && !is(p, "draw:stroke", "none")) {
@@ -1354,9 +1367,10 @@ private:
             st->strokeColor = color(p["svg:stroke-color"]);
             st->strokeColor.a = (float)number(p["svg:stroke-opacity"], 1.0);
             st->strokeWidth = (float)points(p["svg:stroke-width"]);
+            if (!sane(st->strokeWidth) || st->strokeWidth < 0) st->strokeWidth = 0;
             if (is(p, "svg:stroke-linecap", "round")) st->cap = PLUTOVG_LINE_CAP_ROUND;
             else if (is(p, "svg:stroke-linecap", "square")) st->cap = PLUTOVG_LINE_CAP_SQUARE;
-            if (p["libcdr:marker-unit"]) {
+            if (p["libcdr:marker-unit"] && sane(points(p["libcdr:marker-unit"]))) {
                 st->markerUnit = (float)points(p["libcdr:marker-unit"]);
                 if (p["libcdr:marker-start"]) st->markerStart = p["libcdr:marker-start"]->getStr().cstr();
                 if (p["libcdr:marker-end"]) st->markerEnd = p["libcdr:marker-end"]->getStr().cstr();
@@ -1407,8 +1421,8 @@ private:
                 int n1 = p["draw:dots1"] ? p["draw:dots1"]->getInt() : 0, n2 = p["draw:dots2"] ? p["draw:dots2"]->getInt() : 0;
                 // (a length, or a percentage of the line's width: libvisio's; a hairline's as 1 pt)
                 auto dash = [&](const RVNGProperty *v) {
-                    if (v && v->getUnit() == librevenge::RVNG_PERCENT) return (float)(v->getDouble() * std::max(st->strokeWidth, 1.f));
-                    return (float)points(v);
+                    double d = v && v->getUnit() == librevenge::RVNG_PERCENT ? v->getDouble() * std::max(st->strokeWidth, 1.f) : points(v);
+                    return sane(d) && d >= 0 ? (float)d : 0.f;
                 };
                 float l1 = dash(p["draw:dots1-length"]), l2 = dash(p["draw:dots2-length"]);
                 float gap = dash(p["draw:distance"]);
@@ -1537,7 +1551,7 @@ bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, fl
     }
     case FILL_BITMAP: {
         float tw = st.tileRel ? st.tileW * w : st.tileW, th = st.tileRel ? st.tileH * h : st.tileH;
-        if (tw <= 0 || th <= 0) return false;
+        if (!(tw > 0 && th > 0)) return false;
         plutovg_surface_t *px;
         if (st.tile->svg) {   // (a full colour pattern: its tile rendered for the pixels it covers now)
             plutovg_matrix_t cm;
