@@ -1470,10 +1470,10 @@ bool Player::playWmf(Bytes b, size_t o) {
             create(std::move(ob));
             break;
         }
-        case 0x06ff: {   // CreateRegion: scan lines of (left, right) pairs
+        case 0x06ff: {   // CreateRegion: ..., size, scan count, max scan, bounds, scan lines of (left, right) pairs
             Obj ob;
             ob.type = Obj::REGION;
-            uint32_t scans = r.u16(12);
+            uint32_t scans = r.u16(10);
             plutovg_path_reset(tmp);
             size_t at = 22;
             for (uint32_t s = 0; s < scans && at + 6 <= r.n; s++) {
