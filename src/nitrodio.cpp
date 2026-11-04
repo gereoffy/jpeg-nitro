@@ -629,25 +629,26 @@ struct Builder {
         }
         return true;
     }
-    // a vertex's absolute box (its parents' origins added)
-    Box absBox(Cell &c) {
+    // a vertex's absolute box (its parents' origins added; 256 levels at most, as shown(): a
+    // deeper chain, listed children first, recursed once per cell and overflowed the stack)
+    Box absBox(Cell &c, int depth = 0) {
         if (c.state == 2) return c.box;
-        if (c.state == 1) return {c.x, c.y, c.w, c.h};   // (a cycle of parents)
+        if (c.state == 1 || depth > 256) return {c.x, c.y, c.w, c.h};   // (a cycle of parents)
         c.state = 1;
-        Pt o = origin(c.parent);
+        Pt o = origin(c.parent, depth + 1);
         Box pb;
         Cell *p = find(c.parent);
-        if (p && p->vertex) pb = absBox(*p);
+        if (p && p->vertex) pb = absBox(*p, depth + 1);
         if (c.relative && p && p->vertex) c.box = {pb.x + c.x * pb.w, pb.y + c.y * pb.h, c.w, c.h};
         else c.box = {o.x + c.x, o.y + c.y, c.w, c.h};
         if (c.hasOffset && c.relative) c.box.x += c.offset.x, c.box.y += c.offset.y;
         c.state = 2;
         return c.box;
     }
-    Pt origin(const std::string &parent) {   // where the children of a cell start
+    Pt origin(const std::string &parent, int depth = 0) {   // where the children of a cell start
         Cell *p = find(parent);
         if (!p || !p->vertex) return {0, 0};
-        Box b = absBox(*p);
+        Box b = absBox(*p, depth);
         return {b.x, b.y};
     }
 
