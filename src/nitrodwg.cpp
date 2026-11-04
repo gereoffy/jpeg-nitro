@@ -15,6 +15,7 @@
 // own at its end. What nitrodxf doesn't draw is left out; a damaged object is skipped, not the
 // drawing.
 #include "nitrodwg.h"
+#include "nitro_font.h"   // (nf_utf8_put)
 
 #include <algorithm>
 #include <cmath>
@@ -39,13 +40,6 @@ struct P3 {
 const double DEG = 180 / M_PI;
 
 // --- the bit stream ----------------------------------------------------------------
-
-void utf8_put(std::string &o, uint32_t c) {
-    if (c < 0x80) o += (char)c;
-    else if (c < 0x800) o += (char)(0xc0 | c >> 6), o += (char)(0x80 | (c & 63));
-    else if (c < 0x10000) o += (char)(0xe0 | c >> 12), o += (char)(0x80 | (c >> 6 & 63)), o += (char)(0x80 | (c & 63));
-    else o += (char)(0xf0 | c >> 18), o += (char)(0x80 | (c >> 12 & 63)), o += (char)(0x80 | (c >> 6 & 63)), o += (char)(0x80 | (c & 63));
-}
 
 // The bit codes of the specification (B, BB, BS, BL, BD, DD, RC ... H) on a byte range, MSB
 // first. Reading past its end gives zeros and sets bad. Its strings (TV) may be in a stream of
@@ -264,7 +258,7 @@ struct Bits {
                 if (lo >= 0xdc00 && lo < 0xe000) c = 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00);
                 else c = 0xfffd;
             }
-            if (c) utf8_put(s, c);
+            if (c) nf_utf8_put(s, c);
         }
         return s;
     }

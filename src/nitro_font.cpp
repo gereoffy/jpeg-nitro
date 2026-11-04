@@ -17,7 +17,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#include <cerrno>
 #include <dirent.h>
+#include <iconv.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -426,6 +428,57 @@ uint32_t nf_utf8_next(const std::string &s, size_t &i) {
     uint32_t cp = n ? c & (0x3f >> n) : c;
     for (; n && i < s.size() && ((unsigned char)s[i] & 0xc0) == 0x80; n--) cp = (cp << 6) | ((unsigned char)s[i++] & 0x3f);
     return cp;
+}
+
+void nf_codepage(const uint8_t *s, size_t n, unsigned cp, std::vector<uint32_t> &out) {
+    auto latin1 = [cp](uint8_t b) -> uint32_t { return cp == 1252 && b >= 0x80 && b < 0xa0 ? '?' : b; };
+#ifdef _WIN32
+    int m = MultiByteToWideChar(cp, 0, (const char *)s, (int)n, nullptr, 0);
+    if (m > 0) {
+        std::vector<wchar_t> wide((size_t)m);
+        MultiByteToWideChar(cp, 0, (const char *)s, (int)n, wide.data(), m);
+        for (int i = 0; i < m; i++) {   // (UTF-16: its surrogate pairs joined)
+            uint32_t c = (uint16_t)wide[(size_t)i];
+            if (c >= 0xd800 && c < 0xdc00 && i + 1 < m && (uint16_t)wide[(size_t)i + 1] >= 0xdc00 && (uint16_t)wide[(size_t)i + 1] < 0xe000)
+                c = 0x10000 + ((c - 0xd800) << 10) + ((uint16_t)wide[(size_t)++i] - 0xdc00);
+            out.push_back(c);
+        }
+        return;
+    }
+#else
+    // the converters stay open (a drawing of thousands of texts), shared by the loads under their
+    // own lock; a code page without one is remembered too (ISO 8859 and Mac Roman by their names,
+    // for macOS's iconv)
+    static std::mutex lock;
+    static std::unordered_map<unsigned, iconv_t> cds;
+    std::lock_guard<std::mutex> g(lock);
+    auto it = cds.find(cp);
+    if (it == cds.end()) {
+        std::string name = cp > 28590 && cp < 28600 ? "ISO-8859-" + std::to_string(cp - 28590) : cp == 10000 ? "MACINTOSH" : "CP" + std::to_string(cp);
+        it = cds.emplace(cp, iconv_open("UTF-32LE", name.c_str())).first;
+    }
+    iconv_t cd = it->second;
+    if (cd != (iconv_t)-1) {
+        iconv(cd, nullptr, nullptr, nullptr, nullptr);
+        char *src = (char *)s;
+        size_t left = n;
+        while (left) {
+            unsigned char buf[4 * 64];
+            char *dst = (char *)buf;
+            size_t room = sizeof buf;
+            size_t r = iconv(cd, &src, &left, &dst, &room);
+            for (size_t k = 0; k + 4 <= sizeof buf - room; k += 4)
+                out.push_back(buf[k] | buf[k + 1] << 8 | buf[k + 2] << 16 | (uint32_t)buf[k + 3] << 24);
+            if (r == (size_t)-1 && errno != E2BIG) {
+                if (errno != EILSEQ) break;   // (an incomplete character at the end)
+                out.push_back(latin1((uint8_t)*src));   // a byte the code page does not define: as Latin-1, then on with the rest
+                src++, left--;
+            }
+        }
+        return;
+    }
+#endif
+    for (size_t i = 0; i < n; i++) out.push_back(latin1(s[i]));
 }
 
 void nf_utf8_put(std::string &o, uint32_t cp) {

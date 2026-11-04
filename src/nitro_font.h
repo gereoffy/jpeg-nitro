@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // Held around loading a drawing with text and around lunasvg's calls, and by the callers of the
 // functions below.
@@ -35,3 +36,8 @@ plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic);
 // UTF-8: the next code point of s from i (invalid bytes as Latin-1), and a code point appended.
 uint32_t nf_utf8_next(const std::string &s, size_t &i);
 void nf_utf8_put(std::string &o, uint32_t cp);
+// Text in a Windows code page (1250, 932, ...; 10000 Mac Roman; 2859x ISO 8859-x), its code
+// points appended to out: iconv (as in libcdr), on Windows its own converter. A byte the code
+// page does not define goes through as Latin-1 (in 1252 its undefined 0x80..0x9f as '?'), as
+// does all of it without a converter for the code page. Any thread.
+void nf_codepage(const uint8_t *s, size_t n, unsigned cp, std::vector<uint32_t> &out);

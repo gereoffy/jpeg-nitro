@@ -31,14 +31,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>   // MultiByteToWideChar: Windows has no iconv
-#else
-#include <cerrno>
-#include <iconv.h>
-#endif
 #ifndef M_PI   // (not defined by mingw's math.h)
 #define M_PI 3.14159265358979323846
 #endif
@@ -353,59 +345,15 @@ int codepage(sv name) {
     return 1252;   // (ANSI, "undefined", ASCII)
 }
 
-// Text in a code page -> UTF-8: iconv (as in libcdr), on Windows its own converter. Bytes it
-// can't convert are skipped; without a converter for the code page: Latin-1.
+// Text in a code page -> UTF-8 (nf_codepage: iconv, on Windows its own converter; a byte it can't
+// convert goes through as Latin-1, so does all of it without a converter for the code page)
 struct Conv {
     int cp = 1252;   // the drawing's ($DWGCODEPAGE)
-#ifndef _WIN32
-    std::unordered_map<int, iconv_t> cds;
-    ~Conv() {
-        for (auto &e : cds)
-            if (e.second != (iconv_t)-1) iconv_close(e.second);
-    }
-#endif
     void append(std::string &o, sv s, int page) {
-        auto latin1 = [&]() {
-            for (char ch : s) nf_utf8_put(o, (unsigned char)ch);
-        };
-#ifdef _WIN32
-        int n = MultiByteToWideChar((UINT)page, 0, s.data(), (int)s.size(), nullptr, 0);
-        if (n <= 0) return latin1();
-        std::vector<wchar_t> w((size_t)n);
-        MultiByteToWideChar((UINT)page, 0, s.data(), (int)s.size(), w.data(), n);
-        for (size_t i = 0; i < w.size(); i++) {
-            uint32_t c = (uint16_t)w[i];
-            if (c >= 0xd800 && c < 0xdc00 && i + 1 < w.size() && (uint16_t)w[i + 1] >= 0xdc00 && (uint16_t)w[i + 1] < 0xe000)
-                c = (c - 0xd800) * 0x400 + ((uint16_t)w[++i] - 0xdc00) + 0x10000;
-            if (c && c != 0xfffd) nf_utf8_put(o, c);
-        }
-#else
-        auto it = cds.find(page);
-        if (it == cds.end()) {   // (ISO 8859 and Mac Roman by their names, for macOS's iconv)
-            std::string name = page > 28590 && page < 28600 ? "ISO-8859-" + std::to_string(page - 28590) : page == 10000 ? "MACINTOSH" : "CP" + std::to_string(page);
-            it = cds.emplace(page, iconv_open("UTF-32LE", name.c_str())).first;
-        }
-        iconv_t cd = it->second;
-        if (cd == (iconv_t)-1) return latin1();
-        iconv(cd, nullptr, nullptr, nullptr, nullptr);
-        char *src = const_cast<char *>(s.data());
-        size_t left = s.size();
-        while (left) {
-            unsigned char out[4 * 64];
-            char *dst = reinterpret_cast<char *>(out);
-            size_t room = sizeof out;
-            size_t r = iconv(cd, &src, &left, &dst, &room);
-            for (size_t k = 0; k + 4 <= sizeof out - room; k += 4) {
-                uint32_t c = out[k] | out[k + 1] << 8 | out[k + 2] << 16 | (uint32_t)out[k + 3] << 24;
-                if (c && c != 0xfffd && c < 0x110000) nf_utf8_put(o, c);
-            }
-            if (r == (size_t)-1 && errno != E2BIG) {
-                if (errno == EINVAL) break;   // (an incomplete character at the end)
-                src++;
-                left--;
-            }
-        }
-#endif
+        std::vector<uint32_t> cps;
+        nf_codepage((const uint8_t *)s.data(), s.size(), (unsigned)page, cps);
+        for (uint32_t c : cps)
+            if (c && c != 0xfffd && c < 0x110000) nf_utf8_put(o, c);
     }
 };
 

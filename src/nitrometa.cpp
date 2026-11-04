@@ -28,14 +28,6 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOGDI   // (its PS_* and BS_* macros: the GDI constants below are our own)
-#include <windows.h>   // MultiByteToWideChar: Windows has no iconv
-#else
-#include <cerrno>
-#include <iconv.h>
-#endif
 
 namespace {
 
@@ -355,56 +347,7 @@ void decodeText(const uint8_t *s, size_t n, int charset, std::vector<uint32_t> &
         for (size_t i = 0; i < n; i++) out.push_back(s[i]);
         return;
     }
-    unsigned cp = codepage(charset);
-    auto latin1 = [cp](uint8_t b) -> uint32_t { return cp == 1252 && b >= 0x80 && b < 0xa0 ? '?' : b; };   // (without a converter)
-#ifdef _WIN32
-    int m = MultiByteToWideChar(cp, 0, (const char *)s, (int)n, nullptr, 0);
-    if (m > 0) {
-        std::vector<wchar_t> wide((size_t)m);
-        MultiByteToWideChar(cp, 0, (const char *)s, (int)n, wide.data(), m);
-        for (int i = 0; i < m; i++) {
-            uint32_t c = wide[(size_t)i];
-            if (c >= 0xd800 && c < 0xdc00 && i + 1 < m && wide[(size_t)i + 1] >= 0xdc00 && wide[(size_t)i + 1] < 0xe000)
-                c = 0x10000 + ((c - 0xd800) << 10) + (wide[(size_t)++i] - 0xdc00);
-            out.push_back(c);
-        }
-        return;
-    }
-#else
-    // the converters stay open (a file of thousands of text records), shared by the loads under their own lock
-    static std::mutex lock;
-    static struct { unsigned cp; iconv_t cd; } cache[8];
-    static unsigned cached = 0;
-    std::lock_guard<std::mutex> g(lock);
-    iconv_t cd = (iconv_t)-1;
-    bool known = false;   // (a code page iconv has no converter for is remembered too: not tried again per text)
-    for (unsigned i = 0; i < cached && !known; i++)
-        if (cache[i].cp == cp) cd = cache[i].cd, known = true;
-    if (!known) {
-        char name[16];
-        snprintf(name, sizeof name, cp == 10000 ? "MACINTOSH" : "CP%u", cp);
-        cd = iconv_open("UTF-8", name);
-        if (cached < 8) cache[cached++] = {cp, cd};
-        else if (cd != (iconv_t)-1) iconv_close(cd), cd = (iconv_t)-1;
-    }
-    if (cd != (iconv_t)-1) {
-        std::string utf8(n * 4 + 4, '\0');
-        char *in = (char *)s, *o = &utf8[0];
-        size_t inLeft = n, outLeft = utf8.size();
-        iconv(cd, nullptr, nullptr, nullptr, nullptr);
-        while (inLeft && iconv(cd, &in, &inLeft, &o, &outLeft) == (size_t)-1) {
-            if (errno != EILSEQ || outLeft < 2) break;   // (an incomplete character at the end: dropped)
-            uint32_t c = latin1((uint8_t)*in);   // a byte the code page does not define: as Latin-1, then on with the rest
-            in++, inLeft--;
-            if (c < 0x80) *o++ = (char)c, outLeft--;
-            else *o++ = (char)(0xc0 | c >> 6), *o++ = (char)(0x80 | (c & 0x3f)), outLeft -= 2;
-        }
-        utf8.resize(utf8.size() - outLeft);
-        for (size_t i = 0; i < utf8.size();) out.push_back(nf_utf8_next(utf8, i));
-        return;
-    }
-#endif
-    for (size_t i = 0; i < n; i++) out.push_back(latin1(s[i]));
+    nf_codepage(s, n, codepage(charset), out);
 }
 
 // the Symbol font's letters as Unicode (for a face without the private-use mapping of Windows's Symbol)
