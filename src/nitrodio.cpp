@@ -1572,8 +1572,8 @@ nitrodio *nitrodio_load(const void *data, size_t len) {
     if (!doc) return nullptr;
     xmlNode *top = xmlDocGetRootElement(doc);
     std::unique_ptr<nitrodio> dio(new nitrodio);
-    std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces)
     auto model = [&](xmlNode *m) {
+        std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
         Page p;
         if (readModel(m, p)) dio->pages.push_back(std::move(p));
     };
