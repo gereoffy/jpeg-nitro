@@ -360,9 +360,10 @@ void decodeText(const uint8_t *s, size_t n, int charset, std::vector<uint32_t> &
     static struct { unsigned cp; iconv_t cd; } cache[8];
     static unsigned cached = 0;
     iconv_t cd = (iconv_t)-1;
-    for (unsigned i = 0; i < cached; i++)
-        if (cache[i].cp == cp) cd = cache[i].cd;
-    if (cd == (iconv_t)-1) {
+    bool known = false;   // (a code page iconv has no converter for is remembered too: not tried again per text)
+    for (unsigned i = 0; i < cached && !known; i++)
+        if (cache[i].cp == cp) cd = cache[i].cd, known = true;
+    if (!known) {
         char name[16];
         snprintf(name, sizeof name, cp == 10000 ? "MACINTOSH" : "CP%u", cp);
         cd = iconv_open("UTF-8", name);
