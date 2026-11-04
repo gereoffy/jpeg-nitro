@@ -254,7 +254,8 @@ mérés: [BENCHMARKING.md](BENCHMARKING.md) (angolul).
 
 [BUILDING.md](BUILDING.md) (angolul): a nézők fordítása minden platformon, a make-opciók, és a
 `libnitro`, a dekóderek egyetlen könyvtárként a saját programodhoz (egy százsoros példaprogrammal,
-amely bármilyen általa dekódolt képet BMP-vé alakít). [FILES.md](FILES.md) (angolul): melyik forrásfájl mi.
+amely bármilyen általa dekódolt képet BMP-vé alakít), és `libnitrovec`, a vektoros rajzok ugyanígy
+(a `nitrodraw` példaprogrammal: bármely rajz egy oldala BMP-vé). [FILES.md](FILES.md) (angolul): melyik forrásfájl mi.
 
 ## Licenc
 

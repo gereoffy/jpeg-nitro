@@ -245,7 +245,8 @@ real time. How each decoder does it, and all the measurements: [BENCHMARKING.md]
 
 [BUILDING.md](BUILDING.md): building the viewers on every platform, the make options, and
 `libnitro`, the decoders as one library for your own program (with a hundred-line example that
-converts any image it decodes to a BMP). [FILES.md](FILES.md): what each source file is.
+converts any image it decodes to a BMP), and `libnitrovec`, the vector drawings the same way (with
+`nitrodraw`, a page of any drawing to a BMP). [FILES.md](FILES.md): what each source file is.
 
 ## License
 

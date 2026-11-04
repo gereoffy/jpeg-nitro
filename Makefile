@@ -29,6 +29,8 @@
 #                        Linux build); any other program can too, with nitro_os.h's blocks runtime
 #   make examples/nitroconvert
 #                        the example program on the library: any image it decodes -> a 24-bit BMP
+#   make examples/nitrodraw
+#                        the one on libnitrovec.a (the vector drawings): a page of any drawing -> a 24-bit BMP
 #   make gnome           GNOME/libadwaita viewer: nitroview-gnome (the decoders linked in statically)
 #   make sdl             SDL3 + OpenGL viewer for Linux: nitroview-sdl (SDL3 from scripts/get-deps.sh;
 #                        builds on macOS too, for testing)
@@ -406,7 +408,7 @@ endef
 # The vector drawings as one library, libnitrovec.a: nitro_vector (the viewers' interface, nitro_vector.h)
 # over the two above (whichever of SVG / CDR the build has; their objects archived together, built
 # apart so a change in one does not recompile the other), compiled with their NV_SVG / NV_CDR. The
-# viewers link it and know only NV_VECTOR (the Makefile's, when SVG = 1).
+# viewers and examples/nitrodraw link it and know only NV_VECTOR (the Makefile's, when SVG = 1).
 VEC_DEFS = $(if $(filter 1,$(SVG)),-DNV_SVG) $(if $(filter 1,$(CDR)),-DNV_CDR)
 %/libnitrovec.a: src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(if $(filter 1,$(SVG)),%/libnitrosvg.a) \
                  $(if $(filter 1,$(CDR)),%/libnitrocdr.a) build/.config-$(CONFIG)
@@ -504,6 +506,10 @@ EXAMPLE_LIBS := $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB)) $(THREADLIBS) \
                 $(if $(filter Darwin,$(UNAME_S)),-framework CoreFoundation $(VT_FW),-lm)
 examples/nitroconvert: examples/nitroconvert.c build/libnitro.a
 	$(CC) $(CFLAGS) -Isrc $^ $(EXAMPLE_LIBS) $(LDQUIET) -o $@
+# the one on the vector drawings' library (examples/nitrodraw.c): a page of any drawing -> a 24-bit BMP
+DRAW_LIBS := $(if $(filter 1,$(CDR)),-lz) $(if $(filter 1,$(SVG)),$(if $(filter Darwin,$(UNAME_S)),-lc++ -liconv,-lstdc++))
+examples/nitrodraw: examples/nitrodraw.c build/libnitrovec.a build/libnitro.a
+	$(CC) $(CFLAGS) -Isrc $^ $(DRAW_LIBS) $(EXAMPLE_LIBS) $(LDQUIET) -o $@
 
 bench/verify: bench/verify.c build/nitrojpeg_ref.o | ljt
 	$(CC) $(REF_CFLAGS) -w $^ $(REF_LIBS) $(THREADLIBS) -o $@

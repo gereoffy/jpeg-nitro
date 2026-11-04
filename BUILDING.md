@@ -146,6 +146,22 @@ plus `third_party/dav1d/lib/libdav1d.a` when the library was built with dav1d; o
 `-framework CoreFoundation` instead of `-lm`, and `-framework VideoToolbox -framework CoreMedia
 -framework CoreVideo` for HEIC (unless built with `NITROHEVC=1`).
 
+**The vector drawings** are a second library, `build/libnitrovec.a` (built with the viewers; per
+target as `libnitro.a`): `nitro_vector`, the viewers' interface in `src/nitro_vector.h`, over the
+readers the build has (SVG with lunasvg, DXF / DWG, WMF / EMF, CorelDRAW and Visio with libcdr /
+libvisio, draw.io; `make SVG=0` or `CDR=0` leaves them out). `nv_vector_open()` loads a file by
+its extension, `nv_vector_pages()` and `nv_vector_size()` say what is in it, `nv_vector_page_size()`
+picks the size a page is shown at, `nv_vector_render()` draws any part of a page at any scale into
+a BGRA buffer, in parallel bands, over a white, dark or black background (`nv_vector_cycle_background()`).
+`examples/nitrodraw.c` renders a page to a 24-bit BMP (`-p` page, `-s` pixels, `-b` background; `-t`
+the pages and the load / render times only). `make examples/nitrodraw` builds it; by hand:
+
+```
+clang -O3 -fblocks -Isrc examples/nitrodraw.c build/libnitrovec.a build/libnitro.a -lz -lstdc++ -lpthread -lm
+```
+
+(on macOS `-lc++ -liconv` for `-lstdc++`, plus the frameworks and libdav1d.a as above).
+
 **The decoders one by one** are self-contained too (C, pthreads, optional AVX2 / NEON), all of the
 same shape: `*_read_info()` says whether the decoder takes the file and gives its size and
 orientation, `*_decode()` writes the pixels.

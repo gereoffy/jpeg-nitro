@@ -26,6 +26,7 @@
 - `src/nitro_load.c/.h`: file → decoded image with the decoders above (the library's face, what the viewers use)
 - `src/nitro_convert.c/.h`: its planes → RGB
 - `examples/nitroconvert.c`: the example program on the library, any image → BMP
+- `examples/nitrodraw.c`: the example program on libnitrovec, a page of any drawing → BMP
 - `src/nitro_prefetch.c/.h`: the viewers' shared prefetching loader
 - `src/nitro_view.h`: the viewers' shared zoom arithmetic
 - `src/nitro_vector.c/.h` (in libnitrovec.a, with the readers below): the viewers' vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io behind one interface: loading, pages, rendering in parallel bands, the thread limit, the background setting; what the four viewers do alike: a page rendered in full for the target size, the part rendered sharp when zoomed in, the window title's tail)

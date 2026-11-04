@@ -27,6 +27,7 @@
 /bench/bgrxverify
 /bench/*.exe
 /examples/nitroconvert
+/examples/nitrodraw
 *.o
 *.dSYM/
 
