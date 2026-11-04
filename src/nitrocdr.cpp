@@ -186,13 +186,16 @@ plutovg_surface_t *psdGray(const unsigned char *b, size_t n) {
     if (o + 2 > n) return nullptr;
     uint32_t compression = u16(o);
     o += 2;
-    std::vector<unsigned char> gray((size_t)w * h);
+    // (the pixels, 900 MB for a 30000 x 30000 image, only once the data can hold them: raw, all
+    // of them; PackBits, the rows' byte counts and two bytes per 128 pixels of a row at least)
+    size_t pixels = (size_t)w * h, table = (size_t)channels * h * 2;
+    if (compression == 0 ? n - o < pixels : compression != 1 || n - o < table || (n - o - table) / h < ((size_t)w + 127) / 128 * 2)
+        return nullptr;
+    std::vector<unsigned char> gray(pixels);
     if (compression == 0) {
-        if (n - o < gray.size()) return nullptr;
         memcpy(gray.data(), b + o, gray.size());
-    } else if (compression == 1) {   // each row's byte count (all channels), then the rows
+    } else {   // each row's byte count (all channels), then the rows
         size_t counts = o;
-        if ((n - o) / 2 < (size_t)channels * h) return nullptr;
         o += (size_t)channels * h * 2;
         for (uint32_t y = 0; y < h; y++) {
             size_t end = o + u16(counts + 2 * y);
@@ -210,8 +213,7 @@ plutovg_surface_t *psdGray(const unsigned char *b, size_t n) {
             }
             o = end;
         }
-    } else
-        return nullptr;
+    }
     plutovg_surface_t *s = plutovg_surface_create((int)w, (int)h);
     if (!s) return nullptr;
     unsigned char *data = plutovg_surface_get_data(s);
