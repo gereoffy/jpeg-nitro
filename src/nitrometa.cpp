@@ -166,10 +166,15 @@ struct DibPlace {
     int top = 0;      // the first decoded row among the DIB's (top-down): a band of SetDIBitsToDevice, short pixel data
 };
 
+// the pixels of one bitmap, and of all of a document's together (RLE packs 64 Mpixels into half a
+// megabyte: a file of a few megabytes could hold gigabytes of surfaces)
+const size_t kMaxBitmapPixels = 64u << 20, kDocumentPixels = 256u << 20;
+
 // bits: the pixels when the record gives them apart from the header (else they follow the palette);
 // alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it;
-// startScan, scans: SetDIBitsToDevice's band, the rows the bits hold (scans 0: all that are there)
-SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr, uint32_t startScan = 0, uint32_t scans = 0) {
+// budget: the document's pixels left (taken from); startScan, scans: SetDIBitsToDevice's band,
+// the rows the bits hold (scans 0: all that are there)
+SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, DibPlace *place = nullptr, uint32_t startScan = 0, uint32_t scans = 0) {
     uint32_t hs = hdr.u32(0);
     int w, h, bpp;
     uint32_t comp = 0, used = 0;
@@ -192,7 +197,7 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr, ui
         return nullptr;
     bool topDown = h < 0;
     if (topDown) h = -h;
-    if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || (size_t)w * h > 64u << 20) return nullptr;
+    if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || (size_t)w * h > kMaxBitmapPixels) return nullptr;
     if (place) place->bottomUp = !topDown, place->height = h;
     if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return nullptr;
     if (comp != 0 && comp != 1 && comp != 2 && comp != 3) return nullptr;   // BI_RGB, BI_RLE8, BI_RLE4, BI_BITFIELDS
@@ -245,6 +250,8 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr, ui
         uint32_t c = v >> shift[i] & ((1u << bitsOf[i]) - 1);
         return bitsOf[i] >= 8 ? c >> (bitsOf[i] - 8) : c * 255 / ((1u << bitsOf[i]) - 1);
     };
+    if ((size_t)w * rows > budget) return nullptr;
+    budget -= (size_t)w * rows;
     auto surf = std::make_shared<Surface>();
     surf->s = plutovg_surface_create(w, rows);
     if (!surf->s) return nullptr;
@@ -279,11 +286,13 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr, ui
 }
 
 // a WMF's device-dependent bitmap (BITMAP16 and its bits): monochrome ones, and the direct-colour ones
-SurfP decodeDdb(Bytes b, uint32_t fg, uint32_t bg) {
+SurfP decodeDdb(Bytes b, uint32_t fg, uint32_t bg, size_t &budget) {
     int w = b.i16(2), h = b.i16(4), wb = b.u16(6), bpp = b.u8(9);
-    if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || (size_t)w * h > 64u << 20) return nullptr;
+    if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || (size_t)w * h > kMaxBitmapPixels) return nullptr;
     if (bpp != 1 && bpp != 24 && bpp != 32) return nullptr;
     if ((size_t)wb * h + 10 > b.n || (size_t)wb < ((size_t)w * bpp + 7) / 8) return nullptr;
+    if ((size_t)w * h > budget) return nullptr;
+    budget -= (size_t)w * h;
     auto surf = std::make_shared<Surface>();
     surf->s = plutovg_surface_create(w, h);
     if (!surf->s) return nullptr;
@@ -626,6 +635,7 @@ public:
     // drawn alone before any other record: flushMask)
     SurfP mask, orMask;
     double maskRect[4] = {0, 0, 0, 0}, orRect[4] = {0, 0, 0, 0};
+    size_t pixelBudget = kDocumentPixels;   // the bitmaps' pixels left to decode
 
     // --- the display list ---
     void addItem(Item &&it) {
@@ -1446,7 +1456,7 @@ bool Player::playWmf(Bytes b, size_t o) {
             Obj ob;
             ob.type = Obj::BRUSH;
             ob.brush.style = BS_DIBPATTERN;
-            ob.brush.pattern = decodeDib(r.sub(4, r.n), {}, false);
+            ob.brush.pattern = decodeDib(r.sub(4, r.n), {}, false, pixelBudget);
             create(std::move(ob));
             break;
         }
@@ -1454,7 +1464,7 @@ bool Player::playWmf(Bytes b, size_t o) {
             Obj ob;
             ob.type = Obj::BRUSH;
             ob.brush.style = BS_DIBPATTERN;
-            ob.brush.pattern = decodeDdb(r.sub(0, r.n), 0, 0xffffff);
+            ob.brush.pattern = decodeDdb(r.sub(0, r.n), 0, 0xffffff, pixelBudget);
             create(std::move(ob));
             break;
         }
@@ -1578,7 +1588,8 @@ bool Player::playWmf(Bytes b, size_t o) {
             }
             if (noBitmap) break;
             DibPlace place;
-            SurfP img = fn == 0x0922 || fn == 0x0b23 ? decodeDdb(r.sub(at, r.n), dc.textRgb, dc.bkRgb) : decodeDib(r.sub(at, r.n), {}, false, &place);
+            SurfP img = fn == 0x0922 || fn == 0x0b23 ? decodeDdb(r.sub(at, r.n), dc.textRgb, dc.bkRgb, pixelBudget)
+                                                     : decodeDib(r.sub(at, r.n), {}, false, pixelBudget, &place);
             if (!img) break;
             if (!stretch) sw = dw, sh = dh;
             if (fn == 0x0f43) sy = dibSrcY(place, sy, sh);   // (the others blit from a bitmap selected into a DC: top-down)
@@ -1588,7 +1599,7 @@ bool Player::playWmf(Bytes b, size_t o) {
         case 0x0d33: {   // SetDIBitsToDevice: usage, scanCount, startScan, srcY, srcX, h, w, dstY, dstX, DIB
             double sy = r.i16(6), sx = r.i16(8), h = r.i16(10), w = r.i16(12), dy = r.i16(14), dx0 = r.i16(16);
             DibPlace place;
-            SurfP img = decodeDib(r.sub(18, r.n), {}, false, &place, r.u16(4), r.u16(2));
+            SurfP img = decodeDib(r.sub(18, r.n), {}, false, pixelBudget, &place, r.u16(4), r.u16(2));
             if (img) blit(dx0, dy, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
@@ -1685,7 +1696,7 @@ bool Player::playEmf(Bytes b) {
         };
         auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha, DibPlace *place = nullptr, uint32_t startScan = 0,
                        uint32_t scans = 0) {
-            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, place, startScan, scans);
+            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, pixelBudget, place, startScan, scans);
         };
         double v[4];
         switch (type) {
