@@ -12,6 +12,7 @@
 #include "nitro_font.h"
 #include "nitrodxf.h"
 #include "nitrometa.h"
+#include "nitrosvg.h"
 extern "C" {
 #include "nitrotiff.h"
 }
@@ -90,13 +91,43 @@ std::atomic<int> g_threads{0};   // (nitrocdr_set_threads)
 struct Image {
     plutovg_surface_t *s = nullptr;   // a bitmap, or
     nitrometa *meta = nullptr;        // a WMF / EMF picture (the icons of Visio's stencils), or
-    nitrodxf *dxf = nullptr;          // an AutoCAD drawing (an OLE object without its picture)
+    nitrodxf *dxf = nullptr;          // an AutoCAD drawing (an OLE object without its picture), or
+    nitrosvg *svg = nullptr;          // an SVG (the tile of a CorelDRAW full colour pattern, as libcdr gives it)
+    plutovg_surface_t *svgPixels = nullptr;   // (the SVG rendered last: svgSurface)
     ~Image() {
         plutovg_surface_destroy(s);
         nitrometa_free(meta);
         nitrodxf_free(dxf);
+        if (svg) nitrosvg_free(svg);   // (it takes nitro_font's lock: not while nitrocdr_free holds it)
+        plutovg_surface_destroy(svgPixels);
     }
 };
+
+// An SVG picture rendered for w x h device pixels (stretched to them by the caller), at most max on
+// a side; kept until another size is asked for (the bands of a render ask for the same). A
+// reference of the caller's, NULL if it draws nothing.
+static plutovg_surface_t *svgSurface(Image &img, float w, float h, int max) {
+    double sw, sh;
+    nitrosvg_size(img.svg, &sw, &sh);
+    if (!(w > 0 && h > 0 && sw > 0 && sh > 0)) return nullptr;
+    double k = std::min(std::max(w / sw, h / sh), max / std::max(sw, sh));   // (its own proportions: one scale)
+    int iw = std::max(1, (int)std::lround(sw * k)), ih = std::max(1, (int)std::lround(sh * k));
+    k = std::max(iw / sw, ih / sh);   // (covering every pixel: a tile's edge left half transparent showed as a seam)
+    static std::mutex pictures;   // (several renders at once: the bands of one)
+    std::lock_guard<std::mutex> g(pictures);
+    if (!img.svgPixels || plutovg_surface_get_width(img.svgPixels) != iw || plutovg_surface_get_height(img.svgPixels) != ih) {
+        plutovg_surface_t *px = plutovg_surface_create(iw, ih);
+        if (!px) return nullptr;
+        nitrosvg_set_background(img.svg, 3);   // (transparent)
+        if (nitrosvg_render(img.svg, plutovg_surface_get_data(px), iw, ih, (size_t)plutovg_surface_get_stride(px), k, 0, 0)) {
+            plutovg_surface_destroy(px);
+            return nullptr;
+        }
+        plutovg_surface_destroy(img.svgPixels);
+        img.svgPixels = px;
+    }
+    return plutovg_surface_reference(img.svgPixels);
+}
 // libcdr's own bitmaps: uncompressed 32-bit BMPs (B G R A, bottom-up), alpha all 0 when opaque;
 // read here directly, as stb_image would (twice as fast as stb_image + plutovg's conversion)
 static plutovg_surface_t *bmp32(const unsigned char *b, size_t n) {
@@ -283,7 +314,10 @@ std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   
         std::vector<unsigned char> fixed = bmpOffsetFixed(b, n);
         if (!fixed.empty()) img->s = plutovg_surface_load_from_image_data(fixed.data(), (int)fixed.size());
     }
-    return img->s || img->meta ? img : nullptr;
+    size_t i = 0;   // (an SVG: text starting with '<', after white space)
+    while (i < n && i < 256 && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n')) i++;
+    if (!img->s && !img->meta && i < n && b[i] == '<') img->svg = nitrosvg_load(b, n);
+    return img->s || img->meta || img->svg ? img : nullptr;
 }
 
 std::shared_ptr<Image> image(const RVNGProperty *p) {
@@ -903,6 +937,7 @@ public:
                     std::swap(c.img->s, img->s);
                     std::swap(c.img->meta, img->meta);
                     std::swap(c.img->dxf, img->dxf);
+                    std::swap(c.img->svg, img->svg);
                 }
             }
         };
@@ -1487,14 +1522,23 @@ bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, fl
         return true;
     }
     case FILL_BITMAP: {
-        if (!st.tile->s) return false;   // (not decoded: no fill)
-        int iw = plutovg_surface_get_width(st.tile->s), ih = plutovg_surface_get_height(st.tile->s);
         float tw = st.tileRel ? st.tileW * w : st.tileW, th = st.tileRel ? st.tileH * h : st.tileH;
-        if (iw <= 0 || ih <= 0 || tw <= 0 || th <= 0) return false;
+        if (tw <= 0 || th <= 0) return false;
+        plutovg_surface_t *px;
+        if (st.tile->svg) {   // (a full colour pattern: its tile rendered for the pixels it covers now)
+            plutovg_matrix_t cm;
+            plutovg_canvas_get_matrix(c, &cm);
+            float k = std::sqrt(std::fabs(cm.a * cm.d - cm.b * cm.c));
+            px = svgSurface(*st.tile, tw * k, th * k, 2048);
+        } else
+            px = plutovg_surface_reference(st.tile->s);
+        if (!px) return false;   // (not decoded: no fill)
+        int iw = plutovg_surface_get_width(px), ih = plutovg_surface_get_height(px);
         plutovg_matrix_t m;   // tiles from the bottom left corner, shifted by the reference point
         plutovg_matrix_init_translate(&m, x + st.refX * tw, y + h - th + st.refY * th);
         plutovg_matrix_scale(&m, tw / iw, th / ih);
-        plutovg_canvas_set_texture(c, st.tile->s, PLUTOVG_TEXTURE_TYPE_TILED, st.opacity, &m);
+        plutovg_canvas_set_texture(c, px, PLUTOVG_TEXTURE_TYPE_TILED, st.opacity, &m);
+        plutovg_surface_destroy(px);
         return true;
     }
     default: return false;
@@ -1624,12 +1668,23 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
         } else if (it.img->dxf) {
             nitrodxf_draw(it.img->dxf, 0, c, it.x, it.y, it.w, it.h);
         } else {
-            int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s);
-            plutovg_matrix_t m;
-            plutovg_matrix_init_translate(&m, it.x, it.y);
-            plutovg_matrix_scale(&m, it.w / iw, it.h / ih);
-            plutovg_canvas_set_texture(c, it.img->s, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
-            plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
+            plutovg_surface_t *px;
+            if (it.img->svg) {   // (rendered for the pixels it covers now)
+                plutovg_matrix_t cm;
+                plutovg_canvas_get_matrix(c, &cm);
+                float k = std::sqrt(std::fabs(cm.a * cm.d - cm.b * cm.c));
+                px = svgSurface(*it.img, it.w * k, it.h * k, 4096);
+            } else
+                px = plutovg_surface_reference(it.img->s);
+            if (px) {
+                int iw = plutovg_surface_get_width(px), ih = plutovg_surface_get_height(px);
+                plutovg_matrix_t m;
+                plutovg_matrix_init_translate(&m, it.x, it.y);
+                plutovg_matrix_scale(&m, it.w / iw, it.h / ih);
+                plutovg_canvas_set_texture(c, px, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
+                plutovg_canvas_fill_rect(c, it.x, it.y, it.w, it.h);
+                plutovg_surface_destroy(px);
+            }
         }
     } else {
         const Text &t = *it.text;   // (unlocked: plutovg's glyph caches take several readers at once)
@@ -1764,7 +1819,7 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
     pt.decodeImages();
     for (Page &pg : pt.pages)   // (a picture that could not be decoded: left out)
         pg.items.erase(std::remove_if(pg.items.begin(), pg.items.end(),
-                                      [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta && !it.img->dxf; }),
+                                      [](const Item &it) { return it.kind == Item::IMAGE && !it.img->s && !it.img->meta && !it.img->dxf && !it.img->svg; }),
                        pg.items.end());
     // the shown area is the drawing's bounding box (+ a small margin), not the page set in the
     // file: a small logo on an A4 page fills the view, a scan much larger than its page shows
@@ -1812,8 +1867,17 @@ nitrocdr *nitrocdr_load(const void *data, size_t len) {
 }
 
 void nitrocdr_free(nitrocdr *cdr) {
-    std::lock_guard<std::mutex> g(nf_lock());   // (surfaces / paths only; the faces are nitro_font's)
-    delete cdr;
+    std::vector<nitrosvg *> svgs;   // (their nitrosvg_free takes the lock itself: freed after it)
+    if (cdr)
+        for (Page &pg : cdr->pages)
+            for (Item &it : pg.items)
+                for (Image *img : {it.img.get(), it.style && it.style->tile ? it.style->tile.get() : nullptr})
+                    if (img && img->svg) svgs.push_back(img->svg), img->svg = nullptr;
+    {
+        std::lock_guard<std::mutex> g(nf_lock());   // (surfaces / paths only; the faces are nitro_font's)
+        delete cdr;
+    }
+    for (nitrosvg *svg : svgs) nitrosvg_free(svg);
 }
 
 int nitrocdr_pages(const nitrocdr *cdr) { return (int)cdr->pages.size(); }

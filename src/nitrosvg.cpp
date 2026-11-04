@@ -143,12 +143,13 @@ nitrosvg *nitrosvg_load(const void *data, size_t len) {
 }
 
 void nitrosvg_free(nitrosvg *svg) {
+    if (!svg) return;
     std::lock_guard<std::mutex> g(nf_lock());
     delete svg;
 }
 
 void nitrosvg_set_background(nitrosvg *svg, int background) {
-    if (svg && background >= 0 && background <= 2) svg->background = background;
+    if (svg && background >= 0 && background <= 3) svg->background = background;
 }
 
 void nitrosvg_size(const nitrosvg *svg, double *w, double *h) {
@@ -158,7 +159,7 @@ void nitrosvg_size(const nitrosvg *svg, double *w, double *h) {
 
 int nitrosvg_render(nitrosvg *svg, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0) {
     if (w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    static const uint32_t backgrounds[3] = {0xffffffff, 0xff212830, 0xff000000};   // (opaque)
+    static const uint32_t backgrounds[4] = {0xffffffff, 0xff212830, 0xff000000, 0};   // (opaque; none)
     uint32_t bg = backgrounds[svg->background];
     for (int y = 0; y < h; y++) {
         uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);

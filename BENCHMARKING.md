@@ -496,8 +496,8 @@ files show; and ICU is replaced by iconv (code pages; without a charset, windows
 has ő/ű). Fonts come from /Library/Fonts, /System/Library/Fonts and ~/Library/Fonts (Bitstream names
 such as "Futura Lt BT" map to the family); a missing font is replaced by a similar one, so its text
 may run a little longer or shorter. Lines are never thinner than one device pixel, as in CorelDRAW.
-Arrowheads, gradients, two-color and bitmap pattern fills are drawn as CorelDRAW 9 draws them (a
-test drawing saved as versions 5, 7 and 9). Not supported: full-color (vector) pattern fills.
+Arrowheads, gradients, two-color, bitmap and full-color pattern fills are drawn as CorelDRAW 9 draws
+them (test drawings saved as versions 5, 7 and 9). Not supported: rotated or skewed pattern fills.
 
 On 216
 CDRs collected from a Mac (architectural plans from ArchiCAD PDFs, network maps, logos) every file

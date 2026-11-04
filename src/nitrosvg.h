@@ -25,11 +25,12 @@ void nitrosvg_free(nitrosvg *svg);
 void nitrosvg_size(const nitrosvg *svg, double *w, double *h);
 
 // The background it is drawn over: 0 white (the default), 1 dark grey (AutoCAD's), 2 black, as
-// for DXF and CorelDRAW drawings. Set before rendering, not while it renders.
+// for DXF and CorelDRAW drawings; 3 none (transparent: a picture in another drawing). Set before
+// rendering, not while it renders.
 void nitrosvg_set_background(nitrosvg *svg, int background);
 
 // Renders into a w x h BGRA buffer (premultiplied, as Metal's BGRA8Unorm expects)
-// over the opaque background: pixel (i, j) shows the SVG point
+// over the background: pixel (i, j) shows the SVG point
 // (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale), in the units of nitrosvg_size.
 // Returns 0 on success.
 int nitrosvg_render(nitrosvg *svg, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0);
