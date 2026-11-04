@@ -725,7 +725,7 @@ public:
         it.path = p;
         it.evenodd = evenodd;
         it.rgb = rgb;
-        it.hatch = (uint8_t)std::min(b.hatch, 5);
+        it.hatch = (uint8_t)std::clamp(b.hatch, 0, 5);   // (an EMF's hatch is a 32-bit field: a damaged one may be negative)
         if (b.style != BS_SOLID && b.style != BS_HATCHED) {
             if (b.pattern) {
                 it.img = b.pattern;
