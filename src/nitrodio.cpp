@@ -197,12 +197,16 @@ std::string base64(const std::string &s) {
     }
     return out;
 }
+// The XML of a page, 64 MB at most and at most a hundred times the compressed size (a real
+// diagram's XML deflates 5-20x; a few hundred KB inflating to hundreds of MB of elements had
+// libxml2 build a tree of gigabytes).
 bool inflateRaw(const std::string &in, std::string &out) {
     z_stream z;
     memset(&z, 0, sizeof z);
     if (inflateInit2(&z, -15) != Z_OK) return false;
     z.next_in = (Bytef *)in.data();
     z.avail_in = (uInt)in.size();
+    const size_t limit = std::min<size_t>(64u << 20, in.size() * 100 + (1u << 20));
     char buf[65536];
     int rc;
     do {
@@ -210,9 +214,10 @@ bool inflateRaw(const std::string &in, std::string &out) {
         z.avail_out = sizeof buf;
         rc = inflate(&z, Z_NO_FLUSH);
         out.append(buf, sizeof buf - z.avail_out);
-    } while (rc == Z_OK && out.size() < (256u << 20));
+    } while (rc == Z_OK && out.size() <= limit);
     inflateEnd(&z);
-    return rc == Z_STREAM_END;
+    if (out.size() > limit) out.clear();
+    return rc == Z_STREAM_END && !out.empty();
 }
 std::string urlDecode(const std::string &s) {
     std::string o;
