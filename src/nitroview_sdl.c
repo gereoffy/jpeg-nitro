@@ -1712,7 +1712,7 @@ static int detail_target(const Decoded *d, NvDetailRect *r) {   // (after draw_p
     double s = current_scale(d);
     if (s <= 1.01) return 0;
     double cx = V.zoomed ? V.cx : iw / 2, cy = V.zoomed ? V.cy : ih / 2;
-    return nv_vector_detail_rect(iw, ih, s, round(V.vw / 2.0 - cx * s), round(V.vh / 2.0 - cy * s), V.vw, V.vh, 0, r);
+    return nv_vector_detail_rect(iw, ih, s, round(V.vw / 2.0 - cx * s), round(V.vh / 2.0 - cy * s), V.vw, V.vh, r);
 }
 static int detail_current(const Decoded *d, const NvDetailRect *r) {
     return d->dtex && d->dscale == r->scale && d->dx == r->dx && d->dy == r->dy && d->dw == r->dw && d->dh == r->dh;

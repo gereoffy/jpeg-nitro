@@ -100,7 +100,7 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
     double vw = gtk_widget_get_width(GTK_WIDGET(self)) * factor, vh = gtk_widget_get_height(GTK_WIDGET(self)) * factor;
     // the visible part, in device pixels from the texture's origin
     NvDetailRect r;
-    if (!nv_vector_detail_rect(self->source_width, self->source_height, scale, x * factor, y * factor, vw, vh, 0, &r)) return;
+    if (!nv_vector_detail_rect(self->source_width, self->source_height, scale, x * factor, y * factor, vw, vh, &r)) return;
     if (self->detail && self->detail_scale == scale && self->detail_x <= r.x && self->detail_y <= r.y &&
         self->detail_x + self->detail_w >= r.x + r.w && self->detail_y + self->detail_h >= r.y + r.h) {
         graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)(x + (double)self->detail_x / factor),

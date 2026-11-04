@@ -281,14 +281,13 @@ uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPa
     return buf;
 }
 
-int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, double margin,
-                          NvDetailRect *r) {
+int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, NvDetailRect *r) {
     memset(r, 0, sizeof *r);
     r->ox = ox;
     r->oy = oy;
     r->scale = scale;
-    double l = MAX(-margin, ox), t = MAX(-margin, oy);
-    double rr = MIN(vw + margin, ox + iw * scale), b = MIN(vh + margin, oy + ih * scale);
+    double l = MAX(0, ox), t = MAX(0, oy);
+    double rr = MIN(vw, ox + iw * scale), b = MIN(vh, oy + ih * scale);
     r->w = (int)ceil(rr - l);
     r->h = (int)ceil(b - t);
     if (r->w <= 0 || r->h <= 0) return 0;

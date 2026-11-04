@@ -94,17 +94,15 @@ uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPa
 // A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel): the
 // viewers render the visible part again at screen resolution, sharp, and draw it over the image.
 // That part: of an image of iw x ih decoded pixels shown at scale device pixels per decoded
-// pixel, its top left corner at ox, oy (device pixels, whole numbers) in a view of vw x vh,
-// what is visible plus margin device pixels around it (for panning; 0: none), clipped to the
-// image. Returns whether there is any.
+// pixel, its top left corner at ox, oy (device pixels, whole numbers) in a view of vw x vh:
+// what is visible, clipped to the image. Returns whether there is any.
 typedef struct {
     double ox, oy;           // the image's top left corner on the screen (device pixels)
     int x, y, w, h;          // the part: from that corner, in device pixels (its size on the screen)
     double dx, dy, dw, dh;   // the same in decoded pixels
     double scale;            // device pixels per decoded pixel
 } NvDetailRect;
-int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, double margin,
-                          NvDetailRect *r);
+int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, NvDetailRect *r);
 // That part of a page rendered: r->w x r->h BGRA pixels (pitch r->w * 4; from malloc, free them),
 // sharp at r->scale device pixels per decoded pixel of a page decoded at vscale pixels per
 // document unit. Any thread. NULL: no memory, or cancelled meanwhile (as nv_vector_render's).

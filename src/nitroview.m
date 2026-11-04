@@ -1480,9 +1480,9 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
         _wantFor = nil;
         return;
     }
-    // visible part in device pixels, integer, within the image, with a margin for panning
+    // visible part in device pixels, integer, within the image
     NvDetailRect r;
-    int any = nv_vector_detail_rect(iw, ih, s, x0, y0, ds.width, ds.height, round(MAX(ds.width, ds.height) / 8), &r);
+    int any = nv_vector_detail_rect(iw, ih, s, x0, y0, ds.width, ds.height, &r);
     double vl = MAX(0, x0), vt = MAX(0, y0), vr = MIN(ds.width, x0 + iw * s), vb = MIN(ds.height, y0 + ih * s);
     if (_detailTex) {
         double *q = _detailRect;
