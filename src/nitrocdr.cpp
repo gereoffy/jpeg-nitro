@@ -1962,11 +1962,14 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
     size_t n = 0;
     int rc = 0;
     for (const Item &it : cdr->pages[page].items) {
-        if ((++n & 255) == 0 && cancelled && cancelled(ctx)) {
+        bool shown = it.bx1 >= vx0 && it.bx0 <= vx1 && it.by1 >= vy0 && it.by0 <= vy1;
+        // (asked every 256th item, and before a picture: an embedded DWG, a long WMF or an SVG rendered
+        // for the band's scale takes a while)
+        if (((++n & 255) == 0 || (shown && it.kind == Item::IMAGE)) && cancelled && cancelled(ctx)) {
             rc = 1;
             break;
         }
-        if (it.bx1 >= vx0 && it.bx0 <= vx1 && it.by1 >= vy0 && it.by0 <= vy1) drawItem(c, it, (float)scale);
+        if (shown) drawItem(c, it, (float)scale);
     }
     plutovg_canvas_destroy(c);
     plutovg_surface_destroy(surface);
