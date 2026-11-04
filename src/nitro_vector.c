@@ -243,6 +243,26 @@ uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDe
     return buf;
 }
 
+int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, double margin,
+                          NvDetailRect *r) {
+    memset(r, 0, sizeof *r);
+    r->ox = ox;
+    r->oy = oy;
+    r->scale = scale;
+    double l = MAX(-margin, ox), t = MAX(-margin, oy);
+    double rr = MIN(vw + margin, ox + iw * scale), b = MIN(vh + margin, oy + ih * scale);
+    r->w = (int)ceil(rr - l);
+    r->h = (int)ceil(b - t);
+    if (r->w <= 0 || r->h <= 0) return 0;
+    r->x = (int)(l - ox);
+    r->y = (int)(t - oy);
+    r->dx = (l - ox) / scale;
+    r->dy = (t - oy) / scale;
+    r->dw = r->w / scale;
+    r->dh = r->h / scale;
+    return 1;
+}
+
 int nv_vector_background(void) { return atomic_load(&g_background); }
 
 int nv_vector_cycle_background(int delta) {

@@ -54,8 +54,8 @@ static gboolean has_image(NitroView *self) {
 typedef struct {
     NitroVector *vector;
     int page;
-    double vector_scale, scale;
-    int x, y, w, h;   // device pixels
+    double vector_scale;
+    NvDetailRect r;   // the part (device pixels from the texture's origin)
     guint gen;
     GCancellable *cancel;
 } DetailJob;
@@ -69,7 +69,7 @@ static void detail_job_free(gpointer data) {
 
 static void detail_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancellable) {
     DetailJob *j = data;
-    GdkTexture *t = nitro_vector_render(j->vector, j->page, j->vector_scale, j->w, j->h, j->scale, j->x, j->y, j->cancel);
+    GdkTexture *t = nitro_vector_render(j->vector, j->page, j->vector_scale, j->r.w, j->r.h, j->r.scale, j->r.x, j->r.y, j->cancel);
     g_task_return_pointer(task, t, t ? g_object_unref : NULL);
 }
 
@@ -82,11 +82,11 @@ static void detail_done(GObject *source, GAsyncResult *result, gpointer user_dat
     if (t && j->gen == self->detail_gen) {
         g_clear_object(&self->detail);
         self->detail = t;
-        self->detail_scale = j->scale;
-        self->detail_x = j->x;
-        self->detail_y = j->y;
-        self->detail_w = j->w;
-        self->detail_h = j->h;
+        self->detail_scale = j->r.scale;
+        self->detail_x = j->r.x;
+        self->detail_y = j->r.y;
+        self->detail_w = j->r.w;
+        self->detail_h = j->r.h;
     } else if (t) {
         g_object_unref(t);
     }
@@ -99,12 +99,10 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
     if (!self->vector || scale <= 1.0 + 1e-9) return;
     double vw = gtk_widget_get_width(GTK_WIDGET(self)) * factor, vh = gtk_widget_get_height(GTK_WIDGET(self)) * factor;
     // the visible part, in device pixels from the texture's origin
-    int x0 = MAX(0, (int)floor(-x * factor)), y0 = MAX(0, (int)floor(-y * factor));
-    int x1 = MIN((int)ceil(self->source_width * scale), (int)ceil(-x * factor + vw));
-    int y1 = MIN((int)ceil(self->source_height * scale), (int)ceil(-y * factor + vh));
-    if (x1 <= x0 || y1 <= y0) return;
-    if (self->detail && self->detail_scale == scale && self->detail_x <= x0 && self->detail_y <= y0 &&
-        self->detail_x + self->detail_w >= x1 && self->detail_y + self->detail_h >= y1) {
+    NvDetailRect r;
+    if (!nv_vector_detail_rect(self->source_width, self->source_height, scale, x * factor, y * factor, vw, vh, 0, &r)) return;
+    if (self->detail && self->detail_scale == scale && self->detail_x <= r.x && self->detail_y <= r.y &&
+        self->detail_x + self->detail_w >= r.x + r.w && self->detail_y + self->detail_h >= r.y + r.h) {
         graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)(x + (double)self->detail_x / factor),
                                                      (float)(y + (double)self->detail_y / factor),
                                                      (float)((double)self->detail_w / factor),
@@ -113,7 +111,7 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
         return;
     }
     if (self->detail_busy) {   // (stopped if it is not this part: asks again when that one is done)
-        if (self->busy_scale != scale || self->busy_x != x0 || self->busy_y != y0 || self->busy_w != x1 - x0 || self->busy_h != y1 - y0)
+        if (self->busy_scale != scale || self->busy_x != r.x || self->busy_y != r.y || self->busy_w != r.w || self->busy_h != r.h)
             g_cancellable_cancel(self->detail_cancel);
         return;
     }
@@ -121,20 +119,16 @@ static void vector_detail(NitroView *self, GtkSnapshot *snapshot, double scale, 
     j->vector = nv_vector_ref(self->vector);
     j->page = self->page;
     j->vector_scale = self->vector_scale;
-    j->scale = scale;
-    j->x = x0;
-    j->y = y0;
-    j->w = x1 - x0;
-    j->h = y1 - y0;
+    j->r = r;
     j->gen = self->detail_gen;
     j->cancel = g_cancellable_new();
     self->detail_busy = TRUE;
     self->detail_cancel = g_object_ref(j->cancel);
     self->busy_scale = scale;
-    self->busy_x = x0;
-    self->busy_y = y0;
-    self->busy_w = j->w;
-    self->busy_h = j->h;
+    self->busy_x = r.x;
+    self->busy_y = r.y;
+    self->busy_w = r.w;
+    self->busy_h = r.h;
     GTask *task = g_task_new(self, NULL, detail_done, NULL);
     g_task_set_task_data(task, j, detail_job_free);
     g_task_run_in_thread(task, detail_thread);

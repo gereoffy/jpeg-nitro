@@ -1424,36 +1424,19 @@ static void make_rtv(void) {
 
 #ifdef NV_VECTOR
 // A vector image zoomed in beyond its decoded size (more than one device pixel per decoded pixel):
-// the visible part is rendered again at screen resolution ~80 ms after the zoom or position last
-// changed (a background thread), and drawn over the image; until then the previous one is scaled.
-typedef struct {
-    double ox, oy;               // the image's top left corner on the screen (device pixels)
-    double dx, dy, dw, dh;       // the visible part of the image (decoded pixels)
-    double scale;                // device pixels per decoded pixel
-    int w, h;                    // its size on the screen
-} DetailRect;
-
-static int detail_target(const Decoded *d, DetailRect *r) {   // (after draw_params: same centre)
+// the visible part (nv_vector_detail_rect) is rendered again at screen resolution ~80 ms after
+// the zoom or position last changed (a background thread), and drawn over the image; until then
+// the previous one is scaled.
+static int detail_target(const Decoded *d, NvDetailRect *r) {   // (after draw_params: same centre)
     if (!d->vec) return 0;
     double iw, ih;
     display_size(d, &iw, &ih);
     double s = current_scale(d);
     if (s <= 1.01) return 0;
     double cx = V.zoomed ? V.cx : iw / 2, cy = V.zoomed ? V.cy : ih / 2;
-    r->ox = round(V.vw / 2.0 - cx * s);
-    r->oy = round(V.vh / 2.0 - cy * s);
-    double l = MAX(0, r->ox), t = MAX(0, r->oy), rr = MIN(V.vw, r->ox + iw * s), b = MIN(V.vh, r->oy + ih * s);
-    r->w = (int)ceil(rr - l);
-    r->h = (int)ceil(b - t);
-    if (r->w <= 0 || r->h <= 0) return 0;
-    r->scale = s;
-    r->dx = (l - r->ox) / s;
-    r->dy = (t - r->oy) / s;
-    r->dw = r->w / s;
-    r->dh = r->h / s;
-    return 1;
+    return nv_vector_detail_rect(iw, ih, s, round(V.vw / 2.0 - cx * s), round(V.vh / 2.0 - cy * s), V.vw, V.vh, 0, r);
 }
-static int detail_current(const Decoded *d, const DetailRect *r) {
+static int detail_current(const Decoded *d, const NvDetailRect *r) {
     return d->dsrv && d->dscale == r->scale && d->dx == r->dx && d->dy == r->dy && d->dw == r->dw && d->dh == r->dh;
 }
 
@@ -1462,7 +1445,7 @@ typedef struct {
     NvVector *vec;              // (a reference: the document stays while it renders)
     int page;
     double vscale;
-    DetailRect r;
+    NvDetailRect r;
     uint8_t *px;
     double ms;
     volatile LONG cancel;        // set: the view wants another detail, it stops
@@ -1487,7 +1470,7 @@ static DWORD WINAPI detail_run(void *arg) {
 
 static void start_detail(void) {   // TIMER_DETAIL
     Decoded *d = loader_get(V.index);
-    DetailRect r;
+    NvDetailRect r;
     int want = d && detail_target(d, &r) && !detail_current(d, &r);
     if (g_detail_busy) {   // (one at a time, stopped if it is not this one: when it is done, the view asks again)
         if (g_detail_job && (!want || g_detail_job->d != d || memcmp(&g_detail_job->r, &r, sizeof r)))
@@ -1654,7 +1637,7 @@ static void render(void) {
         ID3D11DeviceContext_PSSetSamplers(g_ctx, 0, 2, ss);
         ID3D11DeviceContext_Draw(g_ctx, 4, 0);
 #ifdef NV_VECTOR
-        DetailRect r;
+        NvDetailRect r;
         if (!previous && detail_target(d, &r)) {
             if (d->dsrv) {   // the sharp detail over its part of the image, scaled to the current view
                 double s = r.scale, l = r.ox + d->dx * s, t = r.oy + d->dy * s;

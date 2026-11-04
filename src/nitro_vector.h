@@ -74,6 +74,21 @@ typedef struct {
 } NvPage;
 uint8_t *nv_vector_render_page(NvVector *v, int page, int tw, int th, const NvDecoder *dec, NvPage *p);
 
+// A drawing zoomed in beyond its decoded size (more than one device pixel per decoded pixel): the
+// viewers render the visible part again at screen resolution, sharp, and draw it over the image.
+// That part: of an image of iw x ih decoded pixels shown at scale device pixels per decoded
+// pixel, its top left corner at ox, oy (device pixels, whole numbers) in a view of vw x vh,
+// what is visible plus margin device pixels around it (for panning; 0: none), clipped to the
+// image. Returns whether there is any.
+typedef struct {
+    double ox, oy;           // the image's top left corner on the screen (device pixels)
+    int x, y, w, h;          // the part: from that corner, in device pixels (its size on the screen)
+    double dx, dy, dw, dh;   // the same in decoded pixels
+    double scale;            // device pixels per decoded pixel
+} NvDetailRect;
+int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, double margin,
+                          NvDetailRect *r);
+
 // The background the drawings loaded from now on are drawn over: 0 white, 1 dark grey (AutoCAD's
 // model space), 2 black. Any thread.
 int nv_vector_background(void);

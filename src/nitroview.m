@@ -1484,10 +1484,9 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
         _wantFor = nil;
         return;
     }
-    // visible part in device pixels, integer, within the image
-    double m = round(MAX(ds.width, ds.height) / 8);
-    double l = MAX(floor(-m), x0), t = MAX(floor(-m), y0);
-    double r = MIN(ceil(ds.width + m), x0 + ceil(iw * s)), b = MIN(ceil(ds.height + m), y0 + ceil(ih * s));
+    // visible part in device pixels, integer, within the image, with a margin for panning
+    NvDetailRect r;
+    int any = nv_vector_detail_rect(iw, ih, s, x0, y0, ds.width, ds.height, round(MAX(ds.width, ds.height) / 8), &r);
     double vl = MAX(0, x0), vt = MAX(0, y0), vr = MIN(ds.width, x0 + iw * s), vb = MIN(ds.height, y0 + ih * s);
     if (_detailTex) {
         double *q = _detailRect;
@@ -1502,15 +1501,15 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
             x0 + (q[0] + q[2]) * s >= vr - 0.5 && y0 + (q[1] + q[3]) * s >= vb - 0.5)
             return;
     }
-    if (r <= l || b <= t) return;
-    double want[4] = {(l - x0) / s, (t - y0) / s, (r - l) / s, (b - t) / s};
+    if (!any) return;
+    double want[4] = {r.dx, r.dy, r.dw, r.dh};
     if (_wantFor == d && _wantScale == s && !memcmp(want, _wantRect, sizeof want)) return;   // already on its way
     _wantFor = d;
     _wantScale = s;
     memcpy(_wantRect, want, sizeof want);
     unsigned req = ++_detailReq;
     CGRect wr = CGRectMake(want[0], want[1], want[2], want[3]);
-    int w = MIN(MAX_TEX, (int)(r - l)), h = MIN(MAX_TEX, (int)(b - t));
+    int w = MIN(MAX_TEX, r.w), h = MIN(MAX_TEX, r.h);
     if (!_vectorQueue) _vectorQueue = dispatch_queue_create("nitroview.vector", DISPATCH_QUEUE_SERIAL);
     __weak ViewerView *ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
