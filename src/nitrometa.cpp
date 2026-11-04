@@ -170,11 +170,12 @@ const uint32_t kDefaultPalette[20] = {0x000000, 0x800000, 0x008000, 0x808000, 0x
                                       0xfffbf0, 0xa0a0a4, 0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff};
 
 // bits: the pixels when the record gives them apart from the header (else they follow the palette);
-// alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it;
+// alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it (2: it
+// counts when any pixel has one, nitrometa_dib's);
 // budget: the document's pixels left (taken from); palColors: the device context's palette when the
 // record's colour usage is DIB_PAL_COLORS (the colour table holds 16-bit indices into it), else
 // null; startScan, scans: SetDIBitsToDevice's band, the rows the bits hold (scans 0: all that are there)
-SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, const std::vector<uint32_t> *palColors, DibPlace *place = nullptr,
+SurfP decodeDib(Bytes hdr, Bytes bits, int alpha, size_t &budget, const std::vector<uint32_t> *palColors, DibPlace *place = nullptr,
                 uint32_t startScan = 0, uint32_t scans = 0) {
     uint32_t hs = hdr.u32(0);
     int w, h, bpp;
@@ -258,6 +259,14 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, const std::ve
         uint32_t c = v >> shift[i] & low[i];
         return bitsOf[i] >= 8 ? c >> (bitsOf[i] - 8) : c * 255 / low[i];
     };
+    if (bpp == 32 && alpha == 2) {   // (libcdr's bitmaps: the alpha channel counts when any pixel has one; a bit-field one's when its header has an alpha mask)
+        if (comp == 3) alpha = hs >= 56 && hdr.u32(52) != 0;
+        else {
+            alpha = 0;
+            for (int y = 0; y < rows && !alpha; y++)
+                for (int x = 0; x < w && !alpha; x++) alpha = bits.p[stride * (size_t)y + x * 4 + 3] != 0;
+        }
+    }
     if ((size_t)w * rows > budget) return nullptr;
     budget -= (size_t)w * rows;
     auto surf = std::make_shared<Surface>();
@@ -2157,6 +2166,15 @@ nitrometa *nitrometa_load(const void *data, size_t len) {
 }
 
 void nitrometa_free(nitrometa *meta) { delete meta; }
+
+plutovg_surface_t *nitrometa_dib(const uint8_t *hdr, size_t n, const uint8_t *bits, size_t nbits, int alpha) {
+    size_t budget = kMaxBitmapPixels;
+    SurfP s = decodeDib({hdr, n}, {bits, nbits}, alpha, budget, nullptr);
+    if (!s) return nullptr;
+    plutovg_surface_t *px = s->s;   // (the caller's now)
+    s->s = nullptr;
+    return px;
+}
 
 void nitrometa_size(const nitrometa *meta, double *w, double *h) {
     *w = (meta->fx1 - meta->fx0) * meta->unit;

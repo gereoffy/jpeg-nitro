@@ -137,37 +137,21 @@ static plutovg_surface_t *svgSurface(Image &img, float w, float h, int max) {
     img.svgPixels.push_back(px);
     return plutovg_surface_reference(px);
 }
-// libcdr's own bitmaps: uncompressed 32-bit BMPs (B G R A, bottom-up), alpha all 0 when opaque;
-// read here directly, as stb_image would (twice as fast as stb_image + plutovg's conversion)
-static plutovg_surface_t *bmp32(const unsigned char *b, size_t n) {
+// A BMP file (libcdr's own bitmaps: uncompressed 32-bit ones, their alpha all 0 when opaque; a
+// CorelDRAW or Visio picture of any depth): its DIB, decoded by nitrometa (twice as fast as
+// stb_image + plutovg's conversion), the pixels at the offset the file header gives, or right
+// after the colour table when the offset points before that (a BI_BITFIELDS one's offset left at
+// 54, before its masks: GDI takes the pixels from after them). NULL if not one nitrometa reads:
+// stb_image then.
+static plutovg_surface_t *bmpFile(const unsigned char *b, size_t n) {
     auto u32 = [b](size_t o) { return (uint32_t)b[o] | (uint32_t)b[o + 1] << 8 | (uint32_t)b[o + 2] << 16 | (uint32_t)b[o + 3] << 24; };
-    if (n < 54 || b[0] != 'B' || b[1] != 'M' || u32(14) != 40 || (b[28] | b[29] << 8) != 32 || u32(30) != 0) return nullptr;
-    uint32_t off = u32(10), w = u32(18);
-    int32_t h = (int32_t)u32(22);
-    uint32_t ah = h < 0 ? 0u - (uint32_t)h : (uint32_t)h;
-    if (!w || !ah || w > 65535 || ah > 65535 || off > n || (n - off) / 4 / w < ah) return nullptr;
-    const unsigned char *px = b + off;
-    size_t count = (size_t)w * ah;
-    bool alpha = false;
-    for (size_t i = 0; i < count && !alpha; i++) alpha = px[i * 4 + 3] != 0;
-    plutovg_surface_t *s = plutovg_surface_create((int)w, (int)ah);
-    if (!s) return nullptr;
-    unsigned char *data = plutovg_surface_get_data(s);
-    int stride = plutovg_surface_get_stride(s);
-    for (uint32_t y = 0; y < ah; y++) {
-        const unsigned char *src = px + (size_t)(h > 0 ? ah - 1 - y : y) * w * 4;
-        uint32_t *dst = (uint32_t *)(data + (size_t)stride * y);
-        for (uint32_t x = 0; x < w; x++, src += 4) {
-            uint32_t a = alpha ? src[3] : 255, r = src[2], g = src[1], bl = src[0];
-            if (a != 255) {   // (premultiplied, as plutovg_convert_rgba_to_argb)
-                r = r * a / 255;
-                g = g * a / 255;
-                bl = bl * a / 255;
-            }
-            dst[x] = a ? a << 24 | r << 16 | g << 8 | bl : 0;
-        }
-    }
-    return s;
+    if (n < 54 || b[0] != 'B' || b[1] != 'M') return nullptr;
+    uint32_t off = u32(10), header = u32(14), bits = b[28] | b[29] << 8, compression = u32(30), colours = u32(46);
+    if (header < 40 || header > 124) return nullptr;
+    uint64_t start = 14 + (uint64_t)header + (header == 40 && (compression == 3 || compression == 6) ? (compression == 6 ? 16 : 12) : 0) +
+                     4 * (uint64_t)(colours ? colours : bits <= 8 ? 1u << bits : 0);
+    bool atOffset = off >= start && off < n;
+    return nitrometa_dib(b + 14, n - 14, atOffset ? b + off : nullptr, atOffset ? n - off : 0, 2);
 }
 
 // A grayscale Photoshop image (8 bits, its merged image raw or PackBits compressed; embedded in
@@ -263,13 +247,9 @@ std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
                 std::shared_ptr<Image> img;
                 if (format == 14 || format == 3) img = picture(d, len, depth + 1);   // (EMF, WMF)
                 else if (format == 8 && len > 40) {                               // (a DIB: a BMP without its file header)
-                    std::vector<unsigned char> bmp(14 + len);
-                    uint32_t bits = u32(d) + (u32(d + 32) ? u32(d + 32) : d[14] <= 8 ? 1u << d[14] : 0) * 4 +
-                                    (u32(d) == 40 && u32(d + 16) == 3 ? 12 : 0);   // (the palette, the bit fields' masks)
-                    bmp[0] = 'B', bmp[1] = 'M';
-                    for (int k = 0; k < 4; k++) bmp[2 + k] = (uint8_t)((14 + len) >> 8 * k), bmp[10 + k] = (uint8_t)((14 + bits) >> 8 * k);
-                    memcpy(&bmp[14], d, len);
-                    img = picture(bmp.data(), bmp.size(), depth + 1);
+                    auto dib = std::make_shared<Image>();
+                    dib->s = nitrometa_dib(d, len, nullptr, 0, 2);
+                    if (dib->s) img = dib;
                 }
                 if (img) return img;
             }
@@ -285,26 +265,10 @@ std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
     return nullptr;
 }
 
-// A BMP whose pixels' offset points into its header, colour masks or palette (a BI_BITFIELDS
-// one's offset left at 54, before its masks): GDI takes the pixels from right after them, as
-// here (a copy with the offset set); stb_image would refuse it. Empty if the offset is fine.
-static std::vector<unsigned char> bmpOffsetFixed(const unsigned char *b, size_t n) {
-    auto u32 = [b](size_t o) { return (uint32_t)b[o] | (uint32_t)b[o + 1] << 8 | (uint32_t)b[o + 2] << 16 | (uint32_t)b[o + 3] << 24; };
-    if (n < 54 || b[0] != 'B' || b[1] != 'M') return {};
-    uint32_t header = u32(14), bits = b[28] | b[29] << 8, compression = u32(30), colours = u32(46);
-    if (header < 40 || header > 124) return {};
-    uint64_t start = 14 + (uint64_t)header + (header == 40 && (compression == 3 || compression == 6) ? (compression == 6 ? 16 : 12) : 0) +
-                     4 * (uint64_t)(colours ? colours : bits <= 8 ? 1u << bits : 0);
-    if (u32(10) >= start || start >= n) return {};
-    std::vector<unsigned char> fixed(b, b + n);
-    for (int k = 0; k < 4; k++) fixed[10 + k] = (unsigned char)(start >> 8 * k);
-    return fixed;
-}
-
 std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   // a BMP (or other stb_image format), a WMF / EMF or an OLE object
     if (n >= 8 && !memcmp(b, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8)) return olePicture(b, n, depth);
     auto img = std::make_shared<Image>();
-    img->s = bmp32(b, n);
+    img->s = bmpFile(b, n);
     if (!img->s) img->s = psdGray(b, n);
     if (!img->s) img->meta = nitrometa_load(b, n);
     if (!img->s && !img->meta) img->s = plutovg_surface_load_from_image_data(b, (int)n);
@@ -322,10 +286,7 @@ std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth) {   
             img->s = nullptr;
         }
     }
-    if (!img->s && !img->meta) {
-        std::vector<unsigned char> fixed = bmpOffsetFixed(b, n);
-        if (!fixed.empty()) img->s = plutovg_surface_load_from_image_data(fixed.data(), (int)fixed.size());
-    }
+
     size_t i = 0;   // (an SVG: text starting with '<', after white space)
     while (i < n && i < 256 && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n')) i++;
     if (!img->s && !img->meta && i < n && b[i] == '<') img->svg = nitrosvg_load(b, n);

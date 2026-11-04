@@ -31,6 +31,16 @@ void nitrometa_size(const nitrometa *meta, double *w, double *h);
 // frame stretched to the rectangle and clipped to it; needs no lock.
 void nitrometa_draw(const nitrometa *meta, struct plutovg_canvas *canvas, float x, float y, float w, float h);
 
+// A DIB on its own (a BITMAPINFOHEADER or BITMAPCOREHEADER, its colour table and its pixels: a BMP
+// file past its 14-byte file header, an OLE object's picture) as a plutovg surface (premultiplied
+// BGRA), decoded as the metafiles' bitmaps are: 1 to 32 bits, RLE, bit fields, top-down or
+// bottom-up. bits: the pixels when they are not right after the colour table (a BMP file's offset),
+// else NULL. alpha: 0 opaque (as GDI draws a DIB), 1 a 32-bit one's alpha channel counts, 2 it
+// counts when any pixel has one (libcdr's bitmaps: all zero when opaque). NULL if it is not a DIB
+// this reads (or over 64 Mpixels). Needs no lock.
+struct plutovg_surface;
+struct plutovg_surface *nitrometa_dib(const uint8_t *hdr, size_t n, const uint8_t *bits, size_t nbits, int alpha);
+
 // The viewers' interface (as nitrodxf's): the background 0 white, 1 dark grey, 2 black; a render
 // of w x h pixels, pixel (i, j) showing the point (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale)
 // of the frame in points; 0 on success, 1 if cancelled (may be NULL) returned nonzero meanwhile.
