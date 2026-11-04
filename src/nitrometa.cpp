@@ -370,9 +370,11 @@ void decodeText(const uint8_t *s, size_t n, int charset, std::vector<uint32_t> &
         return;
     }
 #else
-    // the converters stay open (a file of thousands of text records); under nitro_font's lock, as nitrometa_load runs
+    // the converters stay open (a file of thousands of text records), shared by the loads under their own lock
+    static std::mutex lock;
     static struct { unsigned cp; iconv_t cd; } cache[8];
     static unsigned cached = 0;
+    std::lock_guard<std::mutex> g(lock);
     iconv_t cd = (iconv_t)-1;
     bool known = false;   // (a code page iconv has no converter for is remembered too: not tried again per text)
     for (unsigned i = 0; i < cached && !known; i++)
@@ -1269,6 +1271,7 @@ public:
         if (!rop2Draws(rgb)) return;
         M m = matrix();
         double det = m.det();
+        std::unique_lock<std::mutex> lock(nf_lock());   // the face's lookup and the glyph lookups below: nitro_font's (the rest needs no lock)
         bool symbol;
         plutovg_font_face_t *fc = face(f, symbol);
         if (!fc) return;
@@ -1299,6 +1302,7 @@ public:
             float adv = plutovg_font_face_get_glyph_path(g, (float)em, (float)pen, 0, cp, glyphs);
             pen += i < dx.size() ? dx[i] : adv;
         }
+        lock.unlock();
         double width = pen;
         // the alignment: the reference point to the text's origin
         int align = dc.textAlign;
@@ -2197,8 +2201,7 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
 nitrometa *nitrometa_load(const void *data, size_t len) {
     if (!data || len < 18) return nullptr;
     Bytes b{(const uint8_t *)data, len};
-    std::unique_ptr<nitrometa> meta(new nitrometa);
-    std::lock_guard<std::mutex> g(nf_lock());   // (the glyph outlines of the text)
+    std::unique_ptr<nitrometa> meta(new nitrometa);   // (nitro_font's lock is taken by the text records only, around their glyph lookups)
     bool ok = false;
     if (b.u32(0) == 1 && b.u32(40) == 0x464d4520) {
         Player p(*meta, true);
