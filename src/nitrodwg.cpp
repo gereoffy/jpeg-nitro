@@ -430,6 +430,8 @@ struct Dwg {
 
     size_t maxText;   // of the values: no more (a damaged file's HATCH spline edge of 2^29 knots emitted 4.8 GB
                       // of them, past where their 32-bit ends wrap): 16 x the file (4.7 x seen), up to 2 GB
+    static constexpr int kMaxCount = 1000000;   // vertices, knots, handles... of one object: no more
+                                                // (a count is read before them: an array of its size)
     bool bad = false;                           // (past maxText: nothing emitted, and the file fails)
     void put(int code, sv v) {
         if (bad || (bad = out.text.size() + v.size() > maxText)) return;
@@ -545,7 +547,8 @@ struct Dwg {
             int which = -1;
             for (int w = 0; w < 4; w++)
                 if (!strcmp(name, wanted[w])) which = w;
-            if (which >= 0 && !encrypted && size <= std::min<uint64_t>(1ull << 31, (uint64_t)len * 256 + (1 << 20))) {
+            // (a section: 32 x the file at most, 7.8 x seen; up to 1 GB: a damaged map's four of 2 GB were zero-filled)
+            if (which >= 0 && !encrypted && size <= std::min<uint64_t>(1u << 30, (uint64_t)len * 32 + (1 << 20))) {
                 std::vector<uint8_t> &sec = store[which];
                 sec.assign((size_t)size, 0);
                 for (uint32_t q = 0; q < count; q++) {
@@ -1188,7 +1191,7 @@ struct Dwg {
             bh.first = o.h.H(o.handle);
             bh.last = o.h.H(o.handle);
         }
-        if (owned < 0 || (size_t)owned > o.h.left() / 8) return;
+        if (owned < 0 || owned > kMaxCount || (size_t)owned > o.h.left() / 8) return;
         for (int k = 0; k < owned; k++) bh.owned.push_back(o.h.H(o.handle));
         if (b.bad || o.h.bad) return;
         blocks.push_back(std::move(bh));
@@ -1609,7 +1612,7 @@ struct Dwg {
             if (!r2004p()) {
                 first = o.h.H(o.handle);
                 last = o.h.H(o.handle);
-            } else if (owned > 0 && (size_t)owned <= o.h.left() / 8)
+            } else if (owned > 0 && owned <= kMaxCount && (size_t)owned <= o.h.left() / 8)
                 for (int k = 0; k < owned; k++) list.push_back(o.h.H(o.handle));
         }
         if (b.bad || o.h.bad) return;
@@ -1669,7 +1672,7 @@ struct Dwg {
         uint64_t first = 0, last = 0;
         std::vector<uint64_t> list;
         if (r2004p()) {
-            if (owned < 0 || (size_t)owned > o.h.left() / 8) return;
+            if (owned < 0 || owned > kMaxCount || (size_t)owned > o.h.left() / 8) return;
             for (int k = 0; k < owned; k++) list.push_back(o.h.H(o.handle));
         } else {
             first = o.h.H(o.handle);
@@ -1742,7 +1745,8 @@ struct Dwg {
         if (flags & 1) n = b.BD3();
         int nv = b.BL(), nb = flags & 16 ? b.BL() : 0, ni = flags & 1024 ? b.BL() : 0, nw = flags & 32 ? b.BL() : 0;
         size_t room = b.left() / 2;
-        if (nv < 0 || nb < 0 || ni < 0 || nw < 0 || (size_t)nv > room / 2 || (size_t)nb > room || (size_t)ni > room || (size_t)nw > room) {
+        if (nv < 0 || nb < 0 || ni < 0 || nw < 0 || nv > kMaxCount || nb > kMaxCount || ni > kMaxCount || nw > kMaxCount || (size_t)nv > room / 2 ||
+            (size_t)nb > room || (size_t)ni > room || (size_t)nw > room) {
             b.bad = true;
             return;
         }
@@ -1799,7 +1803,8 @@ struct Dwg {
             return;
         }
         size_t room = b.left() / 2;
-        if (nk < 0 || nc < 0 || nf < 0 || (size_t)nk > room || (size_t)nc > room || (size_t)nf > room) {
+        if (nk < 0 || nc < 0 || nf < 0 || nk > kMaxCount || nc > kMaxCount || nf > kMaxCount || (size_t)nk > room || (size_t)nc > room ||
+            (size_t)nf > room) {
             b.bad = true;
             return;
         }
@@ -1905,7 +1910,7 @@ struct Dwg {
         b.B();
         b.BS();
         int path = b.BS(), n = b.BL();
-        if (n < 0 || (size_t)n > b.left() / 6) {
+        if (n < 0 || n > kMaxCount || (size_t)n > b.left() / 6) {
             b.bad = true;
             return;
         }
@@ -1939,7 +1944,7 @@ struct Dwg {
         b.RC(), b.RC(), b.RC();
         if (r2010p()) b.B();
         int ct = b.BS(), n = ct == 1 ? 2 : ct == 2 ? b.BL() : 0;
-        if (n < 0 || (size_t)n > b.left() / 128) {
+        if (n < 0 || n > kMaxCount || (size_t)n > b.left() / 128) {
             b.bad = true;
             return;
         }
