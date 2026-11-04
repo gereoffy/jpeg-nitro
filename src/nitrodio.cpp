@@ -200,10 +200,17 @@ std::string base64(const std::string &s) {
 // The XML of a page, 64 MB at most and at most a hundred times the compressed size (a real
 // diagram's XML deflates 5-20x; a few hundred KB inflating to hundreds of MB of elements had
 // libxml2 build a tree of gigabytes).
+struct Inflater {   // (a z_stream ended however the inflating stops)
+    z_stream z{};
+    bool ok = inflateInit2(&z, -15) == Z_OK;
+    ~Inflater() {
+        if (ok) inflateEnd(&z);
+    }
+};
 bool inflateRaw(const std::string &in, std::string &out) {
-    z_stream z;
-    memset(&z, 0, sizeof z);
-    if (inflateInit2(&z, -15) != Z_OK) return false;
+    Inflater inf;
+    z_stream &z = inf.z;
+    if (!inf.ok) return false;
     z.next_in = (Bytef *)in.data();
     z.avail_in = (uInt)in.size();
     const size_t limit = std::min<size_t>(64u << 20, in.size() * 100 + (1u << 20));
@@ -215,7 +222,6 @@ bool inflateRaw(const std::string &in, std::string &out) {
         rc = inflate(&z, Z_NO_FLUSH);
         out.append(buf, sizeof buf - z.avail_out);
     } while (rc == Z_OK && out.size() <= limit);
-    inflateEnd(&z);
     if (out.size() > limit) out.clear();
     return rc == Z_STREAM_END && !out.empty();
 }
@@ -1555,9 +1561,13 @@ bool readModel(xmlNode *model, Page &page) {
     return page.w > 0 && page.h > 0 && page.w < 1e8 && page.h < 1e8;
 }
 
-xmlDocPtr parseXml(const char *data, size_t len) {
+struct XmlDocFree {
+    void operator()(xmlDoc *d) const { xmlFreeDoc(d); }
+};
+using XmlDoc = std::unique_ptr<xmlDoc, XmlDocFree>;
+XmlDoc parseXml(const char *data, size_t len) {
     if (len > (1u << 30)) return nullptr;
-    return xmlReadMemory(data, (int)len, nullptr, nullptr, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_HUGE);
+    return XmlDoc(xmlReadMemory(data, (int)len, nullptr, nullptr, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_HUGE));
 }
 
 }   // namespace
@@ -1567,10 +1577,10 @@ struct nitrodio {
     int background = 0;
 };
 
-nitrodio *nitrodio_load(const void *data, size_t len) {
-    xmlDocPtr doc = parseXml((const char *)data, len);
+static nitrodio *load(const void *data, size_t len) {
+    XmlDoc doc = parseXml((const char *)data, len);
     if (!doc) return nullptr;
-    xmlNode *top = xmlDocGetRootElement(doc);
+    xmlNode *top = xmlDocGetRootElement(doc.get());
     std::unique_ptr<nitrodio> dio(new nitrodio);
     auto model = [&](xmlNode *m) {
         std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
@@ -1597,16 +1607,22 @@ nitrodio *nitrodio_load(const void *data, size_t len) {
             if (xml.compare(0, 1, "<") != 0) xml = urlDecode(xml);
             else if (xml.compare(0, 3, "%3C") == 0) xml = urlDecode(xml);
             if (xml.compare(0, 3, "%3C") == 0 || xml.compare(0, 3, "%3c") == 0) xml = urlDecode(xml);
-            xmlDocPtr inner = parseXml(xml.data(), xml.size());
+            XmlDoc inner = parseXml(xml.data(), xml.size());
             if (!inner) continue;
-            xmlNode *ir = xmlDocGetRootElement(inner);
+            xmlNode *ir = xmlDocGetRootElement(inner.get());
             if (ir && is(ir, "mxGraphModel")) model(ir);
-            xmlFreeDoc(inner);
         }
     }
-    xmlFreeDoc(doc);
     if (dio->pages.empty()) return nullptr;
     return dio.release();
+}
+
+nitrodio *nitrodio_load(const void *data, size_t len) {
+    try {   // (a C entry point: an allocation that fails on a huge diagram is "not a drawing", not an abort)
+        return load(data, len);
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 void nitrodio_free(nitrodio *dio) { delete dio; }
