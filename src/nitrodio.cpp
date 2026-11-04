@@ -1489,8 +1489,14 @@ struct Builder {
         return r.front();
     }
     void edgeLabel(Cell &lc, Cell &edgeCell, const std::vector<Pt> &r) {
-        Pt p = &lc == &edgeCell ? along(r, lc.relative ? lc.x : 0, lc.relative ? lc.y : 0) : along(r, lc.x, lc.y);
-        if (lc.hasOffset) p.x += lc.offset.x, p.y += lc.offset.y;
+        Pt p;
+        if (&lc == &edgeCell) p = along(r, lc.relative ? lc.x : 0, lc.relative ? lc.y : 0);
+        else if (lc.relative) p = along(r, lc.x, lc.y);
+        else {   // (a label cell with an absolute geometry: from the edge's parent's origin, as a vertex)
+            Pt o = origin(edgeCell.parent);
+            p = {o.x + lc.x + lc.w / 2, o.y + lc.y + lc.h / 2};
+        }
+        if (lc.hasOffset && (lc.relative || &lc == &edgeCell)) p.x += lc.offset.x, p.y += lc.offset.y;
         Style s = lc.style;
         Box b{p.x - lc.w / 2, p.y - lc.h / 2, lc.w, lc.h};
         if (&lc == &edgeCell || lc.w <= 0) {   // (no box: centred on the point)
