@@ -427,6 +427,14 @@ build/win/libnitrovec.a: $(call vec_stamps,build/win,zlib)
 build/win/vec/%.built $(DIST_DIR)/vec/%.built: VEC_INC := -I$(ZLIB)
 $(DIST_DIR)/libnitrovec.a: $(call vec_stamps,$(DIST_DIR),zlib)
 	$(vec_lib)
+# everything of the portable build again when DIST_ARCH changes (x86-64-v2 and v3 share build/dist/)
+DIST_STAMP := $(DIST_DIR)/.arch-$(DIST_ARCH)
+$(DIST_STAMP):
+	@mkdir -p $(DIST_DIR)
+	@rm -f $(DIST_DIR)/.arch-*
+	@touch $@
+$(DIST_DIR)/libnitro.a $(DIST_DIR)/libnitrovec.a $(DIST_MI) $(DIST_DIR)/nitroview-sdl \
+  $(filter %/.built,$(call vec_stamps,$(DIST_DIR),zlib)): $(DIST_STAMP)
 # mimalloc and the new / delete that use it; $(1): compiler flags (architecture, CPU)
 define mimalloc_objs
 	@mkdir -p $(@D)
@@ -641,7 +649,9 @@ build/win/%: TCPU = -march=$(WINARCH) $(X86JCC) $(DEFS)
 build/win/%: TPORT = -fblocks -static
 build/win/libnitro.a: LIB_AVIF = $(if $(WIN_DAV1D),src/nitroavif.c)
 build/win/libnitro.a: LIB_DEFS = $(WIN_AVIF)
-build/win/libnitro.a build/win/libnitrovec.a build/win/vec/%/.built: $(WIN_STAMP)
+# (the parts' stamps by name: a pattern's prerequisite reaches no file, the libraries came out of
+# the build before for the other WINARCH)
+build/win/libnitro.a build/win/libnitrovec.a $(filter %/.built,$(call vec_stamps,build/win,zlib)): $(WIN_STAMP)
 nitroview.exe: src/nitroview_win.c $(VIEWER_SRC) $(VIEWER_HDR) build/win/libnitro.a $(LIB_HDR) build/nitroview_res.o $(WIN_OBJS) \
                $(WIN_STAMP) Makefile
 	$(WINCC) $(WINFLAGS) $(WIN_DEFS) $(WIN_AVIF) -Ibuild -Isrc -municode src/nitroview_win.c $(VIEWER_SRC) build/win/libnitro.a \
