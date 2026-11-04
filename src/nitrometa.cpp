@@ -158,9 +158,16 @@ bool unrle(Bytes src, int w, int h, int bpp, std::vector<uint8_t> &out) {
     return true;
 }
 
+// where a DIB's rows lie: the source coordinates of the DIB records (StretchDIBits, SetDIBitsToDevice)
+// have their origin at a bottom-up DIB's lower-left corner
+struct DibPlace {
+    bool bottomUp = false;
+    int height = 0;   // the DIB's height (its header's)
+};
+
 // bits: the pixels when the record gives them apart from the header (else they follow the palette);
 // alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it
-SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha) {
+SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr) {
     uint32_t hs = hdr.u32(0);
     int w, h, bpp;
     uint32_t comp = 0, used = 0;
@@ -184,6 +191,7 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha) {
     bool topDown = h < 0;
     if (topDown) h = -h;
     if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || (size_t)w * h > 64u << 20) return nullptr;
+    if (place) place->bottomUp = !topDown, place->height = h;
     if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 16 && bpp != 24 && bpp != 32) return nullptr;
     if (comp != 0 && comp != 1 && comp != 2 && comp != 3) return nullptr;   // BI_RGB, BI_RLE8, BI_RLE4, BI_BITFIELDS
     uint32_t masks[3] = {0, 0, 0};
@@ -1065,6 +1073,9 @@ public:
                      plutovg_surface_get_height(m->s), 1);
         }
     }
+    // the top of a DIB record's source rectangle (sy, sh in the DIB's coordinates: from the bottom of a
+    // bottom-up DIB) among the decoded rows, which are top-down
+    static double dibSrcY(const DibPlace &p, double sy, double sh) { return p.bottomUp ? p.height - sy - sh : sy; }
     void blitItem(double x, double y, double w, double h, SurfP img, double sx, double sy, double sw, double sh, float opacity) {
         uint32_t rgb;
         if (!rop2Draws(rgb)) return;
@@ -1561,16 +1572,19 @@ bool Player::playWmf(Bytes b, size_t o) {
                 break;
             }
             if (noBitmap) break;
-            SurfP img = fn == 0x0922 || fn == 0x0b23 ? decodeDdb(r.sub(at, r.n), dc.textRgb, dc.bkRgb) : decodeDib(r.sub(at, r.n), {}, false);
+            DibPlace place;
+            SurfP img = fn == 0x0922 || fn == 0x0b23 ? decodeDdb(r.sub(at, r.n), dc.textRgb, dc.bkRgb) : decodeDib(r.sub(at, r.n), {}, false, &place);
             if (!img) break;
             if (!stretch) sw = dw, sh = dh;
+            if (fn == 0x0f43) sy = dibSrcY(place, sy, sh);   // (the others blit from a bitmap selected into a DC: top-down)
             blit(dx0, dy, dw, dh, img, sx, sy, sw, sh, rop);
             break;
         }
         case 0x0d33: {   // SetDIBitsToDevice: usage, scanCount, startScan, srcY, srcX, h, w, dstY, dstX, DIB
             double sy = r.i16(6), sx = r.i16(8), h = r.i16(10), w = r.i16(12), dy = r.i16(14), dx0 = r.i16(16);
-            SurfP img = decodeDib(r.sub(18, r.n), {}, false);
-            if (img) blit(dx0, dy, w, h, img, sx, sy, w, h, SRCCOPY);
+            DibPlace place;
+            SurfP img = decodeDib(r.sub(18, r.n), {}, false, &place);
+            if (img) blit(dx0, dy, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
         case 0x0626: {   // Escape: function, byte count, data
@@ -1664,8 +1678,8 @@ bool Player::playEmf(Bytes b) {
         auto rect = [&](size_t at, double *v) {
             for (int i = 0; i < 4; i++) v[i] = r.i32(at + (size_t)i * 4);
         };
-        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha) {
-            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha);
+        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha, DibPlace *place = nullptr) {
+            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, place);
         };
         double v[4];
         switch (type) {
@@ -1920,16 +1934,18 @@ bool Player::playEmf(Bytes b) {
         }
         case 80: {   // SetDIBitsToDevice
             double x = r.i32(24), y = r.i32(28), sx = r.i32(32), sy = r.i32(36), w = r.i32(40), h = r.i32(44);
-            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false);
-            if (img) blit(x, y, w, h, img, sx, sy, w, h, SRCCOPY);
+            DibPlace place;
+            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place);
+            if (img) blit(x, y, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
         case 81: {   // StretchDIBits
             double x = r.i32(24), y = r.i32(28), sx = r.i32(32), sy = r.i32(36), sw = r.i32(40), sh = r.i32(44);
             uint32_t rop = r.u32(68);
             double w = r.i32(72), h = r.i32(76);
-            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false);
-            if (img) blit(x, y, w, h, img, sx, sy, sw, sh, rop);
+            DibPlace place;
+            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place);
+            if (img) blit(x, y, w, h, img, sx, dibSrcY(place, sy, sh), sw, sh, rop);
             break;
         }
         case 83: case 84: {   // ExtTextOutA / W
