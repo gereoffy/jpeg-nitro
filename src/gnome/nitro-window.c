@@ -177,22 +177,17 @@ static void update_title(NitroWindow *self) {
                                 self->loading ? "loading..." : "CANNOT DECODE (unsupported or damaged)");
     }
 
-    int pages = self->image ? nv_vector_pages(self->image->vector) : 0;
-    if (pages > 1) {
-        char *with_page = g_strdup_printf("%s  [page %d/%d]", title, self->image->page + 1, pages);
+    char tail[64];   // a drawing's page, background
+    if (self->image && *nv_vector_title_suffix(self->image->vector, self->image->page, self->image->background, tail, sizeof tail)) {
+        char *with_tail = g_strdup_printf("%s%s", title, tail);
         g_free(title);
-        title = with_page;
+        title = with_tail;
     }
 
     if (self->image && self->image->dng && self->image->ev3) {
         char *with_ev = g_strdup_printf("%s  %+.1f EV", title, self->image->ev3 / 3.0);
         g_free(title);
         title = with_ev;
-    }
-    if (self->image && self->image->vector && self->image->background) {
-        char *with_bg = g_strdup_printf("%s  %s", title, nv_vector_background_name(self->image->background));
-        g_free(title);
-        title = with_bg;
     }
 
     if (self->slideshow_ms > 0) {

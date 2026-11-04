@@ -1306,8 +1306,7 @@ static void update_title(void) {
     }
     size_t n = strlen(t);
 #ifdef NV_VECTOR
-    if (d && d->vec && nv_vector_pages(d->vec) > 1) n += (size_t)snprintf(t + n, sizeof t - n, "  [page %d/%d]", d->page + 1, nv_vector_pages(d->vec));
-    if (d && d->vec && d->background) n += (size_t)snprintf(t + n, sizeof t - n, "  %s", nv_vector_background_name(d->background));
+    if (d) n += strlen(nv_vector_title_suffix(d->vec, d->page, d->background, t + n, sizeof t - n));   // a drawing's page, background
 #endif
     if (d && d->mode == MODE_NITRODNG && d->ev3) n += (size_t)snprintf(t + n, sizeof t - n, "  %+.1f EV", d->ev3 / 3.0);
     if (V.slide_ms > 0) {

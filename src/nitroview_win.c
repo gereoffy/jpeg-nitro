@@ -1089,13 +1089,10 @@ static void update_title(void) {
         swfmt(t, 1024, L"%ls  (%d/%d)  %ls", name, V.index + 1, V.nfiles,
                    loader_failed(V.index) ? L"CANNOT DECODE (unsupported or damaged)" : L"loading...");
 #ifdef NV_VECTOR
-    if (d && d->vec && nv_vector_pages(d->vec) > 1) {
+    if (d) {   // a drawing's page, background
+        char tail[64];
         size_t n = wcslen(t);
-        swfmt(t + n, 1024 - n, L"  [page %d/%d]", d->page + 1, nv_vector_pages(d->vec));
-    }
-    if (d && d->vec && d->background) {
-        size_t n = wcslen(t);
-        swfmt(t + n, 1024 - n, L"  %hs", nv_vector_background_name(d->background));
+        swfmt(t + n, 1024 - n, L"%hs", nv_vector_title_suffix(d->vec, d->page, d->background, tail, sizeof tail));
     }
 #endif
     if (d && d->mode == MODE_NITRODNG && d->ev3) {

@@ -110,6 +110,11 @@ int nv_vector_background(void);
 int nv_vector_cycle_background(int delta);
 // For the window title: "" for white, else "dark background" / "black background".
 const char *nv_vector_background_name(int background);
+// The window title's tail for a drawing, after the image's name and size: "  [page i/n]" for a
+// page of a multi-page one, then "  dark background" / "  black background" (nv_vector_background_name)
+// for one over a background other than white; "" when neither (v NULL: not a drawing). Into
+// buf (n bytes), returned.
+const char *nv_vector_title_suffix(const NvVector *v, int page, int background, char *buf, size_t n);
 
 #ifdef __cplusplus
 }

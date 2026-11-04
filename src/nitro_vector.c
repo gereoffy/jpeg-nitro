@@ -16,6 +16,7 @@
 #endif
 #include <math.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -298,4 +299,12 @@ int nv_vector_cycle_background(int delta) {
 
 const char *nv_vector_background_name(int background) {
     return background == 1 ? "dark background" : background == 2 ? "black background" : "";
+}
+
+const char *nv_vector_title_suffix(const NvVector *v, int page, int background, char *buf, size_t n) {
+    size_t k = 0;
+    if (n) buf[0] = 0;
+    if (v && v->pages > 1) k = (size_t)snprintf(buf, n, "  [page %d/%d]", page + 1, v->pages);
+    if (v && background && k < n) snprintf(buf + k, n - k, "  %s", nv_vector_background_name(background));
+    return buf;
 }

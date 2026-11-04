@@ -996,9 +996,9 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  d.height, d.decode_ms]
                     : [NSString stringWithFormat:@"%@  (%ld/%lu)  %@", name, _index + 1, _files.count,
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
-    if (d.pages > 1) t = [t stringByAppendingFormat:@"  [page %d/%d]", d.page + 1, d.pages];
+    char tail[64];   // a drawing's page, background
+    t = [t stringByAppendingFormat:@"%s", nv_vector_title_suffix(d.vector, d.page, d.background, tail, sizeof tail)];
     if (d.mode == MODE_NITRODNG && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
-    if (d.vector && d.background) t = [t stringByAppendingFormat:@"  %s", nv_vector_background_name(d.background)];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
