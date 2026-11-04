@@ -2122,11 +2122,11 @@ static int do_register(void) {
            "(or right-click an image > Open with > Choose another app > NitroView, \"Always\").\n"
            "After moving nitroview.exe, run --register again; --unregister removes all of it.\n",
 #if defined(NV_SVG) && defined(NV_CDR)
-           ", SVG, DXF and CorelDRAW",
+           ", SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio and draw.io",
 #elif defined(NV_SVG)
-           ", SVG and DXF",
+           ", SVG, DXF / DWG and WMF / EMF",
 #elif defined(NV_CDR)
-           " and CorelDRAW",
+           ", CorelDRAW, Visio and draw.io",
 #else
            "",
 #endif
