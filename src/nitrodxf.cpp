@@ -2213,13 +2213,29 @@ uint32_t on_background(uint32_t rgba, int background) {
     return a | (r * 4 / 5) << 16 | (g * 4 / 5) << 8 | (b * 4 / 5);
 }
 
+// a render's "stop now" (nitrodxf_render's cancelled)
+struct Cancel {
+    int (*fn)(void *);
+    void *ctx;
+    bool operator()() const { return fn && fn(ctx); }
+};
+
 // A hairline's segments as quads one device pixel wide (filled: much cheaper than plutovg's
 // stroker, the same with butt caps), its curves cut into lines a fraction of a pixel close.
-void hairline_quads(plutovg_path_t *out, const plutovg_path_t *path, float hair, float scale) {
+// False if cancelled meanwhile (asked every 4096 segments: a polyline may have 10 million).
+bool hairline_quads(plutovg_path_t *out, const plutovg_path_t *path, float hair, float scale, const Cancel *cancel) {
     struct Q {
         plutovg_path_t *out;
         float h, scale, x, y, sx, sy;
+        const Cancel *cancel;
+        size_t n = 0;
+        bool stop = false;
         void seg(float x1, float y1) {
+            if (stop) return;
+            if ((++n & 4095) == 0 && cancel && (*cancel)()) {
+                stop = true;
+                return;
+            }
             float dx = x1 - x, dy = y1 - y, l = std::sqrt(dx * dx + dy * dy);
             if (l > 0) {
                 float nx = -dy / l * h, ny = dx / l * h;
@@ -2231,7 +2247,7 @@ void hairline_quads(plutovg_path_t *out, const plutovg_path_t *path, float hair,
             }
             x = x1, y = y1;
         }
-    } q{out, hair / 2, scale, 0, 0, 0, 0};
+    } q{out, hair / 2, scale, 0, 0, 0, 0, cancel};
     plutovg_path_reset(out);
     plutovg_path_traverse(path, [](void *cl, plutovg_path_command_t cmd, const plutovg_point_t *p, int n) {
         Q &q = *static_cast<Q *>(cl);
@@ -2253,6 +2269,7 @@ void hairline_quads(plutovg_path_t *out, const plutovg_path_t *path, float hair,
         }
         (void)n;
     }, &q);
+    return !q.stop;
 }
 
 // the part [t0, t1] of the line p + t d inside the rectangle; false if none
@@ -2269,13 +2286,6 @@ bool clip_line(double px, double py, double dx, double dy, const double r[4], do
     }
     return t0 <= t1;
 }
-
-// a render's "stop now" (nitrodxf_render's cancelled)
-struct Cancel {
-    int (*fn)(void *);
-    void *ctx;
-    bool operator()() const { return fn && fn(ctx); }
-};
 
 void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::vector<OPatLine> &pat, const double view[4], float scale,
                 const Cancel &cancel) {
@@ -2355,7 +2365,7 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
                     plutovg_path_move_to(part, el[4 * i + 1].point.x, el[4 * i + 1].point.y);
                     plutovg_path_line_to(part, el[4 * i + 3].point.x, el[4 * i + 3].point.y);
                 }
-                hairline_quads(quads, part, hair, scale);
+                hairline_quads(quads, part, hair, scale, nullptr);
                 plutovg_canvas_fill_path(c, quads);
             }
         plutovg_path_destroy(part);
@@ -2676,7 +2686,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
     size_t n = 0;
     int rc = 0;
     for (const Item &it : pg.items) {
-        if ((++n & 63) == 0 && cancel()) {
+        if (rc || ((++n & 63) == 0 && cancel())) {
             rc = 1;
             break;
         }
@@ -2694,7 +2704,10 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
             const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
             bool dashed = d && d->total * fs >= 4;   // (finer than that: drawn solid)
             if (it.width <= hair && !dashed) {
-                hairline_quads(tmp, it.path, hair, fs);
+                if (!hairline_quads(tmp, it.path, hair, fs, &cancel)) {
+                    rc = 1;
+                    break;
+                }
                 plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
                 plutovg_canvas_fill_path(c, tmp);
                 break;
