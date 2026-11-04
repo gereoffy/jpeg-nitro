@@ -1255,18 +1255,35 @@ private:
             t.fy += t.valign == 1 ? room / 2 : room;
         }
         // the box: the lines' ink, from the first one's ascent to the last one's descent (it was a
-        // line taller: an empty margin under a drawing's title), and what a span shifted, raised,
-        // outlined or turned (imported PDF text) reaches beyond that
-        float extra = 0;
-        for (const Line &l : t.lines)
-            for (const Span &s : l.spans) {
-                extra = std::max(extra, std::fabs(s.shiftY) * s.size + std::fabs(s.rise) + s.strokeWidth);
-                if (s.rotate != 0) extra = std::max(extra, s.width + s.size);
-            }
+        // line taller: an empty margin under a drawing's title), and each span where drawItem puts it,
+        // shifted, raised or turned (fitted text's characters, imported PDF text), outlined
         float top = artistic ? t.y - first.ascent : t.fy;
         float left = artistic ? t.x - maxw : t.fx, right = artistic ? t.x + maxw : t.fx + std::max(t.fw, maxw);
+        float x0 = left, y0 = top, x1 = right, y1 = top + first.ascent + total + last.descent;
+        float base = artistic ? t.y : t.fy + first.ascent;
+        for (size_t i = 0; i < t.lines.size(); i++) {
+            const Line &l = t.lines[i];
+            if (i) base += l.height;
+            float x;
+            if (artistic) x = l.align == 1 ? t.x - l.width / 2 : l.align == 2 ? t.x - l.width : t.x;
+            else {
+                float room = t.fw - l.left - l.indentRight;
+                x = t.fx + l.left + (l.align == 1 ? (room - l.width) / 2 : l.align == 2 ? room - l.width : 0);
+            }
+            for (const Span &s : l.spans) {
+                float sx = x + s.shiftX * s.size * s.scaleX, sy = base - s.shiftY * s.size - s.rise, m = s.strokeWidth;
+                float a = -s.rotate * (float)M_PI / 180, c = cosf(a), sn = sinf(a);
+                float us[2] = {-m, s.width + m}, vs[2] = {-l.ascent - m, l.descent + m};
+                for (float u : us)
+                    for (float v : vs) {
+                        float px = sx + u * c - v * sn, py = sy + u * sn + v * c;
+                        x0 = std::min(x0, px), y0 = std::min(y0, py), x1 = std::max(x1, px), y1 = std::max(y1, py);
+                    }
+                x += s.width;
+            }
+        }
         float cx = artistic ? t.x : t.x + t.w / 2, cy = artistic ? t.y : t.y + t.h / 2;
-        rotatedBox(it, cx, cy, left - extra, top - extra, right + extra, top + first.ascent + total + last.descent + extra, t.rotate);
+        rotatedBox(it, cx, cy, x0, y0, x1, y1, t.rotate);
     }
 
     std::shared_ptr<Style> parseStyle(const RVNGPropertyList &p) {
