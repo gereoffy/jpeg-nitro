@@ -1887,7 +1887,6 @@ struct Flat {
     std::vector<char> active;   // blocks being expanded (no recursion)
     std::vector<char> hidden;   // layers frozen in the viewport being drawn
     std::vector<char> skip;     // the model space's prims not in the viewport being drawn
-    bool inViewport = false;    // (the model space through a viewport: line types in paper units, PSLTSCALE)
     size_t points, work;        // (of all the pages)
     // (block references exploding, arrays or nested: drawn in part)
     static constexpr size_t kMaxPoints = 40000000, kMaxWork = 100000000;
@@ -1899,8 +1898,6 @@ struct Flat {
         int layer;
         uint32_t rgb;
         int ltype;
-        double ltscale = 1;   // the block inserts' scale around (AutoCAD scales their line types by it; a viewport's not: PSLTSCALE)
-        double byblock = 1;   // the scale of the insert's own place, for its line type inherited ByBlock
     };
 
     uint32_t rgb(uint32_t col, int layer, const Ctx &parent) {
@@ -2010,8 +2007,7 @@ struct Flat {
                 if (in.index < 0 || depth >= 32 || active[in.index]) continue;
                 const Block &child = P.blocks[in.index];
                 if (child.xref || child.prims.empty()) continue;
-                Ctx cc{layer, col, p.ltype == LT_BYLAYER ? L.ltype : p.ltype == LT_BYBLOCK ? ctx.ltype : p.ltype,
-                       inViewport ? 1 : ctx.ltscale * std::sqrt(std::fabs(det(in.m))), p.ltype == LT_BYBLOCK ? ctx.byblock : ctx.ltscale};
+                Ctx cc{layer, col, p.ltype == LT_BYLAYER ? L.ltype : p.ltype == LT_BYBLOCK ? ctx.ltype : p.ltype};
                 active[in.index] = 1;
                 for (int row = 0; row < in.rows; row++)
                     for (int c = 0; c < in.cols && work <= kMaxWork; c++, work++) {
@@ -2025,7 +2021,7 @@ struct Flat {
             switch (p.kind) {
             case K_STROKE: {
                 float w = p.width > 0 ? (float)(p.width * std::sqrt(std::fabs(det(m)))) : 0;
-                geo(pend[item(O_STROKE, rgba, w, dash(lt, P.ltscale * p.ltscale * (p.ltype == LT_BYBLOCK ? ctx.byblock : ctx.ltscale)))], b, p, m);
+                geo(pend[item(O_STROKE, rgba, w, dash(lt, P.ltscale * p.ltscale))], b, p, m);
                 break;
             }
             case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1)], b, p, m); break;
@@ -2084,9 +2080,7 @@ struct Flat {
             auto it = std::upper_bound(P.idwViews.begin(), P.idwViews.end(), std::make_pair(v.handle, INT_MAX));
             if (it != P.idwViews.end()) skip[(size_t)it->second] = 0;
         }
-        inViewport = true;
         expand(ms, v.m, ctx, 0);
-        inViewport = false;
         skip.clear();
         for (int l : v.frozen) hidden[l] = 0;
         if (items.size() == n + 1) {   // (nothing in it)
