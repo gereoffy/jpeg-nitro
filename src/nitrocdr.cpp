@@ -323,6 +323,8 @@ struct Style {
     // colour; angle (counter-clockwise), centre offset and edge pad (shares) of its own
     bool corel = false;
     float centerX = 0, centerY = 0, edge = 0;
+    bool matrix = false;       // versions 15+: the fill's own space on the page (libcdr:gradient-matrix-*)
+    plutovg_matrix_t gm = {1, 0, 0, 1, 0, 0};
     mutable std::shared_ptr<Image> gradTile;   // conical / square: drawn once over the bounding box
     std::shared_ptr<Image> tile;       // bitmap / pattern fill (null until a shape uses it: addPath)
     librevenge::RVNGBinaryData tileData;   // the tile's file (as libcdr / libvisio give it)
@@ -1304,6 +1306,14 @@ private:
             st->centerX = (float)number(p["libcdr:gradient-center-x"]);
             st->centerY = (float)number(p["libcdr:gradient-center-y"]);
             st->edge = std::min(std::max((float)number(p["libcdr:gradient-edge"]), 0.f), .99f);
+            if (p["libcdr:gradient-matrix-a"] && p["libcdr:gradient-matrix-f"]) {
+                const char *keys[6] = {"libcdr:gradient-matrix-a", "libcdr:gradient-matrix-b", "libcdr:gradient-matrix-c",
+                                       "libcdr:gradient-matrix-d", "libcdr:gradient-matrix-e", "libcdr:gradient-matrix-f"};
+                float m[6];
+                for (int k = 0; k < 6; k++) m[k] = (float)points(p[keys[k]]);
+                plutovg_matrix_t gm = {m[0], m[1], m[2], m[3], m[4], m[5]}, inv;
+                if (std::all_of(m, m + 6, [](float v) { return sane(v); }) && plutovg_matrix_invert(&gm, &inv)) st->matrix = true, st->gm = gm;
+            }
             const RVNGPropertyListVector &v = *p.child("libcdr:gradient-stops");
             for (unsigned long i = 0; i < v.count(); i++)
                 st->stops.push_back(stop((float)number(v[i]["svg:offset"]), color(v[i]["svg:stop-color"])));
@@ -1451,7 +1461,55 @@ static plutovg_color_t stopColor(const std::vector<plutovg_gradient_stop_t> &sto
 // by the angle, likewise; the edge pad of these two shrinks them by twice its share (25: to half
 // the size); conical: the end colour towards the angle, the start colour the other way, both sides
 // alike. Midpoints come as a third stop.
+// Versions 15+: in the fill's own space (st.gm to the page: the object's box stretched to -0.5 ..
+// 0.5, up positive, turned and skewed as the fill is), as CorelDRAW 2024 draws them: linear across
+// -0.5 .. 0.5 along x; radial a circle of 0.5, square a square of half side 0.5 (both ellipses /
+// rectangles of the box, the end colour in the centre); conical round the centre, clockwise from
+// the start colour just above its left to the end colour just below it.
+static bool setMatrixFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
+    if (st.fill == FILL_LINEAR) {
+        plutovg_canvas_set_linear_gradient(c, -.5f, 0, .5f, 0, PLUTOVG_SPREAD_METHOD_PAD, st.stops.data(), (int)st.stops.size(), &st.gm);
+    } else if (st.fill == FILL_RADIAL) {
+        std::vector<plutovg_gradient_stop_t> stops(st.stops.rbegin(), st.stops.rend());   // (from the centre)
+        for (auto &s : stops) s.offset = 1 - s.offset;
+        plutovg_canvas_set_radial_gradient(c, 0, 0, .5f, 0, 0, 0, PLUTOVG_SPREAD_METHOD_PAD, stops.data(), (int)stops.size(), &st.gm);
+    } else {   // (no such gradient in plutovg: drawn into an image over the box, once, as setCorelFill's)
+        int iw = w >= h ? 512 : std::max(8, (int)(512 * w / h)), ih = h >= w ? 512 : std::max(8, (int)(512 * h / w));
+        plutovg_matrix_t inv;
+        if (!plutovg_matrix_invert(&st.gm, &inv)) return false;
+        static std::mutex tiles;
+        std::lock_guard<std::mutex> g(tiles);
+        if (!st.gradTile || plutovg_surface_get_width(st.gradTile->s) != iw || plutovg_surface_get_height(st.gradTile->s) != ih) {
+            auto img = std::make_shared<Image>();
+            img->s = plutovg_surface_create(iw, ih);
+            if (!img->s) return false;
+            unsigned char *data = plutovg_surface_get_data(img->s);
+            int stride = plutovg_surface_get_stride(img->s);
+            for (int j = 0; j < ih; j++) {
+                uint32_t *row = (uint32_t *)(data + (size_t)j * stride);
+                for (int i = 0; i < iw; i++) {
+                    float px = x + (i + .5f) * w / iw, py = y + (j + .5f) * h / ih, u, v, t;
+                    plutovg_matrix_map(&inv, px, py, &u, &v);
+                    if (st.fill == FILL_SQUARE) t = 1 - std::max(fabsf(u), fabsf(v)) / .5f;
+                    else t = .5f - atan2f(v, u) / (2 * (float)M_PI);
+                    plutovg_color_t k = stopColor(st.stops, std::min(std::max(t, 0.f), 1.f));
+                    row[i] = 0xff000000u | (uint32_t)(k.r * 255 + .5f) << 16 | (uint32_t)(k.g * 255 + .5f) << 8 | (uint32_t)(k.b * 255 + .5f);
+                }
+            }
+            st.gradTile = img;
+        }
+        plutovg_matrix_t m;
+        plutovg_matrix_init_translate(&m, x, y);
+        plutovg_matrix_scale(&m, w / iw, h / ih);
+        plutovg_canvas_set_texture(c, st.gradTile->s, PLUTOVG_TEXTURE_TYPE_PLAIN, st.opacity, &m);
+        return true;
+    }
+    plutovg_canvas_set_opacity(c, st.opacity);
+    return true;
+}
+
 static bool setCorelFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
+    if (st.matrix) return setMatrixFill(c, st, x, y, w, h);
     float cx = x + w * (.5f + st.centerX), cy = y + h * (.5f - st.centerY);
     float a = (float)(st.angle * M_PI / 180), dx = cosf(a), dy = -sinf(a);
     float corners[4][2] = {{x, y}, {x + w, y}, {x, y + h}, {x + w, y + h}};
