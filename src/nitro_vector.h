@@ -1,24 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitro_vector: the vector drawings for the four viewers, SVG (nitrosvg), DXF (nitrodxf) and
-// CorelDRAW CDR / CMX (nitrocdr), behind one interface: which files they are, loading one, its
-// pages and their size, rendering any part at any scale, a page rendered in full (at the size
-// it is shown at: the target), the part rendered sharp when zoomed in, the background they are
-// drawn over (keys E / Shift+E) and the window title's tail. Compiled into each viewer with its
-// NV_SVG / NV_CDR; without either, nothing opens. The viewers keep what is theirs: pixel
-// buffers and textures, threads, when the sharp detail is asked for and how it is drawn.
+// nitro_vector: the vector drawings for the four viewers - SVG (nitrosvg), DXF / DWG (nitrodxf),
+// WMF / EMF (nitrometa), CorelDRAW and Visio (nitrocdr), draw.io (nitrodio) - behind one
+// interface: which files they are, loading one, its pages and their size, rendering any part at
+// any scale, a page rendered in full (at the size it is shown at: the target), the part rendered
+// sharp when zoomed in, the background they are drawn over (keys E / Shift+E) and the window
+// title's tail. The face of libnitrovec.a, which holds the readers and the libraries they are
+// built on (the Makefile's NITROVEC = 1; built without them, nothing opens). The viewers keep
+// what is theirs: pixel buffers and textures, threads, when the sharp detail is asked for and
+// how it is drawn.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
 #include "nitro_load.h"   // NvDecoder: the buffer callbacks a page is rendered into
 
-// A viewer with vector drawings (rendered again, sharp, when zoomed in): -DNV_VECTOR from the
-// Makefile when libnitrovec.a holds any of the readers (SVG = 1 or CDR = 1); the library itself
-// is compiled with their NV_SVG / NV_CDR.
-#if (defined(NV_SVG) || defined(NV_CDR)) && !defined(NV_VECTOR)
-#define NV_VECTOR 1
-#endif
+// NV_VECTOR: the Makefile's, for the library's own compile (its readers are in) and for a viewer
+// (its drawings' code is in); a viewer built without it opens no drawing.
 
 #ifdef __cplusplus
 extern "C" {

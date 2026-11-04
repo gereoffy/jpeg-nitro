@@ -18,14 +18,14 @@ optional dependencies below add formats.
 ## Optional dependencies
 
 `scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is
-installed system-wide). The Makefile uses what it finds there: SVG (with DXF / DWG and WMF / EMF), CorelDRAW (with Visio and
-draw.io) and AVIF are built in automatically once their libraries are present.
+installed system-wide). The Makefile uses what it finds there: the vector drawings (SVG, DXF / DWG, WMF / EMF,
+CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and AVIF are built in automatically.
 
 | dependency | for | option |
 |---|---|---|
-| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; DXF, DWG and WMF / EMF (nitrodxf, nitrodwg and nitrometa are our own, they draw with this plutovg) | `SVG=0` leaves all four out |
-| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW (needs SVG) | `CDR=0` leaves it out, with Visio and draw.io; `MIMALLOC=0`: the C++ code with the system malloc |
-| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `CDR` |
+| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; and the rasterizer every reader draws with (DXF, DWG and WMF / EMF: nitrodxf, nitrodwg and nitrometa are our own) | `NITROVEC=0` leaves every drawing format out (libnitrovec.a) |
+| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW | part of `NITROVEC`; `MIMALLOC=0`: the C++ code with the system malloc |
+| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `NITROVEC` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
 | libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
@@ -55,8 +55,7 @@ Options on the make command line (the defaults depend on what `scripts/get-deps.
 | `TURBOJPEG=1` | the JPEGs nitrojpeg does not decode (damaged or cut-off, CMYK, arithmetic coding) go to libjpeg-turbo before ImageIO: about 2× faster on them, 1.2 MB more; `--selftest` needs it |
 | `WUFFS=1` | interlaced PNGs through Wuffs before ImageIO |
 | `DAV1D=0` | AVIF through ImageIO instead of nitroavif + dav1d |
-| `SVG=0` | without SVG, DXF / DWG and WMF / EMF (and so without `CDR` too) |
-| `CDR=0` | without CorelDRAW, Visio and draw.io |
+| `NITROVEC=0` | without the vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io): libnitrovec.a holds nothing, the viewers show bitmaps only |
 | `MIMALLOC=0` | the vector drawings' code with the system malloc instead of mimalloc |
 | `NITROHEVC=1` | HEIC with our own HEVC decoder, nitrohevc, instead of the system's (off by default, see [HEIC](README.md#heic)) |
 | `MAC_ARCHS=x86_64` | `make app` for one architecture only |
@@ -148,8 +147,10 @@ plus `third_party/dav1d/lib/libdav1d.a` when the library was built with dav1d; o
 
 **The vector drawings** are a second library, `build/libnitrovec.a` (built with the viewers; per
 target as `libnitro.a`): `nitro_vector`, the viewers' interface in `src/nitro_vector.h`, over the
-readers the build has (SVG with lunasvg, DXF / DWG, WMF / EMF, CorelDRAW and Visio with libcdr /
-libvisio, draw.io; `make SVG=0` or `CDR=0` leaves them out). `nv_vector_open()` loads a file by
+readers (SVG with lunasvg, DXF / DWG, WMF / EMF, CorelDRAW and Visio with libcdr / libvisio,
+draw.io) and the libraries they are built on, each compiled from its checkout under `third_party/`
+into its own object directory (`build/vec/`) and all archived together: one library to link
+(`make NITROVEC=0` leaves all of it out). `nv_vector_open()` loads a file by
 its extension, `nv_vector_pages()` and `nv_vector_size()` say what is in it, `nv_vector_page_size()`
 picks the size a page is shown at, `nv_vector_render()` draws any part of a page at any scale into
 a BGRA buffer, in parallel bands, over a white, dark or black background (`nv_vector_cycle_background()`).

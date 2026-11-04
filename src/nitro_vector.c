@@ -5,12 +5,10 @@
 #include "nitro_vector.h"
 #include "nitro_load.h"   // nv_has_ext, NV_MODE_*
 #include "nitro_os.h"     // nitro_parallel, nitro_ncpu
-#ifdef NV_SVG
+#ifdef NV_VECTOR
 #include "nitrosvg.h"
 #include "nitrodxf.h"
 #include "nitrometa.h"
-#endif
-#ifdef NV_CDR
 #include "nitrocdr.h"
 #include "nitrodio.h"
 #endif
@@ -21,36 +19,28 @@
 #include <string.h>
 
 const char *const nv_vector_exts[] = {
-#ifdef NV_SVG
-    "svg", "dxf", "dwg", "wmf", "emf",
-#endif
-#ifdef NV_CDR
-    "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx", "drawio", "dio",
+#ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
+    "svg", "dxf", "dwg", "wmf", "emf", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
+    "drawio", "dio",
 #endif
     NULL};
 
 const char *nv_vector_formats(void) {
-#if defined(NV_SVG) && defined(NV_CDR)
+#ifdef NV_VECTOR
     return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio and draw.io";
-#elif defined(NV_SVG)
-    return "SVG, DXF / DWG and WMF / EMF";
-#elif defined(NV_CDR)
-    return "CorelDRAW, Visio and draw.io";
 #else
     return "";
 #endif
 }
 
 const char *nv_vector_mimes(void) {
-    return
-#ifdef NV_SVG
-        "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
+#ifdef NV_VECTOR
+    return "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
+           "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
+           "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;";
+#else
+    return "";
 #endif
-#ifdef NV_CDR
-        "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
-        "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;"
-#endif
-        "";
 }
 
 static _Atomic int g_background;   // (nv_vector_background)
@@ -65,7 +55,7 @@ struct NvVector {
     _Atomic int refs;
 };
 
-#ifdef NV_SVG
+#ifdef NV_VECTOR
 static int svg_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                       int (*cancelled)(void *), void *ctx) {
     (void)page, (void)cancelled, (void)ctx;   // (lunasvg draws a document in one call)
@@ -92,8 +82,6 @@ static void meta_size(void *doc, int page, double *w, double *h) {
     nitrometa_size(doc, w, h);
 }
 static void meta_free(void *doc) { nitrometa_free(doc); }
-#endif
-#ifdef NV_CDR
 static int cdr_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                       int (*cancelled)(void *), void *ctx) {
     return nitrocdr_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
@@ -112,7 +100,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     NvVector *v = calloc(1, sizeof *v);
     if (!v) return NULL;
     v->background = atomic_load(&g_background);
-#ifdef NV_CDR
+#ifdef NV_VECTOR
     static const char *const dio_exts[] = {"drawio", "dio", NULL};   // (before SVG: its text starts with '<' too)
     if (nv_has_ext(name, dio_exts) && (v->doc = nitrodio_load(data, len))) {
         nitrodio_set_background(v->doc, v->background);
@@ -122,8 +110,6 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrodio_pages(v->doc);
         v->mode = NV_MODE_DRAWIO;
     }
-#endif
-#ifdef NV_SVG
     static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
     const uint8_t *p = data;   // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
@@ -153,8 +139,6 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = 1;
         v->mode = NV_MODE_META;
     }
-#endif
-#ifdef NV_CDR
     static const char *const cdr_exts[] = {"cdr", "cmx", NULL};
     static const char *const visio_exts[] = {"vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx", NULL};
     if (!v->doc && (nv_has_ext(name, cdr_exts) || nv_has_ext(name, visio_exts)) && (v->doc = nitrocdr_load(data, len))) {
@@ -205,7 +189,7 @@ static _Atomic int g_split, g_threads;
 
 void nv_vector_set_threads(int n) {
     atomic_store(&g_threads, n > 0 ? n : 0);
-#ifdef NV_CDR
+#ifdef NV_VECTOR
     nitrocdr_set_threads(n);   // (a CorelDRAW / Visio document's pictures, decoded while it loads)
 #endif
 }
