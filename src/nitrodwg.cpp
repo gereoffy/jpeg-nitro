@@ -352,7 +352,7 @@ struct Dwg {
     size_t len;
     int ver = 0;   // 1012 ...
     nitrodwg_pairs &out;
-    Dwg(const uint8_t *data, size_t n, nitrodwg_pairs &o) : d(data), len(n), out(o) {}
+    Dwg(const uint8_t *data, size_t n, nitrodwg_pairs &o) : d(data), len(n), out(o), maxText(std::min<size_t>(1u << 31, n * 16 + (16 << 20))) {}
 
     bool r13_14() const { return ver <= 1014; }
     bool r2000p() const { return ver >= 1015; }
@@ -428,7 +428,11 @@ struct Dwg {
 
     // --- the output
 
+    size_t maxText;   // of the values: no more (a damaged file's HATCH spline edge of 2^29 knots emitted 4.8 GB
+                      // of them, past where their 32-bit ends wrap): 16 x the file (4.7 x seen), up to 2 GB
+    bool bad = false;                           // (past maxText: nothing emitted, and the file fails)
     void put(int code, sv v) {
+        if (bad || (bad = out.text.size() + v.size() > maxText)) return;
         out.code.push_back(code);
         out.text.append(v.data(), v.size());
         out.end.push_back((uint32_t)out.text.size());
@@ -2237,7 +2241,7 @@ bool nitrodwg_read(const void *data, size_t len, nitrodwg_pairs &out) {
     g.readTables();
     out.code.reserve(g.objs.n / 4);
     out.end.reserve(g.objs.n / 4);
-    out.text.reserve(g.objs.n * 2);
+    out.text.reserve(std::min(g.objs.n * 2, g.maxText));
     g.emit();
-    return out.text.size() < 0xf0000000u;
+    return !g.bad;
 }
