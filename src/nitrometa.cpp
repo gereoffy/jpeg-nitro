@@ -32,6 +32,7 @@
 #define NOGDI   // (its PS_* and BS_* macros: the GDI constants below are our own)
 #include <windows.h>   // MultiByteToWideChar: Windows has no iconv
 #else
+#include <cerrno>
 #include <iconv.h>
 #endif
 
@@ -342,6 +343,7 @@ void decodeText(const uint8_t *s, size_t n, int charset, std::vector<uint32_t> &
         return;
     }
     unsigned cp = codepage(charset);
+    auto latin1 = [cp](uint8_t b) -> uint32_t { return cp == 1252 && b >= 0x80 && b < 0xa0 ? '?' : b; };   // (without a converter)
 #ifdef _WIN32
     int m = MultiByteToWideChar(cp, 0, (const char *)s, (int)n, nullptr, 0);
     if (m > 0) {
@@ -375,15 +377,19 @@ void decodeText(const uint8_t *s, size_t n, int charset, std::vector<uint32_t> &
         char *in = (char *)s, *o = &utf8[0];
         size_t inLeft = n, outLeft = utf8.size();
         iconv(cd, nullptr, nullptr, nullptr, nullptr);
-        bool ok = iconv(cd, &in, &inLeft, &o, &outLeft) != (size_t)-1;
-        if (ok) {
-            utf8.resize(utf8.size() - outLeft);
-            for (size_t i = 0; i < utf8.size();) out.push_back(nf_utf8_next(utf8, i));
-            return;
+        while (inLeft && iconv(cd, &in, &inLeft, &o, &outLeft) == (size_t)-1) {
+            if (errno != EILSEQ || outLeft < 2) break;   // (an incomplete character at the end: dropped)
+            uint32_t c = latin1((uint8_t)*in);   // a byte the code page does not define: as Latin-1, then on with the rest
+            in++, inLeft--;
+            if (c < 0x80) *o++ = (char)c, outLeft--;
+            else *o++ = (char)(0xc0 | c >> 6), *o++ = (char)(0x80 | (c & 0x3f)), outLeft -= 2;
         }
+        utf8.resize(utf8.size() - outLeft);
+        for (size_t i = 0; i < utf8.size();) out.push_back(nf_utf8_next(utf8, i));
+        return;
     }
 #endif
-    for (size_t i = 0; i < n; i++) out.push_back(cp == 1252 && s[i] >= 0x80 && s[i] < 0xa0 ? '?' : s[i]);   // (Latin-1)
+    for (size_t i = 0; i < n; i++) out.push_back(latin1(s[i]));
 }
 
 // the Symbol font's letters as Unicode (for a face without the private-use mapping of Windows's Symbol)
