@@ -324,6 +324,7 @@ struct Style {
     bool corel = false;
     float centerX = 0, centerY = 0, edge = 0;
     bool matrix = false;       // versions 15+: the fill's own space on the page (libcdr:gradient-matrix-*)
+    plutovg_spread_method_t spread = PLUTOVG_SPREAD_METHOD_PAD;   // (libcdr:gradient-spread)
     plutovg_matrix_t gm = {1, 0, 0, 1, 0, 0};
     mutable std::shared_ptr<Image> gradTile;   // conical / square: drawn once over the bounding box
     std::shared_ptr<Image> tile;       // bitmap / pattern fill (null until a shape uses it: addPath)
@@ -1314,9 +1315,13 @@ private:
                 plutovg_matrix_t gm = {m[0], m[1], m[2], m[3], m[4], m[5]}, inv;
                 if (std::all_of(m, m + 6, [](float v) { return sane(v); }) && plutovg_matrix_invert(&gm, &inv)) st->matrix = true, st->gm = gm;
             }
+            if (is(p, "libcdr:gradient-spread", "repeat")) st->spread = PLUTOVG_SPREAD_METHOD_REPEAT;
+            else if (is(p, "libcdr:gradient-spread", "reflect")) st->spread = PLUTOVG_SPREAD_METHOD_REFLECT;
             const RVNGPropertyListVector &v = *p.child("libcdr:gradient-stops");
-            for (unsigned long i = 0; i < v.count(); i++)
-                st->stops.push_back(stop((float)number(v[i]["svg:offset"]), color(v[i]["svg:stop-color"])));
+            for (unsigned long i = 0; i < v.count(); i++) {
+                float alpha = v[i]["svg:stop-opacity"] ? std::min(std::max((float)number(v[i]["svg:stop-opacity"]), 0.f), 1.f) : 1;
+                st->stops.push_back(stop((float)number(v[i]["svg:offset"]), color(v[i]["svg:stop-color"]), alpha));
+            }
             std::stable_sort(st->stops.begin(), st->stops.end(),
                              [](const plutovg_gradient_stop_t &a, const plutovg_gradient_stop_t &b) { return a.offset < b.offset; });
         } else if (is(p, "draw:fill", "gradient")) {
@@ -1448,7 +1453,7 @@ static plutovg_color_t stopColor(const std::vector<plutovg_gradient_stop_t> &sto
             const plutovg_gradient_stop_t &a = stops[i - 1], &b = stops[i];
             float k = b.offset > a.offset ? (t - a.offset) / (b.offset - a.offset) : 1;
             return {a.color.r + (b.color.r - a.color.r) * k, a.color.g + (b.color.g - a.color.g) * k,
-                    a.color.b + (b.color.b - a.color.b) * k, 1};
+                    a.color.b + (b.color.b - a.color.b) * k, a.color.a + (b.color.a - a.color.a) * k};
         }
     return stops.back().color;
 }
@@ -1468,11 +1473,11 @@ static plutovg_color_t stopColor(const std::vector<plutovg_gradient_stop_t> &sto
 // the start colour just above its left to the end colour just below it.
 static bool setMatrixFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, float h) {
     if (st.fill == FILL_LINEAR) {
-        plutovg_canvas_set_linear_gradient(c, -.5f, 0, .5f, 0, PLUTOVG_SPREAD_METHOD_PAD, st.stops.data(), (int)st.stops.size(), &st.gm);
+        plutovg_canvas_set_linear_gradient(c, -.5f, 0, .5f, 0, st.spread, st.stops.data(), (int)st.stops.size(), &st.gm);
     } else if (st.fill == FILL_RADIAL) {
         std::vector<plutovg_gradient_stop_t> stops(st.stops.rbegin(), st.stops.rend());   // (from the centre)
         for (auto &s : stops) s.offset = 1 - s.offset;
-        plutovg_canvas_set_radial_gradient(c, 0, 0, .5f, 0, 0, 0, PLUTOVG_SPREAD_METHOD_PAD, stops.data(), (int)stops.size(), &st.gm);
+        plutovg_canvas_set_radial_gradient(c, 0, 0, .5f, 0, 0, 0, st.spread, stops.data(), (int)stops.size(), &st.gm);
     } else {   // (no such gradient in plutovg: drawn into an image over the box, once, as setCorelFill's)
         int iw = w >= h ? 512 : std::max(8, (int)(512 * w / h)), ih = h >= w ? 512 : std::max(8, (int)(512 * h / w));
         plutovg_matrix_t inv;
@@ -1491,9 +1496,12 @@ static bool setMatrixFill(plutovg_canvas_t *c, const Style &st, float x, float y
                     float px = x + (i + .5f) * w / iw, py = y + (j + .5f) * h / ih, u, v, t;
                     plutovg_matrix_map(&inv, px, py, &u, &v);
                     if (st.fill == FILL_SQUARE) t = 1 - std::max(fabsf(u), fabsf(v)) / .5f;
-                    else t = .5f - atan2f(v, u) / (2 * (float)M_PI);
+                    else t = (.5f - atan2f(v, u) / (2 * (float)M_PI)) * (st.spread != PLUTOVG_SPREAD_METHOD_PAD ? 2 : 1);   // (repeated: twice round)
+                    if (st.spread == PLUTOVG_SPREAD_METHOD_REPEAT) t -= floorf(t);
+                    else if (st.spread == PLUTOVG_SPREAD_METHOD_REFLECT) t = 1 - fabsf(t - 2 * floorf(t / 2) - 1);
                     plutovg_color_t k = stopColor(st.stops, std::min(std::max(t, 0.f), 1.f));
-                    row[i] = 0xff000000u | (uint32_t)(k.r * 255 + .5f) << 16 | (uint32_t)(k.g * 255 + .5f) << 8 | (uint32_t)(k.b * 255 + .5f);
+                    uint32_t a = (uint32_t)(k.a * 255 + .5f);   // (premultiplied)
+                    row[i] = a << 24 | (uint32_t)(k.r * k.a * 255 + .5f) << 16 | (uint32_t)(k.g * k.a * 255 + .5f) << 8 | (uint32_t)(k.b * k.a * 255 + .5f);
                 }
             }
             st.gradTile = img;
