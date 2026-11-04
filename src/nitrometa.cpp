@@ -1663,7 +1663,7 @@ bool Player::playEmf(Bytes b) {
     if (b.u32(0) != 1 || b.u32(40) != 0x464d4520 || b.u32(4) < 88) return false;
     double bl = b.i32(8), bt = b.i32(12), br = b.i32(16), bb = b.i32(20);         // rclBounds (device)
     double fl = b.i32(24), ft = b.i32(28), fr = b.i32(32), fb = b.i32(36);        // rclFrame (0.01 mm)
-    uint32_t handles = b.u16(48);
+    uint32_t handles = b.u16(56);   // nHandles (48 is nBytes)
     int devX = b.i32(72), devY = b.i32(76), mmX = b.i32(80), mmY = b.i32(84);
     double dpiX = devX > 0 && mmX > 0 ? devX * 25.4 / mmX : 96, dpiY = devY > 0 && mmY > 0 ? devY * 25.4 / mmY : dpiX;
     if (dpiX < 10 || dpiX > 10000) dpiX = 96;
