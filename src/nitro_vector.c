@@ -163,8 +163,8 @@ void nv_vector_unref(NvVector *v) {
 }
 
 int nv_vector_pages(const NvVector *v) { return v ? v->pages : 0; }
-int nv_vector_mode(const NvVector *v) { return v->mode; }
-int nv_vector_background_of(const NvVector *v) { return v->background; }
+int nv_vector_mode(const NvVector *v) { return v ? v->mode : 0; }
+int nv_vector_background_of(const NvVector *v) { return v ? v->background : 0; }
 
 void nv_vector_size(const NvVector *v, int page, double *w, double *h) {
     *w = *h = 0;
