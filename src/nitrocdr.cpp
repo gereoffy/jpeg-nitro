@@ -360,7 +360,8 @@ struct Style {
     bool corel = false;
     float centerX = 0, centerY = 0, edge = 0;
     mutable std::shared_ptr<Image> gradTile;   // conical / square: drawn once over the bounding box
-    std::shared_ptr<Image> tile;       // bitmap / pattern fill
+    std::shared_ptr<Image> tile;       // bitmap / pattern fill (null until a shape uses it: addPath)
+    librevenge::RVNGBinaryData tileData;   // the tile's file (as libcdr / libvisio give it)
     float tileW = 0, tileH = 0;        // points, or fractions of the bounding box (tileRel)
     bool tileRel = false;
     float refX = 0, refY = 0;          // tile offset (fractions of a tile)
@@ -899,7 +900,9 @@ private:
     // sheet repeats one 2000 x 2000 logo 72 times: decoded once, not 72 x 16 MB; the kept
     // RVNGBinaryData keeps the buffer, so its address is not reused by another image), libvisio
     // a copy of its own for each shape: the same picture also by its bytes (hashed, then
-    // compared). They are decoded at the end of the document, all at once (decodeImages).
+    // compared). They are decoded at the end of the document, all at once (decodeImages). A fill's
+    // tile is cached when a shape of the page is filled with it: not the tiles of the master pages'
+    // styles, nor of styles no shape uses (every one of them was decoded, and kept while loading).
     struct CachedImage {
         librevenge::RVNGBinaryData data;
         std::shared_ptr<Image> img;
@@ -920,7 +923,9 @@ private:
         return h;
     }
     std::shared_ptr<Image> cachedImage(const RVNGProperty *p) {
-        const librevenge::RVNGBinaryData *d = p ? p->getBinaryData() : nullptr;
+        return cachedImage(p ? p->getBinaryData() : nullptr);
+    }
+    std::shared_ptr<Image> cachedImage(const librevenge::RVNGBinaryData *d) {
         if (!d || !d->size()) return nullptr;
         auto key = std::make_pair(d->getDataBuffer(), d->size());
         auto f = m_images.find(key);
@@ -990,6 +995,7 @@ private:
             plutovg_path_destroy(path);
             return;
         }
+        if (m_style->fill == FILL_BITMAP && !m_style->tile) m_style->tile = cachedImage(&m_style->tileData);
         Item it;
         it.kind = Item::PATH;
         it.style = m_style;
@@ -1368,9 +1374,10 @@ private:
                 if (st->r <= 0) st->r = .01f;
             }
         } else if (is(p, "draw:fill", "bitmap")) {
-            st->tile = cachedImage(p["draw:fill-image"]);
-            if (st->tile) {
+            const librevenge::RVNGBinaryData *d = p["draw:fill-image"] ? p["draw:fill-image"]->getBinaryData() : nullptr;
+            if (d && d->size()) {
                 st->fill = FILL_BITMAP;
+                st->tileData = *d;   // (a copy sharing its buffer; decoded for the first shape filled with it: addPath)
                 st->tileRel = p["svg:width"] && p["svg:width"]->getUnit() == librevenge::RVNG_PERCENT;
                 st->tileW = st->tileRel ? (float)number(p["svg:width"]) : (float)points(p["svg:width"]);
                 st->tileH = st->tileRel ? (float)number(p["svg:height"]) : (float)points(p["svg:height"]);
@@ -1569,7 +1576,7 @@ bool setFill(plutovg_canvas_t *c, const Style &st, float x, float y, float w, fl
     }
     case FILL_BITMAP: {
         float tw = st.tileRel ? st.tileW * w : st.tileW, th = st.tileRel ? st.tileH * h : st.tileH;
-        if (!(tw > 0 && th > 0)) return false;
+        if (!(tw > 0 && th > 0) || !st.tile) return false;
         plutovg_surface_t *px;
         if (st.tile->svg) {   // (a full colour pattern: its tile rendered for the pixels it covers now)
             plutovg_matrix_t cm;
