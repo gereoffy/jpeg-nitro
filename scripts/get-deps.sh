@@ -105,7 +105,7 @@ if [ ! -f zlib/.version-$ZLIB_VER ]; then
   mv zlib-$ZLIB_VER zlib
   touch zlib/.version-$ZLIB_VER
 fi
-# mimalloc: the allocator of the SVG / CorelDRAW code (C++ new / delete)
+# mimalloc: the allocator of the vector drawings' code, libnitrovec (C++ new / delete)
 if [ ! -f mimalloc/.version-$MIMALLOC_VER ]; then
   rm -rf mimalloc mimalloc-$MIMALLOC_VER
   curl -fsSL -o mimalloc.tar.gz https://github.com/microsoft/mimalloc/archive/refs/tags/v$MIMALLOC_VER.tar.gz

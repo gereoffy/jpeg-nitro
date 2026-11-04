@@ -5,8 +5,7 @@
 // for the background) share: the backgrounds the viewers choose from, a render's canvas over the
 // caller's BGRA buffer, the "stop now" callback, an item's box against the view (and against
 // plutovg's fixed point), the boxes of paths and of turned rectangles, the union of boxes a page's
-// area is made of, a colour on a canvas. Header only (C++; libnitrosvg's and libnitrocdr's sources
-// include it alike).
+// area is made of, a colour on a canvas. Header only (C++), included by every reader of libnitrovec.
 #pragma once
 #include <plutovg.h>
 
