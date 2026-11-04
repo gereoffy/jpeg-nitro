@@ -238,17 +238,19 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, size_t &budget, DibPlace *pla
     }
     if (place) place->top = top;
     int shift[3], bitsOf[3];
+    uint32_t low[3];   // the mask shifted down (a mask of all 32 bits: 1 << 32 is no number)
     for (int i = 0; i < 3; i++) {
         uint32_t m = masks[i];
         shift[i] = 0;
         while (m && !(m & 1)) m >>= 1, shift[i]++;
         bitsOf[i] = 0;
         while (m & 1) m >>= 1, bitsOf[i]++;
+        low[i] = bitsOf[i] >= 32 ? ~0u : (1u << bitsOf[i]) - 1;
     }
     auto comp8 = [&](uint32_t v, int i) -> uint32_t {
         if (!bitsOf[i]) return 0;
-        uint32_t c = v >> shift[i] & ((1u << bitsOf[i]) - 1);
-        return bitsOf[i] >= 8 ? c >> (bitsOf[i] - 8) : c * 255 / ((1u << bitsOf[i]) - 1);
+        uint32_t c = v >> shift[i] & low[i];
+        return bitsOf[i] >= 8 ? c >> (bitsOf[i] - 8) : c * 255 / low[i];
     };
     if ((size_t)w * rows > budget) return nullptr;
     budget -= (size_t)w * rows;
