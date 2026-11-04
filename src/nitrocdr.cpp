@@ -96,19 +96,20 @@ struct Image {
     nitrometa *meta = nullptr;        // a WMF / EMF picture (the icons of Visio's stencils), or
     nitrodxf *dxf = nullptr;          // an AutoCAD drawing (an OLE object without its picture), or
     nitrosvg *svg = nullptr;          // an SVG (the tile of a CorelDRAW full colour pattern, as libcdr gives it)
-    plutovg_surface_t *svgPixels = nullptr;   // (the SVG rendered last: svgSurface)
+    std::vector<plutovg_surface_t *> svgPixels;   // (the SVG rendered at the sizes asked for last: svgSurface)
     ~Image() {
         plutovg_surface_destroy(s);
         nitrometa_free(meta);
         nitrodxf_free(dxf);
         if (svg) nitrosvg_free(svg);   // (it takes nitro_font's lock: not while nitrocdr_free holds it)
-        plutovg_surface_destroy(svgPixels);
+        for (plutovg_surface_t *px : svgPixels) plutovg_surface_destroy(px);
     }
 };
 
 // An SVG picture rendered for w x h device pixels (stretched to them by the caller), at most max on
-// a side; kept until another size is asked for (the bands of a render ask for the same). A
-// reference of the caller's, NULL if it draws nothing.
+// a side; the last few sizes asked for are kept (the bands of a render ask for the same; another
+// render meanwhile, a zoomed view's detail, for its own: with the last one kept alone, each band
+// of either rendered the SVG again). A reference of the caller's, NULL if it draws nothing.
 static plutovg_surface_t *svgSurface(Image &img, float w, float h, int max) {
     double sw, sh;
     nitrosvg_size(img.svg, &sw, &sh);
@@ -118,18 +119,21 @@ static plutovg_surface_t *svgSurface(Image &img, float w, float h, int max) {
     k = std::max(iw / sw, ih / sh);   // (covering every pixel: a tile's edge left half transparent showed as a seam)
     static std::mutex pictures;   // (several renders at once: the bands of one)
     std::lock_guard<std::mutex> g(pictures);
-    if (!img.svgPixels || plutovg_surface_get_width(img.svgPixels) != iw || plutovg_surface_get_height(img.svgPixels) != ih) {
-        plutovg_surface_t *px = plutovg_surface_create(iw, ih);
-        if (!px) return nullptr;
-        nitrosvg_set_background(img.svg, 3);   // (transparent)
-        if (nitrosvg_render(img.svg, plutovg_surface_get_data(px), iw, ih, (size_t)plutovg_surface_get_stride(px), k, 0, 0)) {
-            plutovg_surface_destroy(px);
-            return nullptr;
-        }
-        plutovg_surface_destroy(img.svgPixels);
-        img.svgPixels = px;
+    for (plutovg_surface_t *px : img.svgPixels)
+        if (plutovg_surface_get_width(px) == iw && plutovg_surface_get_height(px) == ih) return plutovg_surface_reference(px);
+    plutovg_surface_t *px = plutovg_surface_create(iw, ih);
+    if (!px) return nullptr;
+    nitrosvg_set_background(img.svg, 3);   // (transparent)
+    if (nitrosvg_render(img.svg, plutovg_surface_get_data(px), iw, ih, (size_t)plutovg_surface_get_stride(px), k, 0, 0)) {
+        plutovg_surface_destroy(px);
+        return nullptr;
     }
-    return plutovg_surface_reference(img.svgPixels);
+    if (img.svgPixels.size() >= 3) {   // (the oldest goes)
+        plutovg_surface_destroy(img.svgPixels.front());
+        img.svgPixels.erase(img.svgPixels.begin());
+    }
+    img.svgPixels.push_back(px);
+    return plutovg_surface_reference(px);
 }
 // libcdr's own bitmaps: uncompressed 32-bit BMPs (B G R A, bottom-up), alpha all 0 when opaque;
 // read here directly, as stb_image would (twice as fast as stb_image + plutovg's conversion)
