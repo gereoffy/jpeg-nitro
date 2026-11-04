@@ -996,7 +996,8 @@ private:
         it.path.reset(path);
         plutovg_rect_t r;
         plutovg_path_extents(path, &r, false);
-        float m = m_style->stroke ? std::max(std::max(m_style->strokeWidth, 0.5f) * 2, m_style->markerReach) : 0;   // (miters, arrowheads)
+        // (miters: a corner's reaches twice the width from its vertex at most, drawItem's miter limit; arrowheads)
+        float m = m_style->stroke ? std::max(std::max(m_style->strokeWidth, 0.5f) * 2, m_style->markerReach) : 0;
         it.bx0 = r.x - m;
         it.by0 = r.y - m;
         it.bx1 = r.x + r.w + m;
@@ -1683,6 +1684,9 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_set_line_width(c, std::max(st.strokeWidth, 1 / scale));
             plutovg_canvas_set_line_cap(c, st.cap);
             plutovg_canvas_set_line_join(c, st.join);
+            // a miter at most twice the width from its vertex (the item's box, addPath: a longer spike
+            // crossing a band's edge was cut there), sharper corners bevelled as CorelDRAW draws them
+            plutovg_canvas_set_miter_limit(c, 4);
             if (!st.dashes.empty()) plutovg_canvas_set_dash(c, 0, st.dashes.data(), (int)st.dashes.size());
             plutovg_canvas_stroke_path(c, it.path.get());
             if (st.markerUnit > 0) {
@@ -1771,6 +1775,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
                         setColor(c, s.strokeColor, 1);
                         plutovg_canvas_set_line_width(c, std::max(s.strokeWidth, std::min(1 / scale, s.size / 20)));
                         plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
+                        plutovg_canvas_set_miter_limit(c, 4);
                         drawText(c, s, tx, ty, true);
                     }
                     if (turned) plutovg_canvas_restore(c);
