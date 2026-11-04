@@ -335,6 +335,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         return paras;
     }
     int b = bold, it = italic;
+    std::vector<std::pair<int, int>> spans;   // (the bold and italic a <span> / <font> added, taken back at its end)
     bool space = true;   // (white space collapsed: at a line's start, or after one)
     std::string cur;
     auto flush = [&] {
@@ -368,7 +369,19 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 flush();
                 it += close ? -1 : 1;
             } else if (name == "span" || name == "font") {
-                if (!close && tag.find("font-weight") != std::string::npos && tag.find("bold") != std::string::npos) flush(), b++;
+                if (close) {
+                    if (!spans.empty()) {
+                        flush();
+                        b -= spans.back().first, it -= spans.back().second;
+                        spans.pop_back();
+                    }
+                } else {
+                    int sb = tag.find("font-weight") != std::string::npos && tag.find("bold") != std::string::npos;
+                    int si = tag.find("font-style") != std::string::npos && tag.find("italic") != std::string::npos;
+                    if (sb || si) flush();
+                    b += sb, it += si;
+                    if (spans.size() < 64) spans.push_back({sb, si});   // (a stray tag: nothing to take back)
+                }
             }
             continue;
         }
