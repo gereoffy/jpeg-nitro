@@ -1221,17 +1221,20 @@ struct Dwg {
 
     // --- entities
 
-    // the entities of a block: R13 - R2000 from the first one along their next links
-    void chain(uint64_t first, uint64_t last) {
+    // the entities of a block (of: an INSERT's attributes / a POLYLINE's vertices): R13 - R2000
+    // from the first one along their next links
+    void chain(uint64_t first, uint64_t last, int of = 0) {
         uint64_t h = first;
         for (size_t n = 0; h && n <= map.size(); n++) {
             if (!fresh(h)) break;
             uint64_t next = 0;
-            entity(h, &next);
+            entity(h, &next, of);
             if (h == last) break;
             h = next;
         }
     }
+    int nested = 0;   // INSERTs / POLYLINEs whose attributes / vertices are being written (a damaged
+                      // file's INSERTs listing each other as attributes: not past 8 deep)
     void blockEntities(const BlockH &bh) {
         if (r2004p()) {
             for (uint64_t h : bh.owned)
@@ -1253,7 +1256,8 @@ struct Dwg {
         if (e.invisible) inum(60, 1);
     }
 
-    void entity(uint64_t handle, uint64_t *next) {
+    // an entity (of: T_INSERT / T_POLYLINE_2D, one of its attributes / vertices: only those)
+    void entity(uint64_t handle, uint64_t *next, int of = 0) {
         Obj o;
         Ent e;
         if (!open(handle, o)) return;
@@ -1261,6 +1265,8 @@ struct Dwg {
         bool ent = (t >= T_TEXT && t <= T_LEADER + 2 && t != 0x2a) || t == 0x4a || t == T_LWPOLYLINE || t == T_HATCH ||
                    (t >= T_IMAGE && t <= T_OTHER_ENTITY);
         if (!ent || t == T_BLOCK || t == T_ENDBLK) return;
+        if (of == T_INSERT && t != T_ATTRIB && t != T_SEQEND) return;
+        if (of == T_POLYLINE_2D && (t < T_VERTEX_2D || t > T_VERTEX_PFACE_FACE) && t != T_SEQEND) return;
         bool drawn = (t >= T_TEXT && t <= T_SPLINE && t != T_SHAPE) || t == T_RAY || t == T_XLINE || t == T_MTEXT || t == T_LEADER ||
                      t == T_LWPOLYLINE || t == T_HATCH || t == T_IMAGE || t == T_WIPEOUT || t == T_ARC_DIMENSION ||
                      t == T_LARGE_RADIAL_DIMENSION || t == T_ACIDBLOCKREFERENCE;
@@ -1620,11 +1626,14 @@ struct Dwg {
         if (atts) inum(66, 1);
         put_eed(o.eed);
         if (!atts) return;
-        if (r2004p()) {
-            for (uint64_t h : list)
-                if (fresh(h)) entity(h, nullptr);
-        } else if (first)
-            chain(first, last);
+        if (++nested <= 8) {
+            if (r2004p()) {
+                for (uint64_t h : list)
+                    if (fresh(h)) entity(h, nullptr, T_INSERT);
+            } else if (first)
+                chain(first, last, T_INSERT);
+        }
+        nested--;
         rec("SEQEND");
     }
 
@@ -1677,11 +1686,14 @@ struct Dwg {
             inum(72, nn);
         }
         put_eed(o.eed);
-        if (r2004p()) {
-            for (uint64_t h : list)
-                if (fresh(h)) entity(h, nullptr);
-        } else if (first)
-            chain(first, last);
+        if (++nested <= 8) {
+            if (r2004p()) {
+                for (uint64_t h : list)
+                    if (fresh(h)) entity(h, nullptr, T_POLYLINE_2D);
+            } else if (first)
+                chain(first, last, T_POLYLINE_2D);
+        }
+        nested--;
         rec("SEQEND");
     }
 
