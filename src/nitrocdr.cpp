@@ -555,18 +555,14 @@ plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic, 
 }
 
 // A face for a character the font lacks (old Western fonts such as AvantGarde Bk BT have no ő / ű:
-// their "missing glyph" box showed): the family's substitute, then common fonts; null if none has it.
+// their "missing glyph" box showed): the family's substitute, then nitro_font's common fonts (the
+// CJK ones among them); null if none has it.
 plutovg_font_face_t *fallback_font(const std::string &name, bool bold, bool italic, plutovg_codepoint_t cp) {
     std::string family;
     find_font(name, bold, italic, &family);
     const char *sub = substitute(family);
-    const char *tries[] = {sub ? sub : "Arial", "Arial", "Helvetica", "Lucida Grande", "Arial Unicode MS", "Liberation Sans",
-                           "DejaVu Sans"};
-    for (const char *t : tries) {
-        plutovg_font_face_t *f = find_font(t, bold, italic);
-        if (f && nf_has_glyph(f, cp)) return f;
-    }
-    return nullptr;
+    const char *first[] = {sub ? sub : "", nullptr};
+    return nf_glyph_face(first, cp, bold ? 700 : 400, italic);
 }
 
 // --- the painter -------------------------------------------------------------

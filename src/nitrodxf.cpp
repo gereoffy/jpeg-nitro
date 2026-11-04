@@ -454,25 +454,12 @@ plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
             }
         if (fam.empty()) fam = f.substr(0, f.size() - 4);
     }
-    const char *tries[] = {fam.c_str(), "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"};
-    for (const char *t : tries) {
-        if (!*t) continue;
-        plutovg_font_face_t *face = nf_face(t, bold ? 700 : 400, italic);
-        if (face) return face;
-    }
-    return nullptr;
+    const char *tries[] = {fam.c_str(), "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", nullptr};
+    return nf_first_face(tries, bold ? 700 : 400, italic);
 }
 
-// a face for a character the font lacks; null if none has it (locked by the caller)
-plutovg_font_face_t *fallback_font(uint32_t cp) {
-    static const char *const tries[] = {"Arial", "Helvetica", "Lucida Grande", "Arial Unicode MS", "Liberation Sans", "DejaVu Sans",
-                                        "Noto Sans", "PingFang SC", "Hiragino Sans", "MS Gothic", "Noto Sans CJK JP"};
-    for (const char *t : tries) {
-        plutovg_font_face_t *f = nf_face(t, 400, false);
-        if (f && nf_has_glyph(f, cp)) return f;
-    }
-    return nullptr;
-}
+// a face for a character the font lacks (nitro_font's common fonts); null if none has it (locked by the caller)
+plutovg_font_face_t *fallback_font(uint32_t cp) { return nf_glyph_face(nullptr, cp, 400, false); }
 
 struct FaceInfo {
     float cap = 0.7f, descent = 0.21f;   // per em

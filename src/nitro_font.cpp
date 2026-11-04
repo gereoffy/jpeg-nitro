@@ -405,6 +405,24 @@ bool nf_has_glyph(plutovg_font_face_t *face, uint32_t codepoint) {
     return f.cmapTable && has_glyph(f.cmap, f.cmapTable, codepoint);
 }
 
+plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic) {
+    for (; *families; families++)
+        if (**families)
+            if (plutovg_font_face_t *f = nf_face(*families, weight, italic)) return f;
+    return nullptr;
+}
+
+plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic) {
+    static const char *const common[] = {"Arial", "Helvetica", "Lucida Grande", "Arial Unicode MS", "Liberation Sans", "DejaVu Sans",
+                                         "Noto Sans", "PingFang SC", "Hiragino Sans", "MS Gothic", "Noto Sans CJK JP", nullptr};
+    for (const char *const *list : {first, common})
+        for (; list && *list; list++) {
+            plutovg_font_face_t *f = **list ? nf_face(*list, weight, italic) : nullptr;
+            if (f && nf_has_glyph(f, codepoint)) return f;
+        }
+    return nullptr;
+}
+
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
     int weight = bold ? 700 : 400;
     if (family && *family)

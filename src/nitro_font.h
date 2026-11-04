@@ -28,6 +28,14 @@ plutovg_font_face_t *nf_face(const char *family, int weight, bool italic);
 bool nf_has_style(const char *family, bool italic);
 // Whether a face of nf_face's has a glyph for the character (else its "missing glyph" box shows).
 bool nf_has_glyph(plutovg_font_face_t *face, uint32_t codepoint);
+// The first installed family of a NULL-terminated list (empty names skipped), as nf_face gives it;
+// NULL if none is.
+plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic);
+// A face that has a glyph for the character: of the families given first (NULL-terminated, or NULL),
+// then of the common fonts (Arial, Helvetica, Lucida Grande, Arial Unicode MS, Liberation Sans,
+// DejaVu Sans, then the CJK ones Noto Sans, PingFang SC, Hiragino Sans, MS Gothic, Noto Sans CJK JP);
+// NULL if none has it. For a character the text's own font lacks.
+plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic);
 // A face for a CSS font-family: a family name, a generic one (sans-serif, serif, monospace,
 // cursive, fantasy) or "" for the default font; what lunasvg asks for (nitrosvg sets it as its
 // font resolver).
