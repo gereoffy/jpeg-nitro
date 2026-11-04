@@ -562,7 +562,8 @@ WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
 WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks $(WARN) -static
 # everything Windows is built again when WINARCH changes (the v2 and v3 builds share build/win/)
-WIN_STAMP := build/win/.arch-$(WINARCH)
+# or the optional parts do (NITROHEVC=1 left the WIC build in place)
+WIN_STAMP := build/win/.arch-$(WINARCH)-$(CONFIG)
 $(WIN_STAMP):
 	@mkdir -p build/win
 	@rm -f build/win/.arch-*
