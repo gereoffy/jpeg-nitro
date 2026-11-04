@@ -364,6 +364,7 @@ struct Style {
     std::string markerStart, markerEnd;   // arrowheads: SVG path data in their own units (libcdr's)
     float markerUnit = 0;                 // one of those, in points; the tip at the line's end, y along it
     plutovg_matrix_t markerPre[2] = {{1, 0, 0, 1, 0, 0}, {1, 0, 0, 1, 0, 0}};   // applied first (ODF markers, see parseStyle)
+    float markerReach = 0;                // how far an arrowhead reaches from the line's end, in points
 };
 
 struct Span {
@@ -978,7 +979,7 @@ private:
         it.path.reset(path);
         plutovg_rect_t r;
         plutovg_path_extents(path, &r, false);
-        float m = m_style->stroke ? std::max(m_style->strokeWidth, 0.5f) * 2 : 0;   // (miters)
+        float m = m_style->stroke ? std::max(std::max(m_style->strokeWidth, 0.5f) * 2, m_style->markerReach) : 0;   // (miters, arrowheads)
         it.bx0 = r.x - m;
         it.by0 = r.y - m;
         it.bx1 = r.x + r.w + m;
@@ -1386,6 +1387,19 @@ private:
                     float sc = (float)(width / r.w);
                     st->markerPre[k] = {sc, 0, 0, -sc, -sc * (r.x + r.w / 2), sc * (r.y + (centre ? r.h / 2 : 0))};
                 }
+            }
+            for (int k = 0; k < 2 && st->markerUnit > 0; k++) {   // (for the item's box: it is drawn by bands)
+                const std::string &data = k ? st->markerEnd : st->markerStart;
+                plutovg_path_t *path = plutovg_path_create();
+                plutovg_rect_t r = {0, 0, 0, 0};
+                if (!data.empty() && plutovg_path_parse(path, data.data(), (int)data.size())) {
+                    plutovg_path_transform(path, &st->markerPre[k]);
+                    plutovg_path_extents(path, &r, false);
+                    float x = std::max(fabsf(r.x), fabsf(r.x + r.w)), y = std::max(fabsf(r.y), fabsf(r.y + r.h));
+                    float reach = st->markerUnit * hypotf(x, y) + st->strokeWidth;   // (its open parts outlined)
+                    if (std::isfinite(reach)) st->markerReach = std::max(st->markerReach, reach);
+                }
+                plutovg_path_destroy(path);
             }
             if (is(p, "svg:stroke-linejoin", "round")) st->join = PLUTOVG_LINE_JOIN_ROUND;
             else if (is(p, "svg:stroke-linejoin", "bevel")) st->join = PLUTOVG_LINE_JOIN_BEVEL;
