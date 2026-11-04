@@ -2284,8 +2284,10 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
     float hair = 1 / scale;
     plutovg_path_t *lines = plutovg_path_create();
     size_t segs = 0;
+    std::vector<size_t> ends;   // (where each pattern line's segments start; then their end)
     bool tone = false;
     for (const OPatLine &pl : pat) {
+        ends.push_back(segs);
         double nx = -pl.dy, ny = pl.dx, s = pl.ox * nx + pl.oy * ny;
         if (std::fabs(s) * scale < 2.5) {   // (denser than the pixels: a tone instead)
             tone = true;
@@ -2338,18 +2340,23 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
         plutovg_canvas_clip_path(c, it.path);
         set_rgba(c, rgba);
         plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
-        // (each line filled alone: plutovg's rasterizer keeps a scanline's cells in a list, so
-        // the time grows with the square of the lines crossing the same scanlines in one path)
+        // filled in batches of a pattern line's dashes (a fill each took a second for a million
+        // of them): its lines do not touch each other's pixels, while those of the pattern's other
+        // lines cross them (in one path, the pixels where they cross would be drawn alike)
         const plutovg_path_element_t *el;
-        int ne = plutovg_path_get_elements(lines, &el);
+        plutovg_path_get_elements(lines, &el);
         plutovg_path_t *part = plutovg_path_create(), *quads = plutovg_path_create();
-        for (int k = 0; k + 3 < ne && !((k & 63) == 60 && cancel()); k += 4) {   // (move_to, point, line_to, point)
-            plutovg_path_reset(part);
-            plutovg_path_move_to(part, el[k + 1].point.x, el[k + 1].point.y);
-            plutovg_path_line_to(part, el[k + 3].point.x, el[k + 3].point.y);
-            hairline_quads(quads, part, hair, scale);
-            plutovg_canvas_fill_path(c, quads);
-        }
+        ends.push_back(segs);
+        for (size_t f = 1, i = 0; f < ends.size(); f++)
+            for (; i < ends[f] && !cancel(); ) {
+                plutovg_path_reset(part);
+                for (size_t e = std::min(ends[f], i + 128); i < e; i++) {   // (move_to, point, line_to, point)
+                    plutovg_path_move_to(part, el[4 * i + 1].point.x, el[4 * i + 1].point.y);
+                    plutovg_path_line_to(part, el[4 * i + 3].point.x, el[4 * i + 3].point.y);
+                }
+                hairline_quads(quads, part, hair, scale);
+                plutovg_canvas_fill_path(c, quads);
+            }
         plutovg_path_destroy(part);
         plutovg_path_destroy(quads);
     }
