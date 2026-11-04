@@ -36,6 +36,9 @@ int nitro_loader_replace_image(NitroLoader *loader, unsigned serial, NitroImage 
 // The DNG exposure correction (nitro_image_set_dng_ev3) or the drawings' background
 // (nv_vector_background) changed: images decoded with another one are dropped and decoded again.
 void nitro_loader_setting_changed(NitroLoader *loader);
+// The size the drawings' pages are rendered for changed (nv_vector_set_target): the prefetched
+// pages too small for it are dropped and rendered again (the shown one is sharpened by the detail).
+void nitro_loader_vector_target_changed(NitroLoader *loader);
 
 // The image shown now and the paging direction (+1 / -1): decides what is decoded next.
 void nitro_loader_focus(NitroLoader *loader, int index, int direction);

@@ -64,6 +64,10 @@ static int ld_stale(const void *image, void *ctx) {
     const NitroImage *i = image;
     return (i->dng && i->ev3 != nitro_image_get_dng_ev3()) || (i->vector && i->background != nv_vector_background());
 }
+static int ld_too_small(const void *image, void *ctx) {
+    const NitroImage *i = image;
+    return i->vector && nv_vector_page_too_small(i->width, i->height, NITRO_MAX_TEX);
+}
 static void *ld_path_dup(void *path, void *ctx) { return g_object_ref(path); }
 static void ld_path_free(void *path, void *ctx) { g_object_unref(path); }
 static const char *ld_path_name(void *path, void *ctx) { return g_file_peek_path(path); }
@@ -133,6 +137,8 @@ int nitro_loader_replace_image(NitroLoader *l, unsigned serial, NitroImage *imag
 }
 
 void nitro_loader_setting_changed(NitroLoader *l) { nv_loader_drop(l->L, ld_stale, NULL, 0, NULL, NULL); }
+
+void nitro_loader_vector_target_changed(NitroLoader *l) { nv_loader_drop(l->L, ld_too_small, NULL, 1, NULL, NULL); }
 
 void nitro_loader_focus(NitroLoader *l, int index, int direction) { nv_loader_focus(l->L, index, direction); }
 

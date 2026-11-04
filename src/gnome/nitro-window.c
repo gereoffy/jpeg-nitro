@@ -490,20 +490,43 @@ static void set_files(NitroWindow *self, GPtrArray *files, gboolean lazy_directo
 // maximized. (Under Wayland a program cannot move its window, only resize it, through its default
 // size in GTK 4: the top-left corner stays; so the first window is shown only when it has its
 // size, and fill maximizes it instead of growing it past the screen's bottom.)
+// the monitor the window is on (not shown yet: the first one); NULL without any
+static GdkMonitor *window_monitor(NitroWindow *self) {
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(self));
+    GdkDisplay *display = gtk_widget_get_display(GTK_WIDGET(self));
+    GdkMonitor *monitor = surface ? gdk_display_get_monitor_at_surface(display, surface) : NULL;
+    if (!monitor) {
+        GListModel *monitors = gdk_display_get_monitors(display);
+        monitor = g_list_model_get_n_items(monitors) ? g_list_model_get_item(monitors, 0) : NULL;
+        if (monitor) g_object_unref(monitor);   // (the list keeps it)
+    }
+    return monitor;
+}
+
+// Fitted to the screen (full screen or key 0): the drawings' pages are rendered for its size
+// (nv_vector_set_target), sharp from the start, as the other viewers do.
+static void update_vector_target(NitroWindow *self) {
+    int tw = 0, th = 0;
+    if (gtk_window_is_fullscreen(GTK_WINDOW(self)) || nitro_view_get_fit_screen(self->view)) {
+        GdkMonitor *monitor = window_monitor(self);
+        if (monitor) {
+            GdkRectangle geo;
+            gdk_monitor_get_geometry(monitor, &geo);
+            int factor = MAX(1, gtk_widget_get_scale_factor(GTK_WIDGET(self)));
+            tw = geo.width * factor;
+            th = geo.height * factor;
+        }
+    }
+    if (nv_vector_set_target(tw, th) && self->loader) nitro_loader_vector_target_changed(self->loader);
+}
+
 static void size_window(NitroWindow *self, gboolean fill) {
     if (!self->image || gtk_window_is_fullscreen(GTK_WINDOW(self))) return;
     if (fill) {
         gtk_window_maximize(GTK_WINDOW(self));
         return;
     }
-    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(self));
-    GdkDisplay *display = gtk_widget_get_display(GTK_WIDGET(self));
-    GdkMonitor *monitor = surface ? gdk_display_get_monitor_at_surface(display, surface) : NULL;
-    if (!monitor) {   // (not shown yet: the first monitor)
-        GListModel *monitors = gdk_display_get_monitors(display);
-        monitor = g_list_model_get_n_items(monitors) ? g_list_model_get_item(monitors, 0) : NULL;
-        if (monitor) g_object_unref(monitor);   // (the list keeps it)
-    }
+    GdkMonitor *monitor = window_monitor(self);
     if (!monitor) return;
     GdkRectangle geo;
     gdk_monitor_get_geometry(monitor, &geo);
@@ -524,12 +547,14 @@ static void toggle_fullscreen(NitroWindow *self) {
 
 static void window_to_image(NitroWindow *self) {
     nitro_view_fit(self->view, FALSE);
+    update_vector_target(self);
     size_window(self, FALSE);
     update_title(self);
 }
 
 static void fit_to_screen(NitroWindow *self) {
     nitro_view_fit(self->view, TRUE);
+    update_vector_target(self);
     size_window(self, TRUE);
     update_title(self);
 }
@@ -736,6 +761,7 @@ static void fullscreened_notify(GObject *object, GParamSpec *pspec, gpointer use
     NitroWindow *self = NITRO_WINDOW(user_data);
     gboolean fullscreen = gtk_window_is_fullscreen(GTK_WINDOW(self));
     nitro_view_set_fullscreen(self->view, fullscreen);
+    update_vector_target(self);
     gtk_widget_set_visible(GTK_WIDGET(self->header_bar), !fullscreen);
     update_title(self);
 }

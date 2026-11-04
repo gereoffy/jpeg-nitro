@@ -42,7 +42,7 @@ static uint8_t *page_get(size_t len, size_t *cap, void *ctx) { *cap = len; retur
 static void page_put(uint8_t *p, size_t cap, void *ctx) { free(p); }
 
 static NitroImage *vector_image(NitroVector *vector, int page) {
-    static const NvDecoder dec = {.get = page_get, .put = page_put, .align = 1, .max_tex = 16384};
+    static const NvDecoder dec = {.get = page_get, .put = page_put, .align = 1, .max_tex = NITRO_MAX_TEX};
     NvPage p;
     guint8 *px = nv_vector_render_page(vector, page, &dec, &p);
     if (!px) return NULL;

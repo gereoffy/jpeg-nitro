@@ -30,6 +30,7 @@ typedef struct {
 // shimmers (moire). So a large image's texture also carries its halves, quarters ... (2x2 box
 // filter, object data NITRO_MIPS); the view draws the one at most 2x larger than on screen.
 #define NITRO_MIPS "nitro-mips"
+#define NITRO_MAX_TEX 16384   // the largest texture (a page of a drawing is rendered up to it)
 typedef struct {
     int n;
     GdkTexture *t[16];
