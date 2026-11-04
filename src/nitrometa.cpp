@@ -163,11 +163,13 @@ bool unrle(Bytes src, int w, int h, int bpp, std::vector<uint8_t> &out) {
 struct DibPlace {
     bool bottomUp = false;
     int height = 0;   // the DIB's height (its header's)
+    int top = 0;      // the first decoded row among the DIB's (top-down): a band of SetDIBitsToDevice, short pixel data
 };
 
 // bits: the pixels when the record gives them apart from the header (else they follow the palette);
-// alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it
-SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr) {
+// alpha: a 32-bit DIB's alpha channel counts (AlphaBlend), else it is opaque as GDI draws it;
+// startScan, scans: SetDIBitsToDevice's band, the rows the bits hold (scans 0: all that are there)
+SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr, uint32_t startScan = 0, uint32_t scans = 0) {
     uint32_t hs = hdr.u32(0);
     int w, h, bpp;
     uint32_t comp = 0, used = 0;
@@ -216,17 +218,20 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr) {
     if (!bits.p || !bits.n) bits = hdr.sub(palOff + entries * palEntry, hdr.n);
     size_t stride = ((size_t)w * bpp + 31) / 32 * 4;
     std::vector<uint8_t> rle;
+    int rows = h, top = 0;   // the rows decoded, and the first of them among the DIB's (top-down)
     if (comp == 1 || comp == 2) {
         if ((comp == 1) != (bpp == 8) || (comp == 2) != (bpp == 4)) return nullptr;
         unrle(bits, w, h, bpp, rle);
         bpp = 8;
         stride = (size_t)w;
         bits = {rle.data(), rle.size()};
-    } else if (bits.n < stride * h) {   // short pixel data: the rows there are drawn
-        if (bits.n < stride) return nullptr;
-        if (!topDown) return nullptr;
-        h = (int)(bits.n / stride);
+    } else {   // the rows there are drawn in their place: a band (scans rows from startScan, the first stored row of a
+        if (bits.n < stride || startScan >= (uint32_t)h) return nullptr;   // bottom-up DIB its bottom one), or short pixel data
+        rows = (int)std::min<size_t>(bits.n / stride, (size_t)h - startScan);
+        if (scans && scans < (uint32_t)rows) rows = (int)scans;
+        top = topDown ? (int)startScan : h - (int)startScan - rows;
     }
+    if (place) place->top = top;
     int shift[3], bitsOf[3];
     for (int i = 0; i < 3; i++) {
         uint32_t m = masks[i];
@@ -241,12 +246,12 @@ SurfP decodeDib(Bytes hdr, Bytes bits, bool alpha, DibPlace *place = nullptr) {
         return bitsOf[i] >= 8 ? c >> (bitsOf[i] - 8) : c * 255 / ((1u << bitsOf[i]) - 1);
     };
     auto surf = std::make_shared<Surface>();
-    surf->s = plutovg_surface_create(w, h);
+    surf->s = plutovg_surface_create(w, rows);
     if (!surf->s) return nullptr;
     uint8_t *data = plutovg_surface_get_data(surf->s);
     int dstride = plutovg_surface_get_stride(surf->s);
-    for (int y = 0; y < h; y++) {
-        const uint8_t *row = bits.p + stride * (topDown ? y : h - 1 - y);
+    for (int y = 0; y < rows; y++) {
+        const uint8_t *row = bits.p + stride * (topDown ? y : rows - 1 - y);
         uint32_t *dst = (uint32_t *)(data + (size_t)dstride * y);
         for (int x = 0; x < w; x++) {
             uint32_t px;
@@ -1074,8 +1079,8 @@ public:
         }
     }
     // the top of a DIB record's source rectangle (sy, sh in the DIB's coordinates: from the bottom of a
-    // bottom-up DIB) among the decoded rows, which are top-down
-    static double dibSrcY(const DibPlace &p, double sy, double sh) { return p.bottomUp ? p.height - sy - sh : sy; }
+    // bottom-up DIB) among the decoded rows, which are top-down and may be a band of the DIB
+    static double dibSrcY(const DibPlace &p, double sy, double sh) { return (p.bottomUp ? p.height - sy - sh : sy) - p.top; }
     void blitItem(double x, double y, double w, double h, SurfP img, double sx, double sy, double sw, double sh, float opacity) {
         uint32_t rgb;
         if (!rop2Draws(rgb)) return;
@@ -1583,7 +1588,7 @@ bool Player::playWmf(Bytes b, size_t o) {
         case 0x0d33: {   // SetDIBitsToDevice: usage, scanCount, startScan, srcY, srcX, h, w, dstY, dstX, DIB
             double sy = r.i16(6), sx = r.i16(8), h = r.i16(10), w = r.i16(12), dy = r.i16(14), dx0 = r.i16(16);
             DibPlace place;
-            SurfP img = decodeDib(r.sub(18, r.n), {}, false, &place);
+            SurfP img = decodeDib(r.sub(18, r.n), {}, false, &place, r.u16(4), r.u16(2));
             if (img) blit(dx0, dy, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
@@ -1678,8 +1683,9 @@ bool Player::playEmf(Bytes b) {
         auto rect = [&](size_t at, double *v) {
             for (int i = 0; i < 4; i++) v[i] = r.i32(at + (size_t)i * 4);
         };
-        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha, DibPlace *place = nullptr) {
-            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, place);
+        auto dib = [&](size_t offBmi, size_t cbBmi, size_t offBits, size_t cbBits, bool alpha, DibPlace *place = nullptr, uint32_t startScan = 0,
+                       uint32_t scans = 0) {
+            return decodeDib(r.sub(offBmi, cbBmi), cbBits ? r.sub(offBits, cbBits) : Bytes{}, alpha, place, startScan, scans);
         };
         double v[4];
         switch (type) {
@@ -1932,10 +1938,10 @@ bool Player::playEmf(Bytes b) {
             blit(x, y, w, h, img, sx, sy, w, h, SRCCOPY);
             break;
         }
-        case 80: {   // SetDIBitsToDevice
+        case 80: {   // SetDIBitsToDevice: ..., usage, start scan, scans
             double x = r.i32(24), y = r.i32(28), sx = r.i32(32), sy = r.i32(36), w = r.i32(40), h = r.i32(44);
             DibPlace place;
-            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place);
+            SurfP img = dib(r.u32(48), r.u32(52), r.u32(56), r.u32(60), false, &place, r.u32(68), r.u32(72));
             if (img) blit(x, y, w, h, img, sx, dibSrcY(place, sy, h), w, h, SRCCOPY);
             break;
         }
