@@ -69,7 +69,7 @@ static void detail_job_free(gpointer data) {
 
 static void detail_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancellable) {
     DetailJob *j = data;
-    GdkTexture *t = nitro_vector_render(j->vector, j->page, j->vector_scale, j->r.w, j->r.h, j->r.scale, j->r.x, j->r.y, j->cancel);
+    GdkTexture *t = nitro_vector_detail(j->vector, j->page, j->vector_scale, &j->r, j->cancel);
     g_task_return_pointer(task, t, t ? g_object_unref : NULL);
 }
 

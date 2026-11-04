@@ -1456,13 +1456,8 @@ static int detail_cancelled(void *j) { return InterlockedCompareExchange(&((Deta
 
 static DWORD WINAPI detail_run(void *arg) {
     DetailJob *j = arg;
-    double t = now_ms(), k = j->vscale * j->r.scale;
-    j->px = malloc((size_t)j->r.w * j->r.h * 4);
-    if (j->px && nv_vector_render(j->vec, j->page, j->px, j->r.w, j->r.h, (size_t)j->r.w * 4, k, j->r.dx / j->vscale,
-                                j->r.dy / j->vscale, detail_cancelled, j)) {
-        free(j->px);
-        j->px = NULL;
-    }
+    double t = now_ms();
+    j->px = nv_vector_detail_render(j->vec, j->page, j->vscale, &j->r, detail_cancelled, j);
     j->ms = now_ms() - t;
     PostMessageW(V.hwnd, WM_APP_DETAIL, (WPARAM)j, 0);
     return 0;

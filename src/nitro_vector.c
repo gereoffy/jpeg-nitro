@@ -263,6 +263,18 @@ int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double 
     return 1;
 }
 
+uint8_t *nv_vector_detail_render(NvVector *v, int page, double vscale, const NvDetailRect *r, int (*cancelled)(void *ctx),
+                                 void *ctx) {
+    if (r->w <= 0 || r->h <= 0 || (size_t)r->w > SIZE_MAX / 4 / (size_t)r->h) return NULL;
+    size_t pitch = (size_t)r->w * 4;
+    uint8_t *px = malloc(pitch * r->h);
+    if (px && nv_vector_render(v, page, px, r->w, r->h, pitch, vscale * r->scale, r->dx / vscale, r->dy / vscale, cancelled, ctx)) {
+        free(px);
+        return NULL;
+    }
+    return px;
+}
+
 int nv_vector_background(void) { return atomic_load(&g_background); }
 
 int nv_vector_cycle_background(int delta) {

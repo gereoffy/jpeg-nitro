@@ -31,18 +31,9 @@ static GdkTexture *bgra_texture(guint8 *px, int w, int h, gsize stride) {
     return t;
 }
 
-GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
-                                double y0, GCancellable *cancellable) {
-    if (!vector || w <= 0 || h <= 0 || (gsize)w > G_MAXSIZE / 4 / (gsize)h) return NULL;
-    gsize stride = (gsize)w * 4;
-    guint8 *px = malloc(stride * (gsize)h);
-    if (!px) return NULL;
-    double k = scale * vector_scale;   // device pixels per document unit
-    if (nv_vector_render(vector, page, px, w, h, stride, k, x0 / k, y0 / k, cancellable ? vector_cancelled : NULL, cancellable)) {
-        free(px);
-        return NULL;
-    }
-    return bgra_texture(px, w, h, stride);
+GdkTexture *nitro_vector_detail(NitroVector *vector, int page, double vector_scale, const NvDetailRect *r, GCancellable *cancellable) {
+    guint8 *px = vector ? nv_vector_detail_render(vector, page, vector_scale, r, cancellable ? vector_cancelled : NULL, cancellable) : NULL;
+    return px ? bgra_texture(px, r->w, r->h, (gsize)r->w * 4) : NULL;
 }
 
 // A page rendered in full (nv_vector_render_page), as the other viewers do (takes a reference

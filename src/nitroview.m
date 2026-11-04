@@ -1510,6 +1510,7 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
     unsigned req = ++_detailReq;
     CGRect wr = CGRectMake(want[0], want[1], want[2], want[3]);
     int w = MIN(MAX_TEX, r.w), h = MIN(MAX_TEX, r.h);
+    r.w = w, r.h = h;
     if (!_vectorQueue) _vectorQueue = dispatch_queue_create("nitroview.vector", DISPATCH_QUEUE_SERIAL);
     __weak ViewerView *ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
@@ -1529,16 +1530,14 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
         v->_busyRect = wr;
         double k = d.vectorScale;
         dispatch_async(v->_vectorQueue, ^{
-            size_t pitch = (size_t)w * 4;
-            uint8_t *px = malloc(pitch * h);
             double t0 = now_ms();
-            int rc = px ? nv_vector_render(d.vector, d.page, px, w, h, pitch, k * s, wr.origin.x / k, wr.origin.y / k, detail_cancelled, cancel) : -1;
+            uint8_t *px = nv_vector_detail_render(d.vector, d.page, k, &r, detail_cancelled, cancel);
             double ms = now_ms() - t0;
             dispatch_async(dispatch_get_main_queue(), ^{
                 ViewerView *v2 = ws;
                 if (v2) v2->_detailBusy = NO, v2->_busyCancel = NULL, v2->_busyFor = nil;
                 free(cancel);
-                if (v2 && !rc) [v2 vectorDetailDone:d pixels:px w:w h:h scale:s rect:wr ms:ms];
+                if (v2 && px) [v2 vectorDetailDone:d pixels:px w:w h:h scale:s rect:wr ms:ms];
                 else if (v2 && v2->_wantFor == d) v2->_wantFor = nil;   // (failed: may be asked for again)
                 if (v2) v2.needsDisplay = YES;   // (the view may have moved on meanwhile)
                 free(px);

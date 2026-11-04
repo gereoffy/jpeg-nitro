@@ -39,11 +39,10 @@ void nitro_image_set_threads(int threads);
 // DNG exposure correction in 1/3 EV for the images decoded from now on (keys E / Shift+E)
 void nitro_image_set_dng_ev3(int ev3);
 int nitro_image_get_dng_ev3(void);
-// Renders w x h pixels of a page: pixel (i, j) shows texture point ((x0 + i + 0.5) / scale,
-// (y0 + j + 0.5) / scale) of an image of vector_scale texture pixels per document unit; over white.
-// NULL on failure, or when cancellable (may be NULL) is cancelled meanwhile. Any thread.
-GdkTexture *nitro_vector_render(NitroVector *vector, int page, double vector_scale, int w, int h, double scale, double x0,
-                                double y0, GCancellable *cancellable);
+// The part r of a page (nv_vector_detail_rect) rendered sharp, as a texture, of an image of
+// vector_scale texture pixels per document unit (nv_vector_detail_render). NULL on failure, or
+// when cancellable (may be NULL) is cancelled meanwhile. Any thread.
+GdkTexture *nitro_vector_detail(NitroVector *vector, int page, double vector_scale, const NvDetailRect *r, GCancellable *cancellable);
 // Another page of a drawing, as an image (rendered as nitro_image_load does). Any thread.
 NitroImage *nitro_image_load_page(NitroVector *vector, int page);
 NitroImage *nitro_image_load(GFile *file, GError **error);

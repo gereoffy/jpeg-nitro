@@ -88,6 +88,11 @@ typedef struct {
 } NvDetailRect;
 int nv_vector_detail_rect(double iw, double ih, double scale, double ox, double oy, double vw, double vh, double margin,
                           NvDetailRect *r);
+// That part of a page rendered: r->w x r->h BGRA pixels (pitch r->w * 4; from malloc, free them),
+// sharp at r->scale device pixels per decoded pixel of a page decoded at vscale pixels per
+// document unit. Any thread. NULL: no memory, or cancelled meanwhile (as nv_vector_render's).
+uint8_t *nv_vector_detail_render(NvVector *v, int page, double vscale, const NvDetailRect *r, int (*cancelled)(void *ctx),
+                                 void *ctx);
 
 // The background the drawings loaded from now on are drawn over: 0 white, 1 dark grey (AutoCAD's
 // model space), 2 black. Any thread.
