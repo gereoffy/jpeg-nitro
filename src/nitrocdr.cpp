@@ -311,6 +311,45 @@ plutovg_gradient_stop_t stop(float offset, Color c, float alpha = 1) {
     return s;
 }
 
+// A fountain fill's acceleration (CorelDRAW X7+, libcdr:gradient-acceleration, 0 .. 1): the colours
+// change faster at its ends, slower in its middle, at 1 its middle colour all along. The share of
+// the way from the start to the end colour at the first half's 0, 1/32, .. 1/2 of it, for 0, 0.1,
+// .. 1, as CorelDRAW 2024's PDF export draws them (the strips of a black to white fill; no formula
+// found that matches all, the second half mirrors the first). Below 0: the other way round.
+static const float kAcceleration[11][17] = {
+    {0.0000f, 0.0312f, 0.0625f, 0.0938f, 0.1250f, 0.1562f, 0.1875f, 0.2188f, 0.2500f, 0.2812f, 0.3125f, 0.3438f, 0.3750f, 0.4062f, 0.4375f, 0.4688f, 0.5000f},
+    {0.0000f, 0.0353f, 0.0725f, 0.1078f, 0.1431f, 0.1784f, 0.2098f, 0.2411f, 0.2726f, 0.3040f, 0.3353f, 0.3628f, 0.3942f, 0.4216f, 0.4491f, 0.4726f, 0.5000f},
+    {0.0000f, 0.0431f, 0.0863f, 0.1274f, 0.1647f, 0.2019f, 0.2372f, 0.2686f, 0.3000f, 0.3275f, 0.3549f, 0.3824f, 0.4098f, 0.4334f, 0.4569f, 0.4784f, 0.5000f},
+    {0.0000f, 0.0510f, 0.1019f, 0.1470f, 0.1902f, 0.2274f, 0.2607f, 0.2960f, 0.3236f, 0.3510f, 0.3785f, 0.4020f, 0.4235f, 0.4451f, 0.4647f, 0.4824f, 0.5000f},
+    {0.0000f, 0.0627f, 0.1215f, 0.1725f, 0.2176f, 0.2568f, 0.2921f, 0.3196f, 0.3490f, 0.3745f, 0.3981f, 0.4177f, 0.4373f, 0.4549f, 0.4706f, 0.4863f, 0.5000f},
+    {0.0000f, 0.0784f, 0.1451f, 0.2019f, 0.2490f, 0.2882f, 0.3196f, 0.3490f, 0.3745f, 0.3961f, 0.4157f, 0.4334f, 0.4491f, 0.4647f, 0.4765f, 0.4902f, 0.5000f},
+    {0.0000f, 0.1000f, 0.1764f, 0.2372f, 0.2843f, 0.3196f, 0.3509f, 0.3784f, 0.4000f, 0.4177f, 0.4353f, 0.4491f, 0.4608f, 0.4726f, 0.4824f, 0.4922f, 0.5000f},
+    {0.0000f, 0.1314f, 0.2196f, 0.2804f, 0.3255f, 0.3588f, 0.3862f, 0.4058f, 0.4255f, 0.4392f, 0.4510f, 0.4627f, 0.4726f, 0.4804f, 0.4863f, 0.4941f, 0.5000f},
+    {0.0000f, 0.1803f, 0.2784f, 0.3353f, 0.3745f, 0.4019f, 0.4215f, 0.4372f, 0.4491f, 0.4588f, 0.4687f, 0.4745f, 0.4824f, 0.4863f, 0.4922f, 0.4961f, 0.5000f},
+    {0.0000f, 0.2705f, 0.3608f, 0.4058f, 0.4314f, 0.4471f, 0.4588f, 0.4667f, 0.4745f, 0.4804f, 0.4863f, 0.4883f, 0.4902f, 0.4941f, 0.4980f, 0.4980f, 0.5000f},
+    {0.0000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f, 0.5000f},
+};
+
+static float accelerated(float t, float a) {
+    auto curve = [](float t, float a) {   // (0 <= a <= 1)
+        float h = t < .5f ? t : 1 - t, x = h * 32, y = a * 10;
+        int i = std::min((int)x, 15), j = std::min((int)y, 9);
+        float fx = x - i, fy = y - j;
+        float v0 = kAcceleration[j][i] + (kAcceleration[j][i + 1] - kAcceleration[j][i]) * fx;
+        float v1 = kAcceleration[j + 1][i] + (kAcceleration[j + 1][i + 1] - kAcceleration[j + 1][i]) * fx;
+        float v = v0 + (v1 - v0) * fy;
+        return t < .5f ? v : 1 - v;
+    };
+    t = std::min(std::max(t, 0.f), 1.f);
+    if (a >= 0) return curve(t, std::min(a, 1.f));
+    float lo = 0, hi = 1;   // (below 0: the inverse)
+    for (int k = 0; k < 24; k++) {
+        float mid = (lo + hi) / 2;
+        (curve(mid, std::min(-a, 1.f)) < t ? lo : hi) = mid;
+    }
+    return (lo + hi) / 2;
+}
+
 struct Style {
     Fill fill = FILL_NONE;
     Color fillColor;
@@ -1324,6 +1363,26 @@ private:
             }
             std::stable_sort(st->stops.begin(), st->stops.end(),
                              [](const plutovg_gradient_stop_t &a, const plutovg_gradient_stop_t &b) { return a.offset < b.offset; });
+            float acc = (float)number(p["libcdr:gradient-acceleration"]);
+            if (acc != 0 && sane(acc) && !st->stops.empty()) {   // (the stops sampled along the accelerated way)
+                std::vector<plutovg_gradient_stop_t> was = st->stops;
+                st->stops.clear();
+                for (int k = 0; k <= 64; k++) {
+                    float t = k / 64.f, u = accelerated(t, acc), w;
+                    size_t i = 1;
+                    while (i < was.size() && was[i].offset < u) i++;
+                    plutovg_gradient_stop_t s;
+                    if (i >= was.size() || u <= was.front().offset) s = u <= was.front().offset ? was.front() : was.back();
+                    else {
+                        const plutovg_gradient_stop_t &a = was[i - 1], &b = was[i];
+                        w = b.offset > a.offset ? (u - a.offset) / (b.offset - a.offset) : 1;
+                        s.color = {a.color.r + (b.color.r - a.color.r) * w, a.color.g + (b.color.g - a.color.g) * w,
+                                   a.color.b + (b.color.b - a.color.b) * w, a.color.a + (b.color.a - a.color.a) * w};
+                    }
+                    s.offset = t;
+                    st->stops.push_back(s);
+                }
+            }
         } else if (is(p, "draw:fill", "gradient")) {
             bool radial = is(p, "draw:style", "radial") || is(p, "draw:style", "square") || is(p, "draw:style", "rectangular") ||
                           is(p, "draw:style", "ellipsoid");
