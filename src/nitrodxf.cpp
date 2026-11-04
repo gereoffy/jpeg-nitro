@@ -1650,6 +1650,10 @@ struct Parser {
             if (i < n && g[i].code == code) return num(g[i++].v);
             return def;
         };
+        auto takei = [&](int code, int def) {   // (the same as an integer: clamped, not cast)
+            if (i < n && g[i].code == code) return inum(g[i++].v, def);
+            return def;
+        };
         V3 elev = r.p3(10);
         int solidFill = r.i(70);
         if (!seek(91)) return;
@@ -1744,10 +1748,10 @@ struct Parser {
                         V2 u = type == 2 ? V2{rad, 0} : mj, v = type == 2 ? V2{0, rad} : V2{-mj.y, mj.x} * ratio;
                         if (std::isfinite(t0 + t1) && len(u) > 0) arcSegs(c, u, v, t0, t1);
                     } else if (type == 4) {
-                        int deg = (int)take(94, 3);
+                        int deg = takei(94, 3);
                         bool rational = take(73, 0) != 0;
                         take(74, 0);
-                        int nk = (int)take(95, 0), nc = (int)take(96, 0);
+                        int nk = takei(95, 0), nc = takei(96, 0);
                         if (nk < 0 || nc < 0 || nk > 100000 || nc > 100000) return;
                         std::vector<double> knots, w;
                         std::vector<V2> ctrl, fit;
@@ -1757,7 +1761,7 @@ struct Parser {
                             ctrl.push_back(c);
                             if (rational || (i < n && g[i].code == 42)) w.push_back(take(42, 1));
                         }
-                        int nf = (int)take(97, 0);
+                        int nf = takei(97, 0);
                         for (int q = 0; q < nf && q < 100000 && i < n && g[i].code == 11; q++) fit.push_back({take(11, 0), take(21, 0)});
                         take(12, 0), take(22, 0), take(13, 0), take(23, 0);
                         std::vector<V2> out;
@@ -1793,7 +1797,7 @@ struct Parser {
                 pl.base = {take(43, 0), take(44, 0)};
                 pl.off = {take(45, 0), take(46, 0)};
                 pl.dir = {std::cos(a), std::sin(a)};
-                int nd = (int)take(79, 0);
+                int nd = takei(79, 0);
                 for (int q = 0; q < nd && q < 1000 && i < n && g[i].code == 49; q++) pl.dashes.push_back(num(g[i++].v));
                 pat.push_back(pl);
             }
