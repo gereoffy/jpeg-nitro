@@ -26,6 +26,7 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -233,8 +234,9 @@ std::shared_ptr<Image> picture(const unsigned char *b, size_t n, int depth = 0);
 // An embedded OLE object (libvisio passes it as it is: a compound file): the picture it is shown
 // as (its presentation stream: an EMF, a WMF or a DIB), else a Paintbrush object's own BMP.
 std::shared_ptr<Image> olePicture(const unsigned char *b, size_t n, int depth) {
+    if (depth > 1 || n > UINT_MAX) return nullptr;   // (the stream takes an unsigned length)
     librevenge::RVNGStringStream ole(b, (unsigned)n);
-    if (depth > 1 || !ole.isStructured()) return nullptr;
+    if (!ole.isStructured()) return nullptr;
     auto stream = [&](const char *name, std::vector<unsigned char> &out) {
         std::unique_ptr<librevenge::RVNGInputStream> s(ole.getSubStreamByName(name));
         if (!s) return false;
@@ -1835,6 +1837,7 @@ static bool vsdxPagesEmpty(librevenge::RVNGInputStream &in) {
 }
 
 nitrocdr *nitrocdr_load(const void *data, size_t len) {
+    if (len > UINT_MAX) return nullptr;   // (librevenge's stream takes an unsigned length: a larger file would be read in part)
     librevenge::RVNGStringStream in(static_cast<const unsigned char *>(data), (unsigned)len);
     Painter painter;
     std::unique_ptr<Painter> masters;
@@ -1946,6 +1949,10 @@ void nitrocdr_set_background(nitrocdr *cdr, int background) {
 }
 
 void nitrocdr_size(const nitrocdr *cdr, int page, double *w, double *h) {
+    if (!cdr || page < 0 || page >= (int)cdr->pages.size()) {
+        *w = *h = 0;
+        return;
+    }
     *w = cdr->pages[page].w;
     *h = cdr->pages[page].h;
 }
