@@ -5,7 +5,8 @@
 // same format): every object found, its value written canonically, its stream's decoded length
 // and MD5; the pages, their boxes and their content's operator count.
 //
-//   c++ -std=c++17 -O2 -Isrc bench/pdfdump.cpp src/nitropdf.cpp src/nitrocrypt.cpp -lz -o bench/pdfdump
+//   cc -std=c99 -O2 -c src/nitrocrypt.c -o bench/nitrocrypt.o
+//   c++ -std=c++17 -O2 -Isrc bench/pdfdump.cpp src/nitropdf.cpp bench/nitrocrypt.o -lz -o bench/pdfdump
 //   bench/pdfdump [-q] file.pdf      (-q: the summary only)
 #include "nitrocrypt.h"
 #include "nitropdf.h"
@@ -30,7 +31,7 @@ static std::string hexs(const uint8_t *p, size_t n) {
 
 static std::string md5s(const void *p, size_t n) {
     uint8_t h[16];
-    md5(p, n, h);
+    nc_md5(p, n, h);
     return hexs(h, 4);
 }
 

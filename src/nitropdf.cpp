@@ -852,23 +852,23 @@ const uint8_t PDF_PAD[32] = {0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x6
 void hash2b(const uint8_t *salt, uint8_t out[32]) {
     uint8_t K[64];
     size_t kl = 32;
-    sha256(salt, 8, K);
+    nc_sha256(salt, 8, K);
     std::vector<uint8_t> K1, E;
     for (int round = 0;; round++) {
         K1.clear();
         for (int k = 0; k < 64; k++) K1.insert(K1.end(), K, K + kl);
         E.resize(K1.size());
-        Aes aes;
-        aes.init(K, 16);
+        nc_aes aes;
+        nc_aes_init(&aes, K, 16);
         uint8_t iv[16];
         memcpy(iv, K + 16, 16);
-        aes.encryptCbc(iv, K1.data(), K1.size(), E.data());
+        nc_aes_encrypt_cbc(&aes, iv, K1.data(), K1.size(), E.data());
         int sum = 0;
         for (int k = 0; k < 16; k++) sum += E[k];
         int h = sum % 3;
-        if (h == 0) sha256(E.data(), E.size(), K), kl = 32;
-        else if (h == 1) sha384(E.data(), E.size(), K), kl = 48;
-        else sha512(E.data(), E.size(), K), kl = 64;
+        if (h == 0) nc_sha256(E.data(), E.size(), K), kl = 32;
+        else if (h == 1) nc_sha384(E.data(), E.size(), K), kl = 48;
+        else nc_sha512(E.data(), E.size(), K), kl = 64;
         if (round >= 63 && E.back() <= round + 1 - 32) break;
     }
     memcpy(out, K, 32);
@@ -1672,31 +1672,31 @@ struct Doc::Impl {
             b += fileId;
             if (R >= 4 && !encMeta) b += "\xff\xff\xff\xff";
             uint8_t k16[16];
-            md5(b.data(), b.size(), k16);
+            nc_md5(b.data(), b.size(), k16);
             if (R >= 3)
-                for (int k = 0; k < 50; k++) md5(k16, n, k16);
+                for (int k = 0; k < 50; k++) nc_md5(k16, n, k16);
             std::vector<uint8_t> k(k16, k16 + n);
             if (R == 2) {
                 uint8_t c[32];
-                rc4(k.data(), n, PDF_PAD, 32, c);
+                nc_rc4(k.data(), n, PDF_PAD, 32, c);
                 ok = U.size() >= 32 && memcmp(c, U.data(), 32) == 0;
             } else {
                 std::string h((const char *)PDF_PAD, 32);
                 h += fileId;
                 uint8_t c[16];
-                md5(h.data(), h.size(), c);
-                rc4(k.data(), n, c, 16, c);
+                nc_md5(h.data(), h.size(), c);
+                nc_rc4(k.data(), n, c, 16, c);
                 for (int i = 1; i < 20; i++) {
                     std::vector<uint8_t> ki(k);
                     for (auto &x : ki) x ^= (uint8_t)i;
-                    rc4(ki.data(), n, c, 16, c);
+                    nc_rc4(ki.data(), n, c, 16, c);
                 }
                 ok = U.size() >= 16 && memcmp(c, U.data(), 16) == 0;
             }
             if (ok) key = k;
         } else if ((R == 5 || R == 6) && U.size() >= 48 && UE.size() >= 32) {
             auto h = [&](const uint8_t *salt, uint8_t out[32]) {
-                if (R == 5) sha256(salt, 8, out);
+                if (R == 5) nc_sha256(salt, 8, out);
                 else hash2b(salt, out);
             };
             uint8_t hv[32];
@@ -1704,10 +1704,10 @@ struct Doc::Impl {
             if (memcmp(hv, U.data(), 32) == 0) {
                 uint8_t ik[32], iv[16] = {0};
                 h((const uint8_t *)U.data() + 40, ik);
-                Aes aes;
-                aes.init(ik, 32);
+                nc_aes aes;
+                nc_aes_init(&aes, ik, 32);
                 key.resize(32);
-                aes.decryptCbc(iv, (const uint8_t *)UE.data(), 32, key.data());
+                nc_aes_decrypt_cbc(&aes, iv, (const uint8_t *)UE.data(), 32, key.data());
                 ok = true;
             }
             stmAes = !stmNone, strAes = !strNone;
@@ -1733,22 +1733,22 @@ struct Doc::Impl {
             for (int s = 0; s < 2; s++) b.push_back((char)(gen >> (8 * s)));
             if (aes) b += "sAlT";
             uint8_t h[16];
-            md5(b.data(), b.size(), h);
+            nc_md5(b.data(), b.size(), h);
             k.assign(h, h + std::min(key.size() + 5, (size_t)16));
         }
         std::string out(n, '\0');
         if (!aes) {
-            rc4(k.data(), k.size(), data, n, (uint8_t *)&out[0]);
+            nc_rc4(k.data(), k.size(), data, n, (uint8_t *)&out[0]);
             return out;
         }
         if (n < 32) return std::string();   // (the IV and at least a block: an empty string is 32 bytes)
-        Aes a;
-        if (!a.init(k.data(), k.size())) return std::string();
+        nc_aes a;
+        if (!nc_aes_init(&a, k.data(), k.size())) return std::string();
         uint8_t iv[16];
         memcpy(iv, data, 16);
         size_t bl = (n - 16) / 16 * 16;
         out.resize(bl);
-        a.decryptCbc(iv, data + 16, bl, (uint8_t *)&out[0]);
+        nc_aes_decrypt_cbc(&a, iv, data + 16, bl, (uint8_t *)&out[0]);
         int pad = bl ? (uint8_t)out[bl - 1] : 0;
         if (pad >= 1 && pad <= 16 && (size_t)pad <= bl) {
             bool okPad = true;
