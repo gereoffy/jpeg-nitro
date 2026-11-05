@@ -1238,7 +1238,8 @@ struct Doc::Impl {
             } else if (e.type == 2 && e.off <= 0xffffffffu && e.off != oid) {
                 Val v;
                 if (fromObjStm((uint32_t)e.off, oid, v)) cache[oid].v = v, ok = true;
-            } else if ((e.type == 0 || e.type == 3) && !repairedMode()) ok = true;   // (free: null)
+            } else if (e.type == 0 && !repairedMode()) ok = true;   // (free: null)
+            // (3, "0000000000 n": unused numbers, as macOS writes them, or an offset lost: looked for below)
         }
         if (!ok) {
             // not in the xref, or not where it says: where it is in the file, or in an object stream
