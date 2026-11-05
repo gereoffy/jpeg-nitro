@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// pdfdump: nitropdf_doc's view of a PDF, to compare with pdfparse3's (bench/pdfdump.py writes the
+// pdfdump: nitropdf's view of a PDF, to compare with pdfparse3's (bench/pdfdump.py writes the
 // same format): every object found, its value written canonically, its stream's decoded length
 // and MD5; the pages, their boxes and their content's operator count.
 //
-//   c++ -std=c++17 -O2 -Isrc bench/pdfdump.cpp src/nitropdf_doc.cpp src/nitropdf_crypt.cpp -lz -o bench/pdfdump
+//   c++ -std=c++17 -O2 -Isrc bench/pdfdump.cpp src/nitropdf.cpp src/nitrocrypt.cpp -lz -o bench/pdfdump
 //   bench/pdfdump [-q] file.pdf      (-q: the summary only)
-#include "nitropdf_crypt.h"
-#include "nitropdf_doc.h"
+#include "nitrocrypt.h"
+#include "nitropdf.h"
 
 #include <algorithm>
 #include <chrono>

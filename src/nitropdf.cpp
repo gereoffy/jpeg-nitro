@@ -2,15 +2,15 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // The tolerance of pdfparse3 (MIT, https://github.com/gereoffy/pdfparse3), ported.
 //
-// nitropdf_doc: see nitropdf_doc.h. The lexer and the object reader keep pdfparse3's tolerance:
+// nitropdf: see nitropdf.h. The lexer and the object reader keep pdfparse3's tolerance:
 // unterminated strings closed at the end of their line (without quadratic time on garbage full of
 // '('), a missing endobj ended by the next "N G obj", a stream's end from its /Length only where
 // endstream follows it, otherwise from the endstream found, the referenced /Length resolved, junk
 // before the header (offsets relative to it), a startxref pointing nowhere, misnumbered or shifted
 // xref entries (the object then found where it is in the file), a text-mode transfer's line
 // endings reverted, zlib streams without their checksum, with a wrong one or without their end.
-#include "nitropdf_doc.h"
-#include "nitropdf_crypt.h"
+#include "nitropdf.h"
+#include "nitrocrypt.h"
 
 #include <zlib.h>
 

@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitropdf_crypt: MD5 (RFC 1321), SHA-256/384/512 (FIPS 180-4), RC4 and AES (FIPS 197) in CBC
-// mode, plainly written: a PDF's keys are short, and its encrypted streams are decrypted once.
-#include "nitropdf_crypt.h"
+// nitrocrypt: MD5 (RFC 1321), SHA-256/384/512 (FIPS 180-4), RC4 and AES (FIPS 197) in CBC
+// mode, plainly written: keys are short, and what they encrypt is decrypted once.
+#include "nitrocrypt.h"
 
 #include <cstring>
-
-namespace nitropdf {
 
 namespace {
 
@@ -306,4 +304,3 @@ void Aes::encryptCbc(uint8_t iv[16], const uint8_t *in, size_t len, uint8_t *out
     }
 }
 
-}  // namespace nitropdf

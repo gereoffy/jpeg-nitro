@@ -2,7 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // The tolerance of pdfparse3 (MIT, https://github.com/gereoffy/pdfparse3), ported.
 //
-// nitropdf_doc: a PDF file's objects for nitropdf (internal, C++): the lexer, the indirect objects
+// nitropdf: a PDF file's objects (internal, C++; the renderer to come): the lexer, the indirect objects
 // found through the cross-reference sections (tables and streams, the /Prev and /XRefStm chain) or,
 // when those are missing or wrong, by reading the whole file (the repair mode), the object streams,
 // the stream filters (Flate, LZW, ASCII85, ASCIIHex, RunLength with the PNG and TIFF predictors;
