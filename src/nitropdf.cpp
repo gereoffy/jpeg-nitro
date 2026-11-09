@@ -1081,14 +1081,15 @@ struct Doc::Impl {
                     if (d[q] == 13 && q + 1 < len && d[q + 1] == 10) q++;
                     q++;
                 }
-                int64_t sl = 0;
+                int64_t sl = -1;
                 Val L = o.v.get("Length");
                 if (L.t == INT) sl = L.i;
                 else if (L.t == REF) sl = lengthOf(L.oid(), L.n);
+                bool lengthKnown = sl >= 0;
                 if (sl < 0) sl = 0;
                 size_t next = q;
                 bool got = false;
-                if (sl > 0 && (uint64_t)sl <= len - q) {
+                if (lengthKnown && (uint64_t)sl <= len - q) {
                     size_t e = q + sl;
                     while (e < len && e < q + sl + 8 && isWs(d[e])) e++;
                     if (startsWith(d, len, e, "endstream")) {
@@ -1113,7 +1114,7 @@ struct Doc::Impl {
                             got = true;
                             next = q + sl;
                         } else {
-                            if ((uint64_t)sl > span) sl = span;
+                            if (!lengthKnown || (uint64_t)sl > span) sl = span;
                             if ((uint64_t)sl + 3 < span) sl = span;
                             o.st.raw = d + q, o.st.len = sl;
                             got = true;
