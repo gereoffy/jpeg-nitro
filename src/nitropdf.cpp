@@ -2169,13 +2169,49 @@ bool ContentLexer::next(Op &op) {
                 size_t q = p < n && isWs((uint8_t)d[p]) ? p + 1 : p;
                 Val L = dict.get("L");
                 if (L.t == NUL) L = dict.get("Length");
-                size_t from = q + (L.t == INT && L.i > 0 && (uint64_t)L.i <= n - q ? (size_t)L.i : 0);
-                size_t e = n, after = n;
-                for (size_t s = from; s + 2 < n; s++)
-                    if (isWs((uint8_t)d[s]) && d[s + 1] == 'E' && d[s + 2] == 'I' && (s + 3 == n || isWs((uint8_t)d[s + 3]))) {
-                        e = s, after = s + 3;
-                        break;
+                bool lengthKnown = L.t == INT && L.i >= 0 && (uint64_t)L.i <= n - q;
+                size_t from = q + (lengthKnown ? (size_t)L.i : 0);
+                size_t imageSize = lengthKnown ? (size_t)L.i : 0;
+                // Unfiltered inline images have an exact size. Their pixels may contain " EI ".
+                auto param = [&](const char *shortKey, const char *longKey) {
+                    Val v = dict.get(shortKey);
+                    return v.t == NUL ? dict.get(longKey) : v;
+                };
+                Val filter = param("F", "Filter");
+                if (!lengthKnown && (filter.t == NUL || (filter.t == ARRAY && !filter.n))) {
+                    Val w = param("W", "Width"), h = param("H", "Height");
+                    Val b = param("BPC", "BitsPerComponent"), cs = param("CS", "ColorSpace");
+                    Val mask = param("IM", "ImageMask");
+                    int colors = cs.is("G") || cs.is("DeviceGray") || cs.is("I") || cs.is("Indexed") ? 1 :
+                                 cs.is("RGB") || cs.is("DeviceRGB") ? 3 : cs.is("CMYK") || cs.is("DeviceCMYK") ? 4 : 0;
+                    if (cs.t == ARRAY && (cs.at(0).is("I") || cs.at(0).is("Indexed"))) colors = 1;
+                    int bits = b.t == INT && (b.i == 1 || b.i == 2 || b.i == 4 || b.i == 8 || b.i == 16) ? (int)b.i : 0;
+                    if (mask.t == BOOL && mask.i) colors = 1, bits = 1;
+                    if (w.t == INT && h.t == INT && w.i > 0 && h.i > 0 && colors && bits &&
+                        (uint64_t)w.i <= (UINT64_MAX - 7) / (colors * bits)) {
+                        uint64_t row = ((uint64_t)w.i * colors * bits + 7) / 8;
+                        if (row && (uint64_t)h.i <= (n - q) / row) {
+                            imageSize = (size_t)(row * h.i);
+                            lengthKnown = true;
+                        }
                     }
+                }
+                size_t e = n, after = n;
+                if (lengthKnown) {
+                    size_t expected = q + imageSize, end = expected;
+                    while (end < n && isWs((uint8_t)d[end])) end++;
+                    if (end > expected && n - end >= 2 && d[end] == 'E' && d[end + 1] == 'I' &&
+                        (end + 2 == n || isWs((uint8_t)d[end + 2]) || isDelim((uint8_t)d[end + 2]))) {
+                        e = expected, after = end + 2;
+                    }
+                }
+                // Without a confirmed length, delimiters such as '%' can still be image data.
+                if (e == n)
+                    for (size_t s = from; s + 2 < n; s++)
+                        if (isWs((uint8_t)d[s]) && d[s + 1] == 'E' && d[s + 2] == 'I' && (s + 3 == n || isWs((uint8_t)d[s + 3]))) {
+                            e = s, after = s + 3;
+                            break;
+                        }
                 op.name = "BI";
                 op.args = nullptr, op.nargs = 0;
                 op.image = dict;
