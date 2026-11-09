@@ -2106,7 +2106,10 @@ bool Doc::contents(const Page &p, std::string &out, std::string *err) {
         const Stream *s = stream(parts[k].oid());
         if (!s) continue;
         Decoded dec;
-        if (!decode(*s, dec) && err && err->empty()) *err = dec.error, ok = false;
+        if (!decode(*s, dec)) {
+            ok = false;
+            if (err && err->empty()) *err = dec.error;
+        }
         if (k) out.push_back('\n');
         out += dec.data;
     }
