@@ -1649,6 +1649,11 @@ struct Doc::Impl {
         Val CF = resolve(enc.get("CF"));
         int cfl = 0;
         bool aesv2 = false;
+        auto filterKeyLength = [&](Val cf) {
+            aesv2 |= resolve(cf.get("CFM")).is("AESV2");
+            Val l = resolve(cf.get("Length"));
+            if (l.t == INT && l.i > 0) cfl = (int)(l.i <= 32 ? l.i : l.i / 8);
+        };
         auto method = [&](const char *key, bool &aes, bool &none) {
             Val f = resolve(enc.get(key));
             none = V >= 4 && (f.t == NUL || f.is("Identity"));
@@ -1656,13 +1661,20 @@ struct Doc::Impl {
             if (V < 4 || none) return;
             Val cf = resolve(CF.get(std::string(f.str()).c_str()));
             Val cfm = resolve(cf.get("CFM"));
+            none = cfm.t == NUL || cfm.is("None");
             aes = cfm.is("AESV2") || cfm.is("AESV3");
-            aesv2 |= cfm.is("AESV2");
-            Val l = resolve(cf.get("Length"));
-            if (l.t == INT && l.i > 0) cfl = (int)(l.i <= 32 ? l.i : l.i / 8);
+            filterKeyLength(cf);
         };
         method("StmF", stmAes, stmNone);
         method("StrF", strAes, strNone);
+        // With Identity defaults, encryption may be used only by explicit /Crypt filters.
+        if (V == 4 && stmNone && strNone && CF.t == DICT)
+            for (uint32_t k = 0; k < CF.n; k++) {
+                if (CF.v[2 * k].is("Identity")) continue;
+                Val cf = resolve(CF.v[2 * k + 1]);
+                Val cfm = resolve(cf.get("CFM"));
+                if (cfm.is("V2") || cfm.is("AESV2")) filterKeyLength(cf);
+            }
         if (!resolve(enc.get("Filter")).is("Standard") || !R) {
             doc->crypt = "encrypted with an unsupported security handler";
             return;
@@ -1735,8 +1747,9 @@ struct Doc::Impl {
         decrypting = true;
     }
 
-    std::string decrypt(uint32_t oid, uint32_t gen, const uint8_t *data, size_t n, bool stream) {
+    std::string decrypt(uint32_t oid, uint32_t gen, const uint8_t *data, size_t n, bool stream, int method = -1) {
         bool none = stream ? stmNone : strNone, aes = stream ? stmAes : strAes;
+        if (method >= 0) none = method == 0, aes = method == 2;
         if (none || !decrypting) return std::string((const char *)data, n);
         std::vector<uint8_t> k;
         if (cryptR >= 5) k = key;
@@ -1906,7 +1919,29 @@ bool Doc::decode(const Stream &s, Decoded &out, size_t limit) {
         } else if (f.is("ASCII85Decode") || f.is("A85")) ascii85((const uint8_t *)data.data(), data.size(), next, note);
         else if (f.is("ASCIIHexDecode") || f.is("AHx")) asciiHex((const uint8_t *)data.data(), data.size(), next, err);
         else if (f.is("RunLengthDecode") || f.is("RL")) runLength((const uint8_t *)data.data(), data.size(), next, limit);
-        else if (f.is("Crypt")) continue;
+        else if (f.is("Crypt")) {
+            Val name = resolve(p.get("Name"));
+            if (name.t == NUL || name.is("Identity")) continue;
+            Val enc = resolve(m->encryptRef);
+            Val cf = get(enc, "CF");
+            Val spec = resolve(cf.get(std::string(name.str()).c_str()));
+            Val cfm = resolve(spec.get("CFM"));
+            if (spec.t != DICT || !(cfm.t == NUL || cfm.is("None") || cfm.is("V2") || cfm.is("AESV2") || cfm.is("AESV3"))) {
+                if (out.error.empty()) out.error = "Crypt: unsupported crypt filter " + std::string(name.str());
+                break;
+            }
+            if (cfm.t == NUL || cfm.is("None")) continue;
+            if (!m->decrypting) {
+                if (out.error.empty()) out.error = "Crypt: decryption key unavailable";
+                break;
+            }
+            // An inferred stream end can include a line ending after the ciphertext.
+            if (!cfm.is("V2") && (data.size() < 32 || (s.exact && data.size() % 16))) {
+                if (out.error.empty()) out.error = "Crypt: invalid AES stream length";
+                break;
+            }
+            next = m->decrypt(s.oid, s.gen, (const uint8_t *)data.data(), data.size(), true, cfm.is("V2") ? 1 : 2);
+        }
         else if (f.is("DCTDecode") || f.is("DCT") || f.is("CCITTFaxDecode") || f.is("CCF") || f.is("JBIG2Decode") || f.is("JPXDecode")) {
             out.image = std::string(f.str());
             out.imageParms = p;
