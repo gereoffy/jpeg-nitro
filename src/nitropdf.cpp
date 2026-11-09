@@ -45,17 +45,14 @@ Val Val::get(const char *key) const {
     return Val();
 }
 
-// Chunks that never move: the values point into them. A mark / release pair frees what was
-// allocated between them (the repair scan's objects, the content lexer's operands).
+// Chunks that never move: the values point into them. What is short-lived (the repair scan's
+// objects, the content lexer's operands) has an arena of its own, reset as a whole.
 struct Arena {
     struct Chunk {
         std::unique_ptr<char[]> mem;
         size_t size, used;
     };
     std::vector<Chunk> chunks;
-    struct Mark {
-        size_t chunk, used;
-    };
     void *alloc(size_t len) {
         len = (len + 7) & ~(size_t)7;
         if (chunks.empty() || chunks.back().size - chunks.back().used < len) {
@@ -72,14 +69,9 @@ struct Arena {
         if (len) memcpy(q, p, len);
         return q;
     }
-    Mark mark() const { return {chunks.size(), chunks.empty() ? 0 : chunks.back().used}; }
     void reset() {   // (all freed, the first chunk kept)
         if (chunks.size() > 1) chunks.resize(1);
         if (!chunks.empty()) chunks[0].used = 0;
-    }
-    void release(Mark m) {
-        while (chunks.size() > m.chunk) chunks.pop_back();
-        if (!chunks.empty() && m.chunk == chunks.size()) chunks.back().used = m.used;
     }
 };
 
@@ -1313,18 +1305,21 @@ struct Doc::Impl {
         scanned = true;
         findStarts();
         size_t cursor = headEnd;
+        // (the objects read here are dropped again: in an arena of their own, not in the document's,
+        // where an object loaded meanwhile - a referenced /Length's, its object stream - is kept:
+        // rewinding that one freed the cached object's memory under it)
+        Arena tmp;
         for (auto &s : startList) {
             if (s.first < cursor || s.first >= pend) continue;
-            Arena::Mark mk = arena.mark();
+            tmp.reset();
             Obj o;
-            if (parseAt(s.first, o, &arena)) {
+            if (parseAt(s.first, o, &tmp)) {
                 found[o.oid] = s.first;
                 Val type = o.v.get("Type");
                 if (type.is("ObjStm") && o.hasStream) objStms.push_back(o.oid);
                 if (type.is("Catalog")) catalog = o.oid;
                 cursor = std::max(o.end, s.first + 1);
             }
-            arena.release(mk);
         }
     }
 
