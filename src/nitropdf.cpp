@@ -1884,7 +1884,19 @@ struct Doc::Impl {
 Doc::Doc() : m(new Impl) { m->doc = this; }
 Doc::~Doc() { delete m; }
 
-bool Doc::open(const void *data, size_t len) { return m->open((const uint8_t *)data, len); }
+bool Doc::open(const void *data, size_t len) {
+    Impl *fresh = new Impl;
+    fresh->doc = this;
+    delete m;
+    m = fresh;
+    rootDict = Val();
+    pagesDone = false;
+    pages.clear();
+    repaired = false;
+    crypt.clear();
+    notes.clear();
+    return m->open((const uint8_t *)data, len);
+}
 Val Doc::object(uint32_t oid) { return m->getObject(oid); }
 Val Doc::resolve(Val v) { return m->resolve(v); }
 const Stream *Doc::stream(uint32_t oid) { return m->streamOf(oid); }
