@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -917,7 +918,7 @@ struct Doc::Impl {
         bool busy = false;
     };
     std::unordered_map<uint32_t, Cached> cache;
-    std::vector<Stream> streams;
+    std::deque<Stream> streams;   // references survive loading further streams during resolve/decode
 
     struct ObjStm {
         bool loaded = false;
