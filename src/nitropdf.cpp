@@ -1225,9 +1225,14 @@ struct Doc::Impl {
         return true;
     }
 
+    // (objects being loaded, one within the other: an object stream's filter or length given by a
+    // reference into another object stream, and so on: a chain of thousands went as deep on the stack)
+    int loading = 0;
     Val getObject(uint32_t oid) {
         auto it = cache.find(oid);
         if (it != cache.end()) return it->second.v;
+        if (loading >= 64) return Val();   // (not kept: asked for again from the top, it is read)
+        loading++;
         Cached &c = cache[oid];
         c.busy = true;
         bool ok = false;
@@ -1266,6 +1271,7 @@ struct Doc::Impl {
                 }
             }
         }
+        loading--;
         cache[oid].busy = false;
         return cache[oid].v;
     }
