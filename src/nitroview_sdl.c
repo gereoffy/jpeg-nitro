@@ -14,7 +14,7 @@
 // Pipeline: file -> nitrojpeg / nitropng / nitropsd / nitroheic / nitrowebp / nitrodng / nitrotiff / nitroavif
 // (multi-threaded, into a host buffer, on the decoder thread) -> OpenGL: the planes as textures
 // -> a fragment shader into the RGBA texture (upsampling, YCbCr->RGB, PNG rows, PSD planes) ->
-// mipmaps -> trilinear scaled draw. Anything else goes through stb_image (16-bit / palette /
+// mipmaps -> bilinear or trilinear scaled draw. Anything else goes through stb_image (16-bit / palette /
 // interlaced PNG, GIF, BMP, TGA, damaged or CMYK JPEG). The vector drawings (optional, NV_VECTOR:
 // libnitrovec) as on Windows. Neighbouring images are decoded ahead in the background.
 #include <SDL3/SDL.h>
@@ -94,6 +94,7 @@ typedef ptrdiff_t GLsizeiptr, GLintptr;
 #define GL_TEXTURE_BUFFER 0x8C2A
 #define GL_TEXTURE_MAG_FILTER 0x2800
 #define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_LOD_BIAS 0x8501
 #define GL_TEXTURE_WRAP_S 0x2802
 #define GL_TEXTURE_WRAP_T 0x2803
 #define GL_NEAREST 0x2600
@@ -612,7 +613,7 @@ static int gpu_init(void) {
     glGenSamplers(3, s);
     g_samp_lin = s[0];   // trilinear (+ anisotropic where there is)
     g_samp_pt = s[1];    // integer zoom: exact pixel blocks
-    g_samp_bil = s[2];   // a vector image's sharp detail (no mipmaps)
+    g_samp_bil = s[2];   // original texture level only
     for (int i = 0; i < 3; i++) {
         glSamplerParameteri(s[i], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glSamplerParameteri(s[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -1674,10 +1675,9 @@ static void convert_ahead(void) {   // main thread: after a draw, and on EV_CONV
 
 typedef struct { float origin[2], size[2]; int orientation, nearest; } DrawParams;
 
-static DrawParams draw_params(const Decoded *d) {
+static DrawParams draw_params(const Decoded *d, double s) {
     double iw, ih;
     display_size(d, &iw, &ih);
-    double s = current_scale(d);
     if (V.zoomed) clamp_center(d, s);
     double cx = V.zoomed ? V.cx : iw / 2, cy = V.zoomed ? V.cy : ih / 2;
     double x0 = round(V.vw / 2.0 - cx * s), y0 = round(V.vh / 2.0 - cy * s);
@@ -1685,6 +1685,16 @@ static DrawParams draw_params(const Decoded *d) {
                     {(float)(2 * iw * s / V.vw), (float)(2 * ih * s / V.vh)},
                     d->orientation, s >= 2 && s == floor(s)};
     return p;
+}
+
+static GLuint image_sampler(double scale) {
+    const double bilinear_scale = 0.5, trilinear_scale = 1.0 / 3.0;
+    if (scale >= bilinear_scale) return g_samp_bil;
+    // At 50% the unadjusted LOD is 1. Start with a bias of -1 so it joins the
+    // bilinear sampler at level 0, then fade to the normal LOD at one third.
+    float bias = (float)-MAX(0.0, (scale - trilinear_scale) / (bilinear_scale - trilinear_scale));
+    glSamplerParameterf(g_samp_lin, GL_TEXTURE_LOD_BIAS, bias);
+    return g_samp_lin;
 }
 
 static void draw_quad(GLuint tex, const DrawParams *p, GLuint sampler) {
@@ -1876,8 +1886,9 @@ static void render(void) {
             V.shown_time = now_ms();
             schedule_slide();
         }
-        DrawParams p = draw_params(d);
-        draw_quad(tex, &p, p.nearest ? g_samp_pt : g_samp_lin);
+        double scale = current_scale(d);
+        DrawParams p = draw_params(d, scale);
+        draw_quad(tex, &p, p.nearest ? g_samp_pt : image_sampler(scale));
 #ifdef NV_VECTOR
         NvDetailRect r;
         if (!previous && detail_target(d, &r)) {
