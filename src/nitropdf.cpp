@@ -450,6 +450,24 @@ struct Parser {
         }
         if (t.k == T_AOPEN || t.k == T_DOPEN) {
             bool dict = t.k == T_DOPEN;
+            if (depth >= 64) {
+                // too deep: read past, kept as null. Without recursing (a hundred thousand '[' of a
+                // damaged or hostile file went as deep on the stack), closed as below: a dictionary's
+                // ">>" ends the arrays open in it, a stray ']' in a dictionary is skipped
+                std::vector<char> open{(char)dict};
+                while (!open.empty() && !stop()) {
+                    TK k = peek(0).k;
+                    if (k == T_DCLOSE) {
+                        while (!open.empty() && !open.back()) open.pop_back();
+                        if (open.empty()) break;   // (the ">>" of a dictionary around it: left there)
+                        open.pop_back();
+                    } else if (k == T_ACLOSE) {
+                        if (!open.back()) open.pop_back();
+                    } else if (k == T_AOPEN || k == T_DOPEN) open.push_back(k == T_DOPEN);
+                    take();
+                }
+                return Val();
+            }
             std::vector<Val> items;
             while (!stop()) {
                 Tok &c = peek(0);
@@ -485,7 +503,6 @@ struct Parser {
                     if (items.size() < MAX_ITEMS) items.push_back(v);
                 }
             }
-            if (depth >= 64) return Val();   // (too deep: read past, kept as null)
             return list(items, dict ? DICT : ARRAY);
         }
         if (t.k == T_DCLOSE || t.k == T_ACLOSE || t.k == T_STRAY) return Val();
