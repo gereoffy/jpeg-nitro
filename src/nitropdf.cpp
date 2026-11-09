@@ -1329,8 +1329,16 @@ struct Doc::Impl {
         return SIZE_MAX;
     }
 
+    // A hybrid file's stream (/XRefStm) gives the objects its table hides as free: it replaces those
+    // entries of its own table (and the ones without an offset; an object in use there stays: the
+    // table is read first, then its stream), never a newer revision's.
+    std::unordered_map<uint32_t, size_t> xrefRevision;
+    size_t currentRevision = 0;
+    bool hybridSection = false;
     void setEntry(uint32_t oid, uint8_t type, uint64_t off, uint32_t gen) {
-        if (xref.count(oid)) return;   // (a newer section's counts)
+        auto it = xref.find(oid);
+        if (it != xref.end() && !(hybridSection && (it->second.type == 0 || it->second.type == 3) && xrefRevision[oid] == currentRevision)) return;
+        xrefRevision[oid] = currentRevision;
         xref[oid] = {type, false, gen, off};
     }
 
@@ -1445,10 +1453,13 @@ struct Doc::Impl {
     // the sections from o on, following /XRefStm (a hybrid file's stream first, as the standard
     // says) and /Prev
     void parseXref(size_t o, size_t oend) {
-        std::vector<std::pair<size_t, size_t>> todo{{o, oend}};
+        struct Work { size_t at, end, revision = 0; bool hybrid = false; };
+        std::vector<Work> todo{{o, oend}};
         std::unordered_set<size_t> seen;
         while (!todo.empty()) {
-            auto [at, end] = todo.front();
+            auto [at, end, revision, hybrid] = todo.front();
+            currentRevision = revision;
+            hybridSection = hybrid;
             todo.erase(todo.begin());
             if (!seen.insert(at).second) continue;
             if (seen.size() > 4096) break;
@@ -1483,8 +1494,8 @@ struct Doc::Impl {
                         continue;
                     }
                     // (the stream of a hybrid file before the older sections)
-                    if (!strcmp(name, "XRefStm")) todo.insert(todo.begin(), {(size_t)v.i + base, pend});
-                    else todo.push_back({(size_t)v.i + base, pend});
+                    if (!strcmp(name, "XRefStm")) todo.insert(todo.begin(), {(size_t)v.i + base, pend, revision, true});
+                    else todo.push_back({(size_t)v.i + base, pend, revision + 1, false});
                 }
         }
     }
