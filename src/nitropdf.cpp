@@ -1054,6 +1054,9 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     } else if (maskv.t == pp::DICT || d.get("Mask").t == pp::REF) {
         ImageSource ms;
         haveAlpha = d.get("Mask").t == pp::REF && imageSource(P, d.get("Mask"), ms) && maskSamples(P, ms, true, alpha);
+        // a stencil we cannot read (JBIG2): the image left out; it is often a scan's colour layer
+        // (MRC), only its text shown by the mask, the rest junk
+        if (!haveAlpha) return nullptr;
     }
     if (haveAlpha) {
         int w = plutovg_surface_get_width(img->s), h = plutovg_surface_get_height(img->s);
