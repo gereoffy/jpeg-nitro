@@ -19,6 +19,9 @@
 - `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files), drawn with plutovg
 - `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface), drawn with plutovg; the pictures inside through nitrometa, nitrotiff and nitrodxf (an embedded DWG)
 - `nitrodio.cpp/.h`: draw.io, our own reader (libxml2, zlib), drawn with plutovg
+- `nitropdf.cpp/.h`: PDF over pdfparse3, our own renderer, drawn with plutovg
+- `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
+- `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
 - `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 
