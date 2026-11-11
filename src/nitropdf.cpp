@@ -1017,7 +1017,6 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
         }
     }
     if (!img->s) return nullptr;
-    img->finish();
     // an alpha mask: /SMask (gray: its alpha), or a stencil /Mask (its 0 samples shown)
     Val smask = d.get("SMask");
     Samples alpha;
@@ -1031,6 +1030,21 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     }
     if (haveAlpha) {
         int w = plutovg_surface_get_width(img->s), h = plutovg_surface_get_height(img->s);
+        if ((alpha.w > w || alpha.h > h) && (uint64_t)alpha.w * alpha.h <= MAX_IMAGE_PIXELS) {
+            // a mask finer than its image (a driver's dithered transparency): the image enlarged to it
+            plutovg_surface_t *big = plutovg_surface_create(alpha.w, alpha.h);
+            if (big) {
+                plutovg_canvas_t *c = plutovg_canvas_create(big);
+                plutovg_matrix_t sm;
+                plutovg_matrix_init_scale(&sm, (float)alpha.w / w, (float)alpha.h / h);
+                plutovg_canvas_set_texture(c, img->s, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &sm);
+                plutovg_canvas_set_operator(c, PLUTOVG_OPERATOR_SRC);
+                plutovg_canvas_fill_rect(c, 0, 0, alpha.w, alpha.h);
+                plutovg_canvas_destroy(c);
+                plutovg_surface_destroy(img->s);
+                img->s = big, w = alpha.w, h = alpha.h;
+            }
+        }
         std::vector<uint8_t> a = resampleGray(alpha, w, h);
         uint8_t *px = plutovg_surface_get_data(img->s);
         int stride = plutovg_surface_get_stride(img->s);
@@ -1042,6 +1056,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             }
         }
     }
+    img->finish();
     return img;
 }
 
@@ -2357,6 +2372,13 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
             plutovg_canvas_stroke_path(c, it.path->p);
         } else {   // (in the picture's pixels; much smaller: one of its halved copies)
             int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s), f = 1;
+            if (fabsf(m.b) < 1e-6f && fabsf(m.c) < 1e-6f) {
+                // upright: its edges on whole pixels, so that the strips a picture is cut into (a printer
+                // driver's rows of one pixel) meet without the background showing between their edges
+                float x0 = roundf(m.e), y0 = roundf(m.f), x1 = roundf(m.e + m.a * iw), y1 = roundf(m.f + m.d * ih);
+                plutovg_matrix_init(&m, (x1 - x0) / iw, 0, 0, (y1 - y0) / ih, x0, y0);
+                plutovg_canvas_set_matrix(c, &m);
+            }
             plutovg_surface_t *s = it.img->mips->forScale(sqrtf(fabsf(m.a * m.d - m.b * m.c)), &f);
             plutovg_matrix_t tm;
             plutovg_matrix_init_scale(&tm, (float)f, (float)f);
