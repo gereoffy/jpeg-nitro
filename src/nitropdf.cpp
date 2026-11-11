@@ -29,6 +29,7 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +53,8 @@ const int MAX_COMPS = 32;                  // a colour's components, a function'
 
 // (a NaN is a: 0 times an infinite /Encode or /Decode, inf - inf, are never an index or a colour)
 inline float clampf(float v, float a, float b) { return !(v > a) ? a : v > b ? b : v; }
+// a number as an int: beyond an int the nearest one, a NaN 0 (the cast alone is undefined there)
+inline int toInt(double v) { return v >= 2147483647.0 ? INT_MAX : v <= -2147483648.0 ? INT_MIN : v == v ? (int)v : 0; }
 
 // --- functions (Type 0 sampled, 2 exponential, 3 stitching, 4 PostScript calculator) -----------
 
@@ -211,10 +214,10 @@ void Func::evalPs(const float *in, float *out) const {
         case PS_DIV: b = pop(), a = pop(), push(b != 0 ? a / b : 0); break;
         case PS_EXP: b = pop(), a = pop(), push(powf(a, b)); break;
         case PS_FLOOR: push(floorf(pop())); break;
-        case PS_IDIV: b = pop(), a = pop(), push((int)b ? (float)((int)a / (int)b) : 0); break;
+        case PS_IDIV: b = pop(), a = pop(), push(toInt(b) ? (float)((int64_t)toInt(a) / toInt(b)) : 0); break;   // (64 bits: INT_MIN / -1)
         case PS_LN: a = pop(), push(a > 0 ? logf(a) : 0); break;
         case PS_LOG: a = pop(), push(a > 0 ? log10f(a) : 0); break;
-        case PS_MOD: b = pop(), a = pop(), push((int)b ? (float)((int)a % (int)b) : 0); break;
+        case PS_MOD: b = pop(), a = pop(), push(toInt(b) ? (float)((int64_t)toInt(a) % toInt(b)) : 0); break;
         case PS_MUL: b = pop(), a = pop(), push(a * b); break;
         case PS_NEG: push(-pop()); break;
         case PS_ROUND: push(floorf(pop() + 0.5f)); break;
@@ -222,14 +225,14 @@ void Func::evalPs(const float *in, float *out) const {
         case PS_SQRT: a = pop(), push(a > 0 ? sqrtf(a) : 0); break;
         case PS_SUB: b = pop(), a = pop(), push(a - b); break;
         case PS_TRUNC: push(truncf(pop())); break;
-        case PS_AND: b = pop(), a = pop(), push((float)((int)a & (int)b)); break;
-        case PS_OR: b = pop(), a = pop(), push((float)((int)a | (int)b)); break;
-        case PS_XOR: b = pop(), a = pop(), push((float)((int)a ^ (int)b)); break;
-        case PS_NOT: a = pop(), push(a == 0 ? 1.f : a == 1 ? 0.f : (float)~(int)a); break;
+        case PS_AND: b = pop(), a = pop(), push((float)(toInt(a) & toInt(b))); break;
+        case PS_OR: b = pop(), a = pop(), push((float)(toInt(a) | toInt(b))); break;
+        case PS_XOR: b = pop(), a = pop(), push((float)(toInt(a) ^ toInt(b))); break;
+        case PS_NOT: a = pop(), push(a == 0 ? 1.f : a == 1 ? 0.f : (float)~toInt(a)); break;
         case PS_BITSHIFT: {
             b = pop(), a = pop();
-            int s = (int)b, v = (int)a;
-            push((float)(s >= 0 ? (s < 31 ? v << s : 0) : (-s < 31 ? v >> -s : 0)));
+            int s = toInt(b), v = toInt(a);
+            push((float)(s >= 0 ? (s < 31 ? (int)((unsigned)v << s) : 0) : (s > -31 ? v >> -s : 0)));
             break;
         }
         case PS_EQ: b = pop(), a = pop(), push(a == b); break;
@@ -241,7 +244,7 @@ void Func::evalPs(const float *in, float *out) const {
         case PS_TRUE: push(1); break;
         case PS_FALSE: push(0); break;
         case PS_COPY: {
-            int k = (int)pop();
+            int k = toInt(pop());
             if (k < 0 || k > sp || sp + k > 100) break;
             for (int j = 0; j < k; j++) st[sp + j] = st[sp - k + j];
             sp += k;
@@ -254,13 +257,13 @@ void Func::evalPs(const float *in, float *out) const {
             if (sp > 1) std::swap(st[sp - 1], st[sp - 2]);
             break;
         case PS_INDEX: {
-            int k = (int)pop();
+            int k = toInt(pop());
             if (k >= 0 && k < sp) push(st[sp - 1 - k]);
             break;
         }
         case PS_POP: pop(); break;
         case PS_ROLL: {
-            int j = (int)pop(), k = (int)pop();
+            int j = toInt(pop()), k = toInt(pop());
             if (k <= 0 || k > sp) break;
             j = ((j % k) + k) % k;
             std::rotate(st + sp - k, st + sp - j, st + sp);
@@ -281,7 +284,7 @@ void Func::eval(const float *in, float *out) const {
         return;
     case 2: {
         float x = clampf(in[0], domain[0], domain[1]);
-        float t = N == 1 ? x : x > 0 ? powf(x, N) : (N == (int)N ? powf(x, N) : 0);
+        float t = N == 1 ? x : x > 0 ? powf(x, N) : (N == floorf(N) ? powf(x, N) : 0);
         for (int k = 0; k < nout; k++) {
             float v = c0[k] + t * (c1[k] - c0[k]);
             out[k] = range.size() >= 2u * nout ? clampf(v, range[2 * k], range[2 * k + 1]) : v;
