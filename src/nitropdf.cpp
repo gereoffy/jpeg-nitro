@@ -1635,6 +1635,12 @@ struct Interp {
     int pendingClip = 0;   // 1 nonzero, 2 even-odd
     float cx = 0, cy = 0;  // (the current point, for v and y)
     size_t ops = 0, bytes = 0;   // (counted against MAX_OPS, MAX_BYTES)
+    nd::Cancel cancel{nullptr, nullptr};   // asked every 4096 operators and glyphs: stopped is set, every run ends
+    bool stopped = false;
+    bool over() {   // (the page has no more operators to spend, or its reading was cancelled)
+        if (!stopped && (++ops & 4095) == 0 && cancel()) stopped = true;
+        return stopped || ops > MAX_OPS;
+    }
     std::vector<uint32_t> forms;   // (the form XObjects being drawn: no cycles)
     std::vector<bool> hiddenStack;
     int hidden = 0;
@@ -1854,7 +1860,7 @@ struct Interp {
         bool clip = mode >= 4;
         plutovg_path_t *run = plutovg_path_create();
         for (size_t i = 0; i < n;) {
-            if (++ops > MAX_OPS) break;   // (a glyph counts as an operator: a Type 3 one showing a string of itself, 1000 each)
+            if (over()) break;   // (a glyph counts as an operator: a Type 3 one showing a string of itself, 1000 each)
             uint32_t code = s[i], key, uni = 0;
             int bytes = 1, gid = -1;
             float w;
@@ -2228,7 +2234,7 @@ struct Interp {
         pp::ContentLexer lx(data, len);
         pp::Op op;
         while (lx.next(op)) {
-            if (++ops > MAX_OPS) break;
+            if (over()) break;
             const Val *a = op.args;
             size_t n = op.nargs;
             std::string_view o = op.name;
@@ -2492,7 +2498,7 @@ void pageGeometry(const pp::Page &p, double *w, double *h, plutovg_matrix_t *m) 
 void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
     pp::Doc &doc = in.doc;
     Val annots = doc.get(page.dict, "Annots");
-    for (size_t k = 0; k < annots.size() && k < 100000; k++) {
+    for (size_t k = 0; k < annots.size() && k < 100000 && !in.stopped; k++) {
         Val a = doc.resolve(annots.at(k));
         if (a.t != pp::DICT || ((int)doc.get(a, "F").num(0) & (2 | 32))) continue;   // (Hidden, NoView)
         Val oc = a.get("OC");
@@ -2522,10 +2528,13 @@ void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
     }
 }
 
-void buildPage(nitropdf &P, int k) {
+// The page's display list; false if cancel said to stop: then it is left empty, to be built again.
+bool buildPage(nitropdf &P, int k, const nd::Cancel &cancel) {
     PageDL &pg = *P.dl[k];
     const pp::Page &page = P.pages[k];
+    if (cancel()) return false;
     Interp in(P, pg);
+    in.cancel = cancel;
     double pw, ph;
     pageGeometry(page, &pw, &ph, &in.base);
     in.pageW = (float)pw, in.pageH = (float)ph;
@@ -2538,6 +2547,8 @@ void buildPage(nitropdf &P, int k) {
     GState initial = in.gs;
     in.run(content.data(), content.size(), page.resources, 0);
     drawAnnotations(in, page, initial);
+    if (in.stopped) pg.items.clear(), pg.clips.clear();
+    return !in.stopped;
 }
 
 void readOptionalContent(nitropdf &P) {
@@ -2687,10 +2698,11 @@ int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t
                     int (*cancelled)(void *ctx), void *ctx) {
     if (!pdf || page < 0 || page >= (int)pdf->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
     PageDL &pg = *pdf->dl[page];
+    nd::Cancel cancel{cancelled, ctx};
     if (!pg.built.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> g(pdf->lock);
         if (!pg.built.load(std::memory_order_relaxed)) {
-            buildPage(*pdf, page);
+            if (!buildPage(*pdf, page, cancel)) return 1;   // (not built: the next render reads it again)
             pg.built.store(true, std::memory_order_release);
         }
     }
@@ -2700,6 +2712,6 @@ int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t
     plutovg_matrix_init(&view, (float)scale, 0, 0, (float)scale, (float)(-x0 * scale), (float)(-y0 * scale));
     double vb[4] = {x0, y0, x0 + w / scale, y0 + h / scale};
     int rc = 0;
-    drawItems(*pdf, pg, t.canvas, view, vb, scale, nd::Cancel{cancelled, ctx}, rc);
+    drawItems(*pdf, pg, t.canvas, view, vb, scale, cancel, rc);
     return rc;
 }
