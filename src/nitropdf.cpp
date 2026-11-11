@@ -415,7 +415,10 @@ struct nitropdf {
     std::unordered_map<uint32_t, std::shared_ptr<Func>> funcs;
     // large resource dictionaries indexed by name (resource()): by where their pairs are
     std::unordered_map<const pp::Val *, std::unordered_map<std::string_view, pp::Val>> names;
-    std::unordered_map<uint32_t, std::weak_ptr<Img>> images;
+    // the image XObjects decoded, while a page's list holds them: by object number, a stencil mask
+    // by its colour too (imageKey). Like the other caches, used only while a page is built, under
+    // lock: the threads drawing a page read its finished list alone.
+    std::unordered_map<uint64_t, std::weak_ptr<Img>> images;
     // optional content: the groups hidden by the default configuration
     std::unordered_set<uint32_t> ocOff;
     bool ocBaseOff = false;
@@ -1635,6 +1638,7 @@ struct Interp {
     int hidden = 0;
     plutovg_matrix_t tm, tlm;           // the text matrix and the text line matrix
     plutovg_path_t *textClip = nullptr;  // (render modes 4-7: the glyphs clip at ET)
+    std::vector<std::shared_ptr<Img>> decoded;   // (the images decoded for this page, held until it is built: one clipped away is not decoded again)
 
     Interp(nitropdf &p, PageDL &dl) : P(p), doc(p.doc), pg(dl) {}
     ~Interp() {
@@ -2137,17 +2141,20 @@ struct Interp {
             if (oc.t != pp::NUL && !visible(oc)) return;
             Val im = doc.get(d, "ImageMask");
             bool stencil = im.t == pp::BOOL && im.i;
+            // The same picture again, on this page or another: decoded once while any of them holds it.
+            // A stencil mask is painted with the fill colour: one for each colour it is drawn in (a
+            // 1024 x 1024 one drawn 3000 times was decoded 3000 times, 4 MB each).
+            uint64_t imageKey = (uint64_t)(stencil ? 0x1000000u | gs.fillRgb : 0u) << 32 | ref.oid();
             std::shared_ptr<Img> img;
-            if (!stencil) {   // (the same picture on several pages: decoded once while any of them holds it)
-                auto it = P.images.find(ref.oid());
-                if (it != P.images.end()) img = it->second.lock();
-            }
+            auto known = P.images.find(imageKey);
+            if (known != P.images.end()) img = known->second.lock();
             if (!img) {
                 ImageSource src;
                 if (!imageSource(P, ref, src)) return;
                 img = decodeImage(P, src, res, gs.fillRgb, 1);
                 if (!img || !img->s) return;
-                if (!stencil) P.images[ref.oid()] = img;
+                P.images[imageKey] = img;
+                decoded.push_back(img);
             }
             addImage(img, gs.fillA);
             return;
