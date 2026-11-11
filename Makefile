@@ -258,8 +258,8 @@ build/icon.inc: packaging/icon.png
 
 $(SDL_BIN): src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build/icon.inc $(SDL_DEC) $(SDL_VEC) $(SDL_AVIF) $(LIB_HDR) Makefile
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
-	$(CC) $(CFLAGS) $(SDL_VDEFS) -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(SDL_DEC) $(SDL_AVIF) \
-	  $(SDL_VEC) $(SDL_LIBS) $(SDL_VLIBS) $(THREADLIBS) -lm -o $@
+	$(CC) $(CFLAGS) $(SDL_VDEFS) -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(SDL_VEC) \
+	  $(SDL_DEC) $(SDL_AVIF) $(SDL_LIBS) $(SDL_VLIBS) $(THREADLIBS) -lm -o $@
 
 sdl: $(SDL_BIN)
 	@echo "built $(SDL_BIN) (drawings: $(if $(VEC),yes,no), AVIF: $(if $(SDL_AVIF),dav1d,no), HEIC: $(if $(filter 1,$(NITROHEVC)),nitrohevc,$(if $(filter Darwin,$(UNAME_S)),VideoToolbox,no)))"
@@ -291,8 +291,8 @@ $(DIST_DIR)/nitroview-sdl: src/nitroview_sdl.c $(VIEWER_SRC) $(VIEWER_HDR) build
 	@test -f $(SDL3_DIR)/lib/libSDL3.a -a -f third_party/stb_image.h || { echo "missing SDL3 / stb_image: run scripts/get-deps.sh first"; exit 1; }
 	@mkdir -p $(@D)
 	$(CC) -O3 $(DIST_CPU) $(DEFS) -fblocks $(WARN) $(DIST_VDEFS) \
-	  -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(DIST_DIR)/libnitro.a \
-	  $(SDL_AVIF) $(DIST_DIR)/libnitrovec.a $(DIST_MI) $(SDL_LIBS) $(if $(DIST_VEC),-Wl$(COMMA)-Bstatic -lstdc++ -Wl$(COMMA)-Bdynamic) -static-libgcc \
+	  -Isrc -Ibuild -Ithird_party -I$(SDL3_DIR)/include src/nitroview_sdl.c $(VIEWER_SRC) $(DIST_DIR)/libnitrovec.a $(DIST_MI) \
+	  $(DIST_DIR)/libnitro.a $(SDL_AVIF) $(SDL_LIBS) $(if $(DIST_VEC),-Wl$(COMMA)-Bstatic -lstdc++ -Wl$(COMMA)-Bdynamic) -static-libgcc \
 	  $(THREADLIBS) -lm -o $@
 	@echo "$@ needs: $$(objdump -p $@ | sed -n 's/ *NEEDED *//p' | tr '\n' ' ')(glibc $$(objdump -T $@ | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2))"
 $(DIST_TGZ): $(DIST_DIR)/nitroview-sdl

@@ -20,6 +20,8 @@
 #     x86_64-w64-mingw32-clang (as for make windows) also for the Windows viewer (third_party/dav1d-win)
 # Nothing is installed system-wide.
 set -euo pipefail
+# (a step that stops it says where: the builds' own output goes to /dev/null)
+trap 'echo "get-deps.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 cd "$(dirname "$0")/.."
 mkdir -p third_party && cd third_party
 TP=$PWD
@@ -239,7 +241,7 @@ dav1d_source() {
     tar xf dav1d.tar.xz && rm dav1d.tar.xz
   fi
 }
-DAV1D_STAMP=dav1d/.version-$DAV1D_VER$([ "$(uname -s)" = Darwin ] && echo "-macos$MACOS_MIN-nasm$NASM_VER")
+DAV1D_STAMP=dav1d/.version-$DAV1D_VER$([ "$(uname -s)" != Darwin ] || echo "-macos$MACOS_MIN-nasm$NASM_VER")
 if [ "${DAV1D:-1}" = 1 ] && [ ! -f "$DAV1D_STAMP" ]; then
   rm -rf dav1d dav1d-x86_64 dav1d-arm64
   dav1d_source
