@@ -2495,9 +2495,13 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
         } else if (it.kind == Item::STROKE) {
             nd::setRgb(c, it.rgb, it.alpha);
             float k2 = sqrtf(fabsf(m.a * m.d - m.b * m.c));   // (device pixels per unit)
-            plutovg_canvas_set_line_width(c, k2 > 0 ? std::max(it.width, 1 / k2) : it.width);
-            plutovg_canvas_set_line_cap(c, (plutovg_line_cap_t)it.cap);
-            plutovg_canvas_set_line_join(c, (plutovg_line_join_t)it.join);
+            float w = k2 > 0 ? std::max(it.width, 1 / k2) : it.width;
+            // (2 pixels wide at most: round caps and joins drawn square and bevelled, half a pixel apart
+            // at most; the stroker's arcs took most of the time of a CAD plot's round-capped hairlines)
+            bool thin = w * k2 <= 2;
+            plutovg_canvas_set_line_width(c, w);
+            plutovg_canvas_set_line_cap(c, thin && it.cap == PLUTOVG_LINE_CAP_ROUND ? PLUTOVG_LINE_CAP_SQUARE : (plutovg_line_cap_t)it.cap);
+            plutovg_canvas_set_line_join(c, thin && it.join == PLUTOVG_LINE_JOIN_ROUND ? PLUTOVG_LINE_JOIN_BEVEL : (plutovg_line_join_t)it.join);
             plutovg_canvas_set_miter_limit(c, it.miter);
             if (it.dash) plutovg_canvas_set_dash(c, it.dashOffset, it.dash->data(), (int)it.dash->size());
             else plutovg_canvas_set_dash(c, 0, nullptr, 0);
