@@ -58,6 +58,7 @@ const int MAX_COMPS = 32;                  // a colour's components, a function'
 inline float clampf(float v, float a, float b) { return !(v > a) ? a : v > b ? b : v; }
 // a number as an int: beyond an int the nearest one, a NaN 0 (the cast alone is undefined there)
 inline int toInt(double v) { return v >= 2147483647.0 ? INT_MAX : v <= -2147483648.0 ? INT_MIN : v == v ? (int)v : 0; }
+inline uint32_t toU32(double v) { return v >= 4294967295.0 ? UINT32_MAX : v > 0 ? (uint32_t)v : 0; }   // (a negative one, a NaN: 0)
 
 // --- functions (Type 0 sampled, 2 exponential, 3 stitching, 4 PostScript calculator) -----------
 
@@ -471,7 +472,7 @@ struct CS {
             break;
         }
         case INDEXED: {
-            int i = std::max(0, std::min(hival, (int)lroundf(c[0])));
+            int i = std::max(0, std::min(hival, toInt(roundf(c[0]))));
             float bc[32];
             int bn = base ? base->n : 1;
             for (int j = 0; j < bn && j < 32; j++) {
@@ -531,7 +532,7 @@ std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
     Val d = v.t == pp::DICT ? v : Val();
     const pp::Stream *st = ref.t == pp::REF ? doc.stream(ref.oid()) : nullptr;
     if (d.t != pp::DICT) return nullptr;
-    f->type = (int)doc.get(d, "FunctionType").num(-1);
+    f->type = toInt(doc.get(d, "FunctionType").num(-1));
     f->domain = nums(doc, d.get("Domain"));
     f->range = nums(doc, d.get("Range"));
     if (f->domain.size() < 2) f->domain = {0, 1};
@@ -566,9 +567,9 @@ std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
     }
     case 0: {
         if (!st || f->range.size() < 2) return nullptr;
-        for (float s : nums(doc, d.get("Size"))) f->size.push_back(std::max(1, (int)s));
+        for (float s : nums(doc, d.get("Size"))) f->size.push_back(std::max(1, toInt(s)));
         if ((int)f->size.size() != f->nin) return nullptr;
-        int bps = (int)doc.get(d, "BitsPerSample").num(8);
+        int bps = toInt(doc.get(d, "BitsPerSample").num(8));
         if (bps != 1 && bps != 2 && bps != 4 && bps != 8 && bps != 12 && bps != 16 && bps != 24 && bps != 32) return nullptr;
         f->encode = nums(doc, d.get("Encode"));
         if (f->encode.size() < 2u * f->nin) {
@@ -676,7 +677,7 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
             auto a = loadCS(P, alt, res, depth + 1);
             if (a) return a;
         }
-        int n = (int)doc.get(d, "N").num(3);
+        int n = toInt(doc.get(d, "N").num(3));
         return deviceCS(n == 1 ? CS::GRAY : n == 4 ? CS::CMYK : CS::RGB);
     }
     if (kind.is("Lab")) {
@@ -692,7 +693,7 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
         c->k = CS::INDEXED, c->n = 1;
         c->base = loadCS(P, v.at(1), res, depth + 1);
         if (!c->base) return nullptr;
-        c->hival = std::max(0, std::min(255, (int)doc.resolve(v.at(2)).num(0)));
+        c->hival = std::max(0, std::min(255, toInt(doc.resolve(v.at(2)).num(0))));
         Val lk = v.at(3);
         Val lr = doc.resolve(lk);
         if (lr.t == pp::STR) c->lookup.assign((const uint8_t *)lr.s, (const uint8_t *)lr.s + lr.n);
@@ -876,7 +877,7 @@ bool bilevelRows(nitropdf &P, ImageSource &src, int &W, int H, std::string &bits
         bits.assign(prow * H, '\0');
         return !nj2_decode(d, src.data.size(), (const uint8_t *)g.data.data(), g.data.size(), W, H, (uint8_t *)&bits[0], prow);
     }
-    int k = (int)key(doc, p, "K", nullptr).num(0), cols = (int)key(doc, p, "Columns", nullptr).num(1728);
+    int k = toInt(key(doc, p, "K", nullptr).num(0)), cols = toInt(key(doc, p, "Columns", nullptr).num(1728));
     bool b1 = key(doc, p, "BlackIs1", nullptr).t == pp::BOOL && key(doc, p, "BlackIs1", nullptr).i;
     bool align = key(doc, p, "EncodedByteAlign", nullptr).t == pp::BOOL && key(doc, p, "EncodedByteAlign", nullptr).i;
     if (cols <= 0 || (uint64_t)cols * H > (1ull << 32)) return false;
@@ -890,8 +891,8 @@ bool bilevelRows(nitropdf &P, ImageSource &src, int &W, int H, std::string &bits
 // 1-bit / gray samples of a mask (a stencil /Mask, an /SMask), w x h, its /Decode applied: 255 painted / opaque
 bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
     pp::Doc &doc = P.doc;
-    int W = (int)key(doc, src.dict, "Width", "W").num(0), H = (int)key(doc, src.dict, "Height", "H").num(0);
-    int bpc = stencil ? 1 : (int)key(doc, src.dict, "BitsPerComponent", "BPC").num(8);
+    int W = toInt(key(doc, src.dict, "Width", "W").num(0)), H = toInt(key(doc, src.dict, "Height", "H").num(0));
+    int bpc = stencil ? 1 : toInt(key(doc, src.dict, "BitsPerComponent", "BPC").num(8));
     if (W <= 0 || H <= 0 || (uint64_t)W * H > (256u << 20)) return false;
     int step = 1;
     while ((uint64_t)W * H / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
@@ -940,7 +941,7 @@ bool imageSource(nitropdf &P, Val ref, ImageSource &src) {
 std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_t fill, float fillAlpha) {
     pp::Doc &doc = P.doc;
     Val d = src.dict;
-    int W = (int)key(doc, d, "Width", "W").num(0), H = (int)key(doc, d, "Height", "H").num(0);
+    int W = toInt(key(doc, d, "Width", "W").num(0)), H = toInt(key(doc, d, "Height", "H").num(0));
     if (W <= 0 || H <= 0 || (uint64_t)W * H > (1ull << 32)) return nullptr;
     Val im = key(doc, d, "ImageMask", "IM");
     bool stencil = im.t == pp::BOOL && im.i;
@@ -963,7 +964,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
         img->finish();
         return img;
     }
-    int bpc = (int)key(doc, d, "BitsPerComponent", "BPC").num(8);
+    int bpc = toInt(key(doc, d, "BitsPerComponent", "BPC").num(8));
     Val csv = d.get("ColorSpace");
     if (csv.t == pp::NUL) csv = d.get("CS");
     std::shared_ptr<CS> cs = loadCS(P, csv, res, 0);
@@ -1292,7 +1293,7 @@ void parseCMap(const std::string &data, Font &f, bool toUni) {
                 if (a[k].t == pp::STR && a[k + 1].t == pp::STR && a[k + 2].isNum()) {
                     int b0, b1;
                     uint32_t lo = code(a[k], b0), hi = code(a[k + 1], b1);
-                    f.ranges.push_back({lo, hi, (uint32_t)a[k + 2].num(), b0});
+                    f.ranges.push_back({lo, hi, toU32(a[k + 2].num()), b0});
                 }
             f.identity = false;
         } else if (o == "endcidchar" && !toUni) {
@@ -1300,7 +1301,7 @@ void parseCMap(const std::string &data, Font &f, bool toUni) {
                 if (a[k].t == pp::STR && a[k + 1].isNum()) {
                     int b;
                     uint32_t c = code(a[k], b);
-                    f.ranges.push_back({c, c, (uint32_t)a[k + 1].num(), b});
+                    f.ranges.push_back({c, c, toU32(a[k + 1].num()), b});
                 }
             f.identity = false;
         } else if (o == "endbfchar" && toUni) {
@@ -1332,9 +1333,9 @@ plutovg_font_face_t *standIn(pp::Doc &doc, Val desc, std::string name, Font &f) 
     auto has = [&](const char *w) { return lower.find(w) != std::string::npos; };
     f.weight = has("black") || has("heavy") ? 900 : has("bold") ? 700 : has("semibold") || has("demi") ? 600 : has("light") ? 300 : 400;
     Val fw = doc.get(desc, "FontWeight");
-    if (fw.isNum() && fw.num() >= 100) f.weight = (int)fw.num();
+    if (fw.isNum() && fw.num() >= 100) f.weight = toInt(fw.num());
     f.italic = has("italic") || has("oblique") || doc.get(desc, "ItalicAngle").num(0) != 0;
-    int flags = (int)doc.get(desc, "Flags").num(0);
+    int flags = toInt(doc.get(desc, "Flags").num(0));
     std::string family = name.substr(0, name.find_first_of(",-"));
     std::string spaced;   // ("TimesNewRoman" -> "Times New Roman")
     for (size_t k = 0; k < family.size(); k++) {
@@ -1406,7 +1407,7 @@ void simpleEncoding(nitropdf &P, Val enc, Font &f, const char *const *base) {
     f.nameStore.reserve(diff.size());
     for (size_t k = 0; k < diff.size(); k++) {
         Val v = doc.resolve(diff.at(k));
-        if (v.isNum()) code = (int)v.num();
+        if (v.isNum()) code = toInt(v.num());
         else if (v.t == pp::NAME && code >= 0 && code < 256) {
             f.nameStore.emplace_back(v.str());
             f.names[code++] = nullptr;   // (filled below: nameStore may still move)
@@ -1416,7 +1417,7 @@ void simpleEncoding(nitropdf &P, Val enc, Font &f, const char *const *base) {
     size_t s = 0;
     for (size_t k = 0; k < diff.size(); k++) {
         Val v = doc.resolve(diff.at(k));
-        if (v.isNum()) code = (int)v.num();
+        if (v.isNum()) code = toInt(v.num());
         else if (v.t == pp::NAME && code >= 0 && code < 256) f.names[code++] = f.nameStore[s++].c_str();
     }
 }
@@ -1457,13 +1458,13 @@ std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth) {
         if (dw.isNum()) f->dw = (float)dw.num();
         Val w = doc.get(desc, "W");
         for (size_t k = 0; k + 1 < w.size() && f->cidWidths.size() < (1u << 20);) {
-            uint32_t c0 = (uint32_t)doc.resolve(w.at(k)).num();
+            uint32_t c0 = toU32(doc.resolve(w.at(k)).num());
             Val nx = doc.resolve(w.at(k + 1));
             if (nx.t == pp::ARRAY) {
                 for (size_t j = 0; j < nx.size(); j++) f->cidWidths[c0 + (uint32_t)j] = (float)doc.resolve(nx.at(j)).num();
                 k += 2;
             } else if (k + 2 < w.size()) {
-                uint32_t c1 = (uint32_t)nx.num();
+                uint32_t c1 = toU32(nx.num());
                 float wv = (float)doc.resolve(w.at(k + 2)).num();
                 for (uint32_t c = c0; c <= c1 && c - c0 < 65536; c++) f->cidWidths[c] = wv;
                 k += 3;
@@ -1494,10 +1495,10 @@ std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth) {
         return f;
     }
     // simple fonts: widths
-    int first = (int)doc.get(d, "FirstChar").num(0);
+    int first = toInt(doc.get(d, "FirstChar").num(0));
     Val ws = doc.get(d, "Widths");
     for (size_t k = 0; k < ws.size(); k++) {
-        int c = first + (int)k;
+        int64_t c = (int64_t)first + (int64_t)k;
         if (c >= 0 && c < 256) f->widths[c] = (float)doc.resolve(ws.at(k)).num(), f->haveWidth[c] = true;
     }
     if (sub.is("Type3")) {
@@ -1513,7 +1514,7 @@ std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth) {
     }
     Val desc = doc.get(d, "FontDescriptor");
     openProgram(P, desc, *f);
-    int flags = (int)doc.get(desc, "Flags").num(0);
+    int flags = toInt(doc.get(desc, "Flags").num(0));
     bool symbolic = (flags & 4) != 0;
     std::string baseFont(doc.get(d, "BaseFont").str());
     bool symbolFont = baseFont.find("Symbol") != std::string::npos || baseFont.find("Dingbats") != std::string::npos;
@@ -2037,7 +2038,7 @@ struct Interp {
             rgb = 0x808080;
             if (n && args[n - 1].t == pp::NAME) {
                 Val p = doc.resolve(resource(P, res, "Pattern", args[n - 1]));
-                if ((int)doc.get(p, "PatternType").num(0) == 2) {
+                if (toInt(doc.get(p, "PatternType").num(0)) == 2) {
                     Val sh = doc.get(p, "Shading");
                     auto scs = loadCS(P, doc.resolve(sh).get("ColorSpace"), res, 0);
                     auto fn = loadFunc(P, doc.resolve(sh).get("Function"), 0);
@@ -2091,8 +2092,8 @@ struct Interp {
         if (g.t != pp::DICT) return;
         Val v;
         if ((v = doc.get(g, "LW")).isNum()) gs.width = (float)v.num();
-        if ((v = doc.get(g, "LC")).isNum()) gs.cap = (uint8_t)std::max(0, std::min(2, (int)v.num()));
-        if ((v = doc.get(g, "LJ")).isNum()) gs.join = (uint8_t)std::max(0, std::min(2, (int)v.num()));
+        if ((v = doc.get(g, "LC")).isNum()) gs.cap = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
+        if ((v = doc.get(g, "LJ")).isNum()) gs.join = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "ML")).isNum()) gs.miter = (float)v.num();
         if ((v = doc.get(g, "CA")).isNum()) gs.strokeA = clampf((float)v.num(), 0, 1);
         if ((v = doc.get(g, "ca")).isNum()) gs.fillA = clampf((float)v.num(), 0, 1);
@@ -2362,10 +2363,10 @@ struct Interp {
                 if (o == "w" && n >= 1) gs.width = num(0);
                 break;
             case 'J':
-                if (o == "J" && n >= 1) gs.cap = (uint8_t)std::max(0, std::min(2, (int)num(0)));
+                if (o == "J" && n >= 1) gs.cap = (uint8_t)std::max(0, std::min(2, toInt(num(0))));
                 break;
             case 'j':
-                if (o == "j" && n >= 1) gs.join = (uint8_t)std::max(0, std::min(2, (int)num(0)));
+                if (o == "j" && n >= 1) gs.join = (uint8_t)std::max(0, std::min(2, toInt(num(0))));
                 break;
             case 'M':
                 if (o == "M" && n >= 1) gs.miter = num(0);
@@ -2385,7 +2386,7 @@ struct Interp {
                 else if (o == "Tz" && n >= 1) gs.hScale = num(0);
                 else if (o == "TL" && n >= 1) gs.leading = num(0);
                 else if (o == "Ts" && n >= 1) gs.rise = num(0);
-                else if (o == "Tr" && n >= 1) gs.render = (int)num(0) & 7;
+                else if (o == "Tr" && n >= 1) gs.render = toInt(num(0)) & 7;
                 else if ((o == "Td" || o == "TD") && n >= 2) {
                     if (o == "TD") gs.leading = -num(1);
                     plutovg_matrix_t t, out;
@@ -2500,7 +2501,7 @@ void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
     Val annots = doc.get(page.dict, "Annots");
     for (size_t k = 0; k < annots.size() && k < 100000 && !in.stopped; k++) {
         Val a = doc.resolve(annots.at(k));
-        if (a.t != pp::DICT || ((int)doc.get(a, "F").num(0) & (2 | 32))) continue;   // (Hidden, NoView)
+        if (a.t != pp::DICT || (toInt(doc.get(a, "F").num(0)) & (2 | 32))) continue;   // (Hidden, NoView)
         Val oc = a.get("OC");
         if (oc.t != pp::NUL && !in.visible(oc)) continue;
         Val n = doc.get(a, "AP").get("N"), ap = n;   // (unresolved: a stream's reference)
