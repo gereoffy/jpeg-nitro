@@ -161,7 +161,7 @@ public:
     // caller's) and how many of the picture's pixels one of its pixels is across (1, 2, 4 ...).
     plutovg_surface_t *forScale(float k, int *factor) {
         int level = 0;
-        while (k > 0 && k * (1 << (level + 1)) <= 0.75f && level < 16) level++;   // (no copy smaller than 1.33 pixels per pixel)
+        while (k > 0 && k * (1 << (level + 1)) <= 1 && level < 16) level++;   // (1 to 2 of its pixels per pixel: plutovg interpolates those)
         std::lock_guard<std::mutex> g(lock_);
         while ((int)levels_.size() < level) {
             plutovg_surface_t *from = levels_.empty() ? base_ : levels_.back();
