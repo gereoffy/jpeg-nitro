@@ -744,7 +744,8 @@ struct Samples {
 };
 
 bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step, Samples &out, bool keepRaw) {
-    if (W <= 0 || H <= 0 || n <= 0 || n > 32 || step <= 0) return false;
+    if (W <= 0 || H <= 0 || n <= 0 || n > MAX_COMPS || step <= 0) return false;
+    if (bpc != 1 && bpc != 2 && bpc != 4 && bpc != 8 && bpc != 16) return false;   // (the bit depths there are: 0 divided by 0 below)
     size_t rowBytes = ((size_t)W * n * bpc + 7) / 8;
     out.w = (W + step - 1) / step, out.h = (H + step - 1) / step, out.n = n;
     out.v.assign((size_t)out.w * out.h * n, 0);
@@ -1012,7 +1013,6 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             bpc = 1;
             cs = deviceCS(CS::GRAY);
         }
-        if (bpc != 1 && bpc != 2 && bpc != 4 && bpc != 8 && bpc != 16) return nullptr;
         if (!unpack(dd, len, W, H, cs->n, bpc, step, smp, colorKey)) return nullptr;
         img->s = newSurface(smp.w, smp.h);
         if (!img->s) return nullptr;
