@@ -114,7 +114,7 @@ static int prepare(Job *j, const uint8_t *d, size_t len, int *w, int *h) {
     j->len = len;
     size_t need = 0;
     if (len >= 3 && d[0] == 0xFF && d[1] == 0xD8) {
-        if (nj_read_info(d, len, &j->ji) || !j->ji.supported) return -1;
+        if (nj_read_info(d, len, &j->ji) || !j->ji.supported || j->ji.ncomp > 3) return -1;
         j->type = T_JPEG;
         size_t off[3];
         for (int c = 0; c < j->ji.ncomp; c++) {

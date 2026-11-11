@@ -547,6 +547,11 @@ bench/rgbverify: bench/rgbverify.c build/libnitro.a | ljt
 	$(CC) $(CFLAGS) -I$(LJT)/include -Isrc bench/rgbverify.c build/libnitro.a $(LJT)/lib/libturbojpeg.a \
 	  $(LDQUIET) $(THREADLIBS) -o $@
 
+# CMYK / YCCK JPEGs (a PDF's): nitrojpeg's four planes + nitro_convert vs libjpeg-turbo
+bench/cmykverify: bench/cmykverify.c build/libnitro.a | ljt
+	$(CC) $(CFLAGS) -I$(LJT)/include -Isrc bench/cmykverify.c build/libnitro.a $(LJT)/lib/libturbojpeg.a \
+	  $(LDQUIET) $(THREADLIBS) -o $@
+
 # the example program on the library (examples/nitroconvert.c): any image it decodes -> a 24-bit BMP
 EXAMPLE_LIBS := $(if $(filter 1,$(DAV1D)),$(DAV1D_LIB)) $(THREADLIBS) \
                 $(if $(filter Darwin,$(UNAME_S)),-framework CoreFoundation $(VT_FW),-lm)

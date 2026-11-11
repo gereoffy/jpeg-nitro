@@ -32,6 +32,7 @@
 #error "LOOK must be 8..16"
 #endif
 #define MAX_BLOCKS 10           // blocks per MCU (JPEG limit)
+#define NJ_MAXC 4               // frame components (CMYK / YCCK)
 #define PAD_BYTES 8192          // zero padding after the unstuffed stream
 
 // ---------------------------------------------------------------------------
@@ -208,12 +209,12 @@ typedef struct {
     uint8_t bx[MAX_BLOCKS], by[MAX_BLOCKS];  // block position inside its component's MCU part
     uint16_t qt[4][64];           // quantisation tables, natural order
     uint8_t qpresent[4];
-    uint8_t cq[3];                // quantisation table per frame component
-    uint8_t cdc[3], cac[3];       // table selectors per frame component
+    uint8_t cq[NJ_MAXC];          // quantisation table per frame component
+    uint8_t cdc[NJ_MAXC], cac[NJ_MAXC];   // table selectors per frame component
     size_t scan_start;            // first entropy-coded byte
     int progressive;              // SOF2: decoded by nj_decode_prog
     size_t sos_pos;               // the first SOS marker
-    uint8_t comp_id[3];
+    uint8_t comp_id[NJ_MAXC];
 #ifdef NJ_REFERENCE
     // header template for band JPEGs (the old engine): SOI DQT* DHT* [DRI] SOF SOS
     uint8_t hdr[4096];
@@ -254,7 +255,7 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
 #endif
 
     uint8_t sof[64]; size_t sof_len = 0;
-    uint8_t comp_id[3] = {0};
+    uint8_t comp_id[NJ_MAXC] = {0};
     int have_sof = 0, baseline = 0, progressive = 0, adobe = -1, jfif = 0;
     size_t pos = 2;
     for (;;) {
@@ -276,8 +277,8 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
             progressive = m == 0xC2 && seg[0] == 8;
             fi->height = (int)be16(seg + 1);
             fi->width = (int)be16(seg + 3);
-            fi->ncomp = fi->frame_comps = seg[5];
-            if (fi->ncomp != 1 && fi->ncomp != 3) { fi->ncomp = fi->ncomp > 3 ? 3 : fi->ncomp; baseline = progressive = 0; }
+            fi->ncomp = seg[5];
+            if (fi->ncomp != 1 && fi->ncomp != 3 && fi->ncomp != 4) { fi->ncomp = fi->ncomp > 3 ? 3 : fi->ncomp; baseline = progressive = 0; }
             if (sl < 6 + 3 * (size_t)seg[5]) return -1;
             for (int c = 0; c < fi->ncomp; c++) {
                 comp_id[c] = seg[6 + 3 * c];
@@ -336,7 +337,8 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
             if (sl < 1 + 2 * (size_t)ns + 3) return -1;
             j->scan_start = pos + L;
             j->sos_pos = pos - 2;
-            memcpy(j->comp_id, comp_id, 3);
+            memcpy(j->comp_id, comp_id, NJ_MAXC);
+            fi->adobe = adobe;
             // Is it one interleaved baseline scan with all components? (progressive: the
             // scans are checked by nj_decode_prog, which fails on anything it can't do)
             int ok = baseline && ns == fi->ncomp;
@@ -536,8 +538,7 @@ static void scan_chunk(const uint8_t *d, size_t len, size_t lo, ScanChunk *c) {
 
 typedef struct {
     uint64_t pos;         // bit position of the MCU start
-    int32_t dc[3];        // DC predictors before the MCU
-    int32_t _pad;
+    int32_t dc[NJ_MAXC];  // DC predictors before the MCU
 } Rec;
 
 // Bit reader over the unstuffed stream: 'buf' holds the next bits
@@ -633,7 +634,7 @@ static void spec_run(const Jpeg *j, const uint8_t *buf, Spec *s, size_t max_mcus
     BR br;
     br_init(&br, buf, s->start);
     uint64_t pos = s->start;
-    int32_t dc[3] = {0, 0, 0};
+    int32_t dc[NJ_MAXC] = {0};
     size_t n = 0;
     while (pos < s->end && n < max_mcus) {
         if (n + 1 >= s->cap) {
@@ -840,7 +841,7 @@ static void band_header(const Jpeg *j, uint8_t *h, int rows_from, int rows_to) {
 
 typedef struct {
     uint64_t pos;
-    int32_t dc[3];
+    int32_t dc[NJ_MAXC];
 } RowStart;
 
 static int decode_single(const Jpeg *j, const Output *o) {
@@ -978,7 +979,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
             for (int r = 0; r < R; r++) rows[r].pos = UINT64_MAX;
             BR br;
             br_init(&br, clean, 0);
-            int32_t dc[3] = {0, 0, 0};
+            int32_t dc[NJ_MAXC] = {0};
             for (int r = 0; r < R; r++) {
                 uint64_t pos = br_pos(&br, clean);
                 if (pos >= Lbits) break;                 // damaged / truncated
@@ -1007,7 +1008,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
         }
         uint64_t cpos = sp[0].rec[sp[0].n].pos;
         size_t cidx = sp[0].n;
-        int32_t cdc[3];
+        int32_t cdc[NJ_MAXC];
         memcpy(cdc, sp[0].rec[sp[0].n].dc, sizeof cdc);
         for (int t = 1; t < T && cidx < total_mcus; t++) {
             Spec *s = &sp[t];
@@ -1021,17 +1022,17 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
                         st->nsync++;
                     }
                     long off = (long)cidx - (long)jx;
-                    int32_t dco[3];
-                    for (int c = 0; c < 3; c++) dco[c] = cdc[c] - s->rec[jx].dc[c];
+                    int32_t dco[NJ_MAXC];
+                    for (int c = 0; c < NJ_MAXC; c++) dco[c] = cdc[c] - s->rec[jx].dc[c];
                     size_t a = (cidx + mpr - 1) / mpr * mpr;
                     for (; a < (size_t)(off + (long)s->n) && a < total_mcus; a += mpr) {
                         const Rec *rr = &s->rec[a - off];
                         rows[a / mpr].pos = rr->pos;
-                        for (int c = 0; c < 3; c++) rows[a / mpr].dc[c] = rr->dc[c] + dco[c];
+                        for (int c = 0; c < NJ_MAXC; c++) rows[a / mpr].dc[c] = rr->dc[c] + dco[c];
                     }
                     cpos = s->rec[s->n].pos;
                     cidx = off + s->n;
-                    for (int c = 0; c < 3; c++) cdc[c] = s->rec[s->n].dc[c] + dco[c];
+                    for (int c = 0; c < NJ_MAXC; c++) cdc[c] = s->rec[s->n].dc[c] + dco[c];
                     break;
                 }
                 if (jx > s->n || cidx >= total_mcus || cpos >= Lbits) {   // thread t never synced
@@ -1101,7 +1102,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
                 int diff = s ? extend((unsigned)((wv << l) >> (64 - s)), s) : 0;
                 pos += l + s;
                 uint64_t dcend = pos;
-                int32_t dummy[3] = {0, 0, 0};
+                int32_t dummy[NJ_MAXC] = {0};
                 // skip AC of this block by skipping a one-block "MCU"
                 {
                     const HuffTable *at = &j->ac[j->cac[c]];
@@ -1653,7 +1654,7 @@ typedef struct {
     int nerr;
     uint32_t err[32], err_last;       // the first 32 records that failed, and the last one
     long off;                         // absolute MCU index = off + record index
-    int32_t dcoff[3];
+    int32_t dcoff[NJ_MAXC];
     size_t lo, hi;                    // valid records after stitching
     int state;                        // 0 new, 1 decoded, 2 stitched, 3 IDCT claimed
 } Chunk;
@@ -1663,7 +1664,7 @@ typedef struct {
     int frontier, finalized, fail;
     uint64_t cpos, endpos;
     size_t cidx;
-    int32_t cdc[3];
+    int32_t cdc[NJ_MAXC];
     int16_t tmp[MAX_BLOCKS * 64];
 } Stitch;
 
@@ -1676,7 +1677,7 @@ static int chunk_decode(const Jpeg *j, const uint8_t *buf, Chunk *s, size_t max_
     BR br;
     br_init(&br, buf, s->start);
     uint64_t pos = s->start;
-    int32_t dc[3] = {0, 0, 0};
+    int32_t dc[NJ_MAXC] = {0};
     size_t n = 0;
     while (pos < s->end && n < max_mcus) {
         if (pool_grow((void **)&s->rec, &s->rec_cap, (n + 2) * sizeof(Rec)) ||
@@ -1724,7 +1725,7 @@ static int chunk_claim_idct(const Jpeg *j, const Output *o, Chunk *c, size_t msz
 
 // Decode + IDCT one MCU of the true path directly (DC already correct).
 static int stitch_step(const Jpeg *j, const Output *o, const uint8_t *clean, Stitch *S, size_t total) {
-    static const int32_t zero[3] = {0, 0, 0};
+    static const int32_t zero[NJ_MAXC] = {0};
     BR br;
     br_init(&br, clean, S->cpos);
     if (decode_mcu_coef(j, &br, S->cdc, S->tmp)) return -1;
@@ -1758,7 +1759,7 @@ static void stitch_advance(const Jpeg *j, const Output *o, const uint8_t *clean,
                 while (jx <= s->n && s->rec[jx].pos < S->cpos) jx++;
                 if (jx <= s->n && s->rec[jx].pos == S->cpos) {       // synchronised
                     long off = (long)S->cidx - (long)jx;
-                    for (int c = 0; c < 3; c++) s->dcoff[c] = S->cdc[c] - s->rec[jx].dc[c];
+                    for (int c = 0; c < NJ_MAXC; c++) s->dcoff[c] = S->cdc[c] - s->rec[jx].dc[c];
                     size_t hi = (size_t)((long)total - off) < s->n ? (size_t)((long)total - off) : s->n;
                     if (chunk_err_in(s, jx, hi)) { __atomic_store_n(&S->fail, 1, __ATOMIC_RELAXED); break; }
                     s->off = off;
@@ -1772,7 +1773,7 @@ static void stitch_advance(const Jpeg *j, const Output *o, const uint8_t *clean,
                     }
                     S->cpos = s->rec[s->n].pos;
                     S->cidx = off + s->n;
-                    for (int c = 0; c < 3; c++) S->cdc[c] = s->rec[s->n].dc[c] + s->dcoff[c];
+                    for (int c = 0; c < NJ_MAXC; c++) S->cdc[c] = s->rec[s->n].dc[c] + s->dcoff[c];
                     break;
                 }
                 if (jx > s->n || S->cidx >= total || S->cpos >= Lbits) {
@@ -1900,11 +1901,11 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
         parallel_for((size_t)tasks, ^(size_t ti) {
             size_t k0 = I * ti / tasks, k1 = I * (ti + 1) / tasks;
             int16_t coef[MAX_BLOCKS * 64];
-            const int32_t zero[3] = {0, 0, 0};
+            const int32_t zero[NJ_MAXC] = {0};
             for (size_t kk = k0; kk < k1 && !__atomic_load_n(pfail, __ATOMIC_RELAXED); kk++) {
                 BR br;
                 br_init(&br, clean, (uint64_t)istart[kk] * 8);
-                int32_t dc[3] = {0, 0, 0};
+                int32_t dc[NJ_MAXC] = {0};
                 size_t m1 = (kk + 1) * Ri < total ? (kk + 1) * Ri : total;
                 for (size_t m = kk * Ri; m < m1; m++) {
                     if (decode_mcu_coef(j, &br, dc, coef)) { __atomic_store_n(pfail, 1, __ATOMIC_RELAXED); break; }
@@ -1994,8 +1995,8 @@ out:
 #define PMAX_SCANS 64
 
 typedef struct {
-    int ncomp, comp[3], Ss, Se, Ah, Al, ri;
-    const HuffTable *dct[3], *act;
+    int ncomp, comp[NJ_MAXC], Ss, Se, Ah, Al, ri;
+    const HuffTable *dct[NJ_MAXC], *act;
     size_t raw0, raw1;                  // entropy-coded bytes in the file
     uint64_t deps;                      // earlier scans it has to follow
     uint8_t *clean;                     // unstuffed, RST markers dropped
@@ -2004,7 +2005,7 @@ typedef struct {
     // decoding state between the chunks
     uint64_t pos;
     unsigned eobrun;
-    int32_t dc[3];
+    int32_t dc[NJ_MAXC];
     size_t mcu;                         // MCUs (one-component scan: blocks) done
     int done, busy;                     // MCU rows finished; a thread works on it
     int ready;                          // 0: not unstuffed yet, 1: being unstuffed, 2: ready
@@ -2018,9 +2019,9 @@ typedef struct {
     int nscan, ntabs;
     PScan s[PMAX_SCANS];
     HuffTable *tabs[4 * PMAX_SCANS];    // tables defined between the scans
-    int16_t *coef[3];                   // coefficient blocks per component, MCU-padded:
-    size_t bw[3], bh[3];                //   bw x bh blocks of 64
-    size_t cbw[3], cbh[3];              // blocks a one-component scan covers
+    int16_t *coef[NJ_MAXC];             // coefficient blocks per component, MCU-padded:
+    size_t bw[NJ_MAXC], bh[NJ_MAXC];    //   bw x bh blocks of 64
+    size_t cbw[NJ_MAXC], cbh[NJ_MAXC];  // blocks a one-component scan covers
     void *cbuf;
     size_t cbuf_cap;
     int R, K;                           // MCU rows, rows per chunk
@@ -2361,7 +2362,7 @@ static inline int prog_restart(PScan *s, BR *br) {
     if (k > s->nrst || br_pos(br, s->clean) > (uint64_t)s->rst[k - 1] * 8) return 1;
     br_init(br, s->clean, (uint64_t)s->rst[k - 1] * 8);
     s->eobrun = 0;
-    s->dc[0] = s->dc[1] = s->dc[2] = 0;
+    memset(s->dc, 0, sizeof s->dc);
     return 0;
 }
 
@@ -2576,8 +2577,8 @@ out:
     return rc;
 }
 
-int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info, uint8_t *const planes[3],
-                     const size_t pitch[3], int nthreads, nj_stats *stats) {
+int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info, uint8_t *const planes[4],
+                     const size_t pitch[4], int nthreads, nj_stats *stats) {
     Output o = {planes, pitch, NULL, 0};
 #ifdef NJ_REFERENCE
     if (g_engine == 1) return nj_decode(data, len, &o, nthreads, stats);

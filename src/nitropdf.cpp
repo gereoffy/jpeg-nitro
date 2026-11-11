@@ -10,7 +10,8 @@
 // lines by default (Acrobat's "enhance thin lines"), or 0.1 pt plan lines would fade away.
 #include "nitropdf.h"
 #include "nitro_draw.h"
-#include "nitrojpeg.h"   // (nj_read_info)
+#include "nitro_convert.h"   // (nc_jpeg_to_bgra)
+#include "nitrojpeg.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
 }
@@ -735,6 +736,37 @@ bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step
 
 plutovg_surface_t *newSurface(int w, int h) { return w > 0 && h > 0 ? plutovg_surface_create(w, h) : nullptr; }
 
+// A JPEG (DCTDecode) as an opaque surface: by nitrojpeg, in parallel, where it can (1, 3 or 4
+// components: CMYK / YCCK through nitro_convert's simple formula, the values as stored, inverted by
+// an inverting /Decode: Adobe's inverted ones come with one, Adobe's marker alone says nothing),
+// else by stb_image; nullptr if neither reads it. *ncomp: its components (0 if not known).
+plutovg_surface_t *jpegSurface(const std::string &data, bool decodeInverted, int *ncomp) {
+    const uint8_t *d = (const uint8_t *)data.data();
+    nj_info ji;
+    *ncomp = 0;
+    if (!nj_read_info(d, data.size(), &ji)) {
+        *ncomp = ji.ncomp;
+        if (ji.supported && (uint64_t)ji.width * ji.height <= (128u << 20)) {
+            size_t pitch[4] = {0}, total = 0, at[4] = {0};
+            for (int c = 0; c < ji.ncomp; c++) {
+                pitch[c] = (size_t)ji.plane_w[c];
+                at[c] = total;
+                total += pitch[c] * ji.plane_h[c];
+            }
+            std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[total ? total : 1]);
+            plutovg_surface_t *s = buf ? newSurface(ji.width, ji.height) : nullptr;
+            uint8_t *planes[4] = {buf.get() + at[0], buf.get() + at[1], buf.get() + at[2], buf.get() + at[3]};
+            if (s && !nj_decode_planes(d, data.size(), &ji, planes, pitch, 0, nullptr)) {
+                nc_jpeg_to_bgra(&ji, planes, pitch, decodeInverted, plutovg_surface_get_data(s), (size_t)plutovg_surface_get_stride(s));
+                return s;
+            }
+            plutovg_surface_destroy(s);
+        }
+        if (ji.ncomp == 4) return nullptr;   // (stb_image draws CMYK black)
+    }
+    return plutovg_surface_load_from_image_data(data.data(), (int)std::min<size_t>(data.size(), INT32_MAX));
+}
+
 // a surface's pixels scaled to w x h, nearest (masks of another size than their image)
 std::vector<uint8_t> resampleGray(const Samples &m, int w, int h) {
     std::vector<uint8_t> out((size_t)w * h);
@@ -785,7 +817,8 @@ bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
         bpc = 1;
         W = cols;
     } else if (src.filter == "DCTDecode" || src.filter == "DCT") {
-        plutovg_surface_t *s = plutovg_surface_load_from_image_data(src.data.data(), (int)std::min<size_t>(src.data.size(), INT32_MAX));
+        int nc;
+        plutovg_surface_t *s = jpegSurface(src.data, false, &nc);
         if (!s) return false;
         out.w = plutovg_surface_get_width(s), out.h = plutovg_surface_get_height(s), out.n = 1;
         out.v.resize((size_t)out.w * out.h);
@@ -856,14 +889,13 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     Val maskv = doc.resolve(d.get("Mask"));
     bool colorKey = maskv.t == pp::ARRAY;
     if (src.filter == "DCTDecode" || src.filter == "DCT") {
-        nj_info ji;   // (a CMYK / YCCK JPEG: stb_image draws it black)
-        bool four = !nj_read_info((const uint8_t *)src.data.data(), src.data.size(), &ji) && ji.frame_comps > 3;
-        if (!four) img->s = plutovg_surface_load_from_image_data(src.data.data(), (int)std::min<size_t>(src.data.size(), INT32_MAX));
-        if (!img->s) {   // (CMYK / YCCK JPEGs: not yet; a grey area where the picture is)
+        auto dec = nums(doc, key(doc, d, "Decode", "D"));
+        int nc;
+        img->s = jpegSurface(src.data, dec.size() >= 2 && dec[0] > dec[1], &nc);
+        if (!img->s) {   // (one neither decoder reads: a grey area where the picture is)
             img->s = newSurface(1, 1);
             if (img->s) *(uint32_t *)plutovg_surface_get_data(img->s) = 0xffc0c0c0;
         }
-        auto dec = nums(doc, key(doc, d, "Decode", "D"));
         if (img->s && cs && cs->n == 3 && cs->k != CS::RGB) {   // (a JPEG of other components: Lab ones, through the space)
             uint8_t *px = plutovg_surface_get_data(img->s);
             int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
@@ -880,7 +912,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     cs->toRGB(c, rgb);
                     q[2] = (uint8_t)lroundf(rgb[0] * 255), q[1] = (uint8_t)lroundf(rgb[1] * 255), q[0] = (uint8_t)lroundf(rgb[2] * 255);
                 }
-        } else if (img->s && dec.size() >= 2 && dec[0] > dec[1]) {   // (inverted: Adobe's CMYK, a negative gray)
+        } else if (img->s && nc != 4 && dec.size() >= 2 && dec[0] > dec[1]) {   // (inverted: a negative gray / RGB; CMYK: above)
             uint8_t *px = plutovg_surface_get_data(img->s);
             int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
             for (int y = 0; y < plutovg_surface_get_height(img->s); y++)

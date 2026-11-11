@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     double wdec = 0;
     while (now_s() - start < secs) {
         int i = k++ % n;
-        size_t pitch[3]; uint8_t *pl[3]; uint8_t *p = out;
+        size_t pitch[4]; uint8_t *pl[4]; uint8_t *p = out;
         for (int c = 0; c < fi[i].ncomp; c++) { pitch[c] = (fi[i].plane_w[c] + 255) & ~255; pl[c] = p; p += pitch[c] * fi[i].plane_h[c]; }
         double t0 = now_s();
         nj_decode_planes(data[i], len[i], &fi[i], pl, pitch, 0, NULL);

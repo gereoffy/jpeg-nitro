@@ -32,12 +32,12 @@ extern "C" {
 
 typedef struct {
     int width, height;
-    int ncomp;                  // 1 (gray) or 3 (YCbCr)
-    int frame_comps;            // the frame's components as written (4: CMYK / YCCK, which ncomp shows as 3)
-    int h[3], v[3];             // sampling factors (frame component order)
+    int ncomp;                  // 1 (gray), 3 (YCbCr) or 4 (CMYK / YCCK: not for the viewers' YUV path)
+    int adobe;                  // its Adobe APP14 transform: -1 none, 0 none (RGB / CMYK), 1 YCbCr, 2 YCCK
+    int h[4], v[4];             // sampling factors (frame component order)
     int hmax, vmax;
     int mcus_per_row, mcu_rows; // MCU grid
-    int plane_w[3], plane_h[3]; // padded plane size in samples (raw output)
+    int plane_w[4], plane_h[4]; // padded plane size in samples (raw output)
     int restart_interval;       // DRI, 0 if none
     int orientation;            // EXIF orientation 1..8
     int supported;              // 1: nj_decode_* can handle it (else use a fallback)
@@ -71,10 +71,11 @@ int nj_read_info(const uint8_t *data, size_t len, nj_info *info);
 int nj_find_embedded(const uint8_t *data, size_t len, size_t *offset, size_t *size, int *orientation);
 
 // Decodes into planar Y/Cb/Cr (no upsampling, no colour conversion: meant
-// for a GPU shader). planes[c] must hold plane_h[c] rows of pitch[c] bytes,
+// for a GPU shader; 4 components: C M Y K or Y Cb Cr K as stored, see adobe).
+// planes[c] (ncomp of them) must hold plane_h[c] rows of pitch[c] bytes,
 // pitch[c] >= plane_w[c]. nthreads <= 0 means all CPUs. Returns 0 on success.
 int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info,
-                     uint8_t *const planes[3], const size_t pitch[3],
+                     uint8_t *const planes[4], const size_t pitch[4],
                      int nthreads, nj_stats *stats);
 
 

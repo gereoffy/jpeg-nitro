@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         size_t n; uint8_t *d = load(argv[i], &n);
         nj_info fi;
-        if (!d || nj_read_info(d, n, &fi) || !fi.supported) { printf("%s: unsupported\n", argv[i]); continue; }
+        if (!d || nj_read_info(d, n, &fi) || !fi.supported || fi.ncomp > 3) { printf("%s: unsupported\n", argv[i]); continue; }   // (CMYK: bench/cmykverify)
         if (is_progressive(d, n)) {
             const char *nm = strrchr(argv[i], '/') ? strrchr(argv[i], '/') + 1 : argv[i];
             bad += verify_progressive(nm, d, n, &fi);

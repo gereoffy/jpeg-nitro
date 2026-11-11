@@ -423,7 +423,7 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
         nj_info fi;
         int ok = !nj_read_info(data, n, &fi);
         img->orientation = raw_orientation ? raw_orientation : ok ? fi.orientation : 1;   // (for the fallback too)
-        if (!ok || !fi.supported) {
+        if (!ok || !fi.supported || fi.ncomp == 4) {   // (CMYK / YCCK: the platform's decoder, with its profile)
             img->error = "Unsupported JPEG";
         } else if (fi.width > mt || fi.height > mt) {
             img->error = "Unsupported JPEG (too large)";
