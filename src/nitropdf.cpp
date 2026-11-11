@@ -566,8 +566,9 @@ std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
         f->decode = nums(doc, d.get("Decode"));
         if (f->decode.size() < 2u * f->nout) f->decode = f->range;
         uint64_t count = (uint64_t)f->nout;
-        for (int s : f->size) count *= s;
-        if (count > (16u << 20)) return nullptr;
+        for (int s : f->size)   // (checked at each step: four of 65536 multiply to 2^64, that is 0)
+            if ((count *= s) > (16u << 20)) return nullptr;
+        if (!count) return nullptr;
         pp::Decoded dec;
         doc.decode(*st, dec, 64u << 20);
         const uint8_t *b = (const uint8_t *)dec.data.data();
