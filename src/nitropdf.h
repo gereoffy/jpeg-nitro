@@ -7,8 +7,9 @@
 // and their masks, text, form XObjects, optional content) into a display list the first time the
 // page is drawn, and draws it with plutovg at any scale and offset, like the other readers. Text: the
 // fonts it embeds through FreeType (TrueType, Type 1, CFF, CID-keyed, OpenType), Type 3 fonts, and
-// system fonts standing in for the others (nitro_font). Not yet: shadings and tiling patterns (a
-// shading pattern fills with its middle colour), soft masks of groups, blend modes, annotations.
+// system fonts standing in for the others (nitro_font). Annotations: their appearance streams. Not
+// yet: shadings and tiling patterns (a shading pattern fills with its middle colour), soft masks of
+// groups, blend modes.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

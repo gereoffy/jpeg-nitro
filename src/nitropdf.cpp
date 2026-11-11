@@ -2001,12 +2001,16 @@ struct Interp {
             addImage(img, gs.fillA);
             return;
         }
-        if (!sub.is("Form") || depth >= MAX_DEPTH) return;
-        if (std::find(forms.begin(), forms.end(), ref.oid()) != forms.end()) return;
+        if (sub.is("Form")) doForm(ref.oid(), *st, res, depth);
+    }
+    // a form XObject drawn in the current state: its /Matrix, clipped by its /BBox
+    void doForm(uint32_t oid, const pp::Stream &st, Val res, int depth) {
+        if (depth >= MAX_DEPTH || std::find(forms.begin(), forms.end(), oid) != forms.end()) return;
+        Val d = st.dict;
         Val oc = d.get("OC");
         if (oc.t != pp::NUL && !visible(oc)) return;
         pp::Decoded dec;
-        doc.decode(*st, dec, 256u << 20);
+        doc.decode(st, dec, 256u << 20);
         Val fres = doc.get(d, "Resources");
         if (fres.t != pp::DICT) fres = doc.resolve(res);
         stack.push_back(gs);
@@ -2026,7 +2030,7 @@ struct Interp {
             plutovg_path_destroy(path);
             path = saved;
         }
-        forms.push_back(ref.oid());
+        forms.push_back(oid);
         run(dec.data.data(), dec.data.size(), fres, depth + 1);
         forms.pop_back();
         gs = stack.back();
@@ -2300,6 +2304,41 @@ void pageGeometry(const pp::Page &p, double *w, double *h, plutovg_matrix_t *m) 
     plutovg_matrix_multiply(m, &out, &sc);
 }
 
+// The annotations' normal appearances (12.5.5): each form's /BBox, through its /Matrix, fitted to
+// the annotation's /Rect. Not the hidden ones, nor those without an appearance (popups).
+void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
+    pp::Doc &doc = in.doc;
+    Val annots = doc.get(page.dict, "Annots");
+    for (size_t k = 0; k < annots.size() && k < 100000; k++) {
+        Val a = doc.resolve(annots.at(k));
+        if (a.t != pp::DICT || ((int)doc.get(a, "F").num(0) & (2 | 32))) continue;   // (Hidden, NoView)
+        Val oc = a.get("OC");
+        if (oc.t != pp::NUL && !in.visible(oc)) continue;
+        Val n = doc.get(a, "AP").get("N"), ap = n;   // (unresolved: a stream's reference)
+        if (doc.resolve(n).t == pp::DICT && n.t != pp::REF) {   // (appearance states: the one /AS names)
+            Val as = doc.get(a, "AS");
+            ap = as.t == pp::NAME ? doc.resolve(n).get(std::string(as.str()).c_str()) : Val();
+        }
+        const pp::Stream *st = ap.t == pp::REF ? doc.stream(ap.oid()) : nullptr;
+        auto rect = nums(doc, a.get("Rect")), bb = nums(doc, st ? st->dict.get("BBox") : Val());
+        if (!st || rect.size() != 4 || bb.size() != 4) continue;
+        auto mv = nums(doc, st->dict.get("Matrix"));
+        plutovg_matrix_t fm;
+        if (mv.size() == 6) plutovg_matrix_init(&fm, mv[0], mv[1], mv[2], mv[3], mv[4], mv[5]);
+        else plutovg_matrix_init_identity(&fm);
+        nd::Box b = Interp::boxOf(bb[0], bb[1], bb[2], bb[3], fm);   // (the box the form's matrix makes of its BBox)
+        float bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+        if (!(bw > 1e-6f) || !(bh > 1e-6f)) continue;
+        float rx0 = std::min(rect[0], rect[2]), ry0 = std::min(rect[1], rect[3]);
+        float sx = fabsf(rect[2] - rect[0]) / bw, sy = fabsf(rect[3] - rect[1]) / bh;
+        in.gs = initial;
+        in.stack.clear();
+        in.hidden = 0, in.hiddenStack.clear();
+        plutovg_matrix_init(&in.gs.ctm, sx, 0, 0, sy, rx0 - b.x0 * sx, ry0 - b.y0 * sy);
+        in.doForm(ap.oid(), *st, Val(), 0);
+    }
+}
+
 void buildPage(nitropdf &P, int k) {
     PageDL &pg = *P.dl[k];
     const pp::Page &page = P.pages[k];
@@ -2311,7 +2350,9 @@ void buildPage(nitropdf &P, int k) {
     in.resetColors();
     std::string content;
     P.doc.contents(page, content);
+    GState initial = in.gs;
     in.run(content.data(), content.size(), page.resources, 0);
+    drawAnnotations(in, page, initial);
 }
 
 void readOptionalContent(nitropdf &P) {
