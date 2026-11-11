@@ -74,6 +74,12 @@
         },
         {
           "type": "archive",
+          "url": "https://github.com/gereoffy/pdfparse3/archive/a226eeb9816b10297a0cd22219e4444595d9c28c.tar.gz",
+          "sha256": "b4d731b0f05a63b27ca2af626deb50ece1295d19bba44fff2bf676a76c7a9b7a",
+          "dest": "third_party/pdfparse3"
+        },
+        {
+          "type": "archive",
           "url": "https://dev-www.libreoffice.org/src/librevenge-0.0.6.tar.bz2",
           "sha256": "52a65e904d255dbdd97a8b7bb28d6574e14f999eb01416aff004502406d0904d",
           "dest": "third_party/librevenge"

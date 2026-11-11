@@ -263,6 +263,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_VISIO: return "visio";
     case NV_MODE_META: return "metafile";
     case NV_MODE_DRAWIO: return "drawio";
+    case NV_MODE_PDF: return "pdf";
     case NV_MODE_NITROHEIC: return "nitroheic";
     case NV_MODE_NITRODNG: return "nitrodng";
     case NV_MODE_NITROWEBP: return "nitrowebp";

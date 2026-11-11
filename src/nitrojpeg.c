@@ -276,7 +276,7 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
             progressive = m == 0xC2 && seg[0] == 8;
             fi->height = (int)be16(seg + 1);
             fi->width = (int)be16(seg + 3);
-            fi->ncomp = seg[5];
+            fi->ncomp = fi->frame_comps = seg[5];
             if (fi->ncomp != 1 && fi->ncomp != 3) { fi->ncomp = fi->ncomp > 3 ? 3 : fi->ncomp; baseline = progressive = 0; }
             if (sl < 6 + 3 * (size_t)seg[5]) return -1;
             for (int c = 0; c < fi->ncomp; c++) {

@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <vector>
 
 namespace nd {
 
@@ -122,5 +124,56 @@ inline void setRgba(plutovg_canvas_t *c, uint32_t rgba, float alpha = 1) {
 inline void setRgb(plutovg_canvas_t *c, uint32_t rgb, float a) {
     plutovg_canvas_set_rgba(c, (rgb >> 16 & 255) / 255.0f, (rgb >> 8 & 255) / 255.0f, (rgb & 255) / 255.0f, a);
 }
+
+// A picture's halved copies (2 x 2 pixels averaged, premultiplied), each made the first time it is
+// asked for, by any of the threads drawing it: drawn far smaller than its pixels, plutovg's sampling
+// would skip most of them (a scanned page's thin letters fell apart). The picture stays the caller's.
+class Mips {
+    plutovg_surface_t *base_;
+    std::vector<plutovg_surface_t *> levels_;
+    std::mutex lock_;
+    static plutovg_surface_t *halve(plutovg_surface_t *s) {
+        int w = plutovg_surface_get_width(s), h = plutovg_surface_get_height(s), hw = (w + 1) / 2, hh = (h + 1) / 2;
+        plutovg_surface_t *d = plutovg_surface_create(hw, hh);
+        if (!d) return nullptr;
+        const uint8_t *sp = plutovg_surface_get_data(s);
+        uint8_t *dp = plutovg_surface_get_data(d);
+        int ss = plutovg_surface_get_stride(s), ds = plutovg_surface_get_stride(d);
+        for (int y = 0; y < hh; y++) {
+            const uint8_t *r0 = sp + (size_t)(2 * y) * ss, *r1 = sp + (size_t)std::min(2 * y + 1, h - 1) * ss;
+            uint8_t *o = dp + (size_t)y * ds;
+            for (int x = 0; x < hw; x++) {
+                int x0 = 4 * 2 * x, x1 = 4 * std::min(2 * x + 1, w - 1);
+                for (int c = 0; c < 4; c++) o[4 * x + c] = (uint8_t)((r0[x0 + c] + r0[x1 + c] + r1[x0 + c] + r1[x1 + c] + 2) / 4);
+            }
+        }
+        return d;
+    }
+
+public:
+    explicit Mips(plutovg_surface_t *base) : base_(base) {}
+    ~Mips() {
+        for (plutovg_surface_t *s : levels_) plutovg_surface_destroy(s);
+    }
+    Mips(const Mips &) = delete;
+    Mips &operator=(const Mips &) = delete;
+    // The copy to draw with at k device pixels per pixel of the picture (a reference of the
+    // caller's) and how many of the picture's pixels one of its pixels is across (1, 2, 4 ...).
+    plutovg_surface_t *forScale(float k, int *factor) {
+        int level = 0;
+        while (k > 0 && k * (1 << (level + 1)) <= 0.75f && level < 16) level++;   // (no copy smaller than 1.33 pixels per pixel)
+        std::lock_guard<std::mutex> g(lock_);
+        while ((int)levels_.size() < level) {
+            plutovg_surface_t *from = levels_.empty() ? base_ : levels_.back();
+            if (plutovg_surface_get_width(from) <= 1 && plutovg_surface_get_height(from) <= 1) break;
+            plutovg_surface_t *h = halve(from);
+            if (!h) break;
+            levels_.push_back(h);
+        }
+        level = std::min(level, (int)levels_.size());
+        *factor = 1 << level;
+        return plutovg_surface_reference(level ? levels_[level - 1] : base_);
+    }
+};
 
 }   // namespace nd

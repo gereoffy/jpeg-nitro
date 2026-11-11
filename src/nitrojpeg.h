@@ -33,6 +33,7 @@ extern "C" {
 typedef struct {
     int width, height;
     int ncomp;                  // 1 (gray) or 3 (YCbCr)
+    int frame_comps;            // the frame's components as written (4: CMYK / YCCK, which ncomp shows as 3)
     int h[3], v[3];             // sampling factors (frame component order)
     int hmax, vmax;
     int mcus_per_row, mcu_rows; // MCU grid

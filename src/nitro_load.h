@@ -63,7 +63,7 @@ typedef enum { NV_YUV = 0, NV_BGRA = 1, NV_PNG = 2, NV_PLANAR = 3 } NvKind;   //
 // decoder otherwise; the viewers' own fallback decoders use -1 .. -3.
 enum { NV_MODE_NITROPNG = -4, NV_MODE_NITROPSD = -5, NV_MODE_SVG = -6, NV_MODE_CDR = -7, NV_MODE_NITROHEIC = -8,
        NV_MODE_NITRODNG = -9, NV_MODE_NITROWEBP = -10, NV_MODE_NITROTIFF = -11, NV_MODE_NITROAVIF = -12,
-       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16 };
+       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16, NV_MODE_PDF = -17 };
 const char *nv_mode_name(int mode);   // of the modes above; NULL for others
 
 // A decoded image in a host buffer (what the GPU shaders or a CPU conversion read).

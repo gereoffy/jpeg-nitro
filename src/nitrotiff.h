@@ -39,6 +39,12 @@ int nt_read_info(const uint8_t *data, size_t len, nt_info *info);
 // nthreads 1: on the calling thread, else in parallel. Returns 0 on success.
 int nt_decode(const uint8_t *data, size_t len, const nt_info *info, uint8_t *bgrx, size_t pitch, int nthreads);
 
+// CCITT G3 / G4 data as a PDF's CCITTFaxDecode gives it (nitropdf): k < 0 G4, 0 G3 one-dimensional,
+// > 0 G3 two-dimensional; black_is_1: a black pixel is 1 (else 0); byte_align: each row's code starts
+// on a byte (/EncodedByteAlign). rows x columns pixels into rows of packed bits, prow bytes apart (a
+// damaged row and the rest: white). Returns 0 on success.
+int nt_ccitt(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst, size_t prow);
+
 // The size of the first image from its directory alone (for a window size before the whole file is
 // read; the directory of a Photoshop TIFF is at its end): dir holds the n bytes at the directory's
 // offset, le as in the header. Returns 0 if it found them.

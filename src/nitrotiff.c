@@ -394,8 +394,8 @@ static int row_2d(Bits *b, int w, const int *ref, int nr, int *cur) {
     return n;
 }
 
-// rows of one strip / tile: packed bits, prow bytes per row
-static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int w, int rows, size_t prow) {
+// rows of one strip / tile: packed bits, prow bytes per row; align: each row's code starts on a byte
+static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int w, int rows, size_t prow, int align) {
     uint8_t *rev = NULL;
     if (in->fillorder == 2) {
         if (!(rev = malloc(sl))) return -1;
@@ -412,6 +412,7 @@ static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int
     int black_one = in->photometric == 0;   // WhiteIsZero: a black pixel is 1
     for (int y = 0; y < rows; y++) {
         int n;
+        if (align) b.pos = (b.pos + 7) & ~(size_t)7;
         if (in->compression == 4) {
             n = row_2d(&b, w, ref, nr, cur);
         } else if (in->compression == 3) {
@@ -487,7 +488,7 @@ static int decompress(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d
     case 32773: packbits(s, sl, d, dl); break;
     case 5: if (lzw(s, sl, d, dl)) return -1; break;
     case 8: case 32946: if (np_zlib_decompress(s, sl, d, dl, nthreads)) return -1; break;
-    default: return ccitt(in, s, sl, d, w, rows, rowbytes);
+    default: return ccitt(in, s, sl, d, w, rows, rowbytes, 0);
     }
     if (in->predictor == 2) {
         int sp = in->planar == 2 ? 1 : in->spp;
@@ -647,4 +648,18 @@ int nt_decode(const uint8_t *data, size_t len, const nt_info *in, uint8_t *bgrx,
     free(raw);
     free(rows);
     return err ? -1 : 0;
+}
+
+// A PDF's CCITTFaxDecode (nitrotiff.h)
+int nt_ccitt(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst, size_t prow) {
+    if (columns <= 0 || rows <= 0 || prow < ((size_t)columns + 7) / 8) return -1;
+    pthread_once(&g_once, init_tables);
+    nt_info in;
+    memset(&in, 0, sizeof in);
+    in.compression = k < 0 ? 4 : 3;   // (G4; G3, one- or two-dimensional)
+    in.t4options = k > 0;
+    in.photometric = black_is_1 ? 0 : 1;   // (0: a black pixel is 1)
+    in.fillorder = 1;
+    // (G3's rows start with an EOL whose fill bits align it: skip_eol finds it from anywhere)
+    return ccitt(&in, data, len, dst, columns, rows, prow, byte_align && k < 0);
 }
