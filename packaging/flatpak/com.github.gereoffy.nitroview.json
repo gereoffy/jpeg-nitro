@@ -74,8 +74,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/pdfparse3/archive/e772feae0d463e7fa5d018869b177eddf8a16345.tar.gz",
-          "sha256": "7cdae884965524a8ab37bb512e703f684988d7ba3da90dd0d8274a5a364eb0cc",
+          "url": "https://github.com/gereoffy/pdfparse3/archive/6b642d947dab62283e50cfdfc9e662e6780223c1.tar.gz",
+          "sha256": "b40860296d662a01d4530b6bf956a57970fb4cc2f9c7eac1696d0ad7f08056c2",
           "dest": "third_party/pdfparse3"
         },
         {
