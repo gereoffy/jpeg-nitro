@@ -118,10 +118,11 @@ static int bm_new(Bm *b, int w, int h) {
 static inline uint8_t *bm_row(const Bm *b, int y) { return b->mem + (size_t)(y + 2) * b->stride + MX; }
 
 // The context of the pixel x of row r (above it: the rows r1, r2) in the template t (figures 3 to 6),
-// with the adaptive pixels at.
+// with the adaptive pixels at: of this row or one above (6.2.5.4; one below, as a damaged file may
+// say, is not decoded yet, and 127 rows below the last is past the bitmap: 0).
 static inline unsigned context(int t, const Bm *b, int x, int y, const uint8_t *r, const uint8_t *r1,
                                const uint8_t *r2, const int8_t *at) {
-#define AT(k) (x + at[2 * (k)] >= 0 && x + at[2 * (k)] < b->w && y + at[2 * (k) + 1] >= 0 \
+#define AT(k) (x + at[2 * (k)] >= 0 && x + at[2 * (k)] < b->w && at[2 * (k) + 1] <= 0 && y + at[2 * (k) + 1] >= 0 \
                    ? bm_row(b, y + at[2 * (k) + 1])[x + at[2 * (k)]] : 0u)
     switch (t) {
     case 0:
