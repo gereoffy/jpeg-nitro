@@ -49,6 +49,7 @@ const int MAX_DEPTH = 12;                  // forms within forms, patterns, func
 const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included)
 const uint64_t MAX_IMAGE_PIXELS = 16u << 20;   // an image beyond this is decoded smaller
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
+const float MAX_DASHES = 1 << 20;           // a stroke's dashes: with more, drawn solid
 const int MAX_COMPS = 32;                  // a colour's components, a function's outputs (the arrays they are read into)
 
 // (a NaN is a: 0 times an infinite /Encode or /Decode, inf - inf, are never an index or a colour)
@@ -387,6 +388,7 @@ struct Item {
     std::shared_ptr<std::vector<float>> dash;
     std::shared_ptr<Img> img;
     int segments = 0;   // (merged strokes: the path's elements so far)
+    float length = 0;   // (a dashed stroke: its path's length, in its own units)
     bool text = false;  // (a glyph run's fill: merged with the next)
     nd::Box box;
 };
@@ -1948,6 +1950,8 @@ struct Interp {
         float gap = 1e30f;
         if (!clipBox(b, clip, &gap)) return;
         int elements = plutovg_path_get_elements(path, nullptr);
+        plutovg_rect_t unused;
+        float length = gs.dash ? plutovg_path_extents(path, &unused, false) : 0;
         // the same stroke as the last item, opaque: one path (a CAD plot's "m l S" lines)
         if (!pg.items.empty() && gs.strokeA >= 1 && !shared) {
             Item &l = pg.items.back();
@@ -1956,6 +1960,7 @@ struct Interp {
                 l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, path, nullptr);
                 l.segments += elements;
+                l.length += length;
                 l.clipGap = std::min(l.clipGap, gap);
                 l.box.x0 = std::min(l.box.x0, b.x0), l.box.y0 = std::min(l.box.y0, b.y0);
                 l.box.x1 = std::max(l.box.x1, b.x1), l.box.y1 = std::max(l.box.y1, b.y1);
@@ -1978,6 +1983,7 @@ struct Interp {
             it.path = std::make_shared<PathRef>(own);
         }
         it.segments = elements;
+        it.length = length;
         pg.items.push_back(std::move(it));
     }
 
@@ -2549,9 +2555,26 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
             plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path->p);
         } else if (it.kind == Item::STROKE) {
-            nd::setRgb(c, it.rgb, it.alpha);
             float k2 = sqrtf(fabsf(m.a * m.d - m.b * m.c));   // (device pixels per unit)
             float w = k2 > 0 ? std::max(it.width, 1 / k2) : it.width;
+            // Dashes with a period under half a device pixel (they cannot be told apart), or more than
+            // MAX_DASHES of them, are not made one by one: a solid line as light as they cover it. (A
+            // pattern of a millionth of a point on one line across the page: plutovg made every dash,
+            // tens of gigabytes of them.)
+            float alpha = it.alpha;
+            bool dashed = false;
+            if (it.dash) {
+                size_t nd = it.dash->size();
+                float sum = 0, on = 0;
+                for (size_t i = 0; i < nd; i++) sum += (*it.dash)[i], on += i & 1 ? 0 : (*it.dash)[i];
+                // (an odd pattern runs twice, its dashes and gaps changing places: half of it is drawn)
+                float period = nd & 1 ? 2 * sum : sum, perPeriod = nd & 1 ? (float)nd : nd / 2.f;
+                if (nd & 1) on = sum;
+                if (it.cap != PLUTOVG_LINE_CAP_BUTT) on += w * perPeriod;   // (each dash longer by its caps)
+                dashed = period * k2 >= 0.5f && it.length / period * perPeriod <= MAX_DASHES;
+                if (!dashed) alpha *= clampf(on / period, 0, 1);
+            }
+            nd::setRgb(c, it.rgb, alpha);
             // (2 pixels wide at most: round caps and joins drawn square and bevelled, half a pixel apart
             // at most; the stroker's arcs took most of the time of a CAD plot's round-capped hairlines)
             bool thin = w * k2 <= 2;
@@ -2559,7 +2582,7 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
             plutovg_canvas_set_line_cap(c, thin && it.cap == PLUTOVG_LINE_CAP_ROUND ? PLUTOVG_LINE_CAP_SQUARE : (plutovg_line_cap_t)it.cap);
             plutovg_canvas_set_line_join(c, thin && it.join == PLUTOVG_LINE_JOIN_ROUND ? PLUTOVG_LINE_JOIN_BEVEL : (plutovg_line_join_t)it.join);
             plutovg_canvas_set_miter_limit(c, it.miter);
-            if (it.dash) plutovg_canvas_set_dash(c, it.dashOffset, it.dash->data(), (int)it.dash->size());
+            if (dashed) plutovg_canvas_set_dash(c, it.dashOffset, it.dash->data(), (int)it.dash->size());
             else plutovg_canvas_set_dash(c, 0, nullptr, 0);
             plutovg_canvas_stroke_path(c, it.path->p);
         } else {   // (in the picture's pixels; much smaller: one of its halved copies)
