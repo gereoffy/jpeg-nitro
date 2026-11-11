@@ -5,7 +5,7 @@
 [English](README.md) | **Magyar**
 
 A **NitroView** nagyon gyors képnéző **macOS-re, Windowsra és Linuxra**. Fotókat, szkenneléseket,
-Photoshop-fájlokat, nyers (raw) képeket és vektoros rajzokat nyit meg, és saját dekóderekre épül,
+Photoshop-fájlokat, nyers (raw) képeket, vektoros rajzokat és PDF-eket nyit meg, és saját dekóderekre épül,
 amelyek minden képet több CPU-magon dekódolnak: egy 24 megapixeles JPEG egy asztali Intel
 processzoron kb. 11 ms alatt nyílik meg, tízszer gyorsabban, mint a rendszer dekóderével, így egy
 fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. A vektoros
@@ -75,7 +75,7 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io) előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF) előző / következő oldala (címsor: [page 2/5]) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
@@ -169,6 +169,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **draw.io** (.drawio, .dio) | alakzatok, összekötők úgy vezetve, ahogy a draw.io vezeti őket, feliratok (félkövér, dőlt, sortörés), többoldalas diagramok | a stencilkönyvtárak ikonjai és a képek csak keretként jelennek meg; a feliratok egyéb HTML-formázása elvész |
 | **WMF / EMF** (Windows-metafájlok) | a GDI-rajz, szöveg a rendszer betűtípusaival, DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
 | **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2018, az R2007 nem) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként; DWG: lásd [DWG](#dwg) | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
+| **PDF** | oldalak, képek (JPEG, CCITT, JBIG2), beágyazott betűtípusok, CMYK-színek ICC-profillal, megjegyzések, jelszó nélküli titkosított fájlok; [pdfparse3](https://github.com/gereoffy/pdfparse3) | a JPEG 2000 (JPX) képek helyén szürke, a színátmenetes és a csempézett minták egy színnel töltenek ki; a keverési módok és a csoportok lágy maszkjai kimaradnak |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés
@@ -243,6 +244,7 @@ előre dekódolja, amíg az aktuálisat nézed.
 | DXF | 7,5 MB-os alaprajz | **17 ms** | ezdxf 8,7 s |
 | DWG | 1 MB-os alaprajz | **20 ms** | |
 | Visio | 15 MB, 6 oldal, képekkel | **87 ms** | |
+| PDF | nagy CAD-tervek, átlag | **119 ms** | macOS (a Preview renderelője) 170 ms |
 
 Asztali Intel i9-en mérve. Egy 2020-as M1-es MacBook Airen egy 24 MP-es JPEG ~30 ms alatt
 dekódolódik, háromszor gyorsabban, mint ugyanazon a gépen az Apple hardveres JPEG-dekódere. Egy

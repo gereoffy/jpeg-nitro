@@ -5,7 +5,7 @@
 **English** | [Magyar](README.hu.md)
 
 **NitroView** is a very fast image viewer for **macOS, Windows and Linux**. It opens photos, scans,
-Photoshop files, raw images and vector drawings, and it is built on its own decoders, which decode
+Photoshop files, raw images, vector drawings and PDFs, and it is built on its own decoders, which decode
 every image on multiple CPU cores: a 24-megapixel JPEG opens in about 11 ms on a desktop Intel CPU, ten
 times faster than the system's decoder, so a photo series pages as fast as you press the key. Vector
 drawings are rendered sharp at any zoom level.
@@ -71,7 +71,7 @@ SDL viewers open a file dialog when started without files.
 | PgDn / Space                  | next image                                                                                                     |
 | PgUp / Backspace              | previous image                                                                                                 |
 | Home / End                    | first / last image                                                                                             |
-| [ / ]                         | previous / next page of a multi-page drawing: CDR, Visio, DXF / DWG, draw.io (title: [page 2/5])               |
+| [ / ]                         | previous / next page of a multi-page drawing: CDR, Visio, DXF / DWG, draw.io, PDF (title: [page 2/5])          |
 | + / −                         | zoom in / out (√2 steps, stops exactly at 100% and at fit)                                                     |
 | 0                             | fit to the screen: small images are enlarged too (stays on while paging, until W)                              |
 | 1                             | actual size: one image pixel = one screen pixel                                                                |
@@ -163,6 +163,7 @@ The GNOME viewer was contributed by Ferenc Czirok. Windows touchpad gestures are
 | **draw.io** (.drawio, .dio)              | shapes, connectors routed as draw.io routes them, labels (bold, italic, line breaks), multi-page diagrams | the stencil libraries' icons and pictures show as their frame; other HTML formatting in labels is dropped |
 | **WMF / EMF** (Windows metafiles)        | the GDI drawing, text with the system's fonts, DIB bitmaps with masks, gradient fills, clipping, world transforms | EMF+ records (GDI+ drawings) are not read: a dual file shows its GDI part, an EMF+-only one is empty; raster operations other than copy and mask pairs are approximated |
 | **DXF** (AutoCAD R12–2018), **DWG** (R13–R2018, not R2007) | the model space and each layout's sheet with its viewports, as separate pages; DWG: see [DWG](#dwg) | multileaders, multilines, 3D solids, referenced images, external references (xrefs) and the objects of AutoCAD Architecture / Mechanical are not drawn; line weights are ignored; binary DXF does not open |
+| **PDF**                                  | pages, embedded fonts, images (JPG,CCITT,JBIG2), CMYK through an ICC profile, annotations, encrypted files without a password; using [pdfparse3](https://github.com/gereoffy/pdfparse3) | JPEG 2000 (JPX) images not shown; shadings, tiling patterns, blend modes and the soft masks of groups are ignored |
 | **everything else** (GIF, BMP, …)        | through the operating system's decoder (ImageIO, WIC, GTK's loaders; stb_image in the SDL viewer)                                                                                                                    |                                                                                                                                      |
 
 Vector drawings are rendered first in full, so paging, fitting and zooming out work as for photos.
@@ -235,6 +236,7 @@ you look at the current one.
 | DXF              | 7.5 MB floor plan         | **17 ms**  | ezdxf 8.7 s                                      |
 | DWG              | 1 MB floor plan           | **20 ms**  |                                                  |
 | Visio            | 15 MB, 6 pages, pictures  | **87 ms**  |                                                  |
+| PDF              | large CAD plans, average  | **119 ms** | macOS (Preview's renderer) 170 ms                |
 
 Measured on an Intel i9 desktop. On a 2020 M1 MacBook Air a 24 MP JPEG decodes in ~30 ms, three
 times faster than Apple's hardware JPEG decoder on the same machine. A folder of 24 MP photos plays
