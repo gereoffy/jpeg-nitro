@@ -10,17 +10,23 @@
 // lines by default (Acrobat's "enhance thin lines"), or 0.1 pt plan lines would fade away.
 #include "nitropdf.h"
 #include "nitro_draw.h"
+#include "nitro_font.h"   // (stand-ins for the fonts not embedded)
+#include "nitropdf_glyphs.h"
 #include "nitro_convert.h"   // (nc_jpeg_to_bgra)
 #include "nitrojpeg.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
 }
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_OUTLINE_H
 #include <pdfparse3.h>
 #include <plutovg.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -371,8 +377,11 @@ struct Item {
     std::shared_ptr<std::vector<float>> dash;
     std::shared_ptr<Img> img;
     int segments = 0;   // (merged strokes: the path's elements so far)
+    bool text = false;  // (a glyph run's fill: merged with the next)
     nd::Box box;
 };
+
+struct Font;
 
 struct PageDL {
     std::atomic<bool> built{false};
@@ -397,6 +406,13 @@ struct nitropdf {
     std::unordered_set<uint32_t> ocOff;
     bool ocBaseOff = false;
     std::unordered_set<uint32_t> ocOn;
+    // the fonts, by object number, with the FreeType library their embedded programs are read by
+    std::unordered_map<uint32_t, std::shared_ptr<Font>> fonts;
+    FT_Library ft = nullptr;
+    ~nitropdf() {
+        fonts.clear();   // (their faces before the library)
+        if (ft) FT_Done_FreeType(ft);
+    }
 };
 
 namespace {
@@ -1029,6 +1045,460 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     return img;
 }
 
+// --- fonts -------------------------------------------------------------------------
+
+// A glyph name's character: the glyph list's names, uniXXXX, uXXXX[XX] (0: none)
+uint32_t glyphUnicode(const char *name) {
+    if (!name || !*name) return 0;
+    size_t lo = 0, hi = sizeof kGlyphNames / sizeof kGlyphNames[0];
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        int c = strcmp(kGlyphNames[mid].name, name);
+        if (!c) return kGlyphNames[mid].cp;
+        if (c < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    const char *dot = strchr(name, '.');   // (a variant's name: "a.sc", "one.oldstyle")
+    if (dot && dot > name) {
+        std::string base(name, dot - name);
+        return glyphUnicode(base.c_str());
+    }
+    auto hex = [](const char *s, size_t n, uint32_t &v) {
+        v = 0;
+        for (size_t k = 0; k < n; k++) {
+            char c = s[k];
+            int d = c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            if (d < 0) return false;
+            v = v << 4 | d;
+        }
+        return n > 0;
+    };
+    uint32_t v;
+    size_t n = strlen(name);
+    if (n == 7 && !strncmp(name, "uni", 3) && hex(name + 3, 4, v)) return v;
+    if ((n == 5 || n == 6 || n == 7) && name[0] == 'u' && hex(name + 1, n - 1, v) && v <= 0x10FFFF) return v;
+    return 0;
+}
+
+struct Font {
+    enum Kind { SIMPLE, CID, TYPE3 } kind = SIMPLE;
+    std::string program;                  // the embedded font (FreeType reads it in place)
+    FT_Face face = nullptr;
+    plutovg_font_face_t *sub = nullptr;   // a system font standing in for one not embedded
+    int weight = 400;
+    bool italic = false;
+    // simple fonts and Type 3: a code's glyph, character and width
+    int gid[256];
+    uint32_t uni[256];
+    const char *names[256];
+    std::vector<std::string> nameStore;   // (the /Differences' names)
+    float widths[256];
+    bool haveWidth[256];
+    // CID fonts: the CMap (codespace ranges; code ranges -> CIDs), CIDs -> glyphs, widths
+    struct Space {
+        uint32_t lo, hi;
+        int bytes;
+    };
+    struct Range {
+        uint32_t lo, hi, cid;
+        int bytes;
+    };
+    std::vector<Space> spaces;
+    std::vector<Range> ranges;
+    bool identity = true, vertical = false;
+    std::vector<uint16_t> cidToGid;
+    bool cidIdentity = true;
+    std::unordered_map<uint32_t, float> cidWidths;
+    float dw = 1000;
+    std::unordered_map<uint32_t, uint32_t> toUnicode;   // (codes, from /ToUnicode)
+    // Type 3
+    float m[6] = {0.001f, 0, 0, 0.001f, 0, 0};
+    Val charProcs, resources;
+    // the glyphs (glyph space: 1000 units to the em), by glyph (or a stand-in's code)
+    struct Glyph {
+        std::shared_ptr<PathRef> path;
+        float advance = 0;   // (where the PDF gives no width)
+    };
+    std::unordered_map<uint32_t, Glyph> glyphs;
+
+    Font() {
+        for (int k = 0; k < 256; k++) gid[k] = -1, uni[k] = 0, names[k] = nullptr, widths[k] = 0, haveWidth[k] = false;
+    }
+    ~Font() {
+        if (face) FT_Done_Face(face);
+    }
+};
+
+// FreeType outline -> plutovg path, in glyph units (26.6 at 1000 pixels to the em)
+struct Decompose {
+    plutovg_path_t *p;
+    bool open = false;
+};
+int ftMove(const FT_Vector *to, void *u) {
+    Decompose *d = (Decompose *)u;
+    if (d->open) plutovg_path_close(d->p);
+    plutovg_path_move_to(d->p, to->x / 64.f, to->y / 64.f);
+    d->open = true;
+    return 0;
+}
+int ftLine(const FT_Vector *to, void *u) {
+    plutovg_path_line_to(((Decompose *)u)->p, to->x / 64.f, to->y / 64.f);
+    return 0;
+}
+int ftConic(const FT_Vector *c, const FT_Vector *to, void *u) {
+    plutovg_path_quad_to(((Decompose *)u)->p, c->x / 64.f, c->y / 64.f, to->x / 64.f, to->y / 64.f);
+    return 0;
+}
+int ftCubic(const FT_Vector *c1, const FT_Vector *c2, const FT_Vector *to, void *u) {
+    plutovg_path_cubic_to(((Decompose *)u)->p, c1->x / 64.f, c1->y / 64.f, c2->x / 64.f, c2->y / 64.f, to->x / 64.f, to->y / 64.f);
+    return 0;
+}
+
+// A CMap (an embedded /Encoding, or a /ToUnicode): its code space, its CID ranges and characters, or
+// its characters (bfchar, bfrange); read with the content lexer, its operators after their operands.
+void parseCMap(const std::string &data, Font &f, bool toUni) {
+    pp::ContentLexer lx(data.data(), data.size());
+    pp::Op op;
+    auto code = [](Val v, int &bytes) {
+        uint32_t c = 0;
+        bytes = (int)std::min<uint32_t>(v.n, 4);
+        for (int k = 0; k < bytes; k++) c = c << 8 | (uint8_t)v.s[k];
+        return c;
+    };
+    auto unicode = [](Val v) {   // (UTF-16BE: the first character)
+        if (v.t != pp::STR || v.n < 2) return v.t == pp::STR && v.n == 1 ? (uint32_t)(uint8_t)v.s[0] : 0u;
+        uint32_t u = (uint8_t)v.s[0] << 8 | (uint8_t)v.s[1];
+        if (u >= 0xD800 && u < 0xDC00 && v.n >= 4) u = 0x10000 + ((u - 0xD800) << 10) + (((uint8_t)v.s[2] << 8 | (uint8_t)v.s[3]) - 0xDC00);
+        return u;
+    };
+    size_t entries = 0;
+    while (lx.next(op) && entries < (1u << 20)) {
+        std::string_view o = op.name;
+        const Val *a = op.args;
+        size_t n = op.nargs;
+        if (o == "endcodespacerange" && !toUni) {
+            for (size_t k = 0; k + 1 < n; k += 2)
+                if (a[k].t == pp::STR && a[k + 1].t == pp::STR) {
+                    int b0, b1;
+                    uint32_t lo = code(a[k], b0), hi = code(a[k + 1], b1);
+                    if (b0 >= 1 && b0 == b1) f.spaces.push_back({lo, hi, b0});
+                }
+        } else if (o == "endcidrange" && !toUni) {
+            for (size_t k = 0; k + 2 < n; k += 3, entries++)
+                if (a[k].t == pp::STR && a[k + 1].t == pp::STR && a[k + 2].isNum()) {
+                    int b0, b1;
+                    uint32_t lo = code(a[k], b0), hi = code(a[k + 1], b1);
+                    f.ranges.push_back({lo, hi, (uint32_t)a[k + 2].num(), b0});
+                }
+            f.identity = false;
+        } else if (o == "endcidchar" && !toUni) {
+            for (size_t k = 0; k + 1 < n; k += 2, entries++)
+                if (a[k].t == pp::STR && a[k + 1].isNum()) {
+                    int b;
+                    uint32_t c = code(a[k], b);
+                    f.ranges.push_back({c, c, (uint32_t)a[k + 1].num(), b});
+                }
+            f.identity = false;
+        } else if (o == "endbfchar" && toUni) {
+            for (size_t k = 0; k + 1 < n; k += 2, entries++) {
+                int b;
+                if (a[k].t == pp::STR) f.toUnicode[code(a[k], b)] = unicode(a[k + 1]);
+            }
+        } else if (o == "endbfrange" && toUni) {
+            for (size_t k = 0; k + 2 < n; k += 3) {
+                if (a[k].t != pp::STR || a[k + 1].t != pp::STR) continue;
+                int b0, b1;
+                uint32_t lo = code(a[k], b0), hi = code(a[k + 1], b1);
+                for (uint32_t c = lo; c <= hi && c - lo < 65536 && entries < (1u << 20); c++, entries++) {
+                    if (a[k + 2].t == pp::ARRAY) f.toUnicode[c] = unicode(a[k + 2].at(c - lo));
+                    else f.toUnicode[c] = unicode(a[k + 2]) + (c - lo);
+                }
+            }
+        }
+    }
+}
+
+// the stand-in for a font not embedded: its family by its name (the subset tag and the style cut
+// off), else by its descriptor's flags; its weight and slant by its name or descriptor
+plutovg_font_face_t *standIn(pp::Doc &doc, Val desc, std::string name, Font &f) {
+    size_t plus = name.find('+');
+    if (plus == 6) name = name.substr(7);
+    std::string lower;
+    for (char c : name) lower.push_back((char)tolower((unsigned char)c));
+    auto has = [&](const char *w) { return lower.find(w) != std::string::npos; };
+    f.weight = has("black") || has("heavy") ? 900 : has("bold") ? 700 : has("semibold") || has("demi") ? 600 : has("light") ? 300 : 400;
+    Val fw = doc.get(desc, "FontWeight");
+    if (fw.isNum() && fw.num() >= 100) f.weight = (int)fw.num();
+    f.italic = has("italic") || has("oblique") || doc.get(desc, "ItalicAngle").num(0) != 0;
+    int flags = (int)doc.get(desc, "Flags").num(0);
+    std::string family = name.substr(0, name.find_first_of(",-"));
+    std::string spaced;   // ("TimesNewRoman" -> "Times New Roman")
+    for (size_t k = 0; k < family.size(); k++) {
+        if (k && isupper((unsigned char)family[k]) && islower((unsigned char)family[k - 1])) spaced.push_back(' ');
+        spaced.push_back(family[k]);
+    }
+    const char *serif[] = {"Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", nullptr};
+    const char *sans[] = {"Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", nullptr};
+    const char *mono[] = {"Courier New", "Courier", "Liberation Mono", "DejaVu Sans Mono", nullptr};
+    const char *own[] = {family.c_str(), spaced.c_str(), nullptr};
+    std::lock_guard<std::mutex> g(nf_lock());
+    plutovg_font_face_t *face = nf_first_face(own, f.weight, f.italic);
+    if (!face) {
+        bool isMono = has("courier") || has("mono") || (flags & 1);
+        bool isSerif = !isMono && (has("times") || has("serif") || has("roman") || has("garamond") || has("georgia") || (flags & 2));
+        if (has("arial") || has("helvetica") || has("sans")) isSerif = false;
+        face = nf_first_face(isMono ? mono : isSerif ? serif : sans, f.weight, f.italic);
+    }
+    return face;
+}
+
+std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth);
+
+std::shared_ptr<Font> loadFont(nitropdf &P, Val ref, int depth) {
+    if (ref.t == pp::REF) {
+        auto it = P.fonts.find(ref.oid());
+        if (it != P.fonts.end()) return it->second;
+        auto f = loadFontUncached(P, ref, depth);
+        P.fonts[ref.oid()] = f;
+        return f;
+    }
+    return loadFontUncached(P, ref, depth);
+}
+
+// the embedded program of a font descriptor, opened by FreeType
+void openProgram(nitropdf &P, Val desc, Font &f) {
+    pp::Doc &doc = P.doc;
+    for (const char *k : {"FontFile", "FontFile2", "FontFile3"}) {
+        Val r = doc.resolve(desc).get(k);
+        if (r.t != pp::REF) continue;
+        const pp::Stream *st = doc.stream(r.oid());
+        if (!st) continue;
+        pp::Decoded dec;
+        doc.decode(*st, dec, 64u << 20);
+        if (dec.data.empty()) continue;
+        f.program.swap(dec.data);
+        if (!P.ft && FT_Init_FreeType(&P.ft)) P.ft = nullptr;
+        if (P.ft && !FT_New_Memory_Face(P.ft, (const FT_Byte *)f.program.data(), (FT_Long)f.program.size(), 0, &f.face)) {
+            FT_Set_Char_Size(f.face, 0, 1000 * 64, 72, 72);   // (1000 pixels to the em: glyph space's units)
+            return;
+        }
+        f.face = nullptr;
+        f.program.clear();
+    }
+}
+
+// a simple font's encoding: its base table and its /Differences
+void simpleEncoding(nitropdf &P, Val enc, Font &f, const char *const *base) {
+    pp::Doc &doc = P.doc;
+    Val e = doc.resolve(enc);
+    Val baseName = e.t == pp::NAME ? e : doc.get(e, "BaseEncoding");
+    if (baseName.is("WinAnsiEncoding")) base = kWinAnsiEncoding;
+    else if (baseName.is("MacRomanEncoding")) base = kMacRomanEncoding;
+    else if (baseName.is("StandardEncoding") || baseName.is("MacExpertEncoding")) base = kStandardEncoding;
+    if (base)
+        for (int k = 0; k < 256; k++) f.names[k] = base[k];
+    Val diff = doc.get(e, "Differences");
+    int code = 0;
+    f.nameStore.reserve(diff.size());
+    for (size_t k = 0; k < diff.size(); k++) {
+        Val v = doc.resolve(diff.at(k));
+        if (v.isNum()) code = (int)v.num();
+        else if (v.t == pp::NAME && code >= 0 && code < 256) {
+            f.nameStore.emplace_back(v.str());
+            f.names[code++] = nullptr;   // (filled below: nameStore may still move)
+        }
+    }
+    code = 0;
+    size_t s = 0;
+    for (size_t k = 0; k < diff.size(); k++) {
+        Val v = doc.resolve(diff.at(k));
+        if (v.isNum()) code = (int)v.num();
+        else if (v.t == pp::NAME && code >= 0 && code < 256) f.names[code++] = f.nameStore[s++].c_str();
+    }
+}
+
+std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth) {
+    pp::Doc &doc = P.doc;
+    Val d = doc.resolve(ref);
+    if (d.t != pp::DICT || depth > MAX_DEPTH) return nullptr;
+    auto f = std::make_shared<Font>();
+    Val sub = doc.get(d, "Subtype");
+    Val tu = d.get("ToUnicode");
+    if (tu.t == pp::REF)
+        if (const pp::Stream *st = doc.stream(tu.oid())) {
+            pp::Decoded dec;
+            doc.decode(*st, dec, 16u << 20);
+            parseCMap(dec.data, *f, true);
+        }
+    if (sub.is("Type0")) {
+        f->kind = Font::CID;
+        Val desc = doc.resolve(doc.get(d, "DescendantFonts").at(0));
+        Val enc = d.get("Encoding");
+        Val er = doc.resolve(enc);
+        if (er.t == pp::NAME) {
+            f->vertical = er.str().size() > 2 && er.str().substr(er.str().size() - 2) == "-V";
+            // (Identity-H / -V; the predefined CJK CMaps are not built in: their codes taken as two-byte CIDs)
+        } else if (enc.t == pp::REF) {
+            if (const pp::Stream *st = doc.stream(enc.oid())) {
+                pp::Decoded dec;
+                doc.decode(*st, dec, 16u << 20);
+                parseCMap(dec.data, *f, false);
+                f->vertical = doc.get(st->dict, "WMode").num(0) == 1;
+            }
+        }
+        if (f->spaces.empty()) f->spaces.push_back({0, 0xFFFF, 2});
+        Val fd = doc.get(desc, "FontDescriptor");
+        openProgram(P, fd, *f);
+        Val dw = doc.get(desc, "DW");
+        if (dw.isNum()) f->dw = (float)dw.num();
+        Val w = doc.get(desc, "W");
+        for (size_t k = 0; k + 1 < w.size() && f->cidWidths.size() < (1u << 20);) {
+            uint32_t c0 = (uint32_t)doc.resolve(w.at(k)).num();
+            Val nx = doc.resolve(w.at(k + 1));
+            if (nx.t == pp::ARRAY) {
+                for (size_t j = 0; j < nx.size(); j++) f->cidWidths[c0 + (uint32_t)j] = (float)doc.resolve(nx.at(j)).num();
+                k += 2;
+            } else if (k + 2 < w.size()) {
+                uint32_t c1 = (uint32_t)nx.num();
+                float wv = (float)doc.resolve(w.at(k + 2)).num();
+                for (uint32_t c = c0; c <= c1 && c - c0 < 65536; c++) f->cidWidths[c] = wv;
+                k += 3;
+            } else break;
+        }
+        Val c2g = desc.get("CIDToGIDMap");
+        if (c2g.t == pp::REF)
+            if (const pp::Stream *st = doc.stream(c2g.oid())) {
+                pp::Decoded dec;
+                doc.decode(*st, dec, 16u << 20);
+                f->cidIdentity = false;
+                for (size_t k = 0; k + 1 < dec.data.size(); k += 2) f->cidToGid.push_back((uint16_t)((uint8_t)dec.data[k] << 8 | (uint8_t)dec.data[k + 1]));
+            }
+        if (!f->face) f->sub = standIn(doc, fd, std::string(doc.get(desc, "BaseFont").str()), *f);
+        // not embedded, its text by the TrueType font's glyph numbers alone (no /ToUnicode): the
+        // system font's own glyphs by those numbers (right where it is the same font, as readers do)
+        std::string file;
+        int ttc = 0;
+        bool known = false;
+        if (!f->face && f->sub && f->toUnicode.empty() && doc.get(desc, "Subtype").is("CIDFontType2")) {
+            std::lock_guard<std::mutex> g(nf_lock());
+            known = nf_face_file(f->sub, file, ttc);
+        }
+        if (known && (P.ft || !FT_Init_FreeType(&P.ft)) && !FT_New_Face(P.ft, file.c_str(), ttc, &f->face))
+            FT_Set_Char_Size(f->face, 0, 1000 * 64, 72, 72);
+        else if (known)
+            f->face = nullptr;
+        return f;
+    }
+    // simple fonts: widths
+    int first = (int)doc.get(d, "FirstChar").num(0);
+    Val ws = doc.get(d, "Widths");
+    for (size_t k = 0; k < ws.size(); k++) {
+        int c = first + (int)k;
+        if (c >= 0 && c < 256) f->widths[c] = (float)doc.resolve(ws.at(k)).num(), f->haveWidth[c] = true;
+    }
+    if (sub.is("Type3")) {
+        f->kind = Font::TYPE3;
+        auto fm = nums(doc, d.get("FontMatrix"));
+        if (fm.size() == 6) memcpy(f->m, fm.data(), sizeof f->m);
+        f->charProcs = doc.get(d, "CharProcs");
+        f->resources = doc.get(d, "Resources");
+        simpleEncoding(P, d.get("Encoding"), *f, nullptr);
+        for (int k = 0; k < 256; k++)   // (its widths in glyph space, as for other fonts: 1000 to the unit)
+            f->widths[k] *= f->m[0] * 1000;
+        return f;
+    }
+    Val desc = doc.get(d, "FontDescriptor");
+    openProgram(P, desc, *f);
+    int flags = (int)doc.get(desc, "Flags").num(0);
+    bool symbolic = (flags & 4) != 0;
+    std::string baseFont(doc.get(d, "BaseFont").str());
+    bool symbolFont = baseFont.find("Symbol") != std::string::npos || baseFont.find("Dingbats") != std::string::npos;
+    bool tt = f->face && FT_IS_SFNT(f->face);
+    // the base table: a TrueType's or an outside font's StandardEncoding (unless symbolic), a Type 1's own
+    simpleEncoding(P, d.get("Encoding"), *f, (tt || !f->face) && !symbolFont && (!symbolic || !f->face) ? kStandardEncoding : nullptr);
+    if (f->face && !tt) {   // Type 1 / CFF: by name, else by its own encoding
+        FT_CharMap own = nullptr;
+        for (int k = 0; k < f->face->num_charmaps; k++)
+            if (f->face->charmaps[k]->encoding == FT_ENCODING_ADOBE_CUSTOM || f->face->charmaps[k]->encoding == FT_ENCODING_ADOBE_STANDARD ||
+                f->face->charmaps[k]->encoding == FT_ENCODING_ADOBE_EXPERT)
+                own = f->face->charmaps[k];
+        for (int c = 0; c < 256; c++) {
+            FT_UInt g = f->names[c] && FT_HAS_GLYPH_NAMES(f->face) ? FT_Get_Name_Index(f->face, (FT_String *)f->names[c]) : 0;
+            if (!g && own && !FT_Set_Charmap(f->face, own)) g = FT_Get_Char_Index(f->face, c);
+            if (!g && f->names[c] && !FT_Select_Charmap(f->face, FT_ENCODING_UNICODE)) g = FT_Get_Char_Index(f->face, glyphUnicode(f->names[c]));
+            f->gid[c] = g ? (int)g : -1;
+            f->uni[c] = glyphUnicode(f->names[c]);
+        }
+    } else if (f->face) {   // TrueType: (3,0) or (1,0) by the code for a symbolic one, (3,1) by the name's character
+        FT_CharMap m30 = nullptr, m31 = nullptr, m10 = nullptr;
+        for (int k = 0; k < f->face->num_charmaps; k++) {
+            FT_CharMap cm = f->face->charmaps[k];
+            if (cm->platform_id == 3 && cm->encoding_id == 0) m30 = cm;
+            if (cm->platform_id == 3 && cm->encoding_id == 1) m31 = cm;
+            if (cm->platform_id == 1 && cm->encoding_id == 0) m10 = cm;
+        }
+        for (int c = 0; c < 256; c++) {
+            FT_UInt g = 0;
+            uint32_t u = glyphUnicode(f->names[c]);
+            if (m31 && u && (!symbolic || f->names[c]) && !FT_Set_Charmap(f->face, m31)) g = FT_Get_Char_Index(f->face, u);
+            if (!g && m30 && !FT_Set_Charmap(f->face, m30)) {
+                g = FT_Get_Char_Index(f->face, 0xF000 + c);
+                if (!g) g = FT_Get_Char_Index(f->face, c);
+            }
+            if (!g && m10 && !FT_Set_Charmap(f->face, m10)) g = FT_Get_Char_Index(f->face, c);
+            if (!g && f->names[c] && FT_HAS_GLYPH_NAMES(f->face)) g = FT_Get_Name_Index(f->face, (FT_String *)f->names[c]);
+            if (!g && !m31 && !m30 && !m10 && f->face->num_charmaps > 0 && !FT_Set_Charmap(f->face, f->face->charmaps[0]))
+                g = FT_Get_Char_Index(f->face, c);
+            f->gid[c] = g ? (int)g : -1;
+            f->uni[c] = u;
+        }
+    } else {   // not embedded: a system font by the characters (Symbol's own codes in the private area)
+        f->sub = standIn(doc, desc, baseFont, *f);
+        for (int c = 0; c < 256; c++) f->uni[c] = symbolFont && !f->names[c] ? 0xF000 + c : glyphUnicode(f->names[c]);
+    }
+    for (int c = 0; c < 256; c++) {   // (/ToUnicode where the encoding said nothing)
+        auto it = f->toUnicode.find(c);
+        if (!f->uni[c] && it != f->toUnicode.end()) f->uni[c] = it->second;
+    }
+    return f;
+}
+
+// a glyph's outline in glyph space (1000 units to the em, y up) and its advance; a stand-in's
+// stretched to width (its advance made the PDF's, 0: as it is). Its path null: nothing to draw.
+const Font::Glyph &glyphOf(Font &f, uint32_t key, int gid, uint32_t unicode, float width) {
+    auto it = f.glyphs.find(key);
+    if (it != f.glyphs.end()) return it->second;
+    std::shared_ptr<PathRef> out;
+    float advance = 0;
+    if (f.face && gid > 0 && !FT_Load_Glyph(f.face, (FT_UInt)gid, FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP) &&
+        f.face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
+        Decompose d{plutovg_path_create()};
+        FT_Outline_Funcs fn = {ftMove, ftLine, ftConic, ftCubic, 0, 0};
+        FT_Outline_Decompose(&f.face->glyph->outline, &fn, &d);
+        if (d.open) plutovg_path_close(d.p);
+        out = std::make_shared<PathRef>(d.p);
+        advance = f.face->glyph->advance.x / 64.f;
+    } else if (!f.face && unicode) {   // (a space too: its advance, where the PDF gives no width)
+        std::lock_guard<std::mutex> g(nf_lock());
+        plutovg_font_face_t *face = f.sub && nf_has_glyph(f.sub, unicode) ? f.sub : nf_glyph_face(nullptr, unicode, f.weight, f.italic);
+        if (face) {
+            plutovg_path_t *p = plutovg_path_create();
+            float adv = plutovg_font_face_get_glyph_path(face, 1000, 0, 0, unicode, p);
+            float sx = width > 0 && adv > 0 ? clampf(width / adv, 0.5f, 2.f) : 1;
+            plutovg_matrix_t flip;   // (plutovg's y is down)
+            plutovg_matrix_init(&flip, sx, 0, 0, -1, 0, 0);
+            plutovg_path_transform(p, &flip);
+            out = std::make_shared<PathRef>(p);
+            advance = adv * sx;
+        }
+    }
+    if (out && plutovg_path_get_elements(out->p, nullptr) == 0) out.reset();
+    if (f.glyphs.size() >= 65536) f.glyphs.clear();   // (a font of more glyphs than that: some read again)
+    Font::Glyph &g = f.glyphs[key];
+    g.path = out, g.advance = advance;
+    return g;
+}
+
 // --- the content interpreter --------------------------------------------------------
 
 struct GState {
@@ -1042,6 +1512,10 @@ struct GState {
     float width = 1, miter = 10, dashOffset = 0;
     uint8_t cap = 0, join = 0;
     std::shared_ptr<std::vector<float>> dash;
+    // the text state
+    std::shared_ptr<Font> font;
+    float fontSize = 0, charSpace = 0, wordSpace = 0, hScale = 100, leading = 0, rise = 0;
+    int render = 0;
 };
 
 struct Interp {
@@ -1058,10 +1532,13 @@ struct Interp {
     std::vector<uint32_t> forms;   // (the form XObjects being drawn: no cycles)
     std::vector<bool> hiddenStack;
     int hidden = 0;
+    plutovg_matrix_t tm, tlm;           // the text matrix and the text line matrix
+    plutovg_path_t *textClip = nullptr;  // (render modes 4-7: the glyphs clip at ET)
 
     Interp(nitropdf &p, PageDL &dl) : P(p), doc(p.doc), pg(dl) {}
     ~Interp() {
         if (path) plutovg_path_destroy(path);
+        if (textClip) plutovg_path_destroy(textClip);
     }
 
     void resetColors() {
@@ -1146,6 +1623,168 @@ struct Interp {
         if (pendingClip) addClip(pendingClip == 2);
         pendingClip = 0;
         newPath();
+    }
+
+    // a glyph run's fill (in user space), merged into the last one of the same state
+    void textFill(plutovg_path_t *run, const plutovg_matrix_t &m) {
+        nd::Box b = box(run, m, 0);
+        if (!clipBox(b, gs.clip)) return;
+        int elements = plutovg_path_get_elements(run, nullptr);
+        if (!pg.items.empty() && gs.fillA >= 1) {
+            Item &l = pg.items.back();
+            if (l.kind == Item::FILL && l.text && l.clip == gs.clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
+                l.segments + elements <= 4 * (int)MAX_MERGED && l.path.use_count() == 1) {
+                plutovg_path_add_path(l.path->p, run, nullptr);
+                l.segments += elements;
+                l.box.x0 = std::min(l.box.x0, b.x0), l.box.y0 = std::min(l.box.y0, b.y0);
+                l.box.x1 = std::max(l.box.x1, b.x1), l.box.y1 = std::max(l.box.y1, b.y1);
+                return;
+            }
+        }
+        Item it;
+        it.kind = Item::FILL;
+        it.text = true;
+        it.clip = gs.clip;
+        it.rgb = gs.fillRgb, it.alpha = gs.fillA;
+        it.m = m;
+        it.box = b;
+        plutovg_path_t *own = plutovg_path_create();
+        plutovg_path_add_path(own, run, nullptr);
+        it.path = std::make_shared<PathRef>(own);
+        it.segments = elements;
+        pg.items.push_back(std::move(it));
+    }
+
+    // a string shown by Tj / TJ / ' / ": its glyphs drawn by the render mode, the text matrix advanced
+    void showText(Val str, Val res, int depth) {
+        Font *f = gs.font.get();
+        if (!f || str.t != pp::STR) return;
+        const uint8_t *s = (const uint8_t *)str.s;
+        size_t n = str.n;
+        float fs = gs.fontSize, th = gs.hScale / 100;
+        int mode = gs.render;
+        bool fill = mode == 0 || mode == 2 || mode == 4 || mode == 6, stroke = mode == 1 || mode == 2 || mode == 5 || mode == 6;
+        bool clip = mode >= 4;
+        plutovg_path_t *run = plutovg_path_create();
+        for (size_t i = 0; i < n;) {
+            uint32_t code = s[i], key, uni = 0;
+            int bytes = 1, gid = -1;
+            float w;
+            bool haveW;
+            if (f->kind == Font::CID) {
+                bytes = 0;
+                for (int len = 1; len <= 4 && !bytes && i + len <= n; len++) {
+                    uint32_t c = 0;
+                    for (int k = 0; k < len; k++) c = c << 8 | s[i + k];
+                    for (const Font::Space &sp : f->spaces)
+                        if (sp.bytes == len && c >= sp.lo && c <= sp.hi) {
+                            bytes = len, code = c;
+                            break;
+                        }
+                }
+                if (!bytes) {   // (not in the code space: as many bytes as its first range has)
+                    bytes = std::min<int>(f->spaces[0].bytes, (int)(n - i));
+                    code = 0;
+                    for (int k = 0; k < bytes; k++) code = code << 8 | s[i + k];
+                }
+                uint32_t cid = f->identity ? code : 0;
+                for (const Font::Range &r : f->ranges)
+                    if (r.bytes == bytes && code >= r.lo && code <= r.hi) {
+                        cid = r.cid + (code - r.lo);
+                        break;
+                    }
+                gid = f->face ? (int)(f->cidIdentity ? cid : cid < f->cidToGid.size() ? f->cidToGid[cid] : 0) : -1;
+                auto u = f->toUnicode.find(code);
+                uni = u != f->toUnicode.end() ? u->second : 0;
+                auto cw = f->cidWidths.find(cid);
+                haveW = true;
+                w = cw != f->cidWidths.end() ? cw->second : f->dw;
+                key = cid;
+            } else {
+                gid = f->gid[code], uni = f->uni[code];
+                haveW = f->haveWidth[code];
+                w = f->widths[code];
+                key = code;
+            }
+            i += bytes;
+            // the glyph: drawn at the text rendering matrix's origin
+            plutovg_matrix_t g, gm;
+            plutovg_matrix_init(&g, fs * th / 1000, 0, 0, fs / 1000, 0, gs.rise);
+            if (f->vertical) {   // (its origin at the middle of its top: the default metrics, W2 not read)
+                plutovg_matrix_t v;
+                plutovg_matrix_init(&v, 1, 0, 0, 1, -w / 2, -880);
+                mul(gm, v, g);
+                g = gm;
+            }
+            mul(gm, g, tm);
+            if (f->kind == Font::TYPE3) {
+                if (!hidden) type3Glyph(*f, code, gm, res, depth);
+            } else {
+                const Font::Glyph &gl = glyphOf(*f, key, gid, uni, haveW ? w : 0);
+                if (!haveW) w = gl.advance;
+                if (gl.path) plutovg_path_add_path(run, gl.path->p, &gm);
+            }
+            // the advance
+            plutovg_matrix_t t, out;
+            if (!f->vertical) {
+                float tx = (w / 1000 * fs + gs.charSpace + (bytes == 1 && code == 32 ? gs.wordSpace : 0)) * th;
+                plutovg_matrix_init_translate(&t, tx, 0);
+            } else {
+                float ty = -fs + gs.charSpace + (bytes == 1 && code == 32 ? gs.wordSpace : 0);
+                plutovg_matrix_init_translate(&t, 0, ty);
+            }
+            mul(out, t, tm);
+            tm = out;
+        }
+        if (plutovg_path_get_elements(run, nullptr) > 0) {
+            plutovg_matrix_t m;
+            mul(m, gs.ctm, base);
+            if (!hidden && fill) textFill(run, m);
+            if (!hidden && stroke && !gs.strokeNone) {
+                plutovg_path_t *saved = path;
+                path = run;
+                strokeItem(m, nullptr);
+                path = saved;
+            }
+            if (clip) {
+                if (!textClip) textClip = plutovg_path_create();
+                plutovg_path_add_path(textClip, run, nullptr);
+            }
+        } else if (clip && !textClip)
+            textClip = plutovg_path_create();
+        plutovg_path_destroy(run);
+    }
+
+    // a Type 3 glyph: its procedure drawn in its font matrix at the glyph's place
+    void type3Glyph(Font &f, uint32_t code, const plutovg_matrix_t &glyph, Val res, int depth) {
+        if (code > 255 || !f.names[code] || depth >= MAX_DEPTH) return;
+        Val proc = doc.resolve(f.charProcs).get(f.names[code]);
+        const pp::Stream *st = proc.t == pp::REF ? doc.stream(proc.oid()) : nullptr;
+        if (!st) return;
+        pp::Decoded dec;
+        doc.decode(*st, dec, 16u << 20);
+        stack.push_back(gs);
+        plutovg_matrix_t fm, g1000, a, b2;   // (glyph is in 1000ths: the font matrix's units are its own)
+        plutovg_matrix_init(&fm, f.m[0], f.m[1], f.m[2], f.m[3], f.m[4], f.m[5]);
+        plutovg_matrix_init_scale(&g1000, 1000, 1000);
+        mul(a, fm, g1000);
+        mul(b2, a, glyph);
+        mul(gs.ctm, b2, stack.back().ctm);
+        gs.font = nullptr;
+        Val fres = doc.resolve(f.resources).t == pp::DICT ? f.resources : res;
+        run(dec.data.data(), dec.data.size(), fres, depth + 1);
+        gs = stack.back();
+        stack.pop_back();
+    }
+
+    void textClipEnd() {   // ET: the glyphs shown with a clipping mode clip
+        if (!textClip) return;
+        plutovg_path_t *saved = path;
+        path = textClip;
+        addClip(false);
+        path = saved;
+        plutovg_path_destroy(textClip);
+        textClip = nullptr;
     }
 
     void strokeItem(const plutovg_matrix_t &m, std::shared_ptr<PathRef> shared) {
@@ -1472,7 +2111,10 @@ struct Interp {
                 if (o == "F") paint(1, false);
                 break;
             case 'B':
-                if (o == "B") paint(1, true);
+                if (o == "BT") {
+                    plutovg_matrix_init_identity(&tm);
+                    tlm = tm;
+                } else if (o == "B") paint(1, true);
                 else if (o == "B*") paint(2, true);
                 else if (o == "BI") {
                     ImageSource src;
@@ -1494,7 +2136,8 @@ struct Interp {
                 else if (o == "b*") plutovg_path_close(path), paint(2, true);
                 break;
             case 'E':
-                if (o == "EMC" && !hiddenStack.empty()) {
+                if (o == "ET") textClipEnd();
+                else if (o == "EMC" && !hiddenStack.empty()) {
                     hidden -= hiddenStack.back();
                     hiddenStack.pop_back();
                 }
@@ -1524,9 +2167,59 @@ struct Interp {
             case 'D':
                 if (o == "Do" && n >= 1 && a[0].t == pp::NAME) doXObject(res, a[0], depth);
                 break;
+            case 'T':
+                if (o == "Tf" && n >= 2) {
+                    gs.font = a[0].t == pp::NAME ? loadFont(P, doc.resolve(res).t == pp::DICT ? doc.get(res, "Font").get(std::string(a[0].str()).c_str()) : Val(), 0)
+                                                 : nullptr;
+                    gs.fontSize = num(1);
+                } else if (o == "Tc" && n >= 1) gs.charSpace = num(0);
+                else if (o == "Tw" && n >= 1) gs.wordSpace = num(0);
+                else if (o == "Tz" && n >= 1) gs.hScale = num(0);
+                else if (o == "TL" && n >= 1) gs.leading = num(0);
+                else if (o == "Ts" && n >= 1) gs.rise = num(0);
+                else if (o == "Tr" && n >= 1) gs.render = (int)num(0) & 7;
+                else if ((o == "Td" || o == "TD") && n >= 2) {
+                    if (o == "TD") gs.leading = -num(1);
+                    plutovg_matrix_t t, out;
+                    plutovg_matrix_init_translate(&t, num(0), num(1));
+                    mul(out, t, tlm);
+                    tm = tlm = out;
+                } else if (o == "Tm" && n >= 6) {
+                    plutovg_matrix_init(&tlm, num(0), num(1), num(2), num(3), num(4), num(5));
+                    tm = tlm;
+                } else if (o == "T*") nextLine();
+                else if (o == "Tj" && n >= 1) showText(a[0], res, depth);
+                else if (o == "TJ" && n >= 1 && a[0].t == pp::ARRAY) {
+                    for (size_t k = 0; k < a[0].size(); k++) {
+                        Val e = a[0].at(k);
+                        if (e.t == pp::STR) showText(e, res, depth);
+                        else if (e.isNum() && gs.font) {   // (thousandths of the font size, against the direction)
+                            float d = -(float)e.num() / 1000 * gs.fontSize;
+                            plutovg_matrix_t t, out;
+                            if (gs.font->vertical) plutovg_matrix_init_translate(&t, 0, d);
+                            else plutovg_matrix_init_translate(&t, d * gs.hScale / 100, 0);
+                            mul(out, t, tm);
+                            tm = out;
+                        }
+                    }
+                }
+                break;
+            case '\'':
+                if (n >= 1) nextLine(), showText(a[0], res, depth);
+                break;
+            case '"':
+                if (n >= 3) gs.wordSpace = num(0), gs.charSpace = num(1), nextLine(), showText(a[2], res, depth);
+                break;
             }
         }
         while (stack.size() > qBase) gs = stack.back(), stack.pop_back();   // (unbalanced q)
+    }
+
+    void nextLine() {
+        plutovg_matrix_t t, out;
+        plutovg_matrix_init_translate(&t, 0, -gs.leading);
+        mul(out, t, tlm);
+        tm = tlm = out;
     }
 
     // an inline image's dictionary (abbreviated keys and names), its data decoded but for an image filter
@@ -1598,6 +2291,8 @@ void buildPage(nitropdf &P, int k) {
     Interp in(P, pg);
     pageGeometry(page, nullptr, nullptr, &in.base);
     plutovg_matrix_init_identity(&in.gs.ctm);
+    plutovg_matrix_init_identity(&in.tm);
+    in.tlm = in.tm;
     in.resetColors();
     std::string content;
     P.doc.contents(page, content);

@@ -12,6 +12,8 @@
 #     reader only, configured by patches/libxml2/): Visio drawings, through the same code
 #   - pdfparse3 (MIT, github.com/gereoffy/pdfparse3): its C++ object layer (pdfparse3.cpp, pdfcrypt.c),
 #     the PDF files' objects for nitropdf
+#   - FreeType (FreeType License, BSD-like): the outlines of the fonts PDFs embed (nitropdf; sources
+#     only, the Makefile compiles the modules patches/freetype/ftmodule.h lists)
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - dav1d (static, BSD-2-Clause, VideoLAN): the AV1 decoder for AVIF images (DAV1D=0 skips it);
 #     built with meson + ninja (pip, in third_party/tools/venv) and nasm; with WINCC=path/to/
@@ -28,6 +30,7 @@ LIBCDR_COMMIT=89071401ff32fe4f97d997f050ea914f07915b2d    # 2026-11-04, github.c
 LIBVISIO_COMMIT=7fd688eb9d984a699a08f89a012d919cb626530e  # 2026-11-04, github.com/gereoffy/libvisio (and in packaging/flatpak/*.json)
 PDFPARSE3_COMMIT=a226eeb9816b10297a0cd22219e4444595d9c28c  # 2026-11-11, github.com/gereoffy/pdfparse3 (and in packaging/flatpak/*.json)
 LIBXML2_VER=2.13.8
+FREETYPE_VER=2.15.0   # (also in packaging/flatpak/*.json, with its sha256)
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
 ZLIB_VER=1.3.1      # (only for the Windows build: macOS and Linux have it)
@@ -73,6 +76,15 @@ if [ ! -f pdfparse3/.stamp-$PDFPARSE3_COMMIT ]; then
   tar xf pdfparse3.tar.gz && rm pdfparse3.tar.gz
   mv pdfparse3-$PDFPARSE3_COMMIT pdfparse3
   touch pdfparse3/.stamp-$PDFPARSE3_COMMIT
+fi
+# FreeType: the sources of its release tag (only the modules nitropdf needs are compiled)
+if [ ! -f freetype/.stamp-$FREETYPE_VER ]; then
+  FT_TAG=VER-$(echo $FREETYPE_VER | tr . -)
+  rm -rf freetype freetype-$FT_TAG
+  curl -fsSL -o freetype.tar.gz https://github.com/freetype/freetype/archive/refs/tags/$FT_TAG.tar.gz
+  tar xf freetype.tar.gz && rm freetype.tar.gz
+  mv freetype-$FT_TAG freetype
+  touch freetype/.stamp-$FREETYPE_VER
 fi
 LIBREVENGE_STAMP=$LIBREVENGE_VER-$(cksum < ../patches/librevenge.patch | cut -d' ' -f1)
 if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
@@ -281,4 +293,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"

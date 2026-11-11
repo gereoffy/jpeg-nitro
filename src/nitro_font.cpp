@@ -387,6 +387,15 @@ plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
     return best < 0 ? nullptr : load(ix, best);
 }
 
+bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc) {
+    Index &ix = index();
+    auto it = ix.loaded.find(face);
+    if (it == ix.loaded.end()) return false;
+    file = ix.faces[it->second].file;
+    ttc = ix.faces[it->second].ttc;
+    return true;
+}
+
 bool nf_has_style(const char *family, bool italic) {
     Index &ix = index();
     const std::vector<int> *faces = family_faces(ix, family);

@@ -24,6 +24,9 @@ std::mutex &nf_lock();
 // the one on the requested side (a light weight: the lighter). NULL if the family is not
 // installed. The face stays loaded for the process; it is not to be destroyed.
 plutovg_font_face_t *nf_face(const char *family, int weight, bool italic);
+// The file (and the index in a collection) a face of nf_face's was loaded from: for a reader that needs
+// the font's own glyph numbers (a PDF's font not embedded, its text by them). false if not one of ours.
+bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc);
 // Whether the family has an upright (italic false) or an italic face at all.
 bool nf_has_style(const char *family, bool italic);
 // Whether a face of nf_face's has a glyph for the character (else its "missing glyph" box shows).

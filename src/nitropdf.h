@@ -4,10 +4,11 @@
 // nitropdf: PDF documents for the viewers. pdfparse3's object layer (github.com/gereoffy/pdfparse3,
 // see scripts/get-deps.sh) reads the file with its tolerance; nitropdf interprets a page's content
 // (paths, painting and clipping, the graphics state, the colour spaces with their functions, images
-// and their masks, form XObjects, optional content) into a display list the first time the page is
-// drawn, and draws it with plutovg at any scale and offset, like the other readers. Not yet: text,
-// shadings and tiling patterns (a shading pattern fills with its middle colour), soft masks of
-// groups, blend modes.
+// and their masks, text, form XObjects, optional content) into a display list the first time the
+// page is drawn, and draws it with plutovg at any scale and offset, like the other readers. Text: the
+// fonts it embeds through FreeType (TrueType, Type 1, CFF, CID-keyed, OpenType), Type 3 fonts, and
+// system fonts standing in for the others (nitro_font). Not yet: shadings and tiling patterns (a
+// shading pattern fills with its middle colour), soft masks of groups, blend modes, annotations.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

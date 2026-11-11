@@ -80,6 +80,12 @@
         },
         {
           "type": "archive",
+          "url": "https://github.com/freetype/freetype/archive/refs/tags/VER-2-15-0.tar.gz",
+          "sha256": "87c7f1f8699b91e89f773f7dcfa505b044e1dae67f62a55d4e29c3afdcac4fb8",
+          "dest": "third_party/freetype"
+        },
+        {
+          "type": "archive",
           "url": "https://dev-www.libreoffice.org/src/librevenge-0.0.6.tar.bz2",
           "sha256": "52a65e904d255dbdd97a8b7bb28d6574e14f999eb01416aff004502406d0904d",
           "dest": "third_party/librevenge"

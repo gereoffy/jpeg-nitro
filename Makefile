@@ -15,7 +15,7 @@
 #                        decodes all others)
 #   make NITROVEC=0      no vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io, PDF): their
 #                        libraries from scripts/get-deps.sh (lunasvg, libcdr, libvisio, librevenge, lcms2,
-#                        libxml2, pdfparse3) and our readers over them are left out (libnitrovec.a holds nothing then)
+#                        libxml2, pdfparse3, FreeType) and our readers over them are left out (libnitrovec.a holds nothing then)
 #   make MIMALLOC=0      the vector drawings' code with the system malloc, not mimalloc
 #   make app             nitroview.app bundle, so the Finder can open images with it: universal
 #                        (x86_64 + arm64, macOS 11+); MAC_ARCHS=x86_64 for one architecture only
@@ -136,6 +136,8 @@ LIBVISIO   := third_party/libvisio
 LIBXML2    := third_party/libxml2
 # PDF: pdfparse3's C++ object layer (github.com/gereoffy/pdfparse3) under nitropdf
 PDFP       := third_party/pdfparse3
+# FreeType: the outlines of the fonts PDFs embed, its modules as patches/freetype/ configures them
+FT         := third_party/freetype
 BOOST      := third_party/boost
 # zlib for CorelDRAW in the Windows and the portable Linux build (macOS / Linux have it)
 ZLIB       := third_party/zlib
@@ -146,7 +148,7 @@ DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
 DAV1D_DEFS := -DNV_DAV1D -I$(DAV1D_DIR)/include
 # the vector drawings (libnitrovec.a): with all of lunasvg, libcdr, librevenge, lcms2, the boost headers,
 # libvisio and libxml2 from scripts/get-deps.sh, or without any
-NITROVEC   ?= $(if $(and $(wildcard $(LUNA)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h)),1,0)
+NITROVEC   ?= $(if $(and $(wildcard $(LUNA)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h),$(wildcard $(FT)/include/ft2build.h)),1,0)
 # (non-empty with them; no comment on its line: the spaces before one would be part of the value)
 VEC        := $(filter 1,$(NITROVEC))
 MI         := third_party/mimalloc
@@ -343,7 +345,8 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 # recompiles that one - and all archived together: one library to link. lunasvg (with plutovg, the
 # rasterizer every reader draws with), libcdr + libvisio + librevenge (its core and streams; the SVG
 # generator is part of the core: libcdr renders full colour pattern fills with it) + lcms2 + libxml2's
-# XML reader (configured by patches/libxml2/), pdfparse3's object layer (nitropdf's parser), and zlib where the system has none (Windows, the
+# XML reader (configured by patches/libxml2/), pdfparse3's object layer (nitropdf's parser), FreeType's
+# font drivers (configured by patches/freetype/: outlines only), and zlib where the system has none (Windows, the
 # portable Linux build). Built per target directory with its TCPU (see build/% above); every
 # source and header counts, so an edit in third_party rebuilds its library too.
 LUNA_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
@@ -373,6 +376,10 @@ VISIO_DEPS = $(VISIO_CXX) $(wildcard $(LIBVISIO)/src/lib/*.h $(LIBVISIO)/inc/lib
 RVNG_DEFS := -DBOOST_ALL_NO_LIB -DBOOST_ERROR_CODE_HEADER_ONLY -DLIBREVENGE_BUILD -DLIBREVENGE_STREAM_BUILD -DPLUTOVG_BUILD_STATIC \
              -I$(LIBCDR)/inc -I$(LIBREVENGE)/inc -I$(LCMS)/include -I$(BOOST) -I$(LUNA)/plutovg/include \
              -I$(LIBVISIO)/inc -Ipatches/libvisio -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include
+FT_C      = $(addprefix $(FT)/src/,base/ftsystem.c base/ftinit.c base/ftdebug.c base/ftbase.c base/ftbitmap.c base/ftmm.c \
+              truetype/truetype.c type1/type1.c cff/cff.c cid/type1cid.c psaux/psaux.c psnames/psnames.c sfnt/sfnt.c)
+FT_DEFS  := -DFT_CONFIG_MODULES_H=\<ftmodule.h\> -DFT_CONFIG_OPTIONS_H=\<ftoption.h\> -Ipatches/freetype -I$(FT)/include
+FT_DEPS   = $(FT_C) patches/freetype/ftmodule.h patches/freetype/ftoption.h $(wildcard $(FT)/.stamp-*)
 PDFP_C    = $(PDFP)/pdfcrypt.c
 PDFP_CXX  = $(PDFP)/pdfparse3.cpp
 PDFP_DEPS = $(PDFP_C) $(PDFP_CXX) $(wildcard $(PDFP)/*.h) $(wildcard $(PDFP)/.stamp-*)
@@ -408,20 +415,22 @@ endef
 	$(call vec_objs,,$(CDR_CXX),,-O2 -w $(RVNG_DEFS) $(VEC_INC))
 %/vec/libvisio/.built: $(VISIO_DEPS) $(wildcard $(LIBREVENGE)/inc/*/*.h) patches/libxml2/config.h
 	$(call vec_objs,,$(VISIO_CXX),,-O2 -w $(RVNG_DEFS) $(VEC_INC))
+%/vec/freetype/.built: $(FT_DEPS)
+	$(call vec_objs,$(FT_C),,-O2 -w -DFT2_BUILD_LIBRARY $(FT_DEFS),)
 %/vec/pdfparse3/.built: $(PDFP_DEPS)
 	$(call vec_objs,$(PDFP_C),$(PDFP_CXX),-std=c99 -O2 -w,-fno-exceptions -fno-rtti -O2 -w $(VEC_INC))
 %/vec/zlib/.built: $(ZLIB_C) $(wildcard $(ZLIB)/*.h)
 	$(call vec_objs,$(ZLIB_C),,-O2 -w -I$(ZLIB),)
 %/vec/nitro/.built: $(NITRO_DEPS) $(wildcard $(LUNA)/include/*.h $(LUNA)/plutovg/include/*.h $(LIBCDR)/inc/libcdr/*.h $(LIBVISIO)/inc/libvisio/*.h \
-                    $(LIBREVENGE)/inc/*/*.h $(PDFP)/*.h) build/.config-$(CONFIG)
+                    $(LIBREVENGE)/inc/*/*.h $(PDFP)/*.h) patches/freetype/ftoption.h build/.config-$(CONFIG)
 	@rm -rf $(@D) && mkdir -p $(@D)
 	@echo "compiling our readers into $(@D)/"
 	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
-	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
+	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@
 # the library: the parts' objects together ($(1): the target directory, $(2): zlib where it is needed)
-VEC_PARTS = $(if $(VEC),lunasvg lcms2 libxml2 librevenge libcdr libvisio pdfparse3) nitro
+VEC_PARTS = $(if $(VEC),lunasvg lcms2 libxml2 librevenge libcdr libvisio pdfparse3 freetype) nitro
 vec_stamps = $(foreach p,$(VEC_PARTS) $(if $(VEC),$(2)),$(1)/vec/$(p)/.built) build/.config-$(CONFIG)
 define vec_lib
 	@rm -f $@ && $(AR) rcs $@ $(foreach s,$(filter %/.built,$^),$(dir $(s))*.o)
