@@ -50,7 +50,8 @@ const uint64_t MAX_IMAGE_PIXELS = 16u << 20;   // an image beyond this is decode
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
 const int MAX_COMPS = 32;                  // a colour's components, a function's outputs (the arrays they are read into)
 
-inline float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
+// (a NaN is a: 0 times an infinite /Encode or /Decode, inf - inf, are never an index or a colour)
+inline float clampf(float v, float a, float b) { return !(v > a) ? a : v > b ? b : v; }
 
 // --- functions (Type 0 sampled, 2 exponential, 3 stitching, 4 PostScript calculator) -----------
 
