@@ -363,6 +363,7 @@ struct Clip {
     std::shared_ptr<PathRef> path;
     plutovg_matrix_t m;
     bool evenOdd;
+    bool rect;     // an upright rectangle: its box (what is wholly inside it, it does not clip)
     nd::Box box;   // in the page's coordinates, the parents' too
 };
 
@@ -371,6 +372,8 @@ struct Item {
     bool evenOdd = false;
     uint8_t cap = 0, join = 0;
     int clip = -1;
+    int clipOwn = -1;   // (a stroke: its clip before the rectangles around it were left out (clipBox);
+    float clipGap = 0;  // how far inside them it is: a line drawn wider than it is (1 pixel) may reach out)
     uint32_t rgb = 0;
     float alpha = 1, width = 1, miter = 10, dashOffset = 0;
     plutovg_matrix_t m;
@@ -402,6 +405,8 @@ struct nitropdf {
     // the caches, by object number
     std::unordered_map<uint32_t, std::shared_ptr<CS>> spaces;
     std::unordered_map<uint32_t, std::shared_ptr<Func>> funcs;
+    // large resource dictionaries indexed by name (resource()): by where their pairs are
+    std::unordered_map<const pp::Val *, std::unordered_map<std::string_view, pp::Val>> names;
     std::unordered_map<uint32_t, std::weak_ptr<Img>> images;
     // optional content: the groups hidden by the default configuration
     std::unordered_set<uint32_t> ocOff;
@@ -614,6 +619,7 @@ std::shared_ptr<CS> deviceCS(CS::K k) {
 }
 
 std::shared_ptr<CS> loadCS(nitropdf &P, Val v, Val res, int depth);
+Val resource(nitropdf &P, Val res, const char *category, Val name);
 
 std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
     pp::Doc &doc = P.doc;
@@ -628,10 +634,9 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
             c->k = CS::PATTERN;
             return c;
         }
-        Val named = doc.get(doc.get(res, "ColorSpace"), std::string(v.str()).c_str());
-        if (named.t == pp::NUL) return nullptr;
-        return loadCS(P, doc.resolve(res).get("ColorSpace").t ? doc.get(res, "ColorSpace").get(std::string(v.str()).c_str()) : Val(), Val(),
-                      depth + 1);
+        Val named = resource(P, res, "ColorSpace", v);
+        if (doc.resolve(named).t == pp::NUL) return nullptr;
+        return loadCS(P, named, Val(), depth + 1);
     }
     if (v.t != pp::ARRAY || !v.size()) return nullptr;
     Val kind = doc.resolve(v.at(0));
@@ -799,6 +804,22 @@ struct ImageSource {   // an image's dictionary and its data, decoded but for an
     std::string filter;   // DCTDecode, CCITTFaxDecode, JBIG2Decode, JPXDecode or empty
     Val parms;
 };
+
+// A resource by its name: the entry of res's category dictionary (/XObject, /Font ...), unresolved.
+// A large one (a CAD export's thousands of forms on a page) is indexed the first time: looked up
+// through for every operator using it, a page's build took seconds.
+Val resource(nitropdf &P, Val res, const char *category, Val name) {
+    pp::Doc &doc = P.doc;
+    if (name.t != pp::NAME || doc.resolve(res).t != pp::DICT) return Val();
+    Val d = doc.get(res, category);
+    if (d.t != pp::DICT) return Val();
+    if (d.size() < 64) return d.get(std::string(name.str()).c_str());
+    auto &index = P.names[d.v];   // (the pairs never move: the document holds them)
+    if (index.empty())
+        for (size_t k = 0; k < d.size(); k++) index[d.v[2 * k].str()] = d.v[2 * k + 1];   // (the last of the same keys counts)
+    auto it = index.find(name.str());
+    return it != index.end() ? it->second : Val();
+}
 
 // the dictionary's value by its name or (an inline image's) abbreviation
 Val key(pp::Doc &doc, Val d, const char *name, const char *abbr) {
@@ -1544,6 +1565,8 @@ struct Interp {
     pp::Doc &doc;
     PageDL &pg;
     plutovg_matrix_t base;   // the page's user space -> its display coordinates
+    float pageW = 0, pageH = 0;   // (its size there)
+    std::unordered_map<std::string, int> clipIds;   // (the clips made: their index by parent, rule, matrix, path)
     GState gs;
     std::vector<GState> stack;
     plutovg_path_t *path = nullptr;
@@ -1590,7 +1613,16 @@ struct Interp {
     }
     // an item's box within its clip's; false if nothing is left of it (a box of no width or height
     // is something: a hairline exactly across or up, as a CAD plot's letters are drawn)
-    bool clipBox(nd::Box &b, int clip) {
+    // An item's extents b under the clip: false if nothing of it is left. An item wholly inside a
+    // rectangle clip is not clipped by it (clip: its parent then): a CAD export's objects clipped to
+    // the drawing's frame need no clip, and the canvas's clip is not set again and again for them.
+    bool clipBox(nd::Box &b, int &clip, float *gap = nullptr) {
+        while (clip >= 0 && pg.clips[clip].rect) {
+            const nd::Box &c = pg.clips[clip].box;
+            if (b.x0 < c.x0 || b.y0 < c.y0 || b.x1 > c.x1 || b.y1 > c.y1) break;
+            if (gap) *gap = std::min({*gap, b.x0 - c.x0, b.y0 - c.y0, c.x1 - b.x1, c.y1 - b.y1});
+            clip = pg.clips[clip].parent;
+        }
         if (clip < 0) return true;
         const nd::Box &c = pg.clips[clip].box;
         b.x0 = std::max(b.x0, c.x0), b.y0 = std::max(b.y0, c.y0), b.x1 = std::min(b.x1, c.x1), b.y1 = std::min(b.y1, c.y1);
@@ -1602,13 +1634,58 @@ struct Interp {
         path = plutovg_path_create();
     }
 
+    // The current path is an upright rectangle under m, b its extents.
+    bool uprightRect(const plutovg_matrix_t &m, const nd::Box &b) {
+        bool upright = fabsf(m.b) < 1e-6f && fabsf(m.c) < 1e-6f, turned = fabsf(m.a) < 1e-6f && fabsf(m.d) < 1e-6f;
+        if (!upright && !turned) return false;
+        const plutovg_path_element_t *e;
+        int n = plutovg_path_get_elements(path, &e), moves = 0, lines = 0;
+        float px = 0, py = 0, eps = 0.01f;
+        for (int i = 0; i < n; i += e[i].header.length) {
+            plutovg_path_command_t cmd = e[i].header.command;
+            if (cmd == PLUTOVG_PATH_COMMAND_CUBIC_TO || (cmd == PLUTOVG_PATH_COMMAND_MOVE_TO && ++moves > 1)) return false;
+            if (cmd == PLUTOVG_PATH_COMMAND_CLOSE) continue;
+            const plutovg_point_t &q = e[i + 1].point;
+            float x = m.a * q.x + m.c * q.y + m.e, y = m.b * q.x + m.d * q.y + m.f;
+            bool cx = fabsf(x - b.x0) < eps || fabsf(x - b.x1) < eps, cy = fabsf(y - b.y0) < eps || fabsf(y - b.y1) < eps;
+            if (!cx || !cy) return false;   // (every point a corner, every edge along one axis)
+            if (cmd == PLUTOVG_PATH_COMMAND_LINE_TO && ++lines && fabsf(x - px) >= eps && fabsf(y - py) >= eps) return false;
+            px = x, py = y;
+        }
+        return lines >= 3 && lines <= 4;
+    }
+
+    // The clip of the current path: none if it cuts nothing, the same one if it is there already (a
+    // CAD export clips every object to the same rectangle: one clip, not one per object, so that the
+    // items drawn under it share it and the canvas's clip is set once, not before each of them)
     void addClip(bool evenOdd) {
+        plutovg_matrix_t m;
+        mul(m, gs.ctm, base);
+        nd::Box b = box(path, m, 0);
+        bool rect = uprightRect(m, b);
+        if (rect) {   // (around all of the page, or of the clip it is in: it cuts nothing away)
+            nd::Box area = gs.clip >= 0 ? pg.clips[gs.clip].box : nd::Box{0, 0, pageW, pageH};
+            const float eps = 0.01f;
+            if (b.x0 <= area.x0 + eps && b.y0 <= area.y0 + eps && b.x1 >= area.x1 - eps && b.y1 >= area.y1 - eps) return;
+        }
+        const plutovg_path_element_t *e;
+        int n = plutovg_path_get_elements(path, &e);
+        std::string key((const char *)&gs.clip, sizeof gs.clip);
+        key += (char)evenOdd;
+        key.append((const char *)&m, sizeof m);
+        key.append((const char *)e, (size_t)n * sizeof *e);
+        auto known = clipIds.find(key);
+        if (known != clipIds.end()) {
+            gs.clip = known->second;
+            return;
+        }
         Clip c;
         c.parent = gs.clip;
         c.path = std::make_shared<PathRef>(plutovg_path_reference(path));
-        mul(c.m, gs.ctm, base);
+        c.m = m;
         c.evenOdd = evenOdd;
-        c.box = box(path, c.m, 0);
+        c.rect = rect;
+        c.box = b;
         if (gs.clip >= 0) {
             const nd::Box &p = pg.clips[gs.clip].box;
             c.box.x0 = std::max(c.box.x0, p.x0), c.box.y0 = std::max(c.box.y0, p.y0);
@@ -1616,6 +1693,7 @@ struct Interp {
         }
         gs.clip = (int)pg.clips.size();
         pg.clips.push_back(std::move(c));
+        clipIds.emplace(std::move(key), gs.clip);
     }
 
     // painting the current path: fill (0 none, 1 nonzero, 2 even-odd) and / or stroke
@@ -1649,11 +1727,12 @@ struct Interp {
     // a glyph run's fill (in user space), merged into the last one of the same state
     void textFill(plutovg_path_t *run, const plutovg_matrix_t &m) {
         nd::Box b = box(run, m, 0);
-        if (!clipBox(b, gs.clip)) return;
+        int clip = gs.clip;
+        if (!clipBox(b, clip)) return;
         int elements = plutovg_path_get_elements(run, nullptr);
         if (!pg.items.empty() && gs.fillA >= 1) {
             Item &l = pg.items.back();
-            if (l.kind == Item::FILL && l.text && l.clip == gs.clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
+            if (l.kind == Item::FILL && l.text && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= 4 * (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, run, nullptr);
                 l.segments += elements;
@@ -1665,7 +1744,7 @@ struct Interp {
         Item it;
         it.kind = Item::FILL;
         it.text = true;
-        it.clip = gs.clip;
+        it.clip = clip;
         it.rgb = gs.fillRgb, it.alpha = gs.fillA;
         it.m = m;
         it.box = b;
@@ -1810,16 +1889,19 @@ struct Interp {
 
     void strokeItem(const plutovg_matrix_t &m, std::shared_ptr<PathRef> shared) {
         nd::Box b = box(path, m, gs.width / 2 * std::max(1.f, gs.join == 0 ? std::min(gs.miter, 4.f) : 1.f));
-        if (!clipBox(b, gs.clip)) return;
+        int clip = gs.clip;
+        float gap = 1e30f;
+        if (!clipBox(b, clip, &gap)) return;
         int elements = plutovg_path_get_elements(path, nullptr);
         // the same stroke as the last item, opaque: one path (a CAD plot's "m l S" lines)
         if (!pg.items.empty() && gs.strokeA >= 1 && !shared) {
             Item &l = pg.items.back();
-            if (l.kind == Item::STROKE && l.clip == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
+            if (l.kind == Item::STROKE && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
                 l.join == gs.join && l.miter == gs.miter && l.dash == gs.dash && l.dashOffset == gs.dashOffset && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, path, nullptr);
                 l.segments += elements;
+                l.clipGap = std::min(l.clipGap, gap);
                 l.box.x0 = std::min(l.box.x0, b.x0), l.box.y0 = std::min(l.box.y0, b.y0);
                 l.box.x1 = std::max(l.box.x1, b.x1), l.box.y1 = std::max(l.box.y1, b.y1);
                 return;
@@ -1827,7 +1909,8 @@ struct Interp {
         }
         Item it;
         it.kind = Item::STROKE;
-        it.clip = gs.clip;
+        it.clip = clip;
+        it.clipOwn = gs.clip, it.clipGap = gap;
         it.rgb = gs.strokeRgb, it.alpha = gs.strokeA;
         it.width = gs.width, it.cap = gs.cap, it.join = gs.join, it.miter = gs.miter;
         it.dash = gs.dash, it.dashOffset = gs.dashOffset;
@@ -1855,7 +1938,7 @@ struct Interp {
             none = false;
             rgb = 0x808080;
             if (n && args[n - 1].t == pp::NAME) {
-                Val p = doc.get(doc.get(res, "Pattern"), std::string(args[n - 1].str()).c_str());
+                Val p = doc.resolve(resource(P, res, "Pattern", args[n - 1]));
                 if ((int)doc.get(p, "PatternType").num(0) == 2) {
                     Val sh = doc.get(p, "Shading");
                     auto scs = loadCS(P, doc.resolve(sh).get("ColorSpace"), res, 0);
@@ -1905,7 +1988,7 @@ struct Interp {
     }
 
     void extGState(Val res, Val name) {
-        Val g = doc.get(doc.get(res, "ExtGState"), std::string(name.str()).c_str());
+        Val g = doc.resolve(resource(P, res, "ExtGState", name));
         if (g.t != pp::DICT) return;
         Val v;
         if ((v = doc.get(g, "LW")).isNum()) gs.width = (float)v.num();
@@ -1980,7 +2063,7 @@ struct Interp {
     }
 
     void doXObject(Val res, Val name, int depth) {
-        Val ref = doc.resolve(res).t == pp::DICT ? doc.get(res, "XObject").get(std::string(name.str()).c_str()) : Val();
+        Val ref = resource(P, res, "XObject", name);
         if (ref.t != pp::REF) return;
         const pp::Stream *st = doc.stream(ref.oid());
         if (!st) return;
@@ -2148,8 +2231,7 @@ struct Interp {
                 } else if (o == "BMC" || o == "BDC") {
                     bool hide = false;
                     if (o == "BDC" && n >= 2 && a[0].is("OC")) {
-                        Val prop = a[1].t == pp::NAME ? doc.resolve(res).t == pp::DICT ? doc.get(res, "Properties").get(std::string(a[1].str()).c_str()) : Val()
-                                                      : a[1];
+                        Val prop = a[1].t == pp::NAME ? resource(P, res, "Properties", a[1]) : a[1];
                         hide = !visible(prop);
                     }
                     hiddenStack.push_back(hide);
@@ -2194,8 +2276,7 @@ struct Interp {
                 break;
             case 'T':
                 if (o == "Tf" && n >= 2) {
-                    gs.font = a[0].t == pp::NAME ? loadFont(P, doc.resolve(res).t == pp::DICT ? doc.get(res, "Font").get(std::string(a[0].str()).c_str()) : Val(), 0)
-                                                 : nullptr;
+                    gs.font = a[0].t == pp::NAME ? loadFont(P, resource(P, res, "Font", a[0]), 0) : nullptr;
                     gs.fontSize = num(1);
                 } else if (o == "Tc" && n >= 1) gs.charSpace = num(0);
                 else if (o == "Tw" && n >= 1) gs.wordSpace = num(0);
@@ -2349,7 +2430,9 @@ void buildPage(nitropdf &P, int k) {
     PageDL &pg = *P.dl[k];
     const pp::Page &page = P.pages[k];
     Interp in(P, pg);
-    pageGeometry(page, nullptr, nullptr, &in.base);
+    double pw, ph;
+    pageGeometry(page, &pw, &ph, &in.base);
+    in.pageW = (float)pw, in.pageH = (float)ph;
     plutovg_matrix_init_identity(&in.gs.ctm);
     plutovg_matrix_init_identity(&in.tm);
     in.tlm = in.tm;
@@ -2385,11 +2468,13 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
             break;
         }
         if (!nd::inView(vb, it.box.x0, it.box.y0, it.box.x1, it.box.y1, scale, 2 / scale)) continue;
-        if (it.clip != curClip) {   // (the clip chain, from its outermost)
+        // (a stroke within a pixel of a rectangle clip left out: drawn at least a pixel wide, it may reach out)
+        int clip = it.kind == Item::STROKE && it.clipOwn != it.clip && it.clipGap * scale < 1 ? it.clipOwn : it.clip;
+        if (clip != curClip) {   // (the clip chain, from its outermost)
             plutovg_canvas_restore(c);
             plutovg_canvas_save(c);
             std::vector<int> chain;
-            for (int x = it.clip; x >= 0 && chain.size() < 1024; x = pg.clips[x].parent) chain.push_back(x);
+            for (int x = clip; x >= 0 && chain.size() < 1024; x = pg.clips[x].parent) chain.push_back(x);
             for (size_t i = chain.size(); i-- > 0;) {
                 const Clip &cl = pg.clips[chain[i]];
                 plutovg_matrix_t m;
@@ -2398,7 +2483,7 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
                 plutovg_canvas_set_fill_rule(c, cl.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
                 plutovg_canvas_clip_path(c, cl.path->p);
             }
-            curClip = it.clip;
+            curClip = clip;
         }
         plutovg_matrix_t m;
         plutovg_matrix_multiply(&m, &it.m, &view);
