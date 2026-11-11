@@ -17,6 +17,7 @@
 #include "nitrojpeg.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
+#include "nitrojbig2.h"
 }
 
 #include <ft2build.h>
@@ -828,6 +829,38 @@ Val key(pp::Doc &doc, Val d, const char *name, const char *abbr) {
     return doc.resolve(v);
 }
 
+bool imageSource(nitropdf &P, Val ref, ImageSource &src);
+
+bool bilevel(const ImageSource &src) {
+    return src.filter == "CCITTFaxDecode" || src.filter == "CCF" || src.filter == "JBIG2Decode";
+}
+
+// A CCITT or JBIG2 coded image (bilevel(src)) as rows of packed bits, a black pixel 0 (CCITT's
+// /BlackIs1: 1); W x H pixels, W: CCITT's /Columns.
+bool bilevelRows(nitropdf &P, ImageSource &src, int &W, int H, std::string &bits) {
+    pp::Doc &doc = P.doc;
+    Val p = src.parms;
+    const uint8_t *d = (const uint8_t *)src.data.data();
+    if (src.filter == "JBIG2Decode") {
+        if (W <= 0 || (uint64_t)W * H > (1ull << 32)) return false;
+        ImageSource g;   // (/JBIG2Globals: the segments the pages share)
+        Val gr = p.t == pp::DICT ? p.get("JBIG2Globals") : Val();
+        if (gr.t != pp::REF || !imageSource(P, gr, g)) g.data.clear();
+        size_t prow = ((size_t)W + 7) / 8;
+        bits.assign(prow * H, '\0');
+        return !nj2_decode(d, src.data.size(), (const uint8_t *)g.data.data(), g.data.size(), W, H, (uint8_t *)&bits[0], prow);
+    }
+    int k = (int)key(doc, p, "K", nullptr).num(0), cols = (int)key(doc, p, "Columns", nullptr).num(1728);
+    bool b1 = key(doc, p, "BlackIs1", nullptr).t == pp::BOOL && key(doc, p, "BlackIs1", nullptr).i;
+    bool align = key(doc, p, "EncodedByteAlign", nullptr).t == pp::BOOL && key(doc, p, "EncodedByteAlign", nullptr).i;
+    if (cols <= 0 || (uint64_t)cols * H > (1ull << 32)) return false;
+    size_t prow = ((size_t)cols + 7) / 8;
+    bits.assign(prow * H, '\0');
+    if (nt_ccitt(d, src.data.size(), k, cols, H, b1, align, (uint8_t *)&bits[0], prow)) return false;
+    W = cols;
+    return true;
+}
+
 // 1-bit / gray samples of a mask (a stencil /Mask, an /SMask), w x h, its /Decode applied: 255 painted / opaque
 bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
     pp::Doc &doc = P.doc;
@@ -836,20 +869,13 @@ bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
     if (W <= 0 || H <= 0 || (uint64_t)W * H > (256u << 20)) return false;
     int step = 1;
     while ((uint64_t)W * H / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
-    std::string ccitt;
+    std::string bits;
     const uint8_t *d = (const uint8_t *)src.data.data();
     size_t len = src.data.size();
-    if (src.filter == "CCITTFaxDecode" || src.filter == "CCF") {
-        Val p = src.parms;
-        int k = (int)key(doc, p, "K", nullptr).num(0), cols = (int)key(doc, p, "Columns", nullptr).num(1728);
-        bool b1 = key(doc, p, "BlackIs1", nullptr).t == pp::BOOL && key(doc, p, "BlackIs1", nullptr).i;
-        bool align = key(doc, p, "EncodedByteAlign", nullptr).t == pp::BOOL && key(doc, p, "EncodedByteAlign", nullptr).i;
-        size_t prow = ((size_t)cols + 7) / 8;
-        ccitt.assign(prow * H, '\0');
-        if (nt_ccitt(d, len, k, cols, H, b1, align, (uint8_t *)&ccitt[0], prow)) return false;
-        d = (const uint8_t *)ccitt.data(), len = ccitt.size();
+    if (bilevel(src)) {
+        if (!bilevelRows(P, src, W, H, bits)) return false;
+        d = (const uint8_t *)bits.data(), len = bits.size();
         bpc = 1;
-        W = cols;
     } else if (src.filter == "DCTDecode" || src.filter == "DCT") {
         int nc;
         plutovg_surface_t *s = jpegSurface(src.data, false, &nc);
@@ -918,7 +944,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     if (!cs && src.filter != "JPXDecode") cs = deviceCS(CS::GRAY);
     int step = 1;
     while ((uint64_t)W * H / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
-    // the colour of each pixel: from the decoded JPEG, the CCITT bits or the samples
+    // the colour of each pixel: from the decoded JPEG, the CCITT / JBIG2 bits or the samples
     Samples smp;
     Val maskv = doc.resolve(d.get("Mask"));
     bool colorKey = maskv.t == pp::ARRAY;
@@ -955,25 +981,17 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     p[0] = 255 - p[0], p[1] = 255 - p[1], p[2] = 255 - p[2];
                 }
         }
-    } else if (src.filter == "JPXDecode" || src.filter == "JBIG2Decode" || (!src.filter.empty() && src.filter != "CCITTFaxDecode" &&
-                                                                            src.filter != "CCF")) {
+    } else if (!src.filter.empty() && !bilevel(src)) {   // (JPXDecode)
         img->s = newSurface(1, 1);   // (not decoded: a light grey area)
         if (img->s) *(uint32_t *)plutovg_surface_get_data(img->s) = 0xffe0e0e0;
     } else {
         const uint8_t *dd = (const uint8_t *)src.data.data();
         size_t len = src.data.size();
-        std::string ccitt;
-        if (src.filter == "CCITTFaxDecode" || src.filter == "CCF") {
-            Val p = src.parms;
-            int k = (int)key(doc, p, "K", nullptr).num(0), cols = (int)key(doc, p, "Columns", nullptr).num(1728);
-            bool b1 = key(doc, p, "BlackIs1", nullptr).t == pp::BOOL && key(doc, p, "BlackIs1", nullptr).i;
-            bool align = key(doc, p, "EncodedByteAlign", nullptr).t == pp::BOOL && key(doc, p, "EncodedByteAlign", nullptr).i;
-            if (cols <= 0 || (uint64_t)cols * H > (1ull << 32)) return nullptr;
-            size_t prow = ((size_t)cols + 7) / 8;
-            ccitt.assign(prow * H, '\0');
-            if (nt_ccitt(dd, len, k, cols, H, b1, align, (uint8_t *)&ccitt[0], prow)) return nullptr;
-            dd = (const uint8_t *)ccitt.data(), len = ccitt.size();
-            bpc = 1, W = cols;
+        std::string bits;
+        if (bilevel(src)) {
+            if (!bilevelRows(P, src, W, H, bits)) return nullptr;
+            dd = (const uint8_t *)bits.data(), len = bits.size();
+            bpc = 1;
             cs = deviceCS(CS::GRAY);
         }
         if (bpc != 1 && bpc != 2 && bpc != 4 && bpc != 8 && bpc != 16) return nullptr;
