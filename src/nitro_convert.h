@@ -24,9 +24,12 @@ void nc_yuv_to_rgb(const NvImage *img, const uint8_t *buf, uint8_t *dst, size_t 
 
 // A JPEG's planes from nj_decode_planes (its nj_info: any sampling, 1, 3 or 4 components) -> opaque
 // BGRA, 4 bytes per pixel, upsampled as above: gray, YCbCr, RGB (Adobe's transform 0), CMYK and
-// YCCK by the simple formula (no profile); inverted: the CMYK values are as Adobe stores them (255
-// no ink), else 255 is full ink.
-void nc_jpeg_to_bgra(const nj_info *fi, uint8_t *const planes[4], const size_t pitch[4], int inverted, uint8_t *dst, size_t stride);
+// YCCK by cmyk (a row of C M Y K bytes, 255 full ink, to B G R A in place: nitro_cmyk's
+// ncm_row_bgra) or, if NULL, the simple formula (no profile); inverted: the CMYK values are as
+// Adobe stores them (255 no ink), else 255 is full ink.
+typedef void (*nc_cmyk_row)(const uint8_t *cmyk, uint8_t *bgra, size_t n);
+void nc_jpeg_to_bgra(const nj_info *fi, uint8_t *const planes[4], const size_t pitch[4], int inverted, nc_cmyk_row cmyk,
+                     uint8_t *dst, size_t stride);
 
 // An NV_PLANAR image (a PSD's planes from ps_decode) in buf -> RGB. Merged transparency
 // (Photoshop stores the colour matted with white) is shown over black, as the macOS and

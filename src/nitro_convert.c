@@ -101,9 +101,11 @@ static void comp_init(Comp *c, const uint8_t *p, size_t pitch, int W, int H, int
 }
 
 // What convert writes: 3 bytes R G B, or 4 bytes B G R A (A 255). ycc: 3 components are YCbCr (else
-// R G B), 4 are YCCK (else C M Y K); inverted: CMYK values as Adobe stores them (255: no ink).
+// R G B), 4 are YCCK (else C M Y K); inverted: CMYK values as Adobe stores them (255: no ink);
+// cmyk: CMYK to B G R A (bgra only), else the simple formula.
 typedef struct {
     int bgra, ycc, inverted, limited;
+    nc_cmyk_row cmyk;
 } Out;
 
 static inline uint8_t mul255(int a, int b) { return (uint8_t)((a * b + 127) / 255); }
@@ -152,6 +154,12 @@ static void convert(const Comp *comps, int nc, int W, int H, Out out, uint8_t *d
                     b = clamp255(Y + t->cb_b[cb]);
                     if (nc == 4) r = 255 - r, g = 255 - g, b = 255 - b;   // (YCCK: Y Cb Cr are the inverted C M Y, as libjpeg)
                 }
+                if (nc == 4 && out.cmyk) {   // (the ink amounts, converted with the row below)
+                    int k = kr[x];
+                    if (out.inverted) r = 255 - r, g = 255 - g, b = 255 - b, k = 255 - k;
+                    o[4 * x] = (uint8_t)r, o[4 * x + 1] = (uint8_t)g, o[4 * x + 2] = (uint8_t)b, o[4 * x + 3] = (uint8_t)k;
+                    continue;
+                }
                 if (nc == 4) {   // C M Y K -> R G B, the simple way
                     int k = kr[x];
                     if (out.inverted) r = mul255(r, k), g = mul255(g, k), b = mul255(b, k);
@@ -162,6 +170,7 @@ static void convert(const Comp *comps, int nc, int W, int H, Out out, uint8_t *d
                 o[px * x + bi] = (uint8_t)b;
                 if (out.bgra) o[4 * x + 3] = 255;
             }
+            if (nc == 4 && out.cmyk) out.cmyk(o, o, (size_t)W);
         }
         free(rows);
         free(cs);
@@ -173,16 +182,17 @@ void nc_yuv_to_rgb(const NvImage *img, const uint8_t *buf, uint8_t *dst, size_t 
     Comp comps[3];
     for (int k = 0; k < img->ncomp; k++)
         comp_init(&comps[k], buf + img->offset[k], img->pitch[k], W, H, img->h[k], img->v[k], img->hmax, img->vmax);
-    convert(comps, img->ncomp, W, H, (Out){0, 1, 0, img->limited}, dst, stride);
+    convert(comps, img->ncomp, W, H, (Out){0, 1, 0, img->limited, NULL}, dst, stride);
 }
 
-void nc_jpeg_to_bgra(const nj_info *fi, uint8_t *const planes[4], const size_t pitch[4], int inverted, uint8_t *dst, size_t stride) {
+void nc_jpeg_to_bgra(const nj_info *fi, uint8_t *const planes[4], const size_t pitch[4], int inverted, nc_cmyk_row cmyk,
+                     uint8_t *dst, size_t stride) {
     Comp comps[4];
     int nc = fi->ncomp;
     for (int k = 0; k < nc; k++) comp_init(&comps[k], planes[k], pitch[k], fi->width, fi->height, fi->h[k], fi->v[k], fi->hmax, fi->vmax);
     // (3: YCbCr unless Adobe's transform says none; 4: YCCK only when it says so)
     int ycc = nc == 3 ? fi->adobe != 0 : nc == 4 && fi->adobe == 2;
-    convert(comps, nc, fi->width, fi->height, (Out){1, ycc, inverted, 0}, dst, stride);
+    convert(comps, nc, fi->width, fi->height, (Out){1, ycc, inverted, 0, cmyk}, dst, stride);
 }
 
 void nc_psd_to_rgb(const NvImage *img, const uint8_t *buf, uint8_t *dst, size_t stride) {

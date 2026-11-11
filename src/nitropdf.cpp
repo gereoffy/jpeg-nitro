@@ -13,6 +13,7 @@
 #include "nitro_font.h"   // (stand-ins for the fonts not embedded)
 #include "nitropdf_glyphs.h"
 #include "nitro_convert.h"   // (nc_jpeg_to_bgra)
+#include "nitro_cmyk.h"
 #include "nitrojpeg.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
@@ -438,11 +439,7 @@ struct CS {
         case RGB:
             for (int i = 0; i < 3; i++) rgb[i] = clampf(c[i], 0, 1);
             break;
-        case CMYK: {   // (the simple formula; no profile)
-            float kk = clampf(c[3], 0, 1);
-            for (int i = 0; i < 3; i++) rgb[i] = (1 - clampf(c[i], 0, 1)) * (1 - kk);
-            break;
-        }
+        case CMYK: ncm_color(c, rgb); break;   // (through a printing profile, as Acrobat shows it)
         case LAB: {
             float L = clampf(c[0], 0, 100), a = clampf(c[1], range[0], range[1]), b = clampf(c[2], range[2], range[3]);
             float fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
@@ -753,7 +750,7 @@ bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step
 plutovg_surface_t *newSurface(int w, int h) { return w > 0 && h > 0 ? plutovg_surface_create(w, h) : nullptr; }
 
 // A JPEG (DCTDecode) as an opaque surface: by nitrojpeg, in parallel, where it can (1, 3 or 4
-// components: CMYK / YCCK through nitro_convert's simple formula, the values as stored, inverted by
+// components: CMYK / YCCK through nitro_cmyk's profile, the values as stored, inverted by
 // an inverting /Decode: Adobe's inverted ones come with one, Adobe's marker alone says nothing),
 // else by stb_image; nullptr if neither reads it. *ncomp: its components (0 if not known).
 plutovg_surface_t *jpegSurface(const std::string &data, bool decodeInverted, int *ncomp) {
@@ -773,7 +770,7 @@ plutovg_surface_t *jpegSurface(const std::string &data, bool decodeInverted, int
             plutovg_surface_t *s = buf ? newSurface(ji.width, ji.height) : nullptr;
             uint8_t *planes[4] = {buf.get() + at[0], buf.get() + at[1], buf.get() + at[2], buf.get() + at[3]};
             if (s && !nj_decode_planes(d, data.size(), &ji, planes, pitch, 0, nullptr)) {
-                nc_jpeg_to_bgra(&ji, planes, pitch, decodeInverted, plutovg_surface_get_data(s), (size_t)plutovg_surface_get_stride(s));
+                nc_jpeg_to_bgra(&ji, planes, pitch, decodeInverted, ncm_row_bgra, plutovg_surface_get_data(s), (size_t)plutovg_surface_get_stride(s));
                 return s;
             }
             plutovg_surface_destroy(s);
@@ -985,16 +982,25 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             }
         }
         bool plain = dec.empty() || dec.size() < 2u * n;
+        // CMYK: rows through nitro_cmyk, each component plain or inverted by its /Decode
+        bool cmykRows = cs->k == CS::CMYK && n == 4, inv[4] = {false, false, false, false};
+        for (int c = 0; c < 4 && cmykRows && !plain; c++) {
+            if (lo[c] == 1 && hi[c] == 0) inv[c] = true;
+            else if (lo[c] != 0 || hi[c] != 1) cmykRows = false;
+        }
         for (int y = 0; y < smp.h; y++) {
             uint32_t *row = (uint32_t *)(px + (size_t)y * stride);
             const uint8_t *s = &smp.v[(size_t)y * smp.w * n];
+            if (cmykRows) {
+                uint8_t *o = (uint8_t *)row;
+                for (int x = 0; x < 4 * smp.w; x++) o[x] = inv[x & 3] ? 255 - s[x] : s[x];
+                ncm_row_bgra(o, o, (size_t)smp.w);
+                continue;
+            }
             for (int x = 0; x < smp.w; x++, s += n) {
                 if (n == 1) row[x] = lut[s[0]];
                 else if (cs->k == CS::RGB && plain) row[x] = 0xff000000u | s[0] << 16 | s[1] << 8 | s[2];
-                else if (cs->k == CS::CMYK && plain) {
-                    int k = 255 - s[3];
-                    row[x] = 0xff000000u | (uint32_t)((255 - s[0]) * k / 255) << 16 | (uint32_t)((255 - s[1]) * k / 255) << 8 | (uint32_t)((255 - s[2]) * k / 255);
-                } else {
+                else {
                     float c[32], rgb[3];
                     for (int j = 0; j < n && j < 32; j++) c[j] = lo[j] + s[j] / 255.f * (hi[j] - lo[j]);
                     cs->toRGB(c, rgb);

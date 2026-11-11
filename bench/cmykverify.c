@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
         uint8_t *buf = malloc(tot), *ours = malloc((size_t)fi.width * fi.height * 4), *ref = malloc((size_t)fi.width * fi.height * 4);
         uint8_t *planes[4] = {buf + at[0], buf + at[1], buf + at[2], buf + at[3]};
         int r1 = nj_decode_planes(d, n, &fi, planes, pitch, 0, NULL);
-        if (!r1) nc_jpeg_to_bgra(&fi, planes, pitch, 0, ours, (size_t)fi.width * 4);
+        if (!r1) nc_jpeg_to_bgra(&fi, planes, pitch, 0, NULL, ours, (size_t)fi.width * 4);
         tjhandle h = tj3Init(TJINIT_DECOMPRESS);
         int r2 = tj3DecompressHeader(h, d, n) || tj3Decompress8(h, d, n, ref, fi.width * 4, TJPF_CMYK);
         tj3Destroy(h);
