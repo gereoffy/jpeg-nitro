@@ -46,7 +46,9 @@ namespace pp = pdfparse3;
 namespace {
 
 const int MAX_DEPTH = 12;                  // forms within forms, patterns, functions within functions
-const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included)
+const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included) and glyphs shown
+const size_t MAX_BYTES = 1u << 30;         // a page's content decoded to be read: its own (MAX_PAGE_BYTES), its forms'
+const size_t MAX_PAGE_BYTES = 256u << 20;  // and glyph procedures' each time they are drawn
 const uint64_t MAX_IMAGE_PIXELS = 16u << 20;   // an image beyond this is decoded smaller
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
 const float MAX_DASHES = 1 << 20;           // a stroke's dashes: with more, drawn solid
@@ -1632,7 +1634,7 @@ struct Interp {
     plutovg_path_t *path = nullptr;
     int pendingClip = 0;   // 1 nonzero, 2 even-odd
     float cx = 0, cy = 0;  // (the current point, for v and y)
-    size_t ops = 0;
+    size_t ops = 0, bytes = 0;   // (counted against MAX_OPS, MAX_BYTES)
     std::vector<uint32_t> forms;   // (the form XObjects being drawn: no cycles)
     std::vector<bool> hiddenStack;
     int hidden = 0;
@@ -1693,6 +1695,30 @@ struct Interp {
     void newPath() {
         if (path) plutovg_path_destroy(path);
         path = plutovg_path_create();
+    }
+
+    // A content stream decoded to be interpreted, at most limit bytes of it and what is left of the
+    // page's MAX_BYTES; false when none is. (The operators alone did not bound the work: a form of
+    // 64 MB of spaces has none, and it was decoded at each of its 2000 Do's.)
+    bool content(const pp::Stream &st, pp::Decoded &dec, size_t limit) {
+        if (bytes >= MAX_BYTES) return false;
+        doc.decode(st, dec, std::min(limit, MAX_BYTES - bytes));
+        bytes += dec.data.size();
+        return true;
+    }
+    // The page's content streams joined by newlines (as pdfparse3's Doc::contents joins them), up to
+    // MAX_PAGE_BYTES in all: a /Contents naming the same stream of 64 MB 1000 times is 64 GB.
+    void pageContent(const pp::Page &page, std::string &out) {
+        Val c = page.dict.get("Contents"), r = doc.resolve(c);
+        size_t n = r.t == pp::ARRAY ? r.size() : 1;
+        for (size_t k = 0; k < n && out.size() < MAX_PAGE_BYTES; k++) {
+            Val part = r.t == pp::ARRAY ? r.at(k) : c;
+            const pp::Stream *st = part.t == pp::REF ? doc.stream(part.oid()) : nullptr;
+            pp::Decoded dec;
+            if (!st || !content(*st, dec, MAX_PAGE_BYTES - out.size())) continue;
+            if (!out.empty()) out.push_back('\n');
+            out += dec.data;
+        }
     }
 
     // The current path is an upright rectangle under m, b its extents.
@@ -1828,6 +1854,7 @@ struct Interp {
         bool clip = mode >= 4;
         plutovg_path_t *run = plutovg_path_create();
         for (size_t i = 0; i < n;) {
+            if (++ops > MAX_OPS) break;   // (a glyph counts as an operator: a Type 3 one showing a string of itself, 1000 each)
             uint32_t code = s[i], key, uni = 0;
             int bytes = 1, gid = -1;
             float w;
@@ -1923,7 +1950,7 @@ struct Interp {
         const pp::Stream *st = proc.t == pp::REF ? doc.stream(proc.oid()) : nullptr;
         if (!st) return;
         pp::Decoded dec;
-        doc.decode(*st, dec, 16u << 20);
+        if (!content(*st, dec, 16u << 20)) return;
         stack.push_back(gs);
         plutovg_matrix_t fm, g1000, a, b2;   // (glyph is in 1000ths: the font matrix's units are its own)
         plutovg_matrix_init(&fm, f.m[0], f.m[1], f.m[2], f.m[3], f.m[4], f.m[5]);
@@ -2168,7 +2195,7 @@ struct Interp {
         Val oc = d.get("OC");
         if (oc.t != pp::NUL && !visible(oc)) return;
         pp::Decoded dec;
-        doc.decode(st, dec, 256u << 20);
+        if (!content(st, dec, 256u << 20)) return;
         Val fres = doc.get(d, "Resources");
         if (fres.t != pp::DICT) fres = doc.resolve(res);
         stack.push_back(gs);
@@ -2507,7 +2534,7 @@ void buildPage(nitropdf &P, int k) {
     in.tlm = in.tm;
     in.resetColors();
     std::string content;
-    P.doc.contents(page, content);
+    in.pageContent(page, content);
     GState initial = in.gs;
     in.run(content.data(), content.size(), page.resources, 0);
     drawAnnotations(in, page, initial);
