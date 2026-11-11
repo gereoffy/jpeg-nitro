@@ -15,9 +15,9 @@
 #include "nitro_convert.h"   // (nc_jpeg_to_bgra)
 #include "nitro_cmyk.h"
 #include "nitrojpeg.h"
+#include "nitrojbig2.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
-#include "nitrojbig2.h"
 }
 
 #include <ft2build.h>

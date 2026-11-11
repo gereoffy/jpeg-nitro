@@ -2,8 +2,9 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitrojbig2: JBIG2 bi-level images as PDFs embed them (/JBIG2Decode, ITU T.88 annex D.3: the
-// segments without the file header), for nitropdf. Generic regions (arithmetic or MMR coded) only:
-// scanners' whole-page images; symbol dictionaries and text, halftone and refinement regions not yet.
+// segments without the file header), for nitropdf: generic regions (arithmetic or MMR coded),
+// symbol dictionaries and text regions (arithmetic coded) with their refinements. Not decoded:
+// Huffman coded dictionaries and text regions, halftone regions, refinement region segments.
 #ifndef NITROJBIG2_H
 #define NITROJBIG2_H
 
