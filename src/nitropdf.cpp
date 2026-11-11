@@ -38,6 +38,9 @@ extern "C" {
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifndef M_PI   // (not defined by mingw's math.h)
+#define M_PI 3.14159265358979323846
+#endif
 
 using pdfparse3::Val;
 namespace pp = pdfparse3;
