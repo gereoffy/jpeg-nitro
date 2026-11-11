@@ -515,6 +515,7 @@ std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
         for (size_t k = 0; k < v.size(); k++) {
             auto s = loadFunc(P, v.at(k), depth + 1);
             if (!s || s->nout != 1) return nullptr;   // (each writes one output: the next one's follows it)
+            f->nin = std::max(f->nin, s->nin);   // (they read the same inputs)
             f->subs.push_back(s);
         }
         f->nout = (int)f->subs.size();
@@ -544,7 +545,7 @@ std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
         Val fs = doc.get(d, "Functions");
         for (size_t k = 0; k < fs.size(); k++) {
             auto s = loadFunc(P, fs.at(k), depth + 1);
-            if (!s) return nullptr;
+            if (!s || s->nin != 1) return nullptr;   // (its part is given the one input)
             f->subs.push_back(s);
         }
         f->bounds = nums(doc, d.get("Bounds"));
@@ -708,7 +709,8 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
         c->k = CS::TINT;
         c->base = loadCS(P, v.at(2), res, depth + 1);
         c->tint = loadFunc(P, v.at(3), depth + 1);
-        if (!c->base || !c->tint) return nullptr;
+        // (a tint transform reading more inputs than the space has components would read past the colour)
+        if (!c->base || !c->tint || c->tint->nin > c->n) return nullptr;
         return c;
     }
     if (kind.is("Pattern")) {
@@ -1998,8 +2000,9 @@ struct Interp {
                     auto fn = loadFunc(P, doc.resolve(sh).get("Function"), 0);
                     auto dom = nums(doc, doc.resolve(sh).get("Domain"));
                     if (scs && fn) {
-                        float t = dom.size() >= 2 ? (dom[0] + dom[1]) / 2 : 0.5f, out[32] = {0}, col[3];
-                        fn->eval(&t, out);
+                        float in[8], out[MAX_COMPS] = {0}, col[3];   // (the middle of each input's domain: a function-based shading has two)
+                        for (size_t k = 0; k < 8; k++) in[k] = dom.size() >= 2 * k + 2 ? (dom[2 * k] + dom[2 * k + 1]) / 2 : 0.5f;
+                        fn->eval(in, out);
                         scs->toRGB(out, col);
                         rgb = packRgb(col);
                     }
