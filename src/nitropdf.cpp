@@ -1066,9 +1066,16 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     Val smask = d.get("SMask");
     Samples alpha;
     bool haveAlpha = false;
+    float matte[3] = {-1, 0, 0};   // (the /SMask's /Matte: the colours premultiplied towards it; its RGB, 0..255)
     if (smask.t == pp::REF) {
         ImageSource ms;
         haveAlpha = imageSource(P, smask, ms) && maskSamples(P, ms, false, alpha);
+        auto m = nums(doc, ms.dict.t == pp::DICT ? ms.dict.get("Matte") : Val());
+        if (haveAlpha && cs && (int)m.size() == cs->n && cs->n <= 4) {
+            float rgb[3];
+            cs->toRGB(m.data(), rgb);
+            for (int c = 0; c < 3; c++) matte[c] = rgb[c] * 255;
+        }
     } else if (maskv.t == pp::DICT || d.get("Mask").t == pp::REF) {
         ImageSource ms;
         haveAlpha = d.get("Mask").t == pp::REF && imageSource(P, d.get("Mask"), ms) && maskSamples(P, ms, true, alpha);
@@ -1100,7 +1107,16 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             uint8_t *row = px + (size_t)y * stride;
             for (int x = 0; x < w; x++) {
                 unsigned k = a[(size_t)y * w + x];
-                for (int c = 0; c < 4; c++) row[4 * x + c] = (uint8_t)(row[4 * x + c] * k / 255);
+                if (matte[0] < 0) {
+                    for (int c = 0; c < 4; c++) row[4 * x + c] = (uint8_t)(row[4 * x + c] * k / 255);
+                    continue;
+                }
+                // premultiplied towards the matte (c' = m + k (c - m)): k c = c' - m (1 - k)
+                for (int c = 0; c < 3; c++) {   // (B G R: the matte's 2 1 0)
+                    float v = row[4 * x + c] - matte[2 - c] * (255 - k) / 255.f;
+                    row[4 * x + c] = (uint8_t)lroundf(clampf(v, 0, (float)k));
+                }
+                row[4 * x + 3] = (uint8_t)k;
             }
         }
     }
