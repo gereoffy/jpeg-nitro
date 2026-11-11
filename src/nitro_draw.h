@@ -15,6 +15,9 @@
 #include <cstdint>
 #include <mutex>
 #include <vector>
+#ifndef M_PI   // (not defined by mingw's math.h; the readers draw arcs with it)
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace nd {
 
