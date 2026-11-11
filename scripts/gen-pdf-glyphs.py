@@ -69,11 +69,63 @@ for name, uv in AGLFN.items(): pairs.setdefault(name, uv)
 pairs = {n: u for n, u in pairs.items() if u < 0x10000}
 names = sorted(pairs, key=lambda n: n.encode())
 
-out = ['// SPDX-License-Identifier: MIT',
-       '// Generated from fontTools 4.47.2 (MIT): its StandardEncoding and MacRoman, cp1252 named by the',
-       "// Adobe Glyph List (BSD-3-Clause, Adobe), PDF's changes to them (ISO 32000-1 annex D), and the list's",
-       '// names of single BMP characters. Data only, for nitropdf.cpp.',
-       '#pragma once', '#include <stdint.h>', '']
+HEADER = """\
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+// Generated from fontTools 4.47.2: its StandardEncoding and MacRoman, cp1252 named by the Adobe Glyph
+// List, PDF's changes to them (ISO 32000-1 annex D), and the list's names of single BMP characters.
+// Data only, for nitropdf.cpp; scripts/gen-pdf-glyphs.py makes it. Their licenses (also in LICENSE):
+//
+// fontTools (https://github.com/fonttools/fonttools):
+//
+// MIT License
+//
+// Copyright (c) 2017 Just van Rossum
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+// The Adobe Glyph List (https://github.com/adobe-type-tools/agl-aglfn):
+//
+// Copyright 2002-2019 Adobe (http://www.adobe.com/).
+//
+// Redistribution and use in source and binary forms, with or without modification, are permitted
+// provided that the following conditions are met:
+//
+// Redistributions of source code must retain the above copyright notice, this list of conditions
+// and the following disclaimer.
+//
+// Redistributions in binary form must reproduce the above copyright notice, this list of
+// conditions and the following disclaimer in the documentation and/or other materials provided
+// with the distribution.
+//
+// Neither the name of Adobe nor the names of its contributors may be used to endorse or promote
+// products derived from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+// IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+// FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+// CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+// OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE."""
+out = HEADER.split('\n') + ['#pragma once', '#include <stdint.h>', '']
 
 
 def table(cname, lst):
