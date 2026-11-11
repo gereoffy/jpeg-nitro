@@ -48,6 +48,7 @@ const int MAX_DEPTH = 12;                  // forms within forms, patterns, func
 const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included)
 const uint64_t MAX_IMAGE_PIXELS = 16u << 20;   // an image beyond this is decoded smaller
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
+const int MAX_COMPS = 32;                  // a colour's components, a function's outputs (the arrays they are read into)
 
 inline float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
 
@@ -497,16 +498,19 @@ std::vector<float> nums(pp::Doc &doc, Val v) {
 
 std::shared_ptr<Func> loadFunc(nitropdf &P, Val ref, int depth);
 
-std::shared_ptr<Func> loadFuncUncached(nitropdf &P, Val ref, int depth) {
+// A function as it is in the file. Its callers evaluate it into arrays of MAX_COMPS: loadFuncUncached
+// lets none through with more outputs (or none).
+std::shared_ptr<Func> readFunc(nitropdf &P, Val ref, int depth) {
     pp::Doc &doc = P.doc;
     Val v = doc.resolve(ref);
     if (depth > MAX_DEPTH) return nullptr;
     auto f = std::make_shared<Func>();
     if (v.t == pp::ARRAY) {   // (n one-output functions)
         f->type = 100;
+        if (v.size() > (size_t)MAX_COMPS) return nullptr;
         for (size_t k = 0; k < v.size(); k++) {
             auto s = loadFunc(P, v.at(k), depth + 1);
-            if (!s) return nullptr;
+            if (!s || s->nout != 1) return nullptr;   // (each writes one output: the next one's follows it)
             f->subs.push_back(s);
         }
         f->nout = (int)f->subs.size();
@@ -544,6 +548,8 @@ std::shared_ptr<Func> loadFuncUncached(nitropdf &P, Val ref, int depth) {
         if (f->subs.empty() || f->bounds.size() + 1 != f->subs.size()) return nullptr;
         while (f->encode.size() < 2 * f->subs.size()) f->encode.push_back(f->encode.size() & 1);
         f->nout = f->subs[0]->nout;
+        for (auto &s : f->subs)   // (whichever is picked writes nout outputs)
+            if (s->nout != f->nout) return nullptr;
         return f;
     }
     case 0: {
@@ -586,6 +592,11 @@ std::shared_ptr<Func> loadFuncUncached(nitropdf &P, Val ref, int depth) {
     }
     }
     return nullptr;
+}
+
+std::shared_ptr<Func> loadFuncUncached(nitropdf &P, Val ref, int depth) {
+    auto f = readFunc(P, ref, depth);
+    return f && f->nout >= 1 && f->nout <= MAX_COMPS ? f : nullptr;
 }
 
 std::shared_ptr<Func> loadFunc(nitropdf &P, Val ref, int depth) {
