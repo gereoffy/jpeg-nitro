@@ -62,14 +62,14 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/lunasvg/archive/fa64290c9bf4a046b3dc6c6e87d9b0136442c354.tar.gz",
-          "sha256": "3770e2eebcb23525a4daf61cf9efa9c74d731b0596cb47196ac8e32e7232ccfb",
+          "url": "https://github.com/gereoffy/lunasvg/archive/7e2fb3d9477a24251e5e45e4a2a0aebd47471379.tar.gz",
+          "sha256": "44652a02d8e74be1afc5397d2310da9036419886fdb4e72a506811ad0fcecdfe",
           "dest": "third_party/lunasvg"
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/libcdr/archive/89071401ff32fe4f97d997f050ea914f07915b2d.tar.gz",
-          "sha256": "68eeeecad3db7daee1c535f9f562313d09260ebf981e4107a67a5955a3e1877b",
+          "url": "https://github.com/gereoffy/libcdr/archive/3afe6c91a08383af25038ef057332afa2d5ba981.tar.gz",
+          "sha256": "b4ccc12e9037f377723db9bab22c41e6fb7df5b4ecc70eb49540c0e515aa34df",
           "dest": "third_party/libcdr"
         },
         {
