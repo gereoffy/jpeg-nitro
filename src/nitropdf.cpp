@@ -1090,12 +1090,13 @@ struct Interp {
         }
         return b;
     }
-    // an item's box within its clip's; false if nothing is left of it
+    // an item's box within its clip's; false if nothing is left of it (a box of no width or height
+    // is something: a hairline exactly across or up, as a CAD plot's letters are drawn)
     bool clipBox(nd::Box &b, int clip) {
         if (clip < 0) return true;
         const nd::Box &c = pg.clips[clip].box;
         b.x0 = std::max(b.x0, c.x0), b.y0 = std::max(b.y0, c.y0), b.x1 = std::min(b.x1, c.x1), b.y1 = std::min(b.y1, c.y1);
-        return b.x1 > b.x0 && b.y1 > b.y0;
+        return b.x1 >= b.x0 && b.y1 >= b.y0;
     }
 
     void newPath() {
