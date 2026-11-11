@@ -2504,7 +2504,8 @@ void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
         Val oc = a.get("OC");
         if (oc.t != pp::NUL && !in.visible(oc)) continue;
         Val n = doc.get(a, "AP").get("N"), ap = n;   // (unresolved: a stream's reference)
-        if (doc.resolve(n).t == pp::DICT && n.t != pp::REF) {   // (appearance states: the one /AS names)
+        // not a stream but a dictionary, direct or indirect: the appearance states, the one /AS names
+        if (!(n.t == pp::REF && doc.stream(n.oid())) && doc.resolve(n).t == pp::DICT) {
             Val as = doc.get(a, "AS");
             ap = as.t == pp::NAME ? doc.resolve(n).get(std::string(as.str()).c_str()) : Val();
         }
