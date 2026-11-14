@@ -633,6 +633,7 @@ namespace {
 struct Pending {   // an item's path while flattening, in drawing units
     std::vector<uint8_t> cmd;
     std::vector<V2> pt;
+    int8_t wind = 0;   // (fills: their turning, the sign of their area; only fills alike are merged)
 };
 
 struct Parser {
@@ -1958,10 +1959,10 @@ struct Flat {
 
     // a new item, or the last one if it can take more of the same (up to 32 path commands:
     // plutovg's time grows faster than a path's size)
-    size_t item(uint8_t kind, uint32_t rgba, float width, int dsh) {
+    size_t item(uint8_t kind, uint32_t rgba, float width, int dsh, int8_t wind = 0) {
         if (!items.empty()) {
             Item &it = items.back();
-            if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh &&
+            if (it.kind == kind && it.rgba == rgba && it.width == width && it.dash == dsh && pend.back().wind == wind &&
                 (kind == O_STROKE || kind == O_FILL || kind == O_POINTS || kind == O_DOTS) && pend.back().cmd.size() < 32)
                 return items.size() - 1;
         }
@@ -1972,7 +1973,29 @@ struct Flat {
         it.dash = dsh;
         items.push_back(it);
         pend.emplace_back();
+        pend.back().wind = wind;
         return items.size() - 1;
+    }
+    // a fill's turning, the sign of its area as drawn (m may mirror it): two fills of one item under
+    // the nonzero rule show their union only when they turn alike, opposite ones cancel out
+    static int8_t turning(const Block &b, const Prim &p, const M2 &m) {
+        double area = 0;
+        V2 first{}, prev{};
+        size_t pi = p.p0;
+        for (uint32_t ci = p.c0; ci < p.c1; ci++) {
+            uint8_t c = b.geo.cmd[ci];
+            int n = c == C_CUBIC ? 3 : c == C_CLOSE ? 0 : 1;
+            for (int k = 0; k < n; k++) {   // (a curve by its control points: enough for the sign)
+                V2 q = m(b.geo.pt[pi++]);
+                if (c == C_MOVE) {
+                    area += prev.x * first.y - first.x * prev.y;
+                    first = q;
+                } else area += prev.x * q.y - q.x * prev.y;
+                prev = q;
+            }
+        }
+        area += prev.x * first.y - first.x * prev.y;
+        return area < 0 ? -1 : 1;
     }
     void geo(Pending &pd, const Block &b, const Prim &p, const M2 &m) {
         size_t pi = p.p0;
@@ -2021,9 +2044,9 @@ struct Flat {
                 geo(pend[item(O_STROKE, rgba, w, dash(lt, P.ltscale * p.ltscale))], b, p, m);
                 break;
             }
-            case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1)], b, p, m); break;
+            case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1, turning(b, p, m))], b, p, m); break;
             case K_FILL_EO: geo(pend[item(O_FILL_EO, rgba, 0, -1)], b, p, m); break;
-            case K_WIPEOUT: geo(pend[item(O_FILL, WIPEOUT, 0, -1)], b, p, m); break;
+            case K_WIPEOUT: geo(pend[item(O_FILL, WIPEOUT, 0, -1, turning(b, p, m))], b, p, m); break;
             case K_POINT: geo(pend[item(dim ? O_DOTS : O_POINTS, rgba, 0, -1)], b, p, m); break;
             case K_XLINE:
             case K_RAY: {
@@ -2235,13 +2258,18 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
             nmax = std::max(nmax, d);
         }
         double k0 = s > 0 ? std::ceil(nmin / s) : std::ceil(nmax / s), k1 = s > 0 ? std::floor(nmax / s) : std::floor(nmin / s);
+        if (std::isnan(k1 - k0)) continue;   // (a damaged pattern)
         if (k1 - k0 > 20000) {
             tone = true;
             continue;
         }
         double period = 0;
         for (float x : pl.dashes) period += std::fabs(x);
-        for (double k = k0; k <= k1 && segs < 500000; k++) {
+        // (counted, not k++: far from the origin a double's k++ is k, and lines the view misses add no
+        // segment to stop at)
+        for (long i = 0, n = (long)(k1 - k0); i <= n && segs < 500000; i++) {
+            if ((i & 255) == 0 && cancel()) break;
+            double k = k0 + i;
             double px = pl.bx + pl.ox * k, py = pl.by + pl.oy * k, t0 = -1e300, t1 = 1e300;
             if (!clip_line(px, py, pl.dx, pl.dy, r, t0, t1)) continue;
             if (pl.dashes.empty() || period * scale < 3) {
@@ -2261,7 +2289,9 @@ void draw_hatch(plutovg_canvas_t *c, const Item &it, uint32_t rgba, const std::v
                         segs++;
                     }
                 }
-                t += std::fabs(l);
+                double tn = t + std::fabs(l);
+                if (tn == t && l != 0) break;   // (too far out for its dashes to advance t)
+                t = tn;
             }
         }
     }
@@ -2596,7 +2626,8 @@ void nitrodxf_size(const nitrodxf *dxf, int page, double *w, double *h) {
 }
 
 // a page's items drawn on a canvas whose matrix maps drawing units to device pixels, scale of
-// them to a unit; view: the part seen, viewH: the height a relative $PDSIZE is of (drawing units)
+// them to a unit; view: the part seen, viewH: the height a relative $PDSIZE is of (drawing units:
+// the page's, alike in the bands and the parts of one view)
 static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, double scale, const double view[4], double viewH,
                      int (*cancelled)(void *ctx), void *ctx) {
     float hair = (float)(1 / scale), fs = (float)scale;
@@ -2605,6 +2636,8 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
     plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
     float clip[4] = {-FLT_MAX, -FLT_MAX, FLT_MAX, FLT_MAX};   // (the viewport drawn in)
     Cancel cancel{cancelled, ctx};
+    // a point's mark, as $PDSIZE (relative when negative, 0: 5%); its half the margin points reach the view by
+    double pointSize = dxf->pdsize > 0 ? dxf->pdsize : (dxf->pdsize < 0 ? -dxf->pdsize / 100 : 0.05) * viewH;
     size_t n = 0;
     int rc = 0;
     for (const Item &it : pg.items) {
@@ -2615,7 +2648,8 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
         if (it.kind == O_CLIP) clip[0] = it.bx0, clip[1] = it.by0, clip[2] = it.bx1, clip[3] = it.by1;
         else if (it.kind == O_UNCLIP) clip[0] = clip[1] = -FLT_MAX, clip[2] = clip[3] = FLT_MAX;
         else if (it.kind != O_XLINE && it.kind != O_RAY &&
-                 (!nd::touches(view, std::max(it.bx0, clip[0]), std::max(it.by0, clip[1]), std::min(it.bx1, clip[2]), std::min(it.by1, clip[3])) ||
+                 (!nd::touches(view, std::max(it.bx0, clip[0]), std::max(it.by0, clip[1]), std::min(it.bx1, clip[2]), std::min(it.by1, clip[3]),
+                               it.kind == O_POINTS ? pointSize / 2 + hair : 0) ||
                   !nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale)))
             continue;   // (within: plutovg's fixed point would overflow; far-off strays of a damaged file)
         uint32_t rgba = on_background(it.rgba, dxf->background);
@@ -2665,8 +2699,7 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
                 int mode;
                 float r, hair;
             } pc{tmp, mode, 0, hair};
-            double size = dxf->pdsize > 0 ? dxf->pdsize : (dxf->pdsize < 0 ? -dxf->pdsize / 100 : 0.05) * viewH;
-            pc.r = (float)(size / 2);
+            pc.r = (float)(pointSize / 2);
             plutovg_path_reset(tmp);
             plutovg_path_traverse(it.path, [](void *cl, plutovg_path_command_t cmd, const plutovg_point_t *pts, int n) {
                 const Pts *a = static_cast<const Pts *>(cl);
@@ -2754,7 +2787,7 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     plutovg_canvas_set_matrix(c, &mt);
     double hair = 1 / scale;
     double view[4] = {vx0 - 2 * hair, vy1 - h / scale - 2 * hair, vx0 + w / scale + 2 * hair, vy1 + 2 * hair};
-    return draw_page(dxf, pg, c, scale, view, h / scale, cancelled, ctx);
+    return draw_page(dxf, pg, c, scale, view, pg.ay1 - pg.ay0, cancelled, ctx);   // (not h: a band's)
 }
 
 void nitrodxf_draw(const nitrodxf *dxf, int page, plutovg_canvas_t *c, float x, float y, float w, float h) {
