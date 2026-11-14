@@ -1982,11 +1982,14 @@ struct Flat {
         double area = 0;
         V2 first{}, prev{};
         size_t pi = p.p0;
+        if (p.p1 <= p.p0) return 1;
+        V2 o = m(b.geo.pt[p.p0]);   // (around its first point: products of far-off coordinates lose the area)
         for (uint32_t ci = p.c0; ci < p.c1; ci++) {
             uint8_t c = b.geo.cmd[ci];
             int n = c == C_CUBIC ? 3 : c == C_CLOSE ? 0 : 1;
             for (int k = 0; k < n; k++) {   // (a curve by its control points: enough for the sign)
                 V2 q = m(b.geo.pt[pi++]);
+                q.x -= o.x, q.y -= o.y;
                 if (c == C_MOVE) {
                     area += prev.x * first.y - first.x * prev.y;
                     first = q;
