@@ -2790,7 +2790,10 @@ int nitrodxf_render(nitrodxf *dxf, int page, uint8_t *bgra, int w, int h, size_t
     plutovg_canvas_set_matrix(c, &mt);
     double hair = 1 / scale;
     double view[4] = {vx0 - 2 * hair, vy1 - h / scale - 2 * hair, vx0 + w / scale + 2 * hair, vy1 + 2 * hair};
-    return draw_page(dxf, pg, c, scale, view, pg.ay1 - pg.ay0, cancelled, ctx);   // (not h: a band's)
+    // a relative $PDSIZE of the view's height, as AutoCAD's of its viewport: the width's in the page's
+    // proportions (h is a band's; the bands share the width)
+    double ph = pg.ay1 - pg.ay0, pw = pg.ax1 - pg.ax0;
+    return draw_page(dxf, pg, c, scale, view, pw > 0 ? w / scale * ph / pw : ph, cancelled, ctx);
 }
 
 void nitrodxf_draw(const nitrodxf *dxf, int page, plutovg_canvas_t *c, float x, float y, float w, float h) {
