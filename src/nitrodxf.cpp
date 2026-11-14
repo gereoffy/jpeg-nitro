@@ -501,6 +501,7 @@ struct Layer {
     uint32_t color = COL_ACI | 7;
     int ltype = LT_CONTINUOUS;
     bool off = false, frozen = false;
+    bool defpoints = false;   // (DEFPOINTS: its points dots, as AutoCAD shows them, whatever $PDMODE says)
 };
 struct LType {
     std::vector<double> pattern;   // dash > 0, gap < 0, dot 0 (drawing units)
@@ -683,6 +684,7 @@ struct Parser {
         auto it = layerIndex.find(u);
         if (it != layerIndex.end()) return it->second;
         layers.push_back(Layer());
+        layers.back().defpoints = u == "DEFPOINTS";
         return layerIndex[u] = (int)layers.size() - 1;
     }
     int ltype(sv name) {
@@ -2050,7 +2052,7 @@ struct Flat {
             case K_FILL: geo(pend[item(O_FILL, rgba, 0, -1, turning(b, p, m))], b, p, m); break;
             case K_FILL_EO: geo(pend[item(O_FILL_EO, rgba, 0, -1)], b, p, m); break;
             case K_WIPEOUT: geo(pend[item(O_FILL, WIPEOUT, 0, -1, turning(b, p, m))], b, p, m); break;
-            case K_POINT: geo(pend[item(dim ? O_DOTS : O_POINTS, rgba, 0, -1)], b, p, m); break;
+            case K_POINT: geo(pend[item(dim || L.defpoints ? O_DOTS : O_POINTS, rgba, 0, -1)], b, p, m); break;
             case K_XLINE:
             case K_RAY: {
                 size_t i = item(p.kind == K_RAY ? O_RAY : O_XLINE, rgba, 0, -1);
