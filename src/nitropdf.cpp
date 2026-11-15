@@ -50,6 +50,8 @@ const int MAX_DEPTH = 12;                  // forms within forms, patterns, func
 const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included) and glyphs shown
 const size_t MAX_BYTES = 1u << 30;         // a page's content decoded to be read: its own (MAX_PAGE_BYTES), its forms'
 const size_t MAX_PAGE_BYTES = 256u << 20;  // and glyph procedures' each time they are drawn
+const size_t MAX_LIST_BYTES = (size_t)768 << 20;   // the pages' display lists kept up to this ...
+const size_t MIN_LISTS = 4;                          // ... but always the last few drawn
 const uint64_t MAX_IMAGE_PIXELS = 32u << 20;   // an image beyond this is decoded smaller (a scanned A0 plan: 17 MP)
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
 const float MAX_DASHES = 1 << 20;           // a stroke's dashes: with more, drawn solid
@@ -414,6 +416,8 @@ struct PageDL {
     std::atomic<bool> built{false};
     std::vector<Item> items;
     std::vector<Clip> clips;
+    uint64_t lastUse = 0;   // (when last drawn: the least recent lists are let go of first)
+    size_t bytes = 0;       // (built: about what it holds, its pictures most of it)
 };
 
 }  // namespace
@@ -422,7 +426,12 @@ struct nitropdf {
     std::string data;
     pp::Doc doc;
     std::vector<pp::Page> pages;
-    std::vector<std::unique_ptr<PageDL>> dl;
+    // the pages' display lists, built when first drawn; beyond MAX_LIST_BYTES (a book of colour
+    // scans grew by tens of MB a page) the least recently drawn ones let go of (a render holds its
+    // own reference: one drawing is freed when it ends), built again when drawn again
+    std::vector<std::shared_ptr<PageDL>> dl;
+    std::mutex dlLock;   // (the slots of dl and their use counts; a list is built under lock)
+    uint64_t useClock = 0;
     int background = 0;
     std::mutex lock;   // (pdfparse3's document and the caches: one page read at a time)
     // the caches, by object number
@@ -2818,8 +2827,7 @@ void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
 }
 
 // The page's display list; false if cancel said to stop: then it is left empty, to be built again.
-bool buildPage(nitropdf &P, int k, const nd::Cancel &cancel) {
-    PageDL &pg = *P.dl[k];
+bool buildPage(nitropdf &P, int k, PageDL &pg, const nd::Cancel &cancel) {
     const pp::Page &page = P.pages[k];
     if (cancel()) return false;
     Interp in(P, pg);
@@ -2969,7 +2977,7 @@ nitropdf *nitropdf_load(const void *data, size_t len) {
         pageGeometry(pg, &w, &h, nullptr);
         if (!(w > 0 && h > 0 && w < 1e6 && h < 1e6)) continue;
         p->pages.push_back(pg);
-        p->dl.push_back(std::make_unique<PageDL>());
+        p->dl.push_back(std::make_shared<PageDL>());
     }
     if (p->pages.empty()) {
         delete p;
@@ -2993,16 +3001,53 @@ void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h) {
     pageGeometry(pdf->pages[page], w, h, nullptr);
 }
 
+// About the memory a page's list holds: its pictures (each once: a page may draw one many times;
+// with their halved copies, a third more) and its items
+size_t listBytes(const PageDL &pg) {
+    std::unordered_set<const Img *> seen;
+    size_t n = pg.items.size() * sizeof(Item) + pg.clips.size() * sizeof(Clip);
+    for (const Item &it : pg.items)
+        if (it.img && it.img->s && seen.insert(it.img.get()).second)
+            n += (size_t)plutovg_surface_get_stride(it.img->s) * plutovg_surface_get_height(it.img->s) * 4 / 3;
+    return n;
+}
+
+// The lists beyond MAX_LIST_BYTES let go of, the least recently drawn first; never keep's (the page
+// just built) nor the last MIN_LISTS drawn. (A picture several pages share stays while one holds it.)
+void trimLists(nitropdf &P, int keep) {
+    std::lock_guard<std::mutex> g(P.dlLock);
+    size_t total = 0, built = 0;
+    for (auto &l : P.dl)
+        if (l->built.load(std::memory_order_relaxed)) total += l->bytes, built++;
+    while (total > MAX_LIST_BYTES && built > MIN_LISTS) {
+        int oldest = -1;
+        for (int k = 0; k < (int)P.dl.size(); k++)
+            if (k != keep && P.dl[k]->built.load(std::memory_order_relaxed) && (oldest < 0 || P.dl[k]->lastUse < P.dl[oldest]->lastUse))
+                oldest = k;
+        if (oldest < 0) break;
+        total -= P.dl[oldest]->bytes, built--;
+        P.dl[oldest] = std::make_shared<PageDL>();   // (freed now, or when the render drawing it ends)
+    }
+}
+
 int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx) {
     if (!pdf || page < 0 || page >= (int)pdf->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
-    PageDL &pg = *pdf->dl[page];
+    std::shared_ptr<PageDL> list;
+    {
+        std::lock_guard<std::mutex> g(pdf->dlLock);
+        list = pdf->dl[page];
+        list->lastUse = ++pdf->useClock;
+    }
+    PageDL &pg = *list;
     nd::Cancel cancel{cancelled, ctx};
     if (!pg.built.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> g(pdf->lock);
         if (!pg.built.load(std::memory_order_relaxed)) {
-            if (!buildPage(*pdf, page, cancel)) return 1;   // (not built: the next render reads it again)
+            if (!buildPage(*pdf, page, pg, cancel)) return 1;   // (not built: the next render reads it again)
+            pg.bytes = listBytes(pg);
             pg.built.store(true, std::memory_order_release);
+            trimLists(*pdf, page);
         }
     }
     nd::Target t(bgra, w, h, pitch, pdf->background == 3 ? nd::background(3) : nd::background(0));
