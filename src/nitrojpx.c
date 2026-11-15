@@ -5,6 +5,7 @@
 // (annex A), geometry, packet headers and tag trees (B), MQ (C), coefficient coding (D),
 // inverse quantization (E), inverse wavelets (F), component transforms (G), ROI (H), JP2 (I).
 #include "nitrojpx.h"
+#include "nitro_os.h"
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -119,27 +120,35 @@ typedef struct {
     int xs, ys, x0, y0, tw, th, tx0, ty0, nx, ny, nc, siz, layers, order, mct, flags;
     int prec[NJPX_MAX_COMPS], sign[NJPX_MAX_COMPS], dx[NJPX_MAX_COMPS], dy[NJPX_MAX_COMPS];
     Coding coding[NJPX_MAX_COMPS]; Tile *tiles;
-    int colorspace, alpha, premult, raw_colors;
+    int colorspace, alpha, premult, raw_colors, serial;
     const uint8_t *palette, *cmap, *cdef; size_t plen, mlen, dlen;
     uint16_t *output;
 } Jpx;
 
 // Account for every allocation, including compressed code-block data and packet/tag-tree state.
+// Coefficient workers share this budget; reserve before allocating, including on failure.
+static int reserve(Jpx *j, size_t n) {
+    size_t used = __atomic_load_n(&j->memory, __ATOMIC_RELAXED);
+    do {
+        if (n > MEM_LIMIT - used) return -1;
+    } while (!__atomic_compare_exchange_n(&j->memory, &used, used + n, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    return 0;
+}
 static void *jalloc(Jpx *j, size_t n) {
-    if (n > MEM_LIMIT - j->memory || n > SIZE_MAX - sizeof(size_t)) return NULL;
+    if (n > SIZE_MAX - sizeof(size_t) || reserve(j, n)) return NULL;
     size_t *p = calloc(1, n + sizeof(size_t));
-    if (!p) return NULL;
-    *p = n; j->memory += n; return p + 1;
+    if (!p) { __atomic_fetch_sub(&j->memory, n, __ATOMIC_RELAXED); return NULL; }
+    *p = n; return p + 1;
 }
 static void jfree(Jpx *j, void *v) {
-    if (v) { size_t *p = (size_t *)v - 1; j->memory -= *p; free(p); }
+    if (v) { size_t *p = (size_t *)v - 1; __atomic_fetch_sub(&j->memory, *p, __ATOMIC_RELAXED); free(p); }
 }
 static int append(Jpx *j, Segment *s, const uint8_t *p, size_t n) {
-    if (n > MEM_LIMIT - j->memory) return -1;
+    if (reserve(j, n)) return -1;
     size_t *q = s->data ? (size_t *)s->data - 1 : NULL;
     q = realloc(q, sizeof(size_t) + s->len + n);
-    if (!q) return -1;
-    q[0] = s->len + n; j->memory += n; s->data = (uint8_t *)(q + 1);
+    if (!q) { __atomic_fetch_sub(&j->memory, n, __ATOMIC_RELAXED); return -1; }
+    q[0] = s->len + n; s->data = (uint8_t *)(q + 1);
     memcpy(s->data + s->len, p, n); s->len += n; return 0;
 }
 static int tree_new(Jpx *j, Tree *t, int w, int h) {
@@ -407,31 +416,59 @@ done:
 }
 
 // --- coefficient bit-planes (annex D) --------------------------------------------------------
-enum { SIG = 1, NEG = 2, VISIT = 4, REFINE = 8 };
+enum { SIG = 1, NEG = 2, VISIT = 4, REFINE = 8,
+       NW = 1 << 4, N = 1 << 5, NE = 1 << 6, W = 1 << 7, E = 1 << 8,
+       SW = 1 << 9, S = 1 << 10, SE = 1 << 11, NEIGHBOURS = 0xff0, BELOW = SW | S | SE };
+
+// D.1's significance contexts, indexed by the eight cached neighbour significance bits.
+// Rows: LL/LH, HL (horizontal/vertical exchanged), HH. A significance transition updates
+// its eight neighbours once, instead of fetching all eight states on every coding pass.
+static const uint8_t zc_lut[3][256] = {
+    {
+        0,1,3,3,1,2,3,3,5,6,7,7,6,6,7,7,5,6,7,7,6,6,7,7,8,8,8,8,8,8,8,8,
+        1,2,3,3,2,2,3,3,6,6,7,7,6,6,7,7,6,6,7,7,6,6,7,7,8,8,8,8,8,8,8,8,
+        3,3,4,4,3,3,4,4,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8,
+        3,3,4,4,3,3,4,4,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8,
+        1,2,3,3,2,2,3,3,6,6,7,7,6,6,7,7,6,6,7,7,6,6,7,7,8,8,8,8,8,8,8,8,
+        2,2,3,3,2,2,3,3,6,6,7,7,6,6,7,7,6,6,7,7,6,6,7,7,8,8,8,8,8,8,8,8,
+        3,3,4,4,3,3,4,4,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8,
+        3,3,4,4,3,3,4,4,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8,
+    },
+    {
+        0,1,5,6,1,2,6,6,3,3,7,7,3,3,7,7,3,3,7,7,3,3,7,7,4,4,7,7,4,4,7,7,
+        1,2,6,6,2,2,6,6,3,3,7,7,3,3,7,7,3,3,7,7,3,3,7,7,4,4,7,7,4,4,7,7,
+        5,6,8,8,6,6,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,
+        6,6,8,8,6,6,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,
+        1,2,6,6,2,2,6,6,3,3,7,7,3,3,7,7,3,3,7,7,3,3,7,7,4,4,7,7,4,4,7,7,
+        2,2,6,6,2,2,6,6,3,3,7,7,3,3,7,7,3,3,7,7,3,3,7,7,4,4,7,7,4,4,7,7,
+        6,6,8,8,6,6,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,
+        6,6,8,8,6,6,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,7,7,8,8,
+    },
+    {
+        0,3,1,4,3,6,4,7,1,4,2,5,4,7,5,7,1,4,2,5,4,7,5,7,2,5,2,5,5,7,5,7,
+        3,6,4,7,6,8,7,8,4,7,5,7,7,8,7,8,4,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,
+        1,4,2,5,4,7,5,7,2,5,2,5,5,7,5,7,2,5,2,5,5,7,5,7,2,5,2,5,5,7,5,7,
+        4,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,
+        3,6,4,7,6,8,7,8,4,7,5,7,7,8,7,8,4,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,
+        6,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,
+        4,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,5,7,5,7,7,8,7,8,
+        7,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,7,8,7,8,8,8,8,8,
+    },
+};
 typedef struct {
     int w, h, stride, orient, causal, raw;
-    uint8_t *state, cx[19]; uint32_t *mag;
+    uint16_t *state; uint8_t cx[19]; const uint8_t *zc; uint32_t *mag;
     Mq mq; Bits rb;
 } Coeff;
-static int sig(const Coeff *c, int x, int y) { return c->state[(y + 1) * c->stride + x + 1] & SIG; }
-static int neighbourhood(const Coeff *c, int x, int y, int *hh, int *vv, int *dd) {
-    int bottom = !(c->causal && (y & 3) == 3);
-    int h = sig(c, x - 1, y) + sig(c, x + 1, y);
-    int v = sig(c, x, y - 1) + (bottom ? sig(c, x, y + 1) : 0);
-    int d = sig(c, x - 1, y - 1) + sig(c, x + 1, y - 1) +
-            (bottom ? sig(c, x - 1, y + 1) + sig(c, x + 1, y + 1) : 0);
-    *hh = h; *vv = v; *dd = d; return h + v + d;
+static unsigned neighbours(const Coeff *c, int k, int y) {
+    unsigned flags = c->state[k];
+    if (c->causal && (y & 3) == 3) flags &= ~BELOW;
+    return (flags & NEIGHBOURS) >> 4;
 }
 static int zcontext(const Coeff *c, int x, int y) {
-    int h, v, d; neighbourhood(c, x, y, &h, &v, &d);
-    if (c->orient == 3) {
-        int hv = h + v;
-        return d >= 3 ? 8 : d == 2 ? (hv ? 7 : 6) : d == 1 ? (hv >= 2 ? 5 : hv ? 4 : 3) : hv >= 2 ? 2 : hv ? 1 : 0;
-    }
-    if (c->orient == 1) { int tmp = h; h = v; v = tmp; }
-    return h == 2 ? 8 : h == 1 ? (v ? 7 : d ? 6 : 5) : v == 2 ? 4 : v == 1 ? 3 : d >= 2 ? 2 : d ? 1 : 0;
+    return c->zc[neighbours(c, (y + 1) * c->stride + x + 1, y)];
 }
-static int sign_contrib(uint8_t s) { return s & SIG ? (s & NEG ? -1 : 1) : 0; }
+static int sign_contrib(uint16_t s) { return s & SIG ? (s & NEG ? -1 : 1) : 0; }
 static int decision(Coeff *c, int cx) {
     if (!c->raw) return mq_bit(&c->mq, c->cx + cx);
     Bits *b = &c->rb;
@@ -458,15 +495,20 @@ static void significant(Coeff *c, int x, int y, int bp) {
         int cx = h ? (v < 0 ? 11 : v ? 13 : 12) : v ? 10 : 9;
         s = mq_bit(&c->mq, c->cx + cx) ^ flip;
     }
-    c->state[k] |= (uint8_t)(SIG | (s ? NEG : 0));
+    c->state[k] |= (uint16_t)(SIG | (s ? NEG : 0));
+    int stride = c->stride;
+    c->state[k - stride - 1] |= SE; c->state[k - stride] |= S; c->state[k - stride + 1] |= SW;
+    c->state[k - 1] |= E; c->state[k + 1] |= W;
+    c->state[k + stride - 1] |= NE; c->state[k + stride] |= N; c->state[k + stride + 1] |= NW;
     c->mag[k] = 3u << bp;   // twice the magnitude, with the unknown suffix at its midpoint
 }
 static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co, double *dst, int stride, int ox, int oy) {
     if (!cb->passes) return 0;
     Coeff c = {0}; c.w = cb->x1 - cb->x0; c.h = cb->y1 - cb->y0; c.stride = c.w + 2;
     c.orient = b->orient; c.causal = co->style & 8;
+    c.zc = zc_lut[b->orient == 3 ? 2 : b->orient == 1 ? 1 : 0];
     size_t count = (size_t)c.stride * (c.h + 2);
-    c.state = jalloc(j, count); c.mag = jalloc(j, count * sizeof(uint32_t));
+    c.state = jalloc(j, count * sizeof(uint16_t)); c.mag = jalloc(j, count * sizeof(uint32_t));
     if (!c.state || !c.mag) { jfree(j, c.state); jfree(j, c.mag); return -1; }
     contexts(c.cx);
     int rc = -1;
@@ -482,7 +524,7 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
                 int start = y0, stop = imin(y0 + 4, c.h), run = type == 0 && stop == y0 + 4;
                 if (run) for (int y = start; y < stop; y++) {
                     int k = (y + 1) * c.stride + x + 1;
-                    if ((c.state[k] & (SIG | VISIT)) || zcontext(&c, x, y)) { run = 0; break; }
+                    if ((c.state[k] & (SIG | VISIT)) || neighbours(&c, k, y)) { run = 0; break; }
                 }
                 if (run) {
                     if (!mq_bit(&c.mq, c.cx + 17)) continue;
@@ -491,10 +533,10 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
                 }
                 for (int y = start; y < stop; y++) {
                     int k = (y + 1) * c.stride + x + 1;
-                    uint8_t state = c.state[k];
+                    uint16_t state = c.state[k];
                     if (type == 2) {
                         if (!(state & SIG) || (state & VISIT)) continue;
-                        int cx = state & REFINE ? 16 : zcontext(&c, x, y) ? 15 : 14;
+                        int cx = state & REFINE ? 16 : neighbours(&c, k, y) ? 15 : 14;
                         unsigned bit = (unsigned)decision(&c, cx);
                         c.mag[k] = (c.mag[k] & ~(1u << (bp + 1))) | (bit << (bp + 1)) | (1u << bp);
                         c.state[k] |= REFINE;
@@ -508,7 +550,7 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
                 }
             }
             if (type == 0) {
-                for (size_t i = 0; i < count; i++) c.state[i] &= (uint8_t)~VISIT;
+                for (size_t i = 0; i < count; i++) c.state[i] &= (uint16_t)~VISIT;
                 if (co->style & 32) {
                     unsigned v = 0; for (int i = 0; i < 4; i++) v = (v << 1) | mq_bit(&c.mq, c.cx + 18);
                     if (v != 10) goto done;
@@ -555,28 +597,67 @@ static void inverse_line(double *v, int n, int origin, int reversible) {
         }
     }
 }
-static int component_decode(Jpx *j, Component *tc, const Coding *co) {
-    int stride = tc->x1 - tc->x0, height = tc->y1 - tc->y0;
-    if (!stride || !height) return 0; // a small tile can contain no sample of a sub-sampled component
-    tc->plane = jalloc(j, (size_t)stride * height * sizeof(double));
-    double *line = jalloc(j, (size_t)imax(stride, height) * sizeof(double));
-    if (!tc->plane || !line) { jfree(j, line); return -1; }
-    int rc = -1;
-    for (int r = 0; r <= co->nl; r++) {
-        Resolution *rs = tc->res + r;
-        int lw = r ? cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1) : 0;
-        int lh = r ? cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1) : 0;
-        for (int p = 0; p < rs->nx * rs->ny; p++) for (int b = 0; b < (r ? 3 : 1); b++) {
-            Band *band = rs->prec[p].band + b;
-            int n = co->nl - r + (r != 0), bx = band->orient & 1, by = band->orient >> 1;
-            int x0 = cshift(tc->x0 - (bx ? 1 << (n - 1) : 0), n);
-            int y0 = cshift(tc->y0 - (by ? 1 << (n - 1) : 0), n);
-            for (int i = 0; i < band->nx * band->ny; i++) {
-                Block *cb = band->cb + i;
-                if (block_decode(j, cb, band, co, tc->plane, stride, cb->x0 - x0 + bx * lw, cb->y0 - y0 + by * lh)) goto done;
+// Work on a narrow strip of adjacent columns in row order. Gathering/scattering a whole
+// column touches one cache line per sample; strips reuse the lines and let the lifting
+// steps operate on consecutive doubles (SIMD on the host), with the same rounding order.
+#define COLUMN_BATCH 16
+static void inverse_columns(double *plane, int stride, int w, int h, int origin, int low,
+                            int reversible, double *tmp) {
+    int batch = imin(w, COLUMN_BATCH);
+    int even = origin & 1, odd = 1 - even;
+    for (int x0 = 0; x0 < w; x0 += batch) {
+        int cols = imin(batch, w - x0), lo = 0, hi = low;
+        for (int y = 0; y < h; y++) {
+            int sy = ((y + origin) & 1) ? hi++ : lo++;
+            memcpy(tmp + (size_t)y * batch, plane + (size_t)sy * stride + x0, (size_t)cols * sizeof(double));
+        }
+        if (h == 1) {
+            if (origin & 1) for (int x = 0; x < cols; x++) tmp[x] *= 0.5;
+        } else if (reversible) {
+            for (int y = even; y < h; y += 2) {
+                double *v = tmp + (size_t)y * batch;
+                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
+                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] -= floor((a[x] + b[x] + 2) / 4);
+            }
+            for (int y = odd; y < h; y += 2) {
+                double *v = tmp + (size_t)y * batch;
+                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
+                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] += floor((a[x] + b[x]) / 2);
+            }
+        } else {
+            const double k = 1.230174104914001;
+            for (int y = 0; y < h; y++) {
+                double scale = ((y + origin) & 1) ? 1 / k : k;
+                for (int x = 0; x < cols; x++) tmp[(size_t)y * batch + x] *= scale;
+            }
+            static const double coeff[4] = {-0.443506852043971, -0.882911075530934, 0.052980118572961, 1.586134342059924};
+            for (int s = 0; s < 4; s++) for (int y = (s & 1) ? odd : even; y < h; y += 2) {
+                double *v = tmp + (size_t)y * batch;
+                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
+                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] += coeff[s] * (a[x] + b[x]);
             }
         }
-        if (!r) continue;
+        for (int y = 0; y < h; y++)
+            memcpy(plane + (size_t)y * stride + x0, tmp + (size_t)y * batch, (size_t)cols * sizeof(double));
+    }
+}
+typedef struct {
+    const Block *cb; const Band *band; const Coding *coding;
+    double *plane; int stride, x, y;
+} BlockJob;
+
+static int component_wavelet(Jpx *j, Component *tc, const Coding *co) {
+    int stride = tc->x1 - tc->x0, height = tc->y1 - tc->y0;
+    if (!stride || !height || !co->nl) return 0;
+    double *line = jalloc(j, (size_t)imax(stride, height * imin(stride, COLUMN_BATCH)) * sizeof(double));
+    if (!line) return -1;
+    for (int r = 1; r <= co->nl; r++) {
+        Resolution *rs = tc->res + r;
+        int lw = cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1);
+        int lh = cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1);
         int w = rs->x1 - rs->x0, h = rs->y1 - rs->y0;
         // Invert rows, then columns (F.3).
         for (int y = 0; y < h; y++) {
@@ -585,20 +666,68 @@ static int component_decode(Jpx *j, Component *tc, const Coding *co) {
             inverse_line(line, w, rs->x0, co->reversible);
             memcpy(tc->plane + (size_t)y * stride, line, (size_t)w * sizeof(double));
         }
-        for (int x = 0; x < w; x++) {
-            int lo = 0, hi = lh;
-            for (int y = 0; y < h; y++) line[y] = tc->plane[(size_t)(((y + rs->y0) & 1) ? hi++ : lo++) * stride + x];
-            inverse_line(line, h, rs->y0, co->reversible);
-            for (int y = 0; y < h; y++) tc->plane[(size_t)y * stride + x] = line[y];
-        }
-
+        inverse_columns(tc->plane, stride, w, h, rs->y0, lh, co->reversible, line);
     }
-    rc = 0;
-done:
-    jfree(j, line); return rc;
+    jfree(j, line); return 0;
 }
 static int tile_decode(Jpx *j, Tile *t) {
-    for (int c = 0; c < j->nc; c++) if (component_decode(j, t->comp + c, t->coding + c)) return -1;
+    size_t count = 0, samples = 0;
+    for (int c = 0; c < j->nc; c++) {
+        Component *tc = t->comp + c;
+        size_t n = (size_t)(tc->x1 - tc->x0) * (tc->y1 - tc->y0);
+        if (n && !(tc->plane = jalloc(j, n * sizeof(double)))) return -1;
+        samples += n;
+        for (int r = 0; r <= t->coding[c].nl; r++) {
+            Resolution *rs = tc->res + r;
+            for (int p = 0; p < rs->nx * rs->ny; p++) for (int b = 0; b < (r ? 3 : 1); b++) {
+                Band *band = rs->prec[p].band + b;
+                for (int i = 0; i < band->nx * band->ny; i++) if (band->cb[i].passes) count++;
+            }
+        }
+    }
+    BlockJob *jobs = jalloc(j, count * sizeof(BlockJob));
+    if (!jobs) return -1;
+    size_t at = 0;
+    for (int c = 0; c < j->nc; c++) {
+        Component *tc = t->comp + c; const Coding *co = t->coding + c;
+        int stride = tc->x1 - tc->x0;
+        for (int r = 0; r <= co->nl; r++) {
+            Resolution *rs = tc->res + r;
+            int lw = r ? cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1) : 0;
+            int lh = r ? cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1) : 0;
+            for (int p = 0; p < rs->nx * rs->ny; p++) for (int b = 0; b < (r ? 3 : 1); b++) {
+                Band *band = rs->prec[p].band + b;
+                int n = co->nl - r + (r != 0), bx = band->orient & 1, by = band->orient >> 1;
+                int x0 = cshift(tc->x0 - (bx ? 1 << (n - 1) : 0), n);
+                int y0 = cshift(tc->y0 - (by ? 1 << (n - 1) : 0), n);
+                for (int i = 0; i < band->nx * band->ny; i++) {
+                    Block *cb = band->cb + i;
+                    if (cb->passes) jobs[at++] = (BlockJob){cb, band, co, tc->plane, stride,
+                                                          cb->x0 - x0 + bx * lw, cb->y0 - y0 + by * lh};
+                }
+            }
+        }
+    }
+    // Packed sub-bands occupy disjoint rectangles, including those of different resolutions.
+    // Decode every code-block before combining resolutions; workers never share coefficient state.
+    int error = 0, *err = &error;
+    int parallel = !j->serial && samples >= (64u << 10) && count >= 16;
+    nitro_body decode = ^(size_t i) {
+        const BlockJob *job = jobs + i;
+        if (!__atomic_load_n(err, __ATOMIC_RELAXED) &&
+            block_decode(j, job->cb, job->band, job->coding, job->plane, job->stride, job->x, job->y))
+            __atomic_store_n(err, 1, __ATOMIC_RELAXED);
+    };
+    if (parallel) nitro_parallel(count, decode);
+    else for (size_t i = 0; i < count; i++) decode(i);
+    jfree(j, jobs);
+    if (error) return -1;
+    nitro_body wavelet = ^(size_t c) {
+        if (component_wavelet(j, t->comp + c, t->coding + c)) __atomic_store_n(err, 1, __ATOMIC_RELAXED);
+    };
+    if (parallel && j->nc > 1) nitro_parallel((size_t)j->nc, wavelet);
+    else for (int c = 0; c < j->nc; c++) wavelet((size_t)c);
+    if (error) return -1;
     if (t->mct) {
         size_t n = (size_t)(t->comp[0].x1 - t->comp[0].x0) * (t->comp[0].y1 - t->comp[0].y0);
         double *a = t->comp[0].plane, *b = t->comp[1].plane, *c = t->comp[2].plane;
@@ -772,8 +901,8 @@ static int channels(Jpx *j, njpx_image *out) {
 int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out)); out->alpha = -1;
-    if (!data || len < 4 || (flags & ~NJPX_RAW_COLORS)) return -1;
-    Jpx j = {0}; j.alpha = -1; j.raw_colors = (flags & NJPX_RAW_COLORS) != 0;
+    if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD))) return -1;
+    Jpx j = {0}; j.alpha = -1; j.raw_colors = (flags & NJPX_RAW_COLORS) != 0; j.serial = (flags & NJPX_SINGLE_THREAD) != 0;
     const uint8_t *stream = data; size_t slen = len;
     if (be16(data) != 0xff4f) {
         if (len < 12 || be32(data) != 12 || be32(data + 4) != 0x6a502020 || be32(data + 8) != 0x0d0a870a) return -1;

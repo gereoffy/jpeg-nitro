@@ -216,12 +216,17 @@ make bench/jpxverify                      # optional: OpenJPEG >= 2.5, found by 
 mkdir -p /tmp/nitro-jpx-tests
 bench/jpxverify --selftest /tmp/nitro-jpx-tests
 bench/jpxverify images/*.jp2               # compare decoded component samples with OpenJPEG
+make bench/jpxbench
+bench/jpxbench -r 5 images/*.jp2           # median decode time, input read once; -1 for serial
 ```
 
 `OPENJPEG_CFLAGS` and `OPENJPEG_LIBS` can specify a reference library outside pkg-config.
 The generated tests cover all 64 code-block styles, the five progression orders, tiles,
 precincts, layers, signed samples, 1/8/12/16-bit components, sub-sampling, ROI, and both
-wavelet transforms. JP2 ICC profiles use device-space alternates, as PDF ICCBased spaces do;
+wavelet transforms, including serial/parallel pixel equality on larger images.
+Independent JPX code-blocks and component wavelet transforms use the existing pthread worker
+pool; `NJPX_SINGLE_THREAD` keeps a call serial when the caller parallelizes images itself.
+JP2 ICC profiles use device-space alternates, as PDF ICCBased spaces do;
 POC, PPM/PPT, Part 2 coding extensions and HTJ2K are not decoded (see `src/nitrojpx.h`).
 
 `make tools` (macOS) builds `bench/bench`, `verify`, `robust`, `freqprobe`, `sustain`, the PNG,

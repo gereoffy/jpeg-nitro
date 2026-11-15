@@ -598,14 +598,17 @@ bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h src/nitro_os.h
 	$(CC) $(ASAN) bench/pngrobust.c src/nitropng.c $(THREADLIBS) -o $@
 
 # JPEG 2000 / JPX robustness, including packet headers, tag trees and JP2 boxes
-bench/jpxrobust: bench/jpxrobust.c src/nitrojpx.c src/nitrojpx.h
-	$(CC) $(ASAN) bench/jpxrobust.c src/nitrojpx.c -lm -o $@
+bench/jpxrobust: bench/jpxrobust.c src/nitrojpx.c src/nitrojpx.h src/nitro_os.h
+	$(CC) $(ASAN) bench/jpxrobust.c src/nitrojpx.c $(THREADLIBS) -lm -o $@
 
 # Optional reference only; no OpenJPEG dependency in the library/viewers.
 OPENJPEG_CFLAGS ?= $(shell pkg-config --cflags libopenjp2 2>/dev/null)
 OPENJPEG_LIBS ?= $(shell pkg-config --libs libopenjp2 2>/dev/null)
-bench/jpxverify: bench/jpxverify.c src/nitrojpx.c src/nitrojpx.h
-	$(CC) $(CFLAGS) $(OPENJPEG_CFLAGS) bench/jpxverify.c src/nitrojpx.c $(OPENJPEG_LIBS) -lm -o $@
+bench/jpxverify: bench/jpxverify.c src/nitrojpx.c src/nitrojpx.h src/nitro_os.h
+	$(CC) $(CFLAGS) $(OPENJPEG_CFLAGS) bench/jpxverify.c src/nitrojpx.c $(OPENJPEG_LIBS) $(THREADLIBS) -lm -o $@
+
+bench/jpxbench: bench/jpxbench.c src/nitrojpx.c src/nitrojpx.h src/nitro_os.h
+	$(CC) $(CFLAGS) bench/jpxbench.c src/nitrojpx.c $(THREADLIBS) -lm -o $@
 
 bench/psdverify: bench/psdverify.c build/libnitro.a
 	$(CC) -O3 $(CPUFLAGS) $(PORTFLAGS) -w -Isrc $^ $(THREADLIBS) -o $@
@@ -640,7 +643,7 @@ linux: build/libnitro.a $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
+	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/jpxbench bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
 	  examples/nitroconvert
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /

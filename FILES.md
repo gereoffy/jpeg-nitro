@@ -68,6 +68,7 @@
 - `pngrobust.c`: damaged PNG files under ASan
 - `jpxrobust.c`: damaged JPEG 2000 codestreams and JP2 containers under ASan / UBSan
 - `jpxverify.c`: optional OpenJPEG reference comparison and generated JPEG 2000 coding-style tests
+- `jpxbench.c`: JPEG 2000 decode timing and checksums, serial or parallel
 - `jpxpdfverify.py`: rendered PDF regressions for JPX colour spaces, palettes, masks and alpha (Pillow)
 - `psdrobust.c`: damaged PSD files under ASan
 - `pngbench.m`: PNG decoder comparison

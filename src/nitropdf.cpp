@@ -884,6 +884,47 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     bool colorKey = range.size() >= 2u * n;
     uint8_t *dst = plutovg_surface_get_data(surface);
     int stride = plutovg_surface_get_stride(surface);
+    // Opaque device RGB and single-component spaces are common in scanned PDFs. Avoid
+    // per-pixel floating point colour conversion: RGB bytes are already the result;
+    // gray / Indexed / Separation values repeat, so map their raw samples once.
+    if (!smask && alpha < 0 && cs->k == CS::RGB && im.ncomp == 3 && !colorKey &&
+        im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 &&
+        (override || im.colorspace != NJPX_SYCC)) {
+        for (int y = 0; y < h; y++) {
+            uint32_t *row = (uint32_t *)(dst + (size_t)y * stride);
+            const uint16_t *s = im.samples + (size_t)y * step * im.width * 3;
+            for (int x = 0; x < w; x++, s += 3 * step) row[x] = 0xff000000u | s[0] << 16 | s[1] << 8 | s[2];
+        }
+        return surface;
+    }
+    if (!smask && alpha < 0 && cs->k == CS::CMYK && im.ncomp == 4 && !colorKey &&
+        im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 && im.precision[3] == 8) {
+        // The same byte-row conversion as JPEG/ordinary CMYK images; the surface's row
+        // holds the CMYK bytes temporarily, then nitro_cmyk converts them in place.
+        for (int y = 0; y < h; y++) {
+            uint8_t *row = dst + (size_t)y * stride;
+            const uint16_t *s = im.samples + (size_t)y * step * im.width * 4;
+            for (int x = 0; x < w; x++, s += 4 * step)
+                for (int c = 0; c < 4; c++) row[4 * x + c] = (uint8_t)s[c];
+            ncm_row_bgra(row, row, (size_t)w);
+        }
+        return surface;
+    }
+    if (!smask && alpha < 0 && n == 1 && (uint64_t)w * h >= 2u * (1u << im.precision[0])) {
+        unsigned values = 1u << im.precision[0];
+        std::vector<uint32_t> lut(values);
+        for (unsigned v = 0; v < values; v++) {
+            float c = cs->k == CS::INDEXED ? (float)v : v / (float)(values - 1), rgb[3];
+            cs->toRGB(&c, rgb);
+            lut[v] = colorKey && !(v < range[0] || v > range[1]) ? 0 : 0xff000000u | packRgb(rgb);
+        }
+        for (int y = 0; y < h; y++) {
+            uint32_t *row = (uint32_t *)(dst + (size_t)y * stride);
+            const uint16_t *s = im.samples + (size_t)y * step * im.width;
+            for (int x = 0; x < w; x++) row[x] = lut[s[x * step]];
+        }
+        return surface;
+    }
     for (int y = 0; y < h; y++) {
         uint32_t *row = (uint32_t *)(dst + (size_t)y * stride);
         for (int x = 0; x < w; x++) {

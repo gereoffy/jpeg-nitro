@@ -30,6 +30,14 @@ static int verify(const char *path, int tolerance) {
     if (!d || len < 2) { free(d); fprintf(stderr, "cannot read %s\n", path); failed++; return -1; }
     njpx_image im;
     int ours = njpx_decode(d, len, 0, &im);
+    njpx_image serial;
+    int serial_rc = njpx_decode(d, len, NJPX_SINGLE_THREAD, &serial);
+    int parallel_diff = ours != serial_rc || (!ours &&
+        (im.width != serial.width || im.height != serial.height || im.ncomp != serial.ncomp ||
+         im.colorspace != serial.colorspace || im.alpha != serial.alpha || im.premultiplied != serial.premultiplied ||
+         memcmp(im.precision, serial.precision, sizeof(im.precision)) ||
+         memcmp(im.samples, serial.samples, (size_t)im.width * im.height * im.ncomp * sizeof(uint16_t))));
+    njpx_free(&serial);
     opj_dparameters_t params; opj_set_default_decoder_parameters(&params);
     opj_codec_t *codec = opj_create_decompress(d[0] == 255 && d[1] == 79 ? OPJ_CODEC_J2K : OPJ_CODEC_JP2);
     opj_set_error_handler(codec, quiet, NULL); opj_set_warning_handler(codec, quiet, NULL);
@@ -37,7 +45,8 @@ static int verify(const char *path, int tolerance) {
     opj_image_t *ref = NULL;
     int ok = codec && stream && opj_setup_decoder(codec, &params) && opj_read_header(stream, codec, &ref) &&
              opj_decode(codec, stream, ref) && opj_end_decompress(codec, stream);
-    int bad = 0, maxdiff = 0;
+    int bad = parallel_diff, maxdiff = 0;
+    if (parallel_diff) printf("FAIL serial/parallel mismatch: %s\n", path);
     if (!ok) { rejected++; printf("reference rejected (%s): %s\n", ours ? "both reject" : "nitrojpx decoded", path); }
     else if (ours || im.width != (int)(ref->x1 - ref->x0) || im.height != (int)(ref->y1 - ref->y0) || im.ncomp != (int)ref->numcomps) bad = 1;
     else {
@@ -58,24 +67,25 @@ static int verify(const char *path, int tolerance) {
     njpx_free(&im); opj_image_destroy(ref); opj_stream_destroy(stream); opj_destroy_codec(codec); free(d);
     return bad ? -1 : 0;
 }
-static int generate(const char *path, int style, int config) {
+static int generate(const char *path, int style, int config, int large) {
     opj_cparameters_t params; opj_set_default_encoder_parameters(&params);
     int n = config < 0 ? 1 : 1 + config % 4;
     int precision = config < 0 ? 8 : (int[]){1, 8, 12, 16}[(config / 4) % 4];
     int sgnd = config >= 0 && (config / 16) % 2, lossy = config >= 0 && (config / 32) % 2;
     int subsample = config >= 0 && n >= 3 && config % 3 == 0;
     int ox = config >= 0 ? 3 : 0, oy = config >= 0 ? 5 : 0;
+    int width = large ? 257 : 79, height = large ? 257 : 77;
     opj_image_cmptparm_t cp[4] = {{0}};
     for (int c = 0; c < n; c++) {
         cp[c].dx = c && subsample ? 2 : 1; cp[c].dy = c && subsample ? 2 : 1;
         cp[c].x0 = (ox + cp[c].dx - 1) / cp[c].dx; cp[c].y0 = (oy + cp[c].dy - 1) / cp[c].dy;
-        cp[c].w = (79 + ox + cp[c].dx - 1) / cp[c].dx - cp[c].x0;
-        cp[c].h = (77 + oy + cp[c].dy - 1) / cp[c].dy - cp[c].y0;
+        cp[c].w = (width + ox + cp[c].dx - 1) / cp[c].dx - cp[c].x0;
+        cp[c].h = (height + oy + cp[c].dy - 1) / cp[c].dy - cp[c].y0;
         cp[c].prec = precision; cp[c].sgnd = sgnd;
     }
     opj_image_t *im = opj_image_create(n, cp, n < 3 ? OPJ_CLRSPC_GRAY : OPJ_CLRSPC_SRGB);
     if (!im) return -1;
-    im->x0 = ox; im->y0 = oy; im->x1 = ox + 79; im->y1 = oy + 77;
+    im->x0 = ox; im->y0 = oy; im->x1 = ox + width; im->y1 = oy + height;
     for (int c = 0; c < n; c++) for (unsigned i = 0; i < cp[c].w * cp[c].h; i++)
         im->comps[c].data[i] = (int)(rnd() & ((1u << precision) - 1)) - (sgnd ? 1 << (precision - 1) : 0);
     params.numresolution = 4; params.tcp_numlayers = 3;
@@ -84,7 +94,7 @@ static int generate(const char *path, int style, int config) {
     params.tcp_mct = n >= 3 && !subsample;
     if (config >= 0) {
         params.prog_order = (OPJ_PROG_ORDER)(config % 5);
-        if (config & 1) { params.tile_size_on = 1; params.cp_tdx = 31; params.cp_tdy = 29; }
+        if ((config & 1) && !large) { params.tile_size_on = 1; params.cp_tdx = 31; params.cp_tdy = 29; }
         if ((config & 2) && precision > 1) {
             params.csty = 1; params.res_spec = 1;
             params.prcw_init[0] = params.prch_init[0] = 64;
@@ -109,10 +119,15 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[a], "--selftest") && a + 1 < argc) {
             const char *dir = argv[++a]; char path[4096];
             for (int style = 0; style < 64; style++) {
-                snprintf(path, sizeof(path), "%s/style-%d.j2k", dir, style); generate(path, style, -1);
+                snprintf(path, sizeof(path), "%s/style-%d.j2k", dir, style); generate(path, style, -1, 0);
+                snprintf(path, sizeof(path), "%s/parallel-style-%d.j2k", dir, style); generate(path, style, -1, 1);
             }
             for (int config = 0; config < 160; config++) {
-                snprintf(path, sizeof(path), "%s/config-%d.j2k", dir, config); generate(path, 0, config);
+                snprintf(path, sizeof(path), "%s/config-%d.j2k", dir, config); generate(path, 0, config, 0);
+            }
+            const int configs[] = {12, 14, 15, 24, 31, 44, 46, 62, 90};
+            for (size_t i = 0; i < sizeof(configs) / sizeof(*configs); i++) {
+                snprintf(path, sizeof(path), "%s/parallel-config-%d.j2k", dir, configs[i]); generate(path, 0, configs[i], 1);
             }
         } else verify(argv[a], -1);
     }
