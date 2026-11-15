@@ -12,7 +12,8 @@ static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static uint64_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
 static size_t cases, decoded;
 static void run(const uint8_t *d, size_t n) {
-    for (unsigned flags = 0; flags <= NJPX_RAW_COLORS; flags++) {
+    for (unsigned k = 0; k < 4; k++) {   // (both colour paths, in full and reduced)
+        unsigned flags = (k & 1 ? NJPX_RAW_COLORS : 0) | (k & 2 ? NJPX_REDUCE(1 + rnd() % 3) : 0);
         njpx_image im;
         int rc = njpx_decode(d, n, flags, &im);
         cases++;

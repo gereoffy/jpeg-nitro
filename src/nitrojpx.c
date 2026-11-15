@@ -121,6 +121,7 @@ typedef struct {
     int prec[NJPX_MAX_COMPS], sign[NJPX_MAX_COMPS], dx[NJPX_MAX_COMPS], dy[NJPX_MAX_COMPS];
     Coding coding[NJPX_MAX_COMPS]; Tile *tiles;
     int colorspace, alpha, premult, raw_colors, serial;
+    int reduce, ox0, oy0, oxs, oys;   // (NJPX_REDUCE: the levels left out; the output grid, reduced)
     const uint8_t *palette, *cmap, *cdef; size_t plen, mlen, dlen;
     uint16_t *output;
 } Jpx;
@@ -651,10 +652,10 @@ typedef struct {
 
 static int component_wavelet(Jpx *j, Component *tc, const Coding *co) {
     int stride = tc->x1 - tc->x0, height = tc->y1 - tc->y0;
-    if (!stride || !height || !co->nl) return 0;
+    if (!stride || !height || co->nl <= j->reduce) return 0;
     double *line = jalloc(j, (size_t)imax(stride, height * imin(stride, COLUMN_BATCH)) * sizeof(double));
     if (!line) return -1;
-    for (int r = 1; r <= co->nl; r++) {
+    for (int r = 1; r <= co->nl - j->reduce; r++) {
         Resolution *rs = tc->res + r;
         int lw = cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1);
         int lh = cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1);
@@ -674,10 +675,11 @@ static int tile_decode(Jpx *j, Tile *t) {
     size_t count = 0, samples = 0;
     for (int c = 0; c < j->nc; c++) {
         Component *tc = t->comp + c;
+        if (t->coding[c].nl < j->reduce) return -1;
         size_t n = (size_t)(tc->x1 - tc->x0) * (tc->y1 - tc->y0);
         if (n && !(tc->plane = jalloc(j, n * sizeof(double)))) return -1;
         samples += n;
-        for (int r = 0; r <= t->coding[c].nl; r++) {
+        for (int r = 0; r <= t->coding[c].nl - j->reduce; r++) {
             Resolution *rs = tc->res + r;
             for (int p = 0; p < rs->nx * rs->ny; p++) for (int b = 0; b < (r ? 3 : 1); b++) {
                 Band *band = rs->prec[p].band + b;
@@ -691,7 +693,7 @@ static int tile_decode(Jpx *j, Tile *t) {
     for (int c = 0; c < j->nc; c++) {
         Component *tc = t->comp + c; const Coding *co = t->coding + c;
         int stride = tc->x1 - tc->x0;
-        for (int r = 0; r <= co->nl; r++) {
+        for (int r = 0; r <= co->nl - j->reduce; r++) {
             Resolution *rs = tc->res + r;
             int lw = r ? cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1) : 0;
             int lh = r ? cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1) : 0;
@@ -728,25 +730,31 @@ static int tile_decode(Jpx *j, Tile *t) {
     if (parallel && j->nc > 1) nitro_parallel((size_t)j->nc, wavelet);
     else for (int c = 0; c < j->nc; c++) wavelet((size_t)c);
     if (error) return -1;
+    // (the samples: the resolution reduce levels below the finest, the plane's top left corner)
     if (t->mct) {
-        size_t n = (size_t)(t->comp[0].x1 - t->comp[0].x0) * (t->comp[0].y1 - t->comp[0].y0);
-        double *a = t->comp[0].plane, *b = t->comp[1].plane, *c = t->comp[2].plane;
-        for (size_t i = 0; i < n; i++) {
-            double y = a[i], u = b[i], v = c[i];
-            if (t->coding[0].reversible) { b[i] = y - floor((u + v) / 4); a[i] = v + b[i]; c[i] = u + b[i]; }
-            else { a[i] = y + 1.402 * v; b[i] = y - 0.34413 * u - 0.71414 * v; c[i] = y + 1.772 * u; }
+        const Resolution *rs = t->comp[0].res + t->coding[0].nl - j->reduce;
+        int stride = t->comp[0].x1 - t->comp[0].x0;
+        for (int y = 0; y < rs->y1 - rs->y0; y++) {
+            double *a = t->comp[0].plane + (size_t)y * stride, *b = t->comp[1].plane + (size_t)y * stride, *c = t->comp[2].plane + (size_t)y * stride;
+            for (int i = 0; i < rs->x1 - rs->x0; i++) {
+                double yy = a[i], u = b[i], v = c[i];
+                if (t->coding[0].reversible) { b[i] = yy - floor((u + v) / 4); a[i] = v + b[i]; c[i] = u + b[i]; }
+                else { a[i] = yy + 1.402 * v; b[i] = yy - 0.34413 * u - 0.71414 * v; c[i] = yy + 1.772 * u; }
+            }
         }
     }
-    int w = j->xs - j->x0;
+    int w = j->oxs - j->ox0;
     for (int c = 0; c < j->nc; c++) {
         Component *tc = t->comp + c;
-        for (int sy = tc->y0; sy < tc->y1; sy++) for (int sx = tc->x0; sx < tc->x1; sx++) {
-            double v = tc->plane[(size_t)(sy - tc->y0) * (tc->x1 - tc->x0) + sx - tc->x0];
+        const Resolution *rs = tc->res + t->coding[c].nl - j->reduce;
+        for (int sy = rs->y0; sy < rs->y1; sy++) for (int sx = rs->x0; sx < rs->x1; sx++) {
+            double v = tc->plane[(size_t)(sy - rs->y0) * (tc->x1 - tc->x0) + sx - rs->x0];
             // Both signed and unsigned samples are exposed with an unsigned bias to the caller.
             v += (unsigned)1 << (j->prec[c] - 1);
             double max = ((unsigned)1 << j->prec[c]) - 1;
             if (!isfinite(v)) return -1;
-            int x = sx * j->dx[c] - j->x0, y = sy * j->dy[c] - j->y0;
+            int x = sx * j->dx[c] - j->ox0, y = sy * j->dy[c] - j->oy0;
+            if (x < 0 || y < 0 || x >= w || y >= j->oys - j->oy0) continue;   // (reduced: a sub-sampled component's edge)
             j->output[((size_t)y * w + x) * j->nc + c] = (uint16_t)(v <= 0 ? 0 : v >= max ? max : floor(v + 0.5));
         }
     }
@@ -901,8 +909,9 @@ static int channels(Jpx *j, njpx_image *out) {
 int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out)); out->alpha = -1;
-    if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD))) return -1;
+    if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD | NJPX_REDUCE(7)))) return -1;
     Jpx j = {0}; j.alpha = -1; j.raw_colors = (flags & NJPX_RAW_COLORS) != 0; j.serial = (flags & NJPX_SINGLE_THREAD) != 0;
+    j.reduce = (int)(flags >> 8 & 7);
     const uint8_t *stream = data; size_t slen = len;
     if (be16(data) != 0xff4f) {
         if (len < 12 || be32(data) != 12 || be32(data + 4) != 0x6a502020 || be32(data + 8) != 0x0d0a870a) return -1;
@@ -925,7 +934,8 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         if (!j.siz || !j.layers || n != 10) goto done;
         if (!j.tiles) {
             j.tiles = jalloc(&j, (size_t)j.nx * j.ny * sizeof(Tile));
-            j.output = jalloc(&j, (size_t)(j.xs - j.x0) * (j.ys - j.y0) * j.nc * sizeof(uint16_t));
+            j.ox0 = cshift(j.x0, j.reduce), j.oy0 = cshift(j.y0, j.reduce), j.oxs = cshift(j.xs, j.reduce), j.oys = cshift(j.ys, j.reduce);
+            j.output = jalloc(&j, (size_t)(j.oxs - j.ox0) * (j.oys - j.oy0) * j.nc * sizeof(uint16_t));
             if (!j.tiles || !j.output) goto done;
         }
         unsigned index = be16(d), part = d[6]; size_t psot = be32(d + 2);
@@ -964,6 +974,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
     }
     if (!eoc || !j.tiles) goto done;
     for (int i = 0; i < j.nx * j.ny; i++) if (!j.tiles[i].done) goto done;
+    j.x0 = j.ox0, j.y0 = j.oy0, j.xs = j.oxs, j.ys = j.oys;   // (from here the output's grid)
     // Expand sub-sampled components only after all tiles have supplied their grid points:
     // a pixel just across an odd tile boundary can use a sample from the preceding tile.
     for (int c = 0; c < j.nc; c++) {

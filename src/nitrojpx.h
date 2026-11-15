@@ -28,6 +28,10 @@ enum { NJPX_RAW_COLORS = 1 };
 // Default: independent code-blocks/components use nitro_os's worker pool. The caller
 // can keep a decode serial when distributing several images across its own workers.
 enum { NJPX_SINGLE_THREAD = 2 };
+// NJPX_REDUCE(n): the image at 1/2^n of its size (n = 1..7), its n finest resolution levels left
+// out (their code-blocks not decoded, the inverse wavelets stopped there): the reduced grid,
+// ceil(x / 2^n) of each coordinate. An error if a tile-component has fewer than n levels.
+#define NJPX_REDUCE(n) ((unsigned)(n) << 8)
 
 typedef struct {
     int width, height, ncomp;

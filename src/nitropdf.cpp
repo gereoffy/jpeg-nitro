@@ -852,13 +852,25 @@ struct JpxPixels {
 
 Val key(pp::Doc &doc, Val d, const char *name, const char *abbr);
 
+// A JPX image decoded: one beyond MAX_IMAGE_PIXELS (its /Width x /Height) at half, a quarter ... of its
+// size, its finest resolution levels left out (faster than decoding all, and filtered, not decimated);
+// in full if it cannot be (fewer levels in a tile)
+int jpxDecode(nitropdf &P, ImageSource &src, unsigned flags, njpx_image &im) {
+    int64_t W = toInt(key(P.doc, src.dict, "Width", nullptr).num(0)), H = toInt(key(P.doc, src.dict, "Height", nullptr).num(0));
+    int r = 0;
+    while (r < 7 && W > 0 && H > 0 && (uint64_t)((W + (1 << r) - 1) >> r) * (uint64_t)((H + (1 << r) - 1) >> r) > MAX_IMAGE_PIXELS) r++;
+    const uint8_t *d = (const uint8_t *)src.data.data();
+    if (r && !njpx_decode(d, src.data.size(), flags | NJPX_REDUCE(r), &im)) return 0;
+    return njpx_decode(d, src.data.size(), flags, &im);
+}
+
 // JPX carries its own dimensions and per-component precision. /Decode is ignored for colour
 // images (ISO 32000-1, 7.4.9); a PDF /ColorSpace overrides JP2 colour specifications/palettes.
 plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS> &cs) {
     JpxPixels pixels;
     njpx_image &im = pixels.im;
     bool override = cs != nullptr;
-    if (njpx_decode((const uint8_t *)src.data.data(), src.data.size(), override ? NJPX_RAW_COLORS : 0, &im)) return nullptr;
+    if (jpxDecode(P, src, override ? NJPX_RAW_COLORS : 0, im)) return nullptr;
     int smask = toInt(key(P.doc, src.dict, "SMaskInData", nullptr).num(0));
     if (smask < 0 || smask > 2) return nullptr;
     if (src.dict.get("SMask").t != pp::NUL) smask = 0;   // (an /SMask overrides the opacity in the data: 8.9.5.4)
@@ -1046,7 +1058,7 @@ bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
     } else if (src.filter == "JPXDecode") {
         JpxPixels pixels;
         njpx_image &im = pixels.im;
-        if (njpx_decode(d, len, NJPX_RAW_COLORS, &im) || im.ncomp != 1 || (stencil && im.precision[0] != 1)) return false;
+        if (jpxDecode(P, src, NJPX_RAW_COLORS, im) || im.ncomp != 1 || (stencil && im.precision[0] != 1)) return false;
         step = 1;
         while ((uint64_t)im.width * im.height / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
         out.w = (im.width + step - 1) / step, out.h = (im.height + step - 1) / step, out.n = 1;
