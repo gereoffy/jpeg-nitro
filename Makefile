@@ -55,6 +55,9 @@ ARCH       := $(shell uname -m)
 # at a 32-byte boundary (JCC erratum microcode): the Huffman loops became up to 25% slower
 # after edits elsewhere on a Xeon E3-1245 v5. This keeps branches clear; no effect elsewhere.
 X86JCC     := -mbranches-within-32B-boundaries
+# AES-NI (pdfparse3's AES-CBC: encrypted PDFs) in the portable x86 builds but the x86-64-v2 ones:
+# the AVX2 CPUs have it, though x86-64-v3 does not list it. Without -maes it is detected at run time.
+x86aes      = $(if $(filter x86-64-v2,$(1)),,-maes)
 ifeq ($(ARCH),x86_64)
 CPUFLAGS   := -march=native $(X86JCC)
 else
@@ -277,7 +280,7 @@ DIST_CPU    = -march=$(DIST_ARCH)
 DIST_TGZ   := nitroview-linux-arm64.tar.gz
 else
 DIST_ARCH  ?= x86-64-v3
-DIST_CPU    = -march=$(DIST_ARCH) $(X86JCC)
+DIST_CPU    = -march=$(DIST_ARCH) $(call x86aes,$(DIST_ARCH)) $(X86JCC)
 DIST_TGZ   := nitroview-linux-x64.tar.gz
 endif
 DIST_VEC   := $(if $(VEC),$(DIST_DIR)/libnitrovec.a)
@@ -506,7 +509,7 @@ endef
 $(foreach a,$(MAC_ARCHS),$(eval $(call app_vec_rule,$(a))))
 .SECONDARY: $(foreach a,$(MAC_ARCHS),build/app-$(a)/libnitro.a build/app-$(a)/png_wuffs.o build/app-$(a)/mimalloc.o build/app-$(a)/nitroalloc.o)
 MAC_MIN      := -mmacosx-version-min=11.0
-APPCPU_x86_64 := -march=x86-64-v3 $(X86JCC) $(DEFS)
+APPCPU_x86_64 := -march=x86-64-v3 -maes $(X86JCC) $(DEFS)
 APPCPU_arm64  := -mcpu=apple-m1 $(DEFS)
 ljt_has = $(if $(filter 1,$(TURBOJPEG)),$(filter $(1),$(shell lipo -archs $(LJT)/lib/libturbojpeg.a 2>/dev/null)))
 dav1d_has = $(if $(filter 1,$(DAV1D)),$(filter $(1),$(shell lipo -archs $(DAV1D_LIB) 2>/dev/null)))
@@ -650,7 +653,7 @@ clean:
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
 WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
-WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks $(WARN) -static
+WINFLAGS = -O3 -march=$(WINARCH) $(call x86aes,$(WINARCH)) $(X86JCC) $(DEFS) -fblocks $(WARN) -static
 # everything Windows is built again when WINARCH changes (the v2 and v3 builds share build/win/)
 # or the optional parts do (NITROHEVC=1 left the WIC build in place)
 WIN_STAMP := build/win/.arch-$(WINARCH)-$(CONFIG)
@@ -683,7 +686,7 @@ WIN_AVIF  := $(if $(WIN_DAV1D),-DNV_DAV1D -I$(DAV1D_WIN)/include)
 build/win/%: CC = $(WINCC)
 build/win/%: CXX = $(WINCXX)
 build/win/%: AR = $(WINAR)
-build/win/%: TCPU = -march=$(WINARCH) $(X86JCC) $(DEFS)
+build/win/%: TCPU = -march=$(WINARCH) $(call x86aes,$(WINARCH)) $(X86JCC) $(DEFS)
 build/win/%: TPORT = -fblocks -static
 build/win/libnitro.a: LIB_AVIF = $(if $(WIN_DAV1D),src/nitroavif.c)
 build/win/libnitro.a: LIB_DEFS = $(WIN_AVIF)
