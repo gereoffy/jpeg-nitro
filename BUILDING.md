@@ -28,16 +28,18 @@ CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and
 | libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `NITROVEC` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
+| zlib-ng | zlib for the drawings in the Windows and the portable Linux build (macOS and Linux have one) | part of `NITROVEC` |
 | libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
 | stb_image, Wuffs | the decoder comparison in `bench/bench`; Wuffs also as the viewer's interlaced-PNG decoder | `WUFFS=1` |
 
 dav1d is built with meson + ninja in a Python virtual environment (`third_party/tools/venv`),
-universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it for the
-Windows viewer (`third_party/dav1d-win`). The script applies two patches: `patches/librevenge.patch`
-(embedded images pass through without base64, property lists are moved instead of copied, a damaged
-OLE header is refused) and `patches/libxml2.patch` (on Windows the hash tables' seed without
-bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in our forks, fetched by their
-pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and dav1d's x86 assembly.
+universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it and zlib-ng
+for the Windows viewer (`third_party/dav1d-win`, `third_party/zlib-ng-win`). The script applies two
+patches: `patches/librevenge.patch` (embedded images pass through without base64, property lists
+are moved instead of copied, a damaged OLE header is refused) and `patches/libxml2.patch` (on Windows
+the hash tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in
+our forks, fetched by their pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and
+dav1d's x86 assembly.
 
 ## macOS
 
@@ -80,8 +82,8 @@ make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang
 cross-compiles `nitroview.exe` (with its icon), `bench/nbench.exe` and `bench/psdverify.exe`:
 static, only system DLLs, Windows 10 or later, built for AVX2 (x86-64-v3). `WINARCH=x86-64-v2` builds
 for CPUs without AVX2 (switching it rebuilds everything Windows, the vector libraries too).
-AVIF needs dav1d built for Windows first: `WINCC=… scripts/get-deps.sh` with the same compiler. The
-`SVG`, `CDR` and `NITROHEVC` options apply here too.
+First `WINCC=… scripts/get-deps.sh` with the same compiler: it builds zlib-ng (the drawings) and
+dav1d (AVIF) for Windows. The `SVG`, `CDR` and `NITROHEVC` options apply here too.
 
 ## Linux
 
