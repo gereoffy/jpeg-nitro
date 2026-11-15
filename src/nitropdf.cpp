@@ -861,6 +861,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     if (njpx_decode((const uint8_t *)src.data.data(), src.data.size(), override ? NJPX_RAW_COLORS : 0, &im)) return nullptr;
     int smask = toInt(key(P.doc, src.dict, "SMaskInData", nullptr).num(0));
     if (smask < 0 || smask > 2) return nullptr;
+    if (src.dict.get("SMask").t != pp::NUL) smask = 0;   // (an /SMask overrides the opacity in the data: 8.9.5.4)
     int alpha = im.alpha;
     int expected = cs ? cs->n : im.colorspace == NJPX_GRAY ? 1 : im.colorspace == NJPX_CMYK ? 4 :
                    im.colorspace == NJPX_SRGB || im.colorspace == NJPX_SYCC ? 3 : 0;
