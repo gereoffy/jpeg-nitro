@@ -23,7 +23,7 @@
 const char *const nv_vector_exts[] = {
 #ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
     "svg", "dxf", "dwg", "wmf", "emf", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
-    "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "pfb", "pfa",
+    "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "eot", "pfb", "pfa",
 #endif
     NULL};
 
@@ -40,7 +40,7 @@ const char *nv_vector_mimes(void) {
     return "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
            "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;"
-           "font/ttf;font/otf;font/collection;font/woff;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/x-font-type1;";
+           "font/ttf;font/otf;font/collection;font/woff;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/vnd.ms-fontobject;application/x-font-type1;";
 #else
     return "";
 #endif
@@ -151,7 +151,8 @@ static int visio(const uint8_t *p, size_t len, size_t head) {   // VSD: an OLE f
 }
 static unsigned u16be(const uint8_t *p) { return p[0] << 8 | p[1]; }
 // A font file: an sfnt (TrueType, OpenType: its table count and the search range that goes with it), a collection,
-// WOFF, Type 1 (PFB's first segment header before the "%!", PFA's first line)
+// WOFF, Embedded OpenType (its magic, and its size the file's), Type 1 (PFB's first segment header before the "%!",
+// PFA's first line)
 static int font_file(const uint8_t *p, size_t len) {
     if (len < 12) return 0;
     if (!memcmp(p, "\0\1\0\0", 4) || !memcmp(p, "OTTO", 4) || !memcmp(p, "true", 4) || !memcmp(p, "typ1", 4)) {
@@ -161,6 +162,7 @@ static int font_file(const uint8_t *p, size_t len) {
     }
     if (!memcmp(p, "ttcf", 4)) return !memcmp(p + 4, "\0\1\0\0", 4) || !memcmp(p + 4, "\0\2\0\0", 4);
     if (!memcmp(p, "wOFF", 4)) return 1;
+    if (len >= 82 && p[34] == 0x4c && p[35] == 0x50 && (p[0] | p[1] << 8 | p[2] << 16 | (size_t)p[3] << 24) == len) return 1;
     if (p[0] == 0x80 && p[1] == 1) return !memcmp(p + 6, "%!", 2);
     return len >= 14 && (!memcmp(p, "%!PS-AdobeFont", 14) || !memcmp(p, "%!FontType1", 11));
 }
@@ -233,7 +235,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitropdf_pages(v->doc);
         v->mode = NV_MODE_PDF;
     }
-    static const char *const font_exts[] = {"ttf", "otf", "ttc", "otc", "woff", "pfb", "pfa", NULL};
+    static const char *const font_exts[] = {"ttf", "otf", "ttc", "otc", "woff", "eot", "pfb", "pfa", NULL};
     if (!v->doc && (nv_has_ext(name, font_exts) || font_file(p, len)) && (v->doc = nitrotype_load(data, len))) {
         nitrotype_set_background(v->doc, v->background);
         v->render = type_render;

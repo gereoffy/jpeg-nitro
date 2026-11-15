@@ -2,8 +2,9 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitrotype: font files shown as a specimen, for the viewers: TrueType and OpenType (.ttf, .otf),
-// their collections (.ttc, .otc: face after face), Type 1 (.pfb, .pfa) and WOFF (its tables
-// inflated with zlib; not WOFF2: that is Brotli). FreeType reads the outlines (the modules
+// their collections (.ttc, .otc: face after face), Type 1 (.pfb, .pfa), WOFF (its tables
+// inflated with zlib; not WOFF2: that is Brotli) and Embedded OpenType (.eot: the font after its
+// header; not a compressed one: that is MicroType Express). FreeType reads the outlines (the modules
 // nitropdf uses), plutovg draws them like the other readers' drawings: at any scale, so a glyph's
 // curves can be zoomed into. A face's first page: its name and what it is, lines of sample text in
 // the languages of Central Europe and the rest of Latin, Cyrillic and Greek (most fonts cover

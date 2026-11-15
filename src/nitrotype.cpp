@@ -130,11 +130,25 @@ bool unwoff(const uint8_t *d, size_t n, std::string &out) {
     return true;
 }
 
+// An Embedded OpenType file's font: the last FontDataSize bytes, after a header of little-endian
+// fields and names (its magic 0x504C at 34), XORed with 0x50 if the flags say so. false: not one,
+// or its font is compressed (MicroType Express: not read).
+bool uneot(const uint8_t *d, size_t n, std::string &out) {
+    if (n < 82 || d[34] != 0x4c || d[35] != 0x50) return false;
+    auto le32 = [&](size_t at) { return (uint32_t)d[at] | d[at + 1] << 8 | d[at + 2] << 16 | (uint32_t)d[at + 3] << 24; };
+    uint32_t size = le32(0), font = le32(4), flags = le32(12);
+    if (size != n || font < 12 || font > n - 82 || (flags & 0x4)) return false;
+    out.assign((const char *)d + (n - font), font);
+    if (flags & 0x10000000)
+        for (char &c : out) c ^= 0x50;
+    return true;
+}
+
 }   // namespace
 
 struct nitrotype {
     std::string data;   // the font file (a WOFF's sfnt): FreeType reads it in place
-    bool woff = false;
+    const char *wrapper = "";   // "WOFF: ", "EOT: ": what the font came in
     FT_Library lib = nullptr;
     std::vector<Face> faces;
     std::vector<Page> pages;
@@ -316,9 +330,9 @@ struct Layout {
         uiText(title, uiBold, MARGIN, MARGIN + 30, 30, faceName());
         add(title, TEXT);
         const char *fmt = FT_Get_Font_Format(face.ft);
-        std::string s = F.woff ? "WOFF: " : "";
+        std::string s = F.wrapper;
         s += fmt ? fmt : "font";
-        if (FT_IS_SFNT(face.ft) && fmt && !strcmp(fmt, "CFF")) s = (F.woff ? "WOFF: " : "") + std::string("OpenType (CFF)");
+        if (FT_IS_SFNT(face.ft) && fmt && !strcmp(fmt, "CFF")) s = F.wrapper + std::string("OpenType (CFF)");
         if (FT_HAS_MULTIPLE_MASTERS(face.ft)) s += ", variable (its default instance)";
         char b[200];
         snprintf(b, sizeof b, "   ·   %ld glyphs   ·   %zu characters   ·   %d units per em", (long)face.ft->num_glyphs, face.chars, (int)upm);
@@ -448,8 +462,10 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
             delete F;
             return nullptr;
         }
-        F->woff = true;
-    } else
+        F->wrapper = "WOFF: ";
+    } else if (uneot(d, len, F->data))
+        F->wrapper = "EOT: ";
+    else
         F->data.assign((const char *)data, len);
     FT_Face probe = nullptr;
     if (FT_Init_FreeType(&F->lib)) F->lib = nullptr;
