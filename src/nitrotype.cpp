@@ -97,7 +97,7 @@ struct Page {
 inline bool isLetter(uint32_t cp) {
     return ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') || (cp >= 0xC0 && !(cp >= 0x2000 && cp < 0x2C00));   // (not U+2013, the euro sign)
 }
-// whether the font has at least half of a text's letters (else the line is not set in it, only named)
+// whether the font has at least half of a text's letters (a face with no such sample line shows no samples)
 bool covers(FT_Face ft, const char *text) {
     std::string s(text);
     int total = 0, missing = 0;
@@ -258,16 +258,13 @@ struct Layout {
 
     // A line of text in the font shown, size units to the em, from x on the baseline y: its glyphs
     // into ok; the characters it has no glyph for into miss, from a system font. Paths NULL: only
-    // measured. Returns the width; counts the letters (not the digits, signs and dashes every font has)
-    // and those of them missing.
-    float fontText(plutovg_path_t *ok, plutovg_path_t *miss, float x, float y, float size, const std::string &s, int *total, int *missing) {
+    // measured. Returns the width.
+    float fontText(plutovg_path_t *ok, plutovg_path_t *miss, float x, float y, float size, const std::string &s) {
         float x0 = x, k = size / upm;
         FT_UInt prev = 0;
         for (size_t i = 0; i < s.size();) {
             uint32_t cp = nf_utf8_next(s, i);
             FT_UInt gid = FT_Get_Char_Index(face.ft, cp);
-            bool letter = isLetter(cp);
-            if (letter && total) ++*total;
             if (gid) {
                 if (prev && FT_HAS_KERNING(face.ft)) {
                     FT_Vector kern = {0, 0};
@@ -285,7 +282,6 @@ struct Layout {
                 x += size / 2;
                 continue;
             }
-            if (letter && missing) ++*missing;
             plutovg_font_face_t *g = ui && nf_has_glyph(ui, cp) ? ui : nf_glyph_face(nullptr, cp, 400, false);
             if (!g) {   // (no system font has it either: the font's own "missing glyph", glyph 0)
                 plutovg_matrix_t m;
@@ -374,18 +370,11 @@ struct Layout {
         for (int k = 0; k < NSAMPLES; k++) {
             float y = SAMPLE_TOP + k * SAMPLE_PITCH + SAMPLE_SIZE * 0.78f, x = MARGIN + TAG_W;
             uiText(tags, ui, MARGIN, y, 8, SAMPLES[k].tag);
-            int total = 0, missing = 0;
-            float tw = fontText(nullptr, nullptr, 0, 0, SAMPLE_SIZE, SAMPLES[k].text, &total, &missing);
-            if (missing * 2 > total) {   // (not this font's script: the line small, in the page's font)
-                plutovg_path_t *grey = plutovg_path_create();
-                float gx = x + uiText(grey, ui, x, y, 11, SAMPLES[k].text);
-                uiText(grey, ui, gx, y, 11, missing == total ? "      (not in this font)" : "      (mostly not in this font)");
-                add(grey, LABEL);
-                continue;
-            }
+            // (every character the font lacks in red, a whole line too: the languages it does not cover show at a glance)
+            float tw = fontText(nullptr, nullptr, 0, 0, SAMPLE_SIZE, SAMPLES[k].text);
             float size = tw > maxw ? SAMPLE_SIZE * maxw / tw : SAMPLE_SIZE;
             plutovg_path_t *ok = plutovg_path_create(), *miss = plutovg_path_create();
-            fontText(ok, miss, x, y, size, SAMPLES[k].text, nullptr, nullptr);
+            fontText(ok, miss, x, y, size, SAMPLES[k].text);
             add(ok, TEXT);
             add(miss, MISSING);
         }
