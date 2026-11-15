@@ -139,8 +139,9 @@ PDFP       := third_party/pdfparse3
 # FreeType: the outlines of the fonts PDFs embed, its modules as patches/freetype/ configures them
 FT         := third_party/freetype
 BOOST      := third_party/boost
-# zlib for CorelDRAW in the Windows and the portable Linux build (macOS / Linux have it)
-ZLIB       := third_party/zlib
+# zlib (zlib-ng, built by scripts/get-deps.sh) in the Windows and the portable Linux build (macOS / Linux have one)
+ZLIB_WIN   := third_party/zlib-ng-win
+ZLIB_DIST  := third_party/zlib-ng
 # dav1d (VideoLAN, BSD-2-Clause) for AVIF (nitroavif) in every viewer, once scripts/get-deps.sh built it
 DAV1D_DIR  := third_party/dav1d
 DAV1D      ?= $(if $(wildcard $(DAV1D_DIR)/lib/libdav1d.a),1,0)
@@ -383,8 +384,6 @@ FT_DEPS   = $(FT_C) patches/freetype/ftmodule.h patches/freetype/ftoption.h $(wi
 PDFP_C    = $(PDFP)/pdfcrypt.c
 PDFP_CXX  = $(PDFP)/pdfparse3.cpp
 PDFP_DEPS = $(PDFP_C) $(PDFP_CXX) $(wildcard $(PDFP)/*.h) $(wildcard $(PDFP)/.stamp-*)
-# zlib's inflate for the builds whose system has no zlib (Windows, the portable Linux build)
-ZLIB_C   := $(addprefix $(ZLIB)/,adler32.c crc32.c inflate.c inffast.c inftrees.c zutil.c)
 # our readers: the ones drawing with plutovg alone, built as lunasvg is (no exceptions, no RTTI), and
 # the two over librevenge / libxml2 (nitrocdr, nitrodio: librevenge throws), with nitro_vector in C
 NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitrometa.cpp src/nitro_font.cpp src/nitropdf.cpp
@@ -392,7 +391,8 @@ NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
               src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrotiff.h \
               src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.c src/nitrojpx.h
-# (-I$(ZLIB) for the librevenge-based parts, nitrodio too, where the system has no zlib.h: Windows, the portable Linux build)
+# (zlib-ng's include/ for the librevenge-based parts, nitrodio and pdfparse3 too, where the system has no zlib.h:
+# Windows, the portable Linux build)
 VEC_INC :=
 
 # a library's objects: $(1) C sources, $(2) C++ sources, $(3) C flags, $(4) C++ flags (the target: its stamp)
@@ -419,8 +419,12 @@ endef
 	$(call vec_objs,$(FT_C),,-O2 -w -DFT2_BUILD_LIBRARY $(FT_DEFS),)
 %/vec/pdfparse3/.built: $(PDFP_DEPS)
 	$(call vec_objs,$(PDFP_C),$(PDFP_CXX),-std=c99 -O2 -w,-fno-exceptions -fno-rtti -O2 -w $(VEC_INC))
-%/vec/zlib/.built: $(ZLIB_C) $(wildcard $(ZLIB)/*.h)
-	$(call vec_objs,$(ZLIB_C),,-O2 -w -I$(ZLIB),)
+# zlib-ng's objects out of its library (ZLIB: the target's), into libnitrovec.a with the others
+%/vec/zlib/.built: $(wildcard $(ZLIB_WIN)/.version-* $(ZLIB_DIST)/.version-*)
+	@test -f $(ZLIB)/lib/libz.a || { echo "missing $(ZLIB): run scripts/get-deps.sh first$(if $(findstring win,$(ZLIB)), with WINCC=...)"; exit 1; }
+	@rm -rf $(@D) && mkdir -p $(@D)
+	@cd $(@D) && $(AR) x $(abspath $(ZLIB))/lib/libz.a && for f in *; do b=$${f%.obj}; mv "$$f" "zng-$${b%.o}.o"; done
+	@touch $@
 %/vec/nitro/.built: $(NITRO_DEPS) $(wildcard $(LUNA)/include/*.h $(LUNA)/plutovg/include/*.h $(LIBCDR)/inc/libcdr/*.h $(LIBVISIO)/inc/libvisio/*.h \
                     $(LIBREVENGE)/inc/*/*.h $(PDFP)/*.h) patches/freetype/ftoption.h build/.config-$(CONFIG)
 	@rm -rf $(@D) && mkdir -p $(@D)
@@ -444,7 +448,10 @@ build/libnitrovec.a: $(call vec_stamps,build,)
 # (the app's slices: explicit rules, see MAC_ARCHS below)
 build/win/libnitrovec.a: $(call vec_stamps,build/win,zlib)
 	$(vec_lib)
-build/win/vec/%.built $(DIST_DIR)/vec/%.built: VEC_INC := -I$(ZLIB)
+build/win/vec/%.built: ZLIB := $(ZLIB_WIN)
+build/win/vec/%.built: VEC_INC := -I$(ZLIB_WIN)/include
+$(DIST_DIR)/vec/%.built: ZLIB := $(ZLIB_DIST)
+$(DIST_DIR)/vec/%.built: VEC_INC := -I$(ZLIB_DIST)/include
 $(DIST_DIR)/libnitrovec.a: $(call vec_stamps,$(DIST_DIR),zlib)
 	$(vec_lib)
 # everything of the portable build again when DIST_ARCH changes (x86-64-v2 and v3 share build/dist/)

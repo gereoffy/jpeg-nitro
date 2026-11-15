@@ -6,8 +6,8 @@
 #   - stb_image.h and wuffs (only for the decoder comparison in bench/bench)
 #   - lunasvg (MIT, with its plutovg): SVG rendering in nitroview
 #   - libcdr (our fork with fixes, github.com/gereoffy/libcdr) + librevenge (MPL-2.0),
-#     lcms2 (MIT), the boost headers and (for Windows) zlib: CorelDRAW
-#     drawings in nitroview (sources only; the Makefile compiles them)
+#     lcms2 (MIT) and the boost headers: CorelDRAW drawings in nitroview (sources only; the
+#     Makefile compiles them)
 #   - libvisio (our fork with fixes, github.com/gereoffy/libvisio, MPL-2.0) and libxml2 (MIT, its XML
 #     reader only, configured by patches/libxml2/): Visio drawings, through the same code
 #   - pdfparse3 (MIT, github.com/gereoffy/pdfparse3): its C++ object layer (pdfparse3.cpp, pdfcrypt.c),
@@ -15,6 +15,9 @@
 #   - FreeType (FreeType License, BSD-like): the outlines of the fonts PDFs embed (nitropdf; sources
 #     only, the Makefile compiles the modules patches/freetype/ftmodule.h lists)
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
+#   - zlib-ng (zlib license, static, zlib-compatible API; cmake): zlib for the builds whose system
+#     has none, the portable Linux build (built on Linux) and, with WINCC=..., the Windows viewer
+#     (third_party/zlib-ng-win); its inflate is about twice as fast as stock zlib's
 #   - dav1d (static, BSD-2-Clause, VideoLAN): the AV1 decoder for AVIF images (DAV1D=0 skips it);
 #     built with meson + ninja (pip, in third_party/tools/venv) and nasm; with WINCC=path/to/
 #     x86_64-w64-mingw32-clang (as for make windows) also for the Windows viewer (third_party/dav1d-win)
@@ -35,7 +38,7 @@ LIBXML2_VER=2.13.8
 FREETYPE_VER=2.15.0   # (also in packaging/flatpak/*.json, with its sha256)
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
-ZLIB_VER=1.3.1      # (only for the Windows build: macOS and Linux have it)
+ZLIBNG_VER=2.3.3    # (only for the Windows and the portable Linux build: macOS and Linux have a zlib)
 MIMALLOC_VER=2.1.7
 BOOST_VER=1.89.0
 SDL_VER=3.4.18
@@ -123,13 +126,7 @@ if [ ! -f lcms2/.version-$LCMS2_VER ]; then
   mv lcms2-$LCMS2_VER lcms2
   touch lcms2/.version-$LCMS2_VER
 fi
-if [ ! -f zlib/.version-$ZLIB_VER ]; then
-  rm -rf zlib zlib-$ZLIB_VER
-  curl -fsSL -o zlib.tar.gz https://github.com/madler/zlib/releases/download/v$ZLIB_VER/zlib-$ZLIB_VER.tar.gz
-  tar xf zlib.tar.gz && rm zlib.tar.gz
-  mv zlib-$ZLIB_VER zlib
-  touch zlib/.version-$ZLIB_VER
-fi
+rm -rf zlib   # (stock zlib, before zlib-ng)
 # mimalloc: the allocator of the vector drawings' code, libnitrovec (C++ new / delete)
 if [ ! -f mimalloc/.version-$MIMALLOC_VER ]; then
   rm -rf mimalloc mimalloc-$MIMALLOC_VER
@@ -165,6 +162,30 @@ if [ -z "$CMAKE" ]; then
   [ -x tools/py/bin/cmake ] || python3 -m pip install -q --target tools/py cmake
   CMAKE=$(find "$TP/tools/py" -path '*data/bin/cmake' -type f | head -1)
 fi
+
+# zlib-ng into $TP/$1 (static, the zlib API; its SIMD code chosen at run time, so a portable build
+# keeps working on any CPU); $2...: cmake options (a cross compiler)
+build_zlibng() {
+  [ -d zlib-ng-$ZLIBNG_VER ] || { curl -fsSL -o zlib-ng.tar.gz https://github.com/zlib-ng/zlib-ng/archive/refs/tags/$ZLIBNG_VER.tar.gz &&
+                                   tar xf zlib-ng.tar.gz && rm zlib-ng.tar.gz; }
+  local P=$1; shift
+  rm -rf "$P"
+  (cd zlib-ng-$ZLIBNG_VER && rm -rf build-$P &&
+   "$CMAKE" -S . -B build-$P -DCMAKE_BUILD_TYPE=Release -DZLIB_COMPAT=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+     -DWITH_NATIVE_INSTRUCTIONS=OFF -DCMAKE_INSTALL_PREFIX="$TP/$P" -DCMAKE_INSTALL_LIBDIR=lib "$@" >/dev/null &&
+   "$CMAKE" --build build-$P -j"$JOBS" >/dev/null &&
+   "$CMAKE" --install build-$P >/dev/null)
+  touch "$P/.version-$ZLIBNG_VER"
+}
+if [ "$(uname -s)" != Darwin ] && [ ! -f zlib-ng/.version-$ZLIBNG_VER ]; then
+  build_zlibng zlib-ng
+fi
+if [ -n "${WINCC:-}" ] && [ ! -f zlib-ng-win/.version-$ZLIBNG_VER ]; then
+  WINBIN=$(dirname "$(command -v "$WINCC")")
+  build_zlibng zlib-ng-win -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 -DCMAKE_C_COMPILER="$(command -v "$WINCC")" \
+    -DCMAKE_AR="$WINBIN/llvm-ar" -DCMAKE_RANLIB="$WINBIN/llvm-ranlib" -DCMAKE_RC_COMPILER="$WINBIN/x86_64-w64-mingw32-windres"
+fi
+rm -rf zlib-ng-$ZLIBNG_VER
 
 # libjpeg-turbo for one architecture into $TP/$2 (static, with its SIMD code)
 build_ljt() {   # arch prefix
@@ -295,4 +316,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
