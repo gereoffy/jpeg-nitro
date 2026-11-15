@@ -3310,6 +3310,8 @@ nitropdf *loadDepth(const void *data, size_t len, int depth) {
 
 }  // namespace
 
+uint32_t nitropdf_glyph_unicode(const char *name) { return glyphUnicode(name); }
+
 nitropdf *nitropdf_load(const void *data, size_t len) { return loadDepth(data, len, 0); }
 
 void nitropdf_free(nitropdf *pdf) { delete pdf; }

@@ -11,6 +11,7 @@
 #include "nitro_draw.h"
 #include "nitro_font.h"
 #include "nitro_ft.h"
+#include "nitropdf.h"   // (nitropdf_glyph_unicode: a glyph name's character)
 
 #include FT_FONT_FORMATS_H
 #include FT_SFNT_NAMES_H
@@ -23,6 +24,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -83,6 +85,15 @@ struct Face {
     int index = 0;                // (in its collection)
     std::vector<uint32_t> uni;    // a glyph's character (the first one mapped to it), 0: none
     size_t chars = 0;             // the characters the font maps
+    // The characters it maps no code to but has a glyph named for (by the glyph list: A, aacute,
+    // uni0151): that glyph. Such a font cannot be typed with, but its letters are there to show.
+    std::unordered_map<uint32_t, uint32_t> named;
+    FT_UInt glyph(uint32_t cp) const {   // a character's glyph, 0: none
+        FT_UInt g = FT_Get_Char_Index(ft, cp);
+        if (g || named.empty()) return g;
+        auto it = named.find(cp);
+        return it != named.end() ? it->second : 0;
+    }
     // The sample lines it shows: all of them (NSAMPLES) if it has letters beyond the English alphabet
     // (what it lacks is red); the English one alone (1) with that alphabet only; none (0) without it
     // either: an icon or symbol font, or another script's.
@@ -103,14 +114,15 @@ inline bool isLetter(uint32_t cp) {
 // Whether the font has at least half of a text's letters, drawn (an icon font may map a to z to empty
 // glyphs: its icons are ligatures of their names); special: of those beyond the English alphabet (the
 // accented, Cyrillic and Greek ones: a text with none of them is not covered).
-bool covers(FT_Face ft, const char *text, bool special) {
+bool covers(const Face &face, const char *text, bool special) {
+    FT_Face ft = face.ft;
     std::string s(text);
     int total = 0, missing = 0;
     for (size_t i = 0; i < s.size();) {
         uint32_t cp = nf_utf8_next(s, i);
         if (!isLetter(cp) || (special && cp < 0x80)) continue;
         total++;
-        FT_UInt gid = FT_Get_Char_Index(ft, cp);
+        FT_UInt gid = face.glyph(cp);
         FT_BBox box = {0, 0, 0, 0};
         if (gid && !FT_Load_Glyph(ft, gid, FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP) && ft->glyph->format == FT_GLYPH_FORMAT_OUTLINE && ft->glyph->outline.n_points > 0)
             FT_Outline_Get_CBox(&ft->glyph->outline, &box);
@@ -273,7 +285,7 @@ struct Layout {
         FT_UInt prev = 0;
         for (size_t i = 0; i < s.size();) {
             uint32_t cp = nf_utf8_next(s, i);
-            FT_UInt gid = FT_Get_Char_Index(face.ft, cp);
+            FT_UInt gid = face.glyph(cp);
             if (gid) {
                 if (prev && FT_HAS_KERNING(face.ft)) {
                     FT_Vector kern = {0, 0};
@@ -518,9 +530,16 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
                 c = FT_Get_Next_Char(ft, c, &g);
             }
         }
-        face.samples = covers(ft, SAMPLES[0].text, false) ? 1 : 0;
+        if (FT_HAS_GLYPH_NAMES(ft))   // (glyphs with a name and no code: "A", "aacute"; not a variant's, "a.sc")
+            for (FT_UInt g = 1; g < (FT_UInt)face.uni.size(); g++) {
+                char nm[64] = "";
+                if (face.uni[g] || FT_Get_Glyph_Name(ft, g, nm, sizeof nm) || !nm[0] || strchr(nm, '.')) continue;
+                uint32_t cp = nitropdf_glyph_unicode(nm);
+                if (cp && !FT_Get_Char_Index(ft, cp)) face.named.emplace(cp, g);
+            }
+        face.samples = covers(face, SAMPLES[0].text, false) ? 1 : 0;
         for (int k = 1; k < NSAMPLES && face.samples < NSAMPLES; k++)
-            if (covers(ft, SAMPLES[k].text, true)) face.samples = NSAMPLES;
+            if (covers(face, SAMPLES[k].text, true)) face.samples = NSAMPLES;
         int headRows = face.headRows();
         int fi = (int)F->faces.size();
         F->faces.push_back(std::move(face));

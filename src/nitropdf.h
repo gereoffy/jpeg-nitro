@@ -43,6 +43,10 @@ void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h);
 int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx);
 
+// A glyph name's character: the Adobe glyph list's names, uniXXXX, uXXXX[XX] (0: none of them). (The
+// table nitropdf reads a font's encoding by; for nitrotype's glyphs that have a name but no code.)
+uint32_t nitropdf_glyph_unicode(const char *name);
+
 #ifdef __cplusplus
 }
 #endif
