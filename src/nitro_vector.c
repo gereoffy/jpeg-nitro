@@ -22,7 +22,7 @@
 const char *const nv_vector_exts[] = {
 #ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
     "svg", "dxf", "dwg", "wmf", "emf", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
-    "drawio", "dio", "pdf",
+    "drawio", "dio", "pdf", "ai",
 #endif
     NULL};
 
@@ -38,7 +38,7 @@ const char *nv_vector_mimes(void) {
 #ifdef NV_VECTOR
     return "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
-           "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;";
+           "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;";
 #else
     return "";
 #endif
@@ -156,7 +156,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrocdr_pages(v->doc);
         v->mode = nv_has_ext(name, visio_exts) ? NV_MODE_VISIO : NV_MODE_CDR;
     }
-    static const char *const pdf_exts[] = {"pdf", NULL};
+    static const char *const pdf_exts[] = {"pdf", "ai", NULL};   // (Illustrator 9+ saves a PDF)
     if (!v->doc && nv_has_ext(name, pdf_exts) && (v->doc = nitropdf_load(data, len))) {
         nitropdf_set_background(v->doc, v->background);
         v->render = pdf_render;
