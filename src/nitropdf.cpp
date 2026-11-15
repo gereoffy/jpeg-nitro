@@ -939,7 +939,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
             for (int j = 0; j < im.ncomp; j++) {
                 if (j == alpha) continue;
                 float v = s[j] / (float)((1u << im.precision[j]) - 1);
-                if (smask == 2) v = a > 0 ? clampf(v / a, 0, 1) : 0;
+                if (smask == 2 || (smask && im.premultiplied)) v = a > 0 ? clampf(v / a, 0, 1) : 0;   // (or the JP2's channel definition says so)
                 if (cs->k == CS::INDEXED) v = (float)s[j];
                 else if (cs->k == CS::LAB) v = k == 0 ? v * 100 : cs->range[2 * (k - 1)] + v * (cs->range[2 * k - 1] - cs->range[2 * (k - 1)]);
                 c[k] = v;
