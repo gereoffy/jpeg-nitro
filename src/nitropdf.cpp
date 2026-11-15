@@ -880,7 +880,9 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     int w = (im.width + step - 1) / step, h = (im.height + step - 1) / step;
     plutovg_surface_t *surface = newSurface(w, h);
     if (!surface) return nullptr;
-    auto range = nums(P.doc, P.doc.resolve(src.dict.get("Mask")));
+    // (a colour key: an array; a stream there is a stencil mask, applied by the caller)
+    Val mk = P.doc.resolve(src.dict.get("Mask"));
+    auto range = mk.t == pp::ARRAY ? nums(P.doc, mk) : std::vector<float>();
     bool colorKey = range.size() >= 2u * n;
     uint8_t *dst = plutovg_surface_get_data(surface);
     int stride = plutovg_surface_get_stride(surface);
