@@ -149,6 +149,21 @@ static int visio(const uint8_t *p, size_t len, size_t head) {   // VSD: an OLE f
     if (len >= 4 && !memcmp(p, "PK\3\4", 4)) return has(p, len, "visio/");
     return has(p, head, "<VisioDocument");
 }
+static unsigned u16be(const uint8_t *p) { return p[0] << 8 | p[1]; }
+// A font file: an sfnt (TrueType, OpenType: its table count and the search range that goes with it), a collection,
+// WOFF, Type 1 (PFB's first segment header before the "%!", PFA's first line)
+static int font_file(const uint8_t *p, size_t len) {
+    if (len < 12) return 0;
+    if (!memcmp(p, "\0\1\0\0", 4) || !memcmp(p, "OTTO", 4) || !memcmp(p, "true", 4) || !memcmp(p, "typ1", 4)) {
+        unsigned tables = u16be(p + 4), pow2 = 1;
+        while (pow2 * 2 <= tables) pow2 *= 2;
+        return tables > 0 && tables <= 512 && u16be(p + 6) == pow2 * 16;
+    }
+    if (!memcmp(p, "ttcf", 4)) return !memcmp(p + 4, "\0\1\0\0", 4) || !memcmp(p + 4, "\0\2\0\0", 4);
+    if (!memcmp(p, "wOFF", 4)) return 1;
+    if (p[0] == 0x80 && p[1] == 1) return !memcmp(p + 6, "%!", 2);
+    return len >= 14 && (!memcmp(p, "%!PS-AdobeFont", 14) || !memcmp(p, "%!FontType1", 11));
+}
 #endif
 
 NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
@@ -219,7 +234,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->mode = NV_MODE_PDF;
     }
     static const char *const font_exts[] = {"ttf", "otf", "ttc", "otc", "woff", "pfb", "pfa", NULL};
-    if (!v->doc && nv_has_ext(name, font_exts) && (v->doc = nitrotype_load(data, len))) {
+    if (!v->doc && (nv_has_ext(name, font_exts) || font_file(p, len)) && (v->doc = nitrotype_load(data, len))) {
         nitrotype_set_background(v->doc, v->background);
         v->render = type_render;
         v->size = type_size;

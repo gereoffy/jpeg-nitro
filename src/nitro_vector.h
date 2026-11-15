@@ -35,8 +35,8 @@ const char *nv_vector_mimes(void);
 // view rendered on another thread): reference counted, freed by whichever drops it last.
 typedef struct NvVector NvVector;
 
-// Loads a drawing: by the extension of name (a file name or path; SVG also by content: text
-// starting with '<'), over
+// Loads a drawing: by the extension of name (a file name or path) or, whatever its name, by its
+// content (each format's text or magic numbers: a font file's too), over
 // the current background (nv_vector_background). NULL if it is not one, or it draws nothing.
 // One reference.
 NvVector *nv_vector_open(const char *name, const void *data, size_t len);
