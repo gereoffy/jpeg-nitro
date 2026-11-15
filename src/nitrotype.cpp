@@ -51,7 +51,7 @@ const struct {
     {"pl ro", "zażółć gęślą jaźń – ZAŻÓŁĆ GĘŚLĄ JAŹŃ – muzicologă în bej vând whisky și tequila, preț fix – Ă Â Î Ș Ț"},
     {"hr sl", "gojazni đačić s biciklom drži hmelj i finu vatu u džepu nošnje – Č Ć Đ Š Ž"},
     {"de fr es", "falsches Üben von Xylophonmusik quält jeden größeren Zwerg – voix ambiguë d’un cœur – ¿dónde está el pingüino? – ñ ç Ä Ö"},
-    {"ru", "съешь же ещё этих мягких французских булок, да выпей чаю – Ё Й Щ Ъ Э Ю Я"},
+    {"ru uk", "съешь же ещё этих мягких французских булок, да выпей чаю – Ё Й Щ Ъ Э Ю Я – ґ є і ї Ґ Є І Ї"},   // (the four letters Ukrainian has and Russian has not)
     {"el", "ξεσκεπάζω την ψυχοφθόρα βδελυγμία – Α Β Γ Δ Θ Λ Ξ Π Σ Φ Ψ Ω"},
 };
 const int NSAMPLES = sizeof SAMPLES / sizeof SAMPLES[0];
