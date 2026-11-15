@@ -156,8 +156,10 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrocdr_pages(v->doc);
         v->mode = nv_has_ext(name, visio_exts) ? NV_MODE_VISIO : NV_MODE_CDR;
     }
-    static const char *const pdf_exts[] = {"pdf", "ai", NULL};   // (Illustrator 9+ saves a PDF)
-    if (!v->doc && nv_has_ext(name, pdf_exts) && (v->doc = nitropdf_load(data, len))) {
+    static const char *const pdf_exts[] = {"pdf", "ai", NULL};   // (Illustrator 9+ saves a PDF; also by content: "%PDF-" in the first 1 KB)
+    int pdf = 0;
+    for (size_t k = 0; !pdf && k + 5 <= len && k < 1024; k++) pdf = p[k] == '%' && !memcmp(p + k, "%PDF-", 5);
+    if (!v->doc && (pdf || nv_has_ext(name, pdf_exts)) && (v->doc = nitropdf_load(data, len))) {
         nitropdf_set_background(v->doc, v->background);
         v->render = pdf_render;
         v->size = pdf_size;
