@@ -12,6 +12,7 @@
 #include "nitrocdr.h"
 #include "nitrodio.h"
 #include "nitropdf.h"
+#include "nitrotype.h"
 #endif
 #include <math.h>
 #include <stdatomic.h>
@@ -22,13 +23,13 @@
 const char *const nv_vector_exts[] = {
 #ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
     "svg", "dxf", "dwg", "wmf", "emf", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
-    "drawio", "dio", "pdf", "ai",
+    "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "pfb", "pfa",
 #endif
     NULL};
 
 const char *nv_vector_formats(void) {
 #ifdef NV_VECTOR
-    return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io and PDF";
+    return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io, PDF and fonts";
 #else
     return "";
 #endif
@@ -38,7 +39,8 @@ const char *nv_vector_mimes(void) {
 #ifdef NV_VECTOR
     return "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
-           "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;";
+           "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;"
+           "font/ttf;font/otf;font/collection;font/woff;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/x-font-type1;";
 #else
     return "";
 #endif
@@ -101,6 +103,12 @@ static int pdf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t p
 }
 static void pdf_size(void *doc, int page, double *w, double *h) { nitropdf_size(doc, page, w, h); }
 static void pdf_free(void *doc) { nitropdf_free(doc); }
+static int type_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                       int (*cancelled)(void *), void *ctx) {
+    return nitrotype_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+}
+static void type_size(void *doc, int page, double *w, double *h) { nitrotype_size(doc, page, w, h); }
+static void type_free(void *doc) { nitrotype_free(doc); }
 
 // The drawings by their content, whatever the name (a file opened or dropped on its own): text, magic numbers,
 // a ZIP's or an OLE file's part names. The loaders check the files again.
@@ -209,6 +217,15 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->free = pdf_free;
         v->pages = nitropdf_pages(v->doc);
         v->mode = NV_MODE_PDF;
+    }
+    static const char *const font_exts[] = {"ttf", "otf", "ttc", "otc", "woff", "pfb", "pfa", NULL};
+    if (!v->doc && nv_has_ext(name, font_exts) && (v->doc = nitrotype_load(data, len))) {
+        nitrotype_set_background(v->doc, v->background);
+        v->render = type_render;
+        v->size = type_size;
+        v->free = type_free;
+        v->pages = nitrotype_pages(v->doc);
+        v->mode = NV_MODE_FONT;
     }
 #endif
     (void)name, (void)data, (void)len;

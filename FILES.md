@@ -23,6 +23,8 @@
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
 - `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder for PDF's JPXDecode, written from ITU-T T.800
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
+- `nitrotype.cpp/.h`: font files (TrueType, OpenType, collections, Type 1, WOFF) as a specimen: sample lines and every glyph, FreeType's outlines drawn with plutovg
+- `nitro_ft.h`: a FreeType glyph's outline as a plutovg path, shared by nitropdf and nitrotype
 - `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 

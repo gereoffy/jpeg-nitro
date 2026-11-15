@@ -2,7 +2,8 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitro_vector: the vector drawings for the four viewers - SVG (nitrosvg), DXF / DWG (nitrodxf),
-// WMF / EMF (nitrometa), CorelDRAW and Visio (nitrocdr), draw.io (nitrodio) - behind one
+// WMF / EMF (nitrometa), CorelDRAW and Visio (nitrocdr), draw.io (nitrodio), PDF (nitropdf), font
+// files as specimens (nitrotype) - behind one
 // interface: which files they are, loading one, its pages and their size, rendering any part at
 // any scale, a page rendered in full (at the size it is shown at: the target), the part rendered
 // sharp when zoomed in, the background they are drawn over (keys E / Shift+E) and the window
@@ -43,7 +44,7 @@ NvVector *nv_vector_ref(NvVector *v);   // (NULL stays NULL)
 void nv_vector_unref(NvVector *v);
 
 int nv_vector_pages(const NvVector *v);        // 0 for NULL
-int nv_vector_mode(const NvVector *v);         // NV_MODE_SVG / NV_MODE_DXF / NV_MODE_META / NV_MODE_CDR / NV_MODE_VISIO (nitro_load.h)
+int nv_vector_mode(const NvVector *v);         // NV_MODE_SVG / NV_MODE_DXF / NV_MODE_META / NV_MODE_CDR / NV_MODE_VISIO / NV_MODE_DRAWIO / NV_MODE_PDF / NV_MODE_FONT (nitro_load.h)
 int nv_vector_background_of(const NvVector *v);   // the background it was loaded with
 // Size of a page in its own units (render coordinates start at its top left, y down).
 void nv_vector_size(const NvVector *v, int page, double *w, double *h);

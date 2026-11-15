@@ -5,7 +5,7 @@
 [English](README.md) | **Magyar**
 
 A **NitroView** nagyon gyors képnéző **macOS-re, Windowsra és Linuxra**. Fotókat, szkenneléseket,
-Photoshop-fájlokat, nyers (raw) képeket, vektoros rajzokat és PDF-eket nyit meg, és saját dekóderekre épül,
+Photoshop-fájlokat, nyers (raw) képeket, vektoros rajzokat, PDF-eket és betűtípus-fájlokat nyit meg, és saját dekóderekre épül,
 amelyek minden képet több CPU-magon dekódolnak: egy 24 megapixeles JPEG egy asztali Intel
 processzoron kb. 11 ms alatt nyílik meg, tízszer gyorsabban, mint a rendszer dekóderével, így egy
 fotósorozat olyan gyorsan lapozható, ahogy a billentyűt nyomod. A vektoros
@@ -75,7 +75,7 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF) előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF, egy betűtípus glyphjei) előző / következő oldala (címsor: [page 2/5]) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
@@ -170,6 +170,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **WMF / EMF** (Windows-metafájlok) | a GDI-rajz, szöveg a rendszer betűtípusaival, DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
 | **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2018, az R2007 nem) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként; DWG: lásd [DWG](#dwg) | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **PDF** | oldalak, színátmenetek, beágyazott betűtípusok, képek, CMYK-színek ICC-profillal, megjegyzések, jelszó nélküli titkosított fájlok; [pdfparse3](https://github.com/gereoffy/pdfparse3) | a JPX feldolgozási sorrendjének váltása (POC) és a külön tárolt packet-fejlécek (PPM/PPT) nem támogatottak; a többi színátmenet-típus és a csempézett minták egy színnel töltenek ki; a keverési módok és a lágy maszkok kimaradnak |
+| **Betűtípusok** (TTF, OTF, TTC / OTC, WOFF, Type 1 PFB / PFA) | mintalap: a név, mintasorok a közép-európai nyelveken, további latin betűs nyelveken, cirill és görög betűkkel (a betűtípusból hiányzó karakter piros), utána az összes glyph a betűtípus sorrendjében, a sorszámával, a karakterével és a nevével, az alapvonalán a szélességével; ránagyítva a görbék is látszanak | a WOFF2, a bitképes betűtípusok és a színes (emoji) glyphek nem nyílnak meg; változó (variable) betűtípusnak az alappéldánya látszik; alávágás csak a `kern` táblából, ligatúrák nincsenek |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés

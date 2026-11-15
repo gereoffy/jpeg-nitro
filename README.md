@@ -5,7 +5,7 @@
 **English** | [Magyar](README.hu.md)
 
 **NitroView** is a very fast image viewer for **macOS, Windows and Linux**. It opens photos, scans,
-Photoshop files, raw images, vector drawings and PDFs, and it is built on its own decoders, which decode
+Photoshop files, raw images, vector drawings, PDFs and font files, and it is built on its own decoders, which decode
 every image on multiple CPU cores: a 24-megapixel JPEG opens in about 11 ms on a desktop Intel CPU, ten
 times faster than the system's decoder, so a photo series pages as fast as you press the key. Vector
 drawings are rendered sharp at any zoom level.
@@ -71,7 +71,7 @@ SDL viewers open a file dialog when started without files.
 | PgDn / Space                  | next image                                                                                                     |
 | PgUp / Backspace              | previous image                                                                                                 |
 | Home / End                    | first / last image                                                                                             |
-| [ / ]                         | previous / next page of a multi-page drawing: CDR, Visio, DXF / DWG, draw.io, PDF (title: [page 2/5])          |
+| [ / ]                         | previous / next page of a multi-page drawing: CDR, Visio, DXF / DWG, draw.io, PDF, a font's glyphs (title: [page 2/5]) |
 | + / −                         | zoom in / out (√2 steps, stops exactly at 100% and at fit)                                                     |
 | 0                             | fit to the screen: small images are enlarged too (stays on while paging, until W)                              |
 | 1                             | actual size: one image pixel = one screen pixel                                                                |
@@ -164,6 +164,7 @@ The GNOME viewer was contributed by Ferenc Czirok. Windows touchpad gestures are
 | **WMF / EMF** (Windows metafiles)        | the GDI drawing, text with the system's fonts, DIB bitmaps with masks, gradient fills, clipping, world transforms | EMF+ records (GDI+ drawings) are not read: a dual file shows its GDI part, an EMF+-only one is empty; raster operations other than copy and mask pairs are approximated |
 | **DXF** (AutoCAD R12–2018), **DWG** (R13–R2018, not R2007) | the model space and each layout's sheet with its viewports, as separate pages; DWG: see [DWG](#dwg) | multileaders, multilines, 3D solids, referenced images, external references (xrefs) and the objects of AutoCAD Architecture / Mechanical are not drawn; line weights are ignored; binary DXF does not open |
 | **PDF**                                  | pages, embedded fonts, gradients, images, CMYK through an ICC profile, annotations, encrypted files without a password; using [pdfparse3](https://github.com/gereoffy/pdfparse3) | JPX progression changes (POC) and packed packet headers (PPM/PPT) not supported; other shading types, tiling patterns, blend modes and soft masks are ignored |
+| **Fonts** (TTF, OTF, TTC / OTC, WOFF, Type 1 PFB / PFA) | a specimen: the name, sample lines in the Central European languages, other Latin, Cyrillic and Greek (a character the font lacks is red), then every glyph in the font's order with its number, character and name, over its baseline and advance width; zoom in for the curves | WOFF2, bitmap fonts and colour (emoji) glyphs do not open; a variable font shows its default instance; no kerning but the `kern` table's, no ligatures |
 | **everything else** (GIF, BMP, …)        | through the operating system's decoder (ImageIO, WIC, GTK's loaders; stb_image in the SDL viewer)                                                                                                                    |                                                                                                                                      |
 
 Vector drawings are rendered first in full, so paging, fitting and zooming out work as for photos.

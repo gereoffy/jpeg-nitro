@@ -2,7 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitrodraw: an example of using libnitrovec - a page of any drawing the library renders (SVG,
-// DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io) -> an uncompressed 24-bit BMP, over a white,
+// DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io, PDF, a font file) -> an uncompressed 24-bit BMP, over a white,
 // dark or black background.
 //
 //   nitrodraw drawing.svg out.bmp              the first page, its long side 1024 pixels (small icons
