@@ -391,7 +391,7 @@ NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitromet
 NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
               src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrotiff.h \
-              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h
+              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.c src/nitrojpx.h
 # (-I$(ZLIB) for the librevenge-based parts, nitrodio too, where the system has no zlib.h: Windows, the portable Linux build)
 VEC_INC :=
 
@@ -428,6 +428,7 @@ endef
 	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -I$(LCMS)/include -Isrc -c src/nitro_cmyk.c -o $(@D)/nitro_cmyk.o)
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojbig2.c -o $(@D)/nitrojbig2.o)
+	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojpx.c -o $(@D)/nitrojpx.o)
 	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@
@@ -596,6 +597,16 @@ bench/pngverify: bench/pngverify.c build/libnitro.a
 bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h src/nitro_os.h
 	$(CC) $(ASAN) bench/pngrobust.c src/nitropng.c $(THREADLIBS) -o $@
 
+# JPEG 2000 / JPX robustness, including packet headers, tag trees and JP2 boxes
+bench/jpxrobust: bench/jpxrobust.c src/nitrojpx.c src/nitrojpx.h
+	$(CC) $(ASAN) bench/jpxrobust.c src/nitrojpx.c -lm -o $@
+
+# Optional reference only; no OpenJPEG dependency in the library/viewers.
+OPENJPEG_CFLAGS ?= $(shell pkg-config --cflags libopenjp2 2>/dev/null)
+OPENJPEG_LIBS ?= $(shell pkg-config --libs libopenjp2 2>/dev/null)
+bench/jpxverify: bench/jpxverify.c src/nitrojpx.c src/nitrojpx.h
+	$(CC) $(CFLAGS) $(OPENJPEG_CFLAGS) bench/jpxverify.c src/nitrojpx.c $(OPENJPEG_LIBS) -lm -o $@
+
 bench/psdverify: bench/psdverify.c build/libnitro.a
 	$(CC) -O3 $(CPUFLAGS) $(PORTFLAGS) -w -Isrc $^ $(THREADLIBS) -o $@
 
@@ -629,7 +640,7 @@ linux: build/libnitro.a $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
+	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
 	  examples/nitroconvert
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /

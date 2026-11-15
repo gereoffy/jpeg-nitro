@@ -25,6 +25,8 @@
 /bench/nbench
 /bench/rgbverify
 /bench/bgrxverify
+/bench/jpxrobust
+/bench/jpxverify
 /bench/*.exe
 /examples/nitroconvert
 /examples/nitrodraw

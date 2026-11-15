@@ -21,6 +21,7 @@
 - `nitrodio.cpp/.h`: draw.io, our own reader (libxml2, zlib), drawn with plutovg
 - `nitropdf.cpp/.h`: PDF over pdfparse3, our own renderer, drawn with plutovg
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
+- `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder for PDF's JPXDecode, written from ITU-T T.800
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
 - `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
@@ -65,6 +66,9 @@
 - `bgrxverify.m`: nitrotiff's and nitropng's BGRX vs ImageIO
 - `robust.c`: damaged JPEG files under ASan
 - `pngrobust.c`: damaged PNG files under ASan
+- `jpxrobust.c`: damaged JPEG 2000 codestreams and JP2 containers under ASan / UBSan
+- `jpxverify.c`: optional OpenJPEG reference comparison and generated JPEG 2000 coding-style tests
+- `jpxpdfverify.py`: rendered PDF regressions for JPX colour spaces, palettes, masks and alpha (Pillow)
 - `psdrobust.c`: damaged PSD files under ASan
 - `pngbench.m`: PNG decoder comparison
 - `pngsplit.c`: PNG decoding's time split

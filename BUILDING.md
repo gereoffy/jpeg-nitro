@@ -205,6 +205,25 @@ with `-fblocks`; no blocks runtime library is needed.
 
 ## Tests and benchmarks
 
+JPEG 2000 / PDF JPX checks (the decoder and viewers need no OpenJPEG library):
+
+```bash
+make bench/jpxrobust
+bench/jpxrobust small.jp2 small.j2k        # ASan + UBSan, damaged inputs
+make examples/nitrodraw
+python3 bench/jpxpdfverify.py              # Pillow with JPEG 2000; colour, palette, mask and alpha regressions
+make bench/jpxverify                      # optional: OpenJPEG >= 2.5, found by pkg-config libopenjp2
+mkdir -p /tmp/nitro-jpx-tests
+bench/jpxverify --selftest /tmp/nitro-jpx-tests
+bench/jpxverify images/*.jp2               # compare decoded component samples with OpenJPEG
+```
+
+`OPENJPEG_CFLAGS` and `OPENJPEG_LIBS` can specify a reference library outside pkg-config.
+The generated tests cover all 64 code-block styles, the five progression orders, tiles,
+precincts, layers, signed samples, 1/8/12/16-bit components, sub-sampling, ROI, and both
+wavelet transforms. JP2 ICC profiles use device-space alternates, as PDF ICCBased spaces do;
+POC, PPM/PPT, Part 2 coding extensions and HTJ2K are not decoded (see `src/nitrojpx.h`).
+
 `make tools` (macOS) builds `bench/bench`, `verify`, `robust`, `freqprobe`, `sustain`, the PNG,
 PSD and BGRX checks, `rgbverify` and `nbench`; on Linux `make` builds the portable ones (`nbench`,
 `pngverify`, `psdverify`, the ASan robustness tests, and `verify`, `robust`, `rgbverify` once

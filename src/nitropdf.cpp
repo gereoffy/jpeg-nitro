@@ -16,6 +16,7 @@
 #include "nitro_cmyk.h"
 #include "nitrojpeg.h"
 #include "nitrojbig2.h"
+#include "nitrojpx.h"
 extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
 }
@@ -833,6 +834,79 @@ struct ImageSource {   // an image's dictionary and its data, decoded but for an
     Val parms;
 };
 
+struct JpxPixels {
+    njpx_image im{};
+    ~JpxPixels() { njpx_free(&im); }
+};
+
+Val key(pp::Doc &doc, Val d, const char *name, const char *abbr);
+
+// JPX carries its own dimensions and per-component precision. /Decode is ignored for colour
+// images (ISO 32000-1, 7.4.9); a PDF /ColorSpace overrides JP2 colour specifications/palettes.
+plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS> &cs) {
+    JpxPixels pixels;
+    njpx_image &im = pixels.im;
+    bool override = cs != nullptr;
+    if (njpx_decode((const uint8_t *)src.data.data(), src.data.size(), override ? NJPX_RAW_COLORS : 0, &im)) return nullptr;
+    int smask = toInt(key(P.doc, src.dict, "SMaskInData", nullptr).num(0));
+    if (smask < 0 || smask > 2) return nullptr;
+    int alpha = im.alpha;
+    int expected = cs ? cs->n : im.colorspace == NJPX_GRAY ? 1 : im.colorspace == NJPX_CMYK ? 4 :
+                   im.colorspace == NJPX_SRGB || im.colorspace == NJPX_SYCC ? 3 : 0;
+    if (!expected && smask && (im.ncomp == 2 || im.ncomp == 4)) expected = im.ncomp - 1;
+    if (alpha < 0 && smask && expected && im.ncomp == expected + 1) alpha = im.ncomp - 1;
+    int n = im.ncomp - (alpha >= 0);
+    if (!cs) {
+        if (expected && expected != n) return nullptr;
+        if (im.colorspace && im.colorspace != NJPX_GRAY && im.colorspace != NJPX_SRGB &&
+            im.colorspace != NJPX_CMYK && im.colorspace != NJPX_SYCC) return nullptr;
+        if (n != 1 && n != 3 && n != 4) return nullptr;
+        cs = deviceCS(n == 1 ? CS::GRAY : n == 4 ? CS::CMYK : CS::RGB);
+    }
+    if (cs->n != n || n > NJPX_MAX_COMPS || (smask && alpha < 0)) return nullptr;
+    int step = 1;
+    while ((uint64_t)im.width * im.height / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
+    int w = (im.width + step - 1) / step, h = (im.height + step - 1) / step;
+    plutovg_surface_t *surface = newSurface(w, h);
+    if (!surface) return nullptr;
+    auto range = nums(P.doc, P.doc.resolve(src.dict.get("Mask")));
+    bool colorKey = range.size() >= 2u * n;
+    uint8_t *dst = plutovg_surface_get_data(surface);
+    int stride = plutovg_surface_get_stride(surface);
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(dst + (size_t)y * stride);
+        for (int x = 0; x < w; x++) {
+            const uint16_t *s = im.samples + ((size_t)y * step * im.width + x * step) * im.ncomp;
+            float a = smask ? s[alpha] / (float)((1u << im.precision[alpha]) - 1) : 1;
+            float c[NJPX_MAX_COMPS], rgb[3];
+            bool transparent = colorKey;
+            int k = 0;
+            for (int j = 0; j < im.ncomp; j++) {
+                if (j == alpha) continue;
+                float v = s[j] / (float)((1u << im.precision[j]) - 1);
+                if (smask == 2) v = a > 0 ? clampf(v / a, 0, 1) : 0;
+                if (cs->k == CS::INDEXED) v = (float)s[j];
+                else if (cs->k == CS::LAB) v = k == 0 ? v * 100 : cs->range[2 * (k - 1)] + v * (cs->range[2 * k - 1] - cs->range[2 * (k - 1)]);
+                c[k] = v;
+                if (colorKey && (s[j] < range[2 * k] || s[j] > range[2 * k + 1])) transparent = false;
+                k++;
+            }
+            if (!override && im.colorspace == NJPX_SYCC) {
+                float cb = c[1] - (1u << (im.precision[1] - 1)) / (float)((1u << im.precision[1]) - 1);
+                float cr = c[2] - (1u << (im.precision[2] - 1)) / (float)((1u << im.precision[2]) - 1);
+                float yy = c[0];
+                c[0] = clampf(yy + 1.402f * cr, 0, 1);
+                c[1] = clampf(yy - 0.344136f * cb - 0.714136f * cr, 0, 1);
+                c[2] = clampf(yy + 1.772f * cb, 0, 1);
+            }
+            cs->toRGB(c, rgb);
+            unsigned aa = transparent ? 0 : (unsigned)lroundf(a * 255);
+            row[x] = aa << 24 | (unsigned)lroundf(rgb[0] * aa) << 16 | (unsigned)lroundf(rgb[1] * aa) << 8 | (unsigned)lroundf(rgb[2] * aa);
+        }
+    }
+    return surface;
+}
+
 // A resource by its name: the entry of res's category dictionary (/XObject, /Font ...), unresolved.
 // A large one (a CAD export's thousands of forms on a page) is indexed the first time: looked up
 // through for every operator using it, a page's build took seconds.
@@ -914,11 +988,23 @@ bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
         for (int y = 0; y < out.h; y++)
             for (int x = 0; x < out.w; x++) out.v[(size_t)y * out.w + x] = px[(size_t)y * stride + 4 * x + 1];   // (green: gray)
         plutovg_surface_destroy(s);
+    } else if (src.filter == "JPXDecode") {
+        JpxPixels pixels;
+        njpx_image &im = pixels.im;
+        if (njpx_decode(d, len, NJPX_RAW_COLORS, &im) || im.ncomp != 1 || (stencil && im.precision[0] != 1)) return false;
+        step = 1;
+        while ((uint64_t)im.width * im.height / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
+        out.w = (im.width + step - 1) / step, out.h = (im.height + step - 1) / step, out.n = 1;
+        out.v.resize((size_t)out.w * out.h);
+        unsigned maxv = (1u << im.precision[0]) - 1;
+        for (int y = 0; y < out.h; y++)
+            for (int x = 0; x < out.w; x++)
+                out.v[(size_t)y * out.w + x] = (uint8_t)((im.samples[(size_t)y * step * im.width + x * step] * 255u + maxv / 2) / maxv);
     } else if (!src.filter.empty())
         return false;
     if (out.v.empty() && !unpack(d, len, W, H, 1, bpc, step, out, false)) return false;
     auto dec = nums(doc, key(doc, src.dict, "Decode", "D"));
-    bool invert = dec.size() >= 2 && dec[0] > dec[1];
+    bool invert = (stencil || src.filter != "JPXDecode") && dec.size() >= 2 && dec[0] > dec[1];
     if (stencil) invert = !invert;   // (a stencil: a 0 sample is painted)
     if (invert)
         for (uint8_t &b : out.v) b = 255 - b;
@@ -1008,9 +1094,14 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     p[0] = 255 - p[0], p[1] = 255 - p[1], p[2] = 255 - p[2];
                 }
         }
-    } else if (!src.filter.empty() && !bilevel(src)) {   // (JPXDecode)
-        img->s = newSurface(1, 1);   // (not decoded: a light grey area)
-        if (img->s) *(uint32_t *)plutovg_surface_get_data(img->s) = 0xffe0e0e0;
+    } else if (src.filter == "JPXDecode") {
+        img->s = jpxSurface(P, src, cs);
+        if (!img->s) {   // (damaged or unsupported JPEG 2000: a light grey area)
+            img->s = newSurface(1, 1);
+            if (img->s) *(uint32_t *)plutovg_surface_get_data(img->s) = 0xffe0e0e0;
+        }
+    } else if (!src.filter.empty() && !bilevel(src)) {
+        return nullptr;
     } else {
         const uint8_t *dd = (const uint8_t *)src.data.data();
         size_t len = src.data.size();
