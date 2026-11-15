@@ -1704,6 +1704,7 @@ struct GState {
     float fillC[32], strokeC[32];
     uint32_t fillRgb = 0, strokeRgb = 0;
     float fillA = 1, strokeA = 1;
+    float groupA = 1;   // (the alpha the transparency groups around compose with: in fillA and strokeA)
     bool fillPattern = false, strokePattern = false, fillNone = false, strokeNone = false;
     float width = 1, miter = 10, dashOffset = 0;
     uint8_t cap = 0, join = 0;
@@ -2186,8 +2187,8 @@ struct Interp {
         if ((v = doc.get(g, "LC")).isNum()) gs.cap = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "LJ")).isNum()) gs.join = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "ML")).isNum()) gs.miter = (float)v.num();
-        if ((v = doc.get(g, "CA")).isNum()) gs.strokeA = clampf((float)v.num(), 0, 1);
-        if ((v = doc.get(g, "ca")).isNum()) gs.fillA = clampf((float)v.num(), 0, 1);
+        if ((v = doc.get(g, "CA")).isNum()) gs.strokeA = clampf((float)v.num(), 0, 1) * gs.groupA;
+        if ((v = doc.get(g, "ca")).isNum()) gs.fillA = clampf((float)v.num(), 0, 1) * gs.groupA;
         if ((v = doc.get(g, "D")).t == pp::ARRAY && v.size() >= 2) setDash(doc.resolve(v.at(0)), doc.resolve(v.at(1)));
     }
     void setDash(Val arr, Val phase) {
@@ -2297,6 +2298,14 @@ struct Interp {
         Val fres = doc.get(d, "Resources");
         if (fres.t != pp::DICT) fres = doc.resolve(res);
         stack.push_back(gs);
+        // a transparency group: composed with the alpha it was painted with (ca), its own content's
+        // starting at 1 (11.6.6), whatever alpha it sets inside then of that. (Each of its items
+        // takes it: where they overlap inside the group, more opaque than the group drawn apart.)
+        Val grp = doc.get(d, "Group");
+        if (grp.t == pp::DICT && doc.get(grp, "S").is("Transparency")) {
+            gs.groupA = gs.fillA;
+            gs.strokeA = gs.fillA;
+        }
         auto mtx = nums(doc, d.get("Matrix"));
         if (mtx.size() == 6) {
             plutovg_matrix_t fm, out;
