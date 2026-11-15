@@ -50,7 +50,7 @@ const int MAX_DEPTH = 12;                  // forms within forms, patterns, func
 const size_t MAX_OPS = 20u << 20;          // a page's operators (forms included) and glyphs shown
 const size_t MAX_BYTES = 1u << 30;         // a page's content decoded to be read: its own (MAX_PAGE_BYTES), its forms'
 const size_t MAX_PAGE_BYTES = 256u << 20;  // and glyph procedures' each time they are drawn
-const uint64_t MAX_IMAGE_PIXELS = 16u << 20;   // an image beyond this is decoded smaller
+const uint64_t MAX_IMAGE_PIXELS = 32u << 20;   // an image beyond this is decoded smaller (a scanned A0 plan: 17 MP)
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
 const float MAX_DASHES = 1 << 20;           // a stroke's dashes: with more, drawn solid
 const int MAX_COMPS = 32;                  // a colour's components, a function's outputs (the arrays they are read into)
@@ -852,7 +852,7 @@ struct JpxPixels {
 
 Val key(pp::Doc &doc, Val d, const char *name, const char *abbr);
 
-// A JPX image decoded: one beyond MAX_IMAGE_PIXELS (its /Width x /Height) at half, a quarter ... of its
+// A JPX image decoded: one beyond MAX_IMAGE_PIXELS (32 MP: its /Width x /Height) at half, a quarter ... of its
 // size, its finest resolution levels left out (faster than decoding all, and filtered, not decimated);
 // in full if it cannot be (fewer levels in a tile)
 int jpxDecode(nitropdf &P, ImageSource &src, unsigned flags, njpx_image &im) {
