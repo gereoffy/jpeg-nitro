@@ -101,6 +101,46 @@ static int pdf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t p
 }
 static void pdf_size(void *doc, int page, double *w, double *h) { nitropdf_size(doc, page, w, h); }
 static void pdf_free(void *doc) { nitropdf_free(doc); }
+
+// The drawings by their content, whatever the name (a file opened or dropped on its own): text, magic numbers,
+// a ZIP's or an OLE file's part names. The loaders check the files again.
+static int has(const uint8_t *p, size_t len, const char *s) {   // s in p[0, len)
+    size_t n = strlen(s);
+    for (const uint8_t *q = p, *end = p + len; (size_t)(end - q) >= n && (q = memchr(q, s[0], (size_t)(end - q) - n + 1)); q++)
+        if (!memcmp(q, s, n)) return 1;
+    return 0;
+}
+static int is_space(uint8_t c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+static int dxf_text(const uint8_t *p, size_t len) {   // "0" then "SECTION", or a "999" comment first
+    size_t i = 0;
+    while (i < len && is_space(p[i])) i++;
+    if (i + 4 <= len && !memcmp(p + i, "999", 3) && (p[i + 3] == '\r' || p[i + 3] == '\n')) return 1;
+    if (i >= len || p[i++] != '0') return 0;
+    while (i < len && (p[i] == ' ' || p[i] == '\r')) i++;
+    if (i >= len || p[i] != '\n') return 0;
+    while (i < len && is_space(p[i])) i++;
+    return i + 7 <= len && !memcmp(p + i, "SECTION", 7);
+}
+static unsigned u16le(const uint8_t *p) { return p[0] | p[1] << 8; }
+static int metafile(const uint8_t *p, size_t len) {   // EMF: its header record; WMF: the placeable or the plain header
+    if (len >= 44 && !memcmp(p, "\1\0\0\0", 4) && !memcmp(p + 40, " EMF", 4)) return 1;
+    if (len >= 22 && !memcmp(p, "\xd7\xcd\xc6\x9a", 4)) return 1;
+    return len >= 18 && (u16le(p) == 1 || u16le(p) == 2) && u16le(p + 2) == 9 && (u16le(p + 4) == 0x100 || u16le(p + 4) == 0x300);
+}
+static int corel(const uint8_t *p, size_t len) {   // RIFF CDR / CMX; CorelDRAW X4+: a ZIP
+    if (len >= 12 && !memcmp(p, "RIFF", 4)) {
+        char t[4];
+        for (int k = 0; k < 4; k++) t[k] = (char)(p[8 + k] | 0x20);
+        return !memcmp(t, "cdr", 3) || !memcmp(t, "cmx1", 4);
+    }
+    return len >= 4 && !memcmp(p, "PK\3\4", 4) && (has(p, len, "content/riffData.cdr") || has(p, len, "content/root.dat"));
+}
+static int visio(const uint8_t *p, size_t len, size_t head) {   // VSD: an OLE file (or Visio 1-4); VSDX: a ZIP; VDX: XML
+    if (len >= 8 && !memcmp(p, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", 8)) return 1;
+    if (len >= 18 && !memcmp(p, "Visio (TM) Drawing", 18)) return 1;
+    if (len >= 4 && !memcmp(p, "PK\3\4", 4)) return has(p, len, "visio/");
+    return has(p, head, "<VisioDocument");
+}
 #endif
 
 NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
@@ -108,8 +148,10 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     if (!v) return NULL;
     v->background = atomic_load(&g_background);
 #ifdef NV_VECTOR
+    const uint8_t *p = data;
+    size_t head = len < 1024 ? len : 1024;   // (the part where the text formats' and PDF's marks are looked for)
     static const char *const dio_exts[] = {"drawio", "dio", NULL};   // (before SVG: its text starts with '<' too)
-    if (nv_has_ext(name, dio_exts) && (v->doc = nitrodio_load(data, len))) {
+    if ((nv_has_ext(name, dio_exts) || has(p, head, "<mxfile") || has(p, head, "<mxGraphModel")) && (v->doc = nitrodio_load(data, len))) {
         nitrodio_set_background(v->doc, v->background);
         v->render = dio_render;
         v->size = dio_size;
@@ -118,7 +160,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->mode = NV_MODE_DRAWIO;
     }
     static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
-    const uint8_t *p = data;   // (SVG also by content: text starting with '<', after a byte order mark and white space)
+    // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
     while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n')) i++;
     if (!v->doc && (nv_has_ext(name, svg_exts) || (i < len && p[i] == '<')) && (v->doc = nitrosvg_load(data, len))) {
@@ -129,7 +171,8 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = 1;
         v->mode = NV_MODE_SVG;
     }
-    if (!v->doc && nv_has_ext(name, dxf_exts) && (v->doc = nitrodxf_load(data, len))) {
+    int dwg = len >= 6 && !memcmp(p, "AC10", 4) && p[4] >= '0' && p[4] <= '9' && p[5] >= '0' && p[5] <= '9';
+    if (!v->doc && (nv_has_ext(name, dxf_exts) || dwg || dxf_text(p, head)) && (v->doc = nitrodxf_load(data, len))) {
         nitrodxf_set_background(v->doc, v->background);
         v->render = dxf_render;
         v->size = dxf_size;
@@ -138,7 +181,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->mode = NV_MODE_DXF;
     }
     static const char *const meta_exts[] = {"wmf", "emf", NULL};
-    if (!v->doc && nv_has_ext(name, meta_exts) && (v->doc = nitrometa_load(data, len))) {
+    if (!v->doc && (nv_has_ext(name, meta_exts) || metafile(p, len)) && (v->doc = nitrometa_load(data, len))) {
         nitrometa_set_background(v->doc, v->background);
         v->render = meta_render;
         v->size = meta_size;
@@ -148,18 +191,18 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     }
     static const char *const cdr_exts[] = {"cdr", "cmx", NULL};
     static const char *const visio_exts[] = {"vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx", NULL};
-    if (!v->doc && (nv_has_ext(name, cdr_exts) || nv_has_ext(name, visio_exts)) && (v->doc = nitrocdr_load(data, len))) {
+    int cdr_ext = nv_has_ext(name, cdr_exts), visio_ext = nv_has_ext(name, visio_exts);
+    int is_visio = visio_ext || (!cdr_ext && !v->doc && visio(p, len, head));
+    if (!v->doc && (cdr_ext || is_visio || corel(p, len)) && (v->doc = nitrocdr_load(data, len))) {
         nitrocdr_set_background(v->doc, v->background);
         v->render = cdr_render;
         v->size = cdr_size;
         v->free = cdr_free;
         v->pages = nitrocdr_pages(v->doc);
-        v->mode = nv_has_ext(name, visio_exts) ? NV_MODE_VISIO : NV_MODE_CDR;
+        v->mode = is_visio ? NV_MODE_VISIO : NV_MODE_CDR;
     }
     static const char *const pdf_exts[] = {"pdf", "ai", NULL};   // (Illustrator 9+ saves a PDF; also by content: "%PDF-" in the first 1 KB)
-    int pdf = 0;
-    for (size_t k = 0; !pdf && k + 5 <= len && k < 1024; k++) pdf = p[k] == '%' && !memcmp(p + k, "%PDF-", 5);
-    if (!v->doc && (pdf || nv_has_ext(name, pdf_exts)) && (v->doc = nitropdf_load(data, len))) {
+    if (!v->doc && (nv_has_ext(name, pdf_exts) || has(p, head, "%PDF-")) && (v->doc = nitropdf_load(data, len))) {
         nitropdf_set_background(v->doc, v->background);
         v->render = pdf_render;
         v->size = pdf_size;
