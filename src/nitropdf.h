@@ -8,6 +8,8 @@
 // page is drawn, and draws it with plutovg at any scale and offset, like the other readers. Text: the
 // fonts it embeds through FreeType (TrueType, Type 1, CFF, CID-keyed, OpenType), Type 3 fonts, and
 // system fonts standing in for the others (nitro_font). Annotations: their appearance streams.
+// Embedded PDFs (a portfolio's documents, attachments): their pages after its own, a portfolio's
+// cover page left out.
 // Shadings: axial and radial (the others fill with a middle colour). Not yet: tiling patterns, soft
 // masks, blend modes.
 #pragma once

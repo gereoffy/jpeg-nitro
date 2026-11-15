@@ -426,6 +426,10 @@ struct nitropdf {
     std::string data;
     pp::Doc doc;
     std::vector<pp::Page> pages;
+    // the PDFs embedded in it (a portfolio's documents, attachments), each a document of its own;
+    // the pages the interface shows: its own (not a portfolio's cover) and theirs, after them
+    std::vector<std::unique_ptr<nitropdf>> parts;
+    std::vector<std::pair<nitropdf *, int>> shown;
     // the pages' display lists, built when first drawn; beyond MAX_LIST_BYTES (a book of colour
     // scans grew by tens of MB a page) the least recently drawn ones let go of (a render holds its
     // own reference: one drawing is freed when it ends), built again when drawn again
@@ -2961,7 +2965,38 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
 
 // --- the interface -----------------------------------------------------------------
 
-nitropdf *nitropdf_load(const void *data, size_t len) {
+namespace {
+
+// The PDFs embedded in the document (the /EmbeddedFiles name tree, 7.11.4): each file whose data
+// starts as a PDF, opened as a document of its own (depth: how deep this one is embedded)
+nitropdf *loadDepth(const void *data, size_t len, int depth);
+void embeddedPdfs(nitropdf &P, int depth) {
+    pp::Doc &doc = P.doc;
+    Val tree = doc.get(doc.get(doc.root(), "Names"), "EmbeddedFiles");
+    std::vector<Val> stack{tree};
+    size_t nodes = 0;
+    while (!stack.empty() && nodes++ < 10000 && P.parts.size() < 256) {
+        Val node = doc.resolve(stack.back());
+        stack.pop_back();
+        if (node.t != pp::DICT) continue;
+        Val kids = doc.get(node, "Kids");
+        for (size_t k = kids.size(); k-- > 0;) stack.push_back(kids.at(k));   // (in order: the first kid on top)
+        Val names = doc.get(node, "Names");
+        for (size_t k = 1; k < names.size(); k += 2) {
+            Val ef = doc.get(doc.resolve(names.at(k)), "EF");   // (the file specification's embedded file stream)
+            Val ref = ef.get("F").t == pp::REF ? ef.get("F") : ef.get("UF");
+            const pp::Stream *st = ref.t == pp::REF ? doc.stream(ref.oid()) : nullptr;
+            if (!st) continue;
+            pp::Decoded dec;
+            doc.decode(*st, dec, 512u << 20);
+            const std::string &d = dec.data;
+            if (d.size() < 8 || d.substr(0, 1024).find("%PDF-") == std::string::npos) continue;
+            if (nitropdf *part = loadDepth(d.data(), d.size(), depth + 1)) P.parts.emplace_back(part);
+        }
+    }
+}
+
+nitropdf *loadDepth(const void *data, size_t len, int depth) {
     if (!data || len < 8) return nullptr;
     auto *p = new nitropdf;
     p->data.assign((const char *)data, len);
@@ -2979,7 +3014,14 @@ nitropdf *nitropdf_load(const void *data, size_t len) {
         p->pages.push_back(pg);
         p->dl.push_back(std::make_shared<PageDL>());
     }
-    if (p->pages.empty()) {
+    if (depth < 2) embeddedPdfs(*p, depth);   // (a portfolio in a portfolio, no deeper)
+    // a portfolio (/Collection): its documents, not its cover (a page for the viewers that cannot
+    // show them, "open this in Acrobat"); a document with attachments: its pages, then theirs
+    bool portfolio = p->doc.get(p->doc.root(), "Collection").t != pp::NUL && !p->parts.empty();
+    if (!portfolio)
+        for (int k = 0; k < (int)p->pages.size(); k++) p->shown.emplace_back(p, k);
+    for (auto &part : p->parts) p->shown.insert(p->shown.end(), part->shown.begin(), part->shown.end());
+    if (p->shown.empty()) {
         delete p;
         return nullptr;
     }
@@ -2987,18 +3029,25 @@ nitropdf *nitropdf_load(const void *data, size_t len) {
     return p;
 }
 
+}  // namespace
+
+nitropdf *nitropdf_load(const void *data, size_t len) { return loadDepth(data, len, 0); }
+
 void nitropdf_free(nitropdf *pdf) { delete pdf; }
 
-int nitropdf_pages(const nitropdf *pdf) { return pdf ? (int)pdf->pages.size() : 0; }
+int nitropdf_pages(const nitropdf *pdf) { return pdf ? (int)pdf->shown.size() : 0; }
 
 void nitropdf_set_background(nitropdf *pdf, int background) {
-    if (pdf) pdf->background = background;
+    if (!pdf) return;
+    pdf->background = background;
+    for (auto &part : pdf->parts) nitropdf_set_background(part.get(), background);
 }
 
 void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h) {
     *w = *h = 0;
-    if (!pdf || page < 0 || page >= (int)pdf->pages.size()) return;
-    pageGeometry(pdf->pages[page], w, h, nullptr);
+    if (!pdf || page < 0 || page >= (int)pdf->shown.size()) return;
+    const auto &sp = pdf->shown[page];   // (its document's own page)
+    pageGeometry(sp.first->pages[sp.second], w, h, nullptr);
 }
 
 // About the memory a page's list holds: its pictures (each once: a page may draw one many times;
@@ -3032,7 +3081,9 @@ void trimLists(nitropdf &P, int keep) {
 
 int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                     int (*cancelled)(void *ctx), void *ctx) {
-    if (!pdf || page < 0 || page >= (int)pdf->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
+    if (!pdf || page < 0 || page >= (int)pdf->shown.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
+    const std::pair<nitropdf *, int> sp = pdf->shown[page];   // (its document's own page)
+    pdf = sp.first, page = sp.second;
     std::shared_ptr<PageDL> list;
     {
         std::lock_guard<std::mutex> g(pdf->dlLock);
