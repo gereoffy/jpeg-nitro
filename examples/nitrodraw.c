@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
     size_t len = 0;
     uint8_t *data = nv_read_file(in, &len);
     if (!data) { fprintf(stderr, "%s: cannot read\n", in); return 1; }
-    nv_vector_cycle_background(background);   // (the background the drawings loaded from now on are over: 0, 1, 2)
+    for (int k = 0; k < background % 3; k++) nv_vector_cycle_background(1);   // (the background the drawings loaded from now on are over: 0, 1, 2)
     double t0 = now_ms();
     NvVector *v = nv_vector_open(in, data, len);
     double load = now_ms() - t0;
