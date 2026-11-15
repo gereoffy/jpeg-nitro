@@ -223,14 +223,16 @@ struct Layout {
 
     // A line of text in the font shown, size units to the em, from x on the baseline y: its glyphs
     // into ok; the characters it has no glyph for into miss, from a system font. Paths NULL: only
-    // measured. Returns the width; counts the characters (but spaces) and those missing.
+    // measured. Returns the width; counts the letters (not the digits, signs and dashes every font has)
+    // and those of them missing.
     float fontText(plutovg_path_t *ok, plutovg_path_t *miss, float x, float y, float size, const std::string &s, int *total, int *missing) {
         float x0 = x, k = size / upm;
         FT_UInt prev = 0;
         for (size_t i = 0; i < s.size();) {
             uint32_t cp = nf_utf8_next(s, i);
             FT_UInt gid = FT_Get_Char_Index(face.ft, cp);
-            if (cp != ' ' && total) ++*total;
+            bool letter = (cp | 0x20) >= 'a' && (cp | 0x20) <= 'z' ? true : cp >= 0xC0 && !(cp >= 0x2000 && cp < 0x2C00);   // (not U+2013, the euro sign)
+            if (letter && total) ++*total;
             if (gid) {
                 if (prev && FT_HAS_KERNING(face.ft)) {
                     FT_Vector kern = {0, 0};
@@ -248,7 +250,7 @@ struct Layout {
                 x += size / 2;
                 continue;
             }
-            if (missing) ++*missing;
+            if (letter && missing) ++*missing;
             plutovg_font_face_t *g = ui && nf_has_glyph(ui, cp) ? ui : nf_glyph_face(nullptr, cp, 400, false);
             if (!g) {   // (no system font has it either: the font's own "missing glyph", glyph 0)
                 plutovg_matrix_t m;
