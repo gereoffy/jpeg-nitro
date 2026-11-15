@@ -9,6 +9,7 @@
 //                                              enlarged, huge drawings reduced: nv_vector_page_size)
 //   nitrodraw -p 2 -s 2048 -b 1 plan.dwg out.bmp   page 2 (counted from 1), 2048 pixels, the dark background
 //   nitrodraw -t plan.dwg                      no BMP: just the pages, sizes and the load / render times
+//   nitrodraw -j 1 plan.pdf out.bmp            on one thread (default: in bands, one per CPU thread)
 //
 // nv_read_file reads the file, nv_vector_open loads it with the reader of its format (by the
 // extension, SVG by content too), nv_vector_page_size picks the size and scale a page is shown at,
@@ -62,10 +63,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[a], "-s") && a + 1 < argc) side = atoi(argv[++a]);
         else if (!strcmp(argv[a], "-b") && a + 1 < argc) background = atoi(argv[++a]);
         else if (!strcmp(argv[a], "-t")) times = 1;
+        else if (!strcmp(argv[a], "-j") && a + 1 < argc) nv_vector_set_threads(atoi(argv[++a]));
         else break;
     }
     if (a >= argc || (!times && a + 1 >= argc)) {
-        fprintf(stderr, "usage: nitrodraw [-p page] [-s pixels] [-b 0|1|2] <drawing> <out.bmp>\n       nitrodraw -t <drawing>   (the pages and the times only)\n");
+        fprintf(stderr, "usage: nitrodraw [-p page] [-s pixels] [-b 0|1|2] [-j threads] <drawing> <out.bmp>\n       nitrodraw -t <drawing>   (the pages and the times only)\n");
         return 2;
     }
     const char *in = argv[a], *out = a + 1 < argc ? argv[a + 1] : NULL;
