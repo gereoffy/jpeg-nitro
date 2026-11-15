@@ -138,6 +138,8 @@ LIBXML2    := third_party/libxml2
 PDFP       := third_party/pdfparse3
 # FreeType: the outlines of the fonts PDFs embed, its modules as patches/freetype/ configures them
 FT         := third_party/freetype
+# Brotli's decoder: the WOFF2 fonts FreeType reads (nitrotype)
+BROTLI     := third_party/brotli
 BOOST      := third_party/boost
 # zlib (zlib-ng, built by scripts/get-deps.sh) in the Windows and the portable Linux build (macOS / Linux have one)
 ZLIB_WIN   := third_party/zlib-ng-win
@@ -149,7 +151,7 @@ DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
 DAV1D_DEFS := -DNV_DAV1D -I$(DAV1D_DIR)/include
 # the vector drawings (libnitrovec.a): with all of lunasvg, libcdr, librevenge, lcms2, the boost headers,
 # libvisio and libxml2 from scripts/get-deps.sh, or without any
-NITROVEC   ?= $(if $(and $(wildcard $(LUNA)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h),$(wildcard $(FT)/include/ft2build.h)),1,0)
+NITROVEC   ?= $(if $(and $(wildcard $(LUNA)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h),$(wildcard $(FT)/include/ft2build.h),$(wildcard $(BROTLI)/c/include/brotli/decode.h)),1,0)
 # (non-empty with them; no comment on its line: the spaces before one would be part of the value)
 VEC        := $(filter 1,$(NITROVEC))
 MI         := third_party/mimalloc
@@ -347,7 +349,7 @@ flatpak: $(FLATPAK_MANIFEST) packaging/flatpak/$(GNOME_APP_ID).metainfo.xml $(GN
 # rasterizer every reader draws with), libcdr + libvisio + librevenge (its core and streams; the SVG
 # generator is part of the core: libcdr renders full colour pattern fills with it) + lcms2 + libxml2's
 # XML reader (configured by patches/libxml2/), pdfparse3's object layer (nitropdf's parser), FreeType's
-# font drivers (configured by patches/freetype/: outlines only), and zlib where the system has none (Windows, the
+# font drivers (configured by patches/freetype/: outlines only) with Brotli's decoder (WOFF2), and zlib where the system has none (Windows, the
 # portable Linux build). Built per target directory with its TCPU (see build/% above); every
 # source and header counts, so an edit in third_party rebuilds its library too.
 LUNA_C    = $(wildcard $(LUNA)/plutovg/source/*.c)
@@ -379,7 +381,9 @@ RVNG_DEFS := -DBOOST_ALL_NO_LIB -DBOOST_ERROR_CODE_HEADER_ONLY -DLIBREVENGE_BUIL
              -I$(LIBVISIO)/inc -Ipatches/libvisio -DLIBXML_STATIC -Ipatches/libxml2 -I$(LIBXML2)/include
 FT_C      = $(addprefix $(FT)/src/,base/ftsystem.c base/ftinit.c base/ftdebug.c base/ftbase.c base/ftbitmap.c base/ftmm.c \
               truetype/truetype.c type1/type1.c cff/cff.c cid/type1cid.c psaux/psaux.c psnames/psnames.c sfnt/sfnt.c)
-FT_DEFS  := -DFT_CONFIG_MODULES_H=\<ftmodule.h\> -DFT_CONFIG_OPTIONS_H=\<ftoption.h\> -Ipatches/freetype -I$(FT)/include
+FT_DEFS  := -DFT_CONFIG_MODULES_H=\<ftmodule.h\> -DFT_CONFIG_OPTIONS_H=\<ftoption.h\> -Ipatches/freetype -I$(FT)/include -I$(BROTLI)/c/include
+BROTLI_C  = $(wildcard $(BROTLI)/c/common/*.c $(BROTLI)/c/dec/*.c)
+BROTLI_DEPS = $(BROTLI_C) $(wildcard $(BROTLI)/c/common/*.h $(BROTLI)/c/dec/*.h $(BROTLI)/c/include/brotli/*.h $(BROTLI)/.stamp-*)
 FT_DEPS   = $(FT_C) patches/freetype/ftmodule.h patches/freetype/ftoption.h $(wildcard $(FT)/.stamp-*)
 PDFP_C    = $(PDFP)/pdfcrypt.c
 PDFP_CXX  = $(PDFP)/pdfparse3.cpp
@@ -418,6 +422,10 @@ endef
 	$(call vec_objs,,$(VISIO_CXX),,-O2 -w $(RVNG_DEFS) $(VEC_INC))
 %/vec/freetype/.built: $(FT_DEPS)
 	$(call vec_objs,$(FT_C),,-O2 -w -DFT2_BUILD_LIBRARY $(FT_DEFS),)
+# (its objects renamed: decode.c, state.c, huffman.c are names another library may have too)
+%/vec/brotli/.built: $(BROTLI_DEPS)
+	$(call vec_objs,$(BROTLI_C),,-O2 -w -I$(BROTLI)/c/include,)
+	@cd $(@D) && for f in *.o; do mv "$$f" "brotli-$$f"; done
 %/vec/pdfparse3/.built: $(PDFP_DEPS)
 	$(call vec_objs,$(PDFP_C),$(PDFP_CXX),-std=c99 -O2 -w,-fno-exceptions -fno-rtti -O2 -w $(VEC_INC))
 # zlib-ng's objects out of its library (ZLIB: the target's), into libnitrovec.a with the others
@@ -438,7 +446,7 @@ endef
 	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@
 # the library: the parts' objects together ($(1): the target directory, $(2): zlib where it is needed)
-VEC_PARTS = $(if $(VEC),lunasvg lcms2 libxml2 librevenge libcdr libvisio pdfparse3 freetype) nitro
+VEC_PARTS = $(if $(VEC),lunasvg lcms2 libxml2 librevenge libcdr libvisio pdfparse3 freetype brotli) nitro
 vec_stamps = $(foreach p,$(VEC_PARTS) $(if $(VEC),$(2)),$(1)/vec/$(p)/.built) build/.config-$(CONFIG)
 define vec_lib
 	@rm -f $@ && $(AR) rcs $@ $(foreach s,$(filter %/.built,$^),$(dir $(s))*.o)

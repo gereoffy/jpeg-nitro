@@ -2,6 +2,7 @@
 // what reading outlines doesn't use - zlib (WOFF fonts), the TrueType bytecode interpreter (the
 // glyphs are loaded unhinted) - so that nothing outside the modules of ftmodule.h is linked.
 #include <freetype/config/ftoption.h>
+#define FT_CONFIG_OPTION_USE_BROTLI   // (WOFF2 fonts, for nitrotype: Brotli's decoder is built beside it)
 #undef FT_CONFIG_OPTION_USE_ZLIB
 #undef TT_CONFIG_OPTION_BYTECODE_INTERPRETER
 #undef TT_CONFIG_OPTION_SUBPIXEL_HINTING

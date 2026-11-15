@@ -14,6 +14,8 @@
 #     the PDF files' objects for nitropdf
 #   - FreeType (FreeType License, BSD-like): the outlines of the fonts PDFs embed (nitropdf; sources
 #     only, the Makefile compiles the modules patches/freetype/ftmodule.h lists)
+#   - Brotli (MIT): its decoder, for the WOFF2 fonts FreeType reads (nitrotype; sources only, the
+#     Makefile compiles c/common and c/dec)
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - zlib-ng (zlib license, static, zlib-compatible API; cmake): zlib for the builds whose system
 #     has none, the portable Linux build (built on Linux) and, with WINCC=..., the Windows viewer
@@ -36,6 +38,7 @@ LIBVISIO_COMMIT=7fd688eb9d984a699a08f89a012d919cb626530e  # 2026-11-04, github.c
 PDFPARSE3_COMMIT=1a7447e65ca930f23f15e385c7ed4f98713b55bd  # 2026-11-15, github.com/gereoffy/pdfparse3 (and in packaging/flatpak/*.json)
 LIBXML2_VER=2.13.8
 FREETYPE_VER=2.15.0   # (also in packaging/flatpak/*.json, with its sha256)
+BROTLI_VER=1.2.1      # (also in packaging/flatpak/*.json, with its sha256)
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
 ZLIBNG_VER=2.3.3    # (only for the Windows and the portable Linux build: macOS and Linux have a zlib)
@@ -90,6 +93,14 @@ if [ ! -f freetype/.stamp-$FREETYPE_VER ]; then
   tar xf freetype.tar.gz && rm freetype.tar.gz
   mv freetype-$FT_TAG freetype
   touch freetype/.stamp-$FREETYPE_VER
+fi
+# Brotli: the sources of its release tag (the decoder alone is compiled)
+if [ ! -f brotli/.stamp-$BROTLI_VER ]; then
+  rm -rf brotli brotli-$BROTLI_VER
+  curl -fsSL -o brotli.tar.gz https://github.com/google/brotli/archive/refs/tags/v$BROTLI_VER.tar.gz
+  tar xf brotli.tar.gz && rm brotli.tar.gz
+  mv brotli-$BROTLI_VER brotli
+  touch brotli/.stamp-$BROTLI_VER
 fi
 LIBREVENGE_STAMP=$LIBREVENGE_VER-$(cksum < ../patches/librevenge.patch | cut -d' ' -f1)
 if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
@@ -316,4 +327,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER, Brotli $BROTLI_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"

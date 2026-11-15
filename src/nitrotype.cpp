@@ -169,7 +169,7 @@ bool uneot(const uint8_t *d, size_t n, std::string &out) {
 
 struct nitrotype {
     std::string data;   // the font file (a WOFF's sfnt): FreeType reads it in place
-    const char *wrapper = "";   // "WOFF: ", "EOT: ": what the font came in
+    const char *wrapper = "";   // "WOFF: ", "WOFF2: ", "EOT: ": what the font came in
     FT_Library lib = nullptr;
     std::vector<Face> faces;
     std::vector<Page> pages;
@@ -477,7 +477,6 @@ uint32_t colour(Role r, bool dark) {
 nitrotype *nitrotype_load(const void *data, size_t len) {
     if (!data || len < 12 || len > (256u << 20)) return nullptr;
     const uint8_t *d = (const uint8_t *)data;
-    if (!memcmp(d, "wOF2", 4)) return nullptr;   // (WOFF2: Brotli, not read)
     auto *F = new nitrotype;
     if (!memcmp(d, "wOFF", 4)) {
         if (!unwoff(d, len, F->data)) {
@@ -487,8 +486,10 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
         F->wrapper = "WOFF: ";
     } else if (uneot(d, len, F->data))
         F->wrapper = "EOT: ";
-    else
+    else {
         F->data.assign((const char *)data, len);
+        if (!memcmp(d, "wOF2", 4)) F->wrapper = "WOFF2: ";   // (FreeType unwraps it: Brotli, the glyph table rebuilt)
+    }
     FT_Face probe = nullptr;
     if (FT_Init_FreeType(&F->lib)) F->lib = nullptr;
     if (!F->lib || FT_New_Memory_Face(F->lib, (const FT_Byte *)F->data.data(), (FT_Long)F->data.size(), -1, &probe)) {

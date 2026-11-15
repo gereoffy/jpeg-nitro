@@ -26,6 +26,7 @@ CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and
 | [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; and the rasterizer every reader draws with (DXF, DWG and WMF / EMF: nitrodxf, nitrodwg and nitrometa are our own) | `NITROVEC=0` leaves every drawing format out (libnitrovec.a) |
 | [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW | part of `NITROVEC`; `MIMALLOC=0`: the C++ code with the system malloc |
 | libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `NITROVEC` |
+| [pdfparse3](https://github.com/gereoffy/pdfparse3)'s C++ object layer; FreeType (the font drivers `patches/freetype/` configures); Brotli's decoder | PDF (nitropdf), font files (nitrotype); Brotli: the WOFF2 fonts FreeType reads | part of `NITROVEC` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
 | zlib-ng | zlib for the drawings in the Windows and the portable Linux build (macOS and Linux have one) | part of `NITROVEC` |
