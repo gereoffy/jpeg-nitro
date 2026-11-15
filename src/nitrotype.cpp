@@ -55,11 +55,11 @@ const struct {
     {"el", "ξεσκεπάζω την ψυχοφθόρα βδελυγμία – Α Β Γ Δ Θ Λ Ξ Π Σ Φ Ψ Ω"},
 };
 const int NSAMPLES = sizeof SAMPLES / sizeof SAMPLES[0];
-// the glyphs under the samples on a face's first page, and on each page after it
-const int ROWS_FIRST = (int)((PAGE_H - MARGIN - (SAMPLE_TOP + NSAMPLES * SAMPLE_PITCH + 6)) / CELL_H);
+// the one line of a font with the English alphabet alone (no accented, Cyrillic or Greek letter): the digits and signs with it
+const char SAMPLE_ASCII[] = "the quick brown fox jumps over the lazy dog – THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG – 0123456789 € $ £ @ & % ! ? ( ) [ ] { }";
+// the rows of glyphs on a face's first page, under its sample lines (0: its glyphs under its name), and on each page after it
+inline int rowsUnder(int lines) { return (int)((PAGE_H - MARGIN - (lines ? SAMPLE_TOP + lines * SAMPLE_PITCH + 6 : SAMPLE_TOP)) / CELL_H); }
 const int ROWS_MORE = (int)((PAGE_H - MARGIN - GRID_TOP) / CELL_H);
-// (a face none of the sample lines can be set in, an icon or symbol font: no samples, its glyphs under its name)
-const int ROWS_PLAIN = (int)((PAGE_H - MARGIN - SAMPLE_TOP) / CELL_H);
 
 enum Role : uint8_t { TEXT, LABEL, FRAME, MARK, MISSING };
 
@@ -83,8 +83,11 @@ struct Face {
     int index = 0;                // (in its collection)
     std::vector<uint32_t> uni;    // a glyph's character (the first one mapped to it), 0: none
     size_t chars = 0;             // the characters the font maps
-    bool samples = true;          // some sample line is mostly in the font: they are shown
-    int headRows() const { return samples ? ROWS_FIRST : ROWS_PLAIN; }   // the rows of glyphs on its first page
+    // The sample lines it shows: all of them (NSAMPLES) if it has letters beyond the English alphabet
+    // (what it lacks is red); the English one alone (1) with that alphabet only; none (0) without it
+    // either: an icon or symbol font, or another script's.
+    int samples = NSAMPLES;
+    int headRows() const { return rowsUnder(samples); }   // the rows of glyphs on its first page
 };
 
 struct Page {
@@ -97,17 +100,23 @@ struct Page {
 inline bool isLetter(uint32_t cp) {
     return ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') || (cp >= 0xC0 && !(cp >= 0x2000 && cp < 0x2C00));   // (not U+2013, the euro sign)
 }
-// whether the font has at least half of a text's letters (a face with no such sample line shows no samples)
-bool covers(FT_Face ft, const char *text) {
+// Whether the font has at least half of a text's letters, drawn (an icon font may map a to z to empty
+// glyphs: its icons are ligatures of their names); special: of those beyond the English alphabet (the
+// accented, Cyrillic and Greek ones: a text with none of them is not covered).
+bool covers(FT_Face ft, const char *text, bool special) {
     std::string s(text);
     int total = 0, missing = 0;
     for (size_t i = 0; i < s.size();) {
         uint32_t cp = nf_utf8_next(s, i);
-        if (!isLetter(cp)) continue;
+        if (!isLetter(cp) || (special && cp < 0x80)) continue;
         total++;
-        if (!FT_Get_Char_Index(ft, cp)) missing++;
+        FT_UInt gid = FT_Get_Char_Index(ft, cp);
+        FT_BBox box = {0, 0, 0, 0};
+        if (gid && !FT_Load_Glyph(ft, gid, FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP) && ft->glyph->format == FT_GLYPH_FORMAT_OUTLINE && ft->glyph->outline.n_points > 0)
+            FT_Outline_Get_CBox(&ft->glyph->outline, &box);
+        if (box.xMax <= box.xMin || box.yMax <= box.yMin) missing++;   // (no glyph, or one with nothing in it: points on one spot)
     }
-    return missing * 2 <= total;
+    return total > 0 && missing * 2 <= total;
 }
 
 inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
@@ -363,18 +372,19 @@ struct Layout {
         float w = uiText(nullptr, ui, 0, 0, 11, s), size = w > PAGE_W - 2 * MARGIN ? 11 * (PAGE_W - 2 * MARGIN) / w : 11;
         uiText(info, ui, MARGIN, MARGIN + 48, size, s);
         add(info, LABEL);
-        if (!face.samples) return;   // (an icon font: nine lines of "not in this font" say nothing)
+        if (!face.samples) return;   // (an icon font: lines all red say nothing)
 
         plutovg_path_t *tags = plutovg_path_create();
         const float maxw = PAGE_W - 2 * MARGIN - TAG_W;
-        for (int k = 0; k < NSAMPLES; k++) {
+        for (int k = 0; k < face.samples; k++) {
+            const char *text = face.samples == 1 ? SAMPLE_ASCII : SAMPLES[k].text;
             float y = SAMPLE_TOP + k * SAMPLE_PITCH + SAMPLE_SIZE * 0.78f, x = MARGIN + TAG_W;
             uiText(tags, ui, MARGIN, y, 8, SAMPLES[k].tag);
             // (every character the font lacks in red, a whole line too: the languages it does not cover show at a glance)
-            float tw = fontText(nullptr, nullptr, 0, 0, SAMPLE_SIZE, SAMPLES[k].text);
+            float tw = fontText(nullptr, nullptr, 0, 0, SAMPLE_SIZE, text);
             float size = tw > maxw ? SAMPLE_SIZE * maxw / tw : SAMPLE_SIZE;
             plutovg_path_t *ok = plutovg_path_create(), *miss = plutovg_path_create();
-            fontText(ok, miss, x, y, size, SAMPLES[k].text);
+            fontText(ok, miss, x, y, size, text);
             add(ok, TEXT);
             add(miss, MISSING);
         }
@@ -508,8 +518,9 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
                 c = FT_Get_Next_Char(ft, c, &g);
             }
         }
-        face.samples = false;
-        for (int k = 0; k < NSAMPLES && !face.samples; k++) face.samples = covers(ft, SAMPLES[k].text);
+        face.samples = covers(ft, SAMPLES[0].text, false) ? 1 : 0;
+        for (int k = 1; k < NSAMPLES && face.samples < NSAMPLES; k++)
+            if (covers(ft, SAMPLES[k].text, true)) face.samples = NSAMPLES;
         int headRows = face.headRows();
         int fi = (int)F->faces.size();
         F->faces.push_back(std::move(face));
