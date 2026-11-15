@@ -378,6 +378,15 @@ struct Clip {
     nd::Box box;   // in the page's coordinates, the parents' too
 };
 
+// An axial (2) or radial (3) shading as plutovg's gradient: its function sampled into stops, in the
+// shading's own space (8.7.4.5.3, 8.7.4.5.4)
+struct Shade {
+    int type = 2;
+    float c[6] = {0};   // x0 y0 x1 y1 (axial); x0 y0 r0 x1 y1 r1 (radial)
+    bool extend[2] = {false, false};
+    std::vector<plutovg_gradient_stop_t> stops;
+};
+
 struct Item {
     enum : uint8_t { FILL, STROKE, IMAGE } kind;
     bool evenOdd = false;
@@ -391,6 +400,8 @@ struct Item {
     std::shared_ptr<PathRef> path;
     std::shared_ptr<std::vector<float>> dash;
     std::shared_ptr<Img> img;
+    std::shared_ptr<Shade> shade;   // (a fill: by this gradient instead of rgb)
+    plutovg_matrix_t shadeM;        // (its space -> the path's)
     int segments = 0;   // (merged strokes: the path's elements so far)
     float length = 0;   // (a dashed stroke: its path's length, in its own units)
     bool text = false;  // (a glyph run's fill: merged with the next)
@@ -1706,6 +1717,9 @@ struct GState {
     float fillA = 1, strokeA = 1;
     float groupA = 1;   // (the alpha the transparency groups around compose with: in fillA and strokeA)
     bool fillPattern = false, strokePattern = false, fillNone = false, strokeNone = false;
+    std::shared_ptr<Shade> fillShade;   // (a shading pattern's: fills by it)
+    plutovg_matrix_t fillShadeM;        // (its space -> the page's display coordinates)
+    bool softMask = false;   // (a soft mask set, not drawn: its shadings as before, a colour or nothing)
     float width = 1, miter = 10, dashOffset = 0;
     uint8_t cap = 0, join = 0;
     std::shared_ptr<std::vector<float>> dash;
@@ -1897,6 +1911,11 @@ struct Interp {
                 it.rgb = gs.fillRgb, it.alpha = gs.fillA;
                 it.m = m;
                 it.box = box(path, m, 0);
+                plutovg_matrix_t inv;
+                if (gs.fillPattern && gs.fillShade && !gs.softMask && plutovg_matrix_invert(&m, &inv)) {
+                    it.shade = gs.fillShade;
+                    mul(it.shadeM, gs.fillShadeM, inv);
+                }
                 if (clipBox(it.box, it.clip)) {
                     shared = std::make_shared<PathRef>(plutovg_path_reference(path));
                     it.path = shared;
@@ -2117,12 +2136,113 @@ struct Interp {
         pg.items.push_back(std::move(it));
     }
 
+    // an axial or radial shading (a dictionary or a stream) as gradient stops; null for the others
+    std::shared_ptr<Shade> loadShade(Val ref, Val res) {
+        Val sh = doc.resolve(ref);
+        if (sh.t != pp::DICT) {   // (a stream: its dictionary)
+            const pp::Stream *st = ref.t == pp::REF ? doc.stream(ref.oid()) : nullptr;
+            if (!st) return nullptr;
+            sh = st->dict;
+        }
+        int type = toInt(doc.get(sh, "ShadingType").num(0));
+        auto co = nums(doc, doc.get(sh, "Coords"));
+        if ((type != 2 || co.size() < 4) && (type != 3 || co.size() < 6)) return nullptr;
+        auto cs = loadCS(P, doc.get(sh, "ColorSpace"), res, 0);
+        auto fn = loadFunc(P, doc.get(sh, "Function"), 0);
+        if (!cs || !fn || cs->k == CS::PATTERN) return nullptr;
+        auto s = std::make_shared<Shade>();
+        s->type = type;
+        for (size_t k = 0; k < 6 && k < co.size(); k++) s->c[k] = co[k];
+        if (type == 3 && (s->c[2] < 0 || s->c[5] < 0)) return nullptr;
+        auto dom = nums(doc, doc.get(sh, "Domain"));
+        float t0 = dom.size() >= 2 ? dom[0] : 0, t1 = dom.size() >= 2 ? dom[1] : 1;
+        Val ext = doc.resolve(doc.get(sh, "Extend"));
+        for (size_t k = 0; k < 2 && k < ext.size(); k++) {
+            Val e = doc.resolve(ext.at(k));
+            s->extend[k] = e.t == pp::BOOL && e.i;
+        }
+        const int N = 64;   // (the function sampled: stitched ones change slope at their bounds)
+        for (int k = 0; k < N; k++) {
+            float t = t0 + (t1 - t0) * k / (N - 1), out[MAX_COMPS] = {0}, col[3];
+            fn->eval(&t, out);
+            cs->toRGB(out, col);
+            plutovg_gradient_stop_t st;
+            st.offset = (float)k / (N - 1);
+            st.color = {clampf(col[0], 0, 1), clampf(col[1], 0, 1), clampf(col[2], 0, 1), 1};
+            s->stops.push_back(st);
+        }
+        return s;
+    }
+
+    // sh: the shading painted over the clip (its /BBox, if any, limiting it; an axial one not
+    // extended: only between the lines its ends are on)
+    void shFill(Val name, Val res) {
+        if (hidden || gs.softMask) return;
+        Val ref = resource(P, res, "Shading", name);
+        auto s = loadShade(ref, res);
+        if (!s) return;
+        plutovg_matrix_t m, inv;
+        mul(m, gs.ctm, base);
+        if (!plutovg_matrix_invert(&m, &inv)) return;
+        // the area: the clip's box (or the page) back in user space, a quad
+        nd::Box b{0, 0, pageW, pageH};
+        if (gs.clip >= 0) b = pg.clips[gs.clip].box;
+        std::vector<plutovg_point_t> poly;
+        for (int k = 0; k < 4; k++) {
+            plutovg_point_t q = {k == 1 || k == 2 ? b.x1 : b.x0, k >= 2 ? b.y1 : b.y0}, u;
+            plutovg_matrix_map_point(&inv, &q, &u);
+            poly.push_back(u);
+        }
+        auto cut = [&](float nx, float ny, float d) {   // (keeps nx x + ny y >= d)
+            std::vector<plutovg_point_t> out;
+            for (size_t k = 0; k < poly.size(); k++) {
+                plutovg_point_t p = poly[k], q = poly[(k + 1) % poly.size()];
+                float fp = nx * p.x + ny * p.y - d, fq = nx * q.x + ny * q.y - d;
+                if (fp >= 0) out.push_back(p);
+                if ((fp >= 0) != (fq >= 0)) out.push_back({p.x + (q.x - p.x) * fp / (fp - fq), p.y + (q.y - p.y) * fp / (fp - fq)});
+            }
+            poly.swap(out);
+        };
+        auto bb = nums(doc, doc.get(doc.resolve(ref).t == pp::DICT ? doc.resolve(ref) : Val(), "BBox"));
+        if (bb.size() == 4) {
+            cut(1, 0, std::min(bb[0], bb[2])), cut(-1, 0, -std::max(bb[0], bb[2]));
+            cut(0, 1, std::min(bb[1], bb[3])), cut(0, -1, -std::max(bb[1], bb[3]));
+        }
+        if (s->type == 2) {
+            float dx = s->c[2] - s->c[0], dy = s->c[3] - s->c[1];
+            if (!s->extend[0]) cut(dx, dy, dx * s->c[0] + dy * s->c[1]);
+            if (!s->extend[1]) cut(-dx, -dy, -(dx * s->c[2] + dy * s->c[3]));
+        }
+        if (poly.size() < 3) return;
+        plutovg_path_t *area = plutovg_path_create();
+        if (s->type == 3 && !s->extend[1]) {   // (radial, not extended: within its end circle)
+            plutovg_path_add_circle(area, s->c[3], s->c[4], s->c[5]);
+        } else {
+            plutovg_path_move_to(area, poly[0].x, poly[0].y);
+            for (size_t k = 1; k < poly.size(); k++) plutovg_path_line_to(area, poly[k].x, poly[k].y);
+            plutovg_path_close(area);
+        }
+        Item it;
+        it.kind = Item::FILL;
+        it.clip = gs.clip;
+        it.alpha = gs.fillA;
+        it.m = m;
+        it.box = box(area, m, 0);
+        it.shade = s;
+        plutovg_matrix_init_identity(&it.shadeM);
+        if (clipBox(it.box, it.clip)) {
+            it.path = std::make_shared<PathRef>(area);
+            pg.items.push_back(std::move(it));
+        } else plutovg_path_destroy(area);
+    }
+
     void setColor(bool fill, const Val *args, size_t n, Val res) {
         std::shared_ptr<CS> &cs = fill ? gs.fillCS : gs.strokeCS;
         float *c = fill ? gs.fillC : gs.strokeC;
         bool &pat = fill ? gs.fillPattern : gs.strokePattern;
         uint32_t &rgb = fill ? gs.fillRgb : gs.strokeRgb;
         bool &none = fill ? gs.fillNone : gs.strokeNone;
+        if (fill) gs.fillShade.reset();
         if (cs->k == CS::PATTERN) {
             // a pattern: a shading pattern fills with its middle colour, a tiling one with grey (not yet drawn)
             pat = true;
@@ -2141,6 +2261,13 @@ struct Interp {
                         fn->eval(in, out);
                         scs->toRGB(out, col);
                         rgb = packRgb(col);
+                    }
+                    if (fill && (gs.fillShade = loadShade(sh, res))) {   // (its matrix: to the page's default space)
+                        auto pm = nums(doc, doc.get(p, "Matrix"));
+                        plutovg_matrix_t pmat;
+                        if (pm.size() == 6) plutovg_matrix_init(&pmat, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5]);
+                        else plutovg_matrix_init_identity(&pmat);
+                        mul(gs.fillShadeM, pmat, base);
                     }
                 } else if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
                     float cc[32];
@@ -2163,6 +2290,7 @@ struct Interp {
     void setSpace(bool fill, Val name, Val res) {
         auto cs = loadCS(P, name, res, 0);
         if (!cs) cs = deviceCS(CS::GRAY);
+        if (fill) gs.fillShade.reset();
         (fill ? gs.fillCS : gs.strokeCS) = cs;
         float *c = fill ? gs.fillC : gs.strokeC;
         cs->initial(c);
@@ -2184,6 +2312,9 @@ struct Interp {
         if (g.t != pp::DICT) return;
         Val v;
         if ((v = doc.get(g, "LW")).isNum()) gs.width = (float)v.num();
+        v = doc.get(g, "SMask");
+        if (v.t == pp::NAME) gs.softMask = false;
+        else if (v.t == pp::DICT) gs.softMask = true;
         if ((v = doc.get(g, "LC")).isNum()) gs.cap = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "LJ")).isNum()) gs.join = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "ML")).isNum()) gs.miter = (float)v.num();
@@ -2408,7 +2539,7 @@ struct Interp {
             case 's':
                 if (o == "sc" || o == "scn") setColor(true, a, n, res);
                 else if (o == "s") plutovg_path_close(path), paint(0, true);
-                else if (o == "sh") {}   // (shadings: not yet)
+                else if (o == "sh" && n >= 1) shFill(a[0], res);
                 break;
             case 'S':
                 if (o == "SC" || o == "SCN") setColor(false, a, n, res);
@@ -2698,7 +2829,17 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
         plutovg_matrix_multiply(&m, &it.m, &view);
         plutovg_canvas_set_matrix(c, &m);
         if (it.kind == Item::FILL) {
-            nd::setRgb(c, it.rgb, it.alpha);
+            if (it.shade) {
+                const Shade &s = *it.shade;
+                std::vector<plutovg_gradient_stop_t> stops = s.stops;
+                for (auto &st : stops) st.color.a = it.alpha;
+                if (s.type == 2)
+                    plutovg_canvas_set_linear_gradient(c, s.c[0], s.c[1], s.c[2], s.c[3], PLUTOVG_SPREAD_METHOD_PAD, stops.data(),
+                                                       (int)stops.size(), &it.shadeM);
+                else   // (SVG's terms: the start circle its focal one)
+                    plutovg_canvas_set_radial_gradient(c, s.c[3], s.c[4], s.c[5], s.c[0], s.c[1], s.c[2], PLUTOVG_SPREAD_METHOD_PAD,
+                                                       stops.data(), (int)stops.size(), &it.shadeM);
+            } else nd::setRgb(c, it.rgb, it.alpha);
             plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path->p);
         } else if (it.kind == Item::STROKE) {
