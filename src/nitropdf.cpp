@@ -21,9 +21,7 @@ extern "C" {
 #include "nitrotiff.h"   // (nt_ccitt)
 }
 
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include FT_OUTLINE_H
+#include "nitro_ft.h"   // (FreeType; a glyph's outline as a path)
 #include <pdfparse3.h>
 #include <plutovg.h>
 
@@ -1405,31 +1403,6 @@ struct Font {
     }
 };
 
-// FreeType outline -> plutovg path, in glyph units (26.6 at 1000 pixels to the em)
-struct Decompose {
-    plutovg_path_t *p;
-    bool open = false;
-};
-int ftMove(const FT_Vector *to, void *u) {
-    Decompose *d = (Decompose *)u;
-    if (d->open) plutovg_path_close(d->p);
-    plutovg_path_move_to(d->p, to->x / 64.f, to->y / 64.f);
-    d->open = true;
-    return 0;
-}
-int ftLine(const FT_Vector *to, void *u) {
-    plutovg_path_line_to(((Decompose *)u)->p, to->x / 64.f, to->y / 64.f);
-    return 0;
-}
-int ftConic(const FT_Vector *c, const FT_Vector *to, void *u) {
-    plutovg_path_quad_to(((Decompose *)u)->p, c->x / 64.f, c->y / 64.f, to->x / 64.f, to->y / 64.f);
-    return 0;
-}
-int ftCubic(const FT_Vector *c1, const FT_Vector *c2, const FT_Vector *to, void *u) {
-    plutovg_path_cubic_to(((Decompose *)u)->p, c1->x / 64.f, c1->y / 64.f, c2->x / 64.f, c2->y / 64.f, to->x / 64.f, to->y / 64.f);
-    return 0;
-}
-
 // A CMap (an embedded /Encoding, or a /ToUnicode): its code space, its CID ranges and characters, or
 // its characters (bfchar, bfrange); read with the content lexer, its operators after their operands.
 void parseCMap(const std::string &data, Font &f, bool toUni) {
@@ -1748,11 +1721,9 @@ const Font::Glyph &glyphOf(Font &f, uint32_t key, int gid, uint32_t unicode, flo
     float advance = 0;
     if (f.face && gid > 0 && !FT_Load_Glyph(f.face, (FT_UInt)gid, FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP) &&
         f.face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
-        Decompose d{plutovg_path_create()};
-        FT_Outline_Funcs fn = {ftMove, ftLine, ftConic, ftCubic, 0, 0};
-        FT_Outline_Decompose(&f.face->glyph->outline, &fn, &d);
-        if (d.open) plutovg_path_close(d.p);
-        out = std::make_shared<PathRef>(d.p);
+        plutovg_path_t *p = plutovg_path_create();
+        nft::outlinePath(&f.face->glyph->outline, p, 1 / 64.f);   // (26.6 at 1000 pixels to the em: glyph units)
+        out = std::make_shared<PathRef>(p);
         advance = f.face->glyph->advance.x / 64.f;
     } else if (!f.face && unicode) {   // (a space too: its advance, where the PDF gives no width)
         std::lock_guard<std::mutex> g(nf_lock());
