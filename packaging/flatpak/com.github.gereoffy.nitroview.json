@@ -62,8 +62,8 @@
         },
         {
           "type": "archive",
-          "url": "https://github.com/gereoffy/lunasvg/archive/7e2fb3d9477a24251e5e45e4a2a0aebd47471379.tar.gz",
-          "sha256": "44652a02d8e74be1afc5397d2310da9036419886fdb4e72a506811ad0fcecdfe",
+          "url": "https://github.com/gereoffy/lunasvg/archive/713c6cd469e8b4fa1374a4f3ddfa6ff2c4023328.tar.gz",
+          "sha256": "6d9d8980e3713487df84115acf0e08687ff068f25dc9b8ee8b98551695049f5a",
           "dest": "third_party/lunasvg"
         },
         {
