@@ -9,7 +9,7 @@
 // curves can be zoomed into. A face's first page: its name and what it is, lines of sample text in
 // the languages of Central Europe and the rest of Latin, Cyrillic and Greek (most fonts cover
 // Latin-1 alone: a character the font lacks is drawn in red from a system font, a line it mostly
-// lacks is only named), then its glyphs in the order the font has them, each in a cell with its
+// lacks is only named; a font with none of them, icons or symbols, gets no samples), then its glyphs in the order the font has them, each in a cell with its
 // number, its character and its name, over its baseline and advance width. More glyphs: more
 // pages. Not drawn: colour glyphs' layers and bitmaps (their outline, if any), variations (the
 // default instance), hinting.

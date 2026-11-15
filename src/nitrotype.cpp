@@ -58,6 +58,8 @@ const int NSAMPLES = sizeof SAMPLES / sizeof SAMPLES[0];
 // the glyphs under the samples on a face's first page, and on each page after it
 const int ROWS_FIRST = (int)((PAGE_H - MARGIN - (SAMPLE_TOP + NSAMPLES * SAMPLE_PITCH + 6)) / CELL_H);
 const int ROWS_MORE = (int)((PAGE_H - MARGIN - GRID_TOP) / CELL_H);
+// (a face none of the sample lines can be set in, an icon or symbol font: no samples, its glyphs under its name)
+const int ROWS_PLAIN = (int)((PAGE_H - MARGIN - SAMPLE_TOP) / CELL_H);
 
 enum Role : uint8_t { TEXT, LABEL, FRAME, MARK, MISSING };
 
@@ -81,6 +83,8 @@ struct Face {
     int index = 0;                // (in its collection)
     std::vector<uint32_t> uni;    // a glyph's character (the first one mapped to it), 0: none
     size_t chars = 0;             // the characters the font maps
+    bool samples = true;          // some sample line is mostly in the font: they are shown
+    int headRows() const { return samples ? ROWS_FIRST : ROWS_PLAIN; }   // the rows of glyphs on its first page
 };
 
 struct Page {
@@ -88,6 +92,23 @@ struct Page {
     uint32_t first, count;   // its glyphs
     bool head;               // the face's first page: its name and the samples
 };
+
+// a letter: what a sample line's coverage is counted by (not the digits, signs and dashes every font has)
+inline bool isLetter(uint32_t cp) {
+    return ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') || (cp >= 0xC0 && !(cp >= 0x2000 && cp < 0x2C00));   // (not U+2013, the euro sign)
+}
+// whether the font has at least half of a text's letters (else the line is not set in it, only named)
+bool covers(FT_Face ft, const char *text) {
+    std::string s(text);
+    int total = 0, missing = 0;
+    for (size_t i = 0; i < s.size();) {
+        uint32_t cp = nf_utf8_next(s, i);
+        if (!isLetter(cp)) continue;
+        total++;
+        if (!FT_Get_Char_Index(ft, cp)) missing++;
+    }
+    return missing * 2 <= total;
+}
 
 inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 inline void put32(std::string &o, size_t at, uint32_t v) {
@@ -245,7 +266,7 @@ struct Layout {
         for (size_t i = 0; i < s.size();) {
             uint32_t cp = nf_utf8_next(s, i);
             FT_UInt gid = FT_Get_Char_Index(face.ft, cp);
-            bool letter = (cp | 0x20) >= 'a' && (cp | 0x20) <= 'z' ? true : cp >= 0xC0 && !(cp >= 0x2000 && cp < 0x2C00);   // (not U+2013, the euro sign)
+            bool letter = isLetter(cp);
             if (letter && total) ++*total;
             if (gid) {
                 if (prev && FT_HAS_KERNING(face.ft)) {
@@ -346,6 +367,7 @@ struct Layout {
         float w = uiText(nullptr, ui, 0, 0, 11, s), size = w > PAGE_W - 2 * MARGIN ? 11 * (PAGE_W - 2 * MARGIN) / w : 11;
         uiText(info, ui, MARGIN, MARGIN + 48, size, s);
         add(info, LABEL);
+        if (!face.samples) return;   // (an icon font: nine lines of "not in this font" say nothing)
 
         plutovg_path_t *tags = plutovg_path_create();
         const float maxw = PAGE_W - 2 * MARGIN - TAG_W;
@@ -439,7 +461,7 @@ struct Layout {
     void build(const Page &p) {
         if (p.head) head();
         else heading(p);
-        if (p.count) grid(p, p.head ? PAGE_H - MARGIN - ROWS_FIRST * CELL_H : GRID_TOP);
+        if (p.count) grid(p, p.head ? PAGE_H - MARGIN - face.headRows() * CELL_H : GRID_TOP);
     }
 };
 
@@ -496,11 +518,14 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
                 c = FT_Get_Next_Char(ft, c, &g);
             }
         }
+        face.samples = false;
+        for (int k = 0; k < NSAMPLES && !face.samples; k++) face.samples = covers(ft, SAMPLES[k].text);
+        int headRows = face.headRows();
         int fi = (int)F->faces.size();
         F->faces.push_back(std::move(face));
         uint32_t n = (uint32_t)ft->num_glyphs, at = 0;
         for (bool head = true; (head || at < n) && F->pages.size() < MAX_PAGES; head = false) {
-            uint32_t room = (uint32_t)((head ? ROWS_FIRST : ROWS_MORE) * COLS), take = std::min(room, n - at);
+            uint32_t room = (uint32_t)((head ? headRows : ROWS_MORE) * COLS), take = std::min(room, n - at);
             F->pages.push_back({fi, at, take, head});
             at += take;
         }
