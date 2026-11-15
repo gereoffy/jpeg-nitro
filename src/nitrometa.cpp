@@ -2019,15 +2019,11 @@ bool textureFits(const Item &it, const plutovg_matrix_t &base, const double view
     return true;
 }
 
-// a clip path's extents against the view: 1 clip with it, 0 it covers the view (no effect), -1 it
-// lies outside the view or too far for plutovg's fixed point (nothing left to draw)
-int clipFits(const plutovg_path_t *path, float hair, const double view[4]) {
+// whether a clip path reaches the view (if not, nothing is left to draw)
+bool clipShows(const plutovg_path_t *path, const double view[4]) {
     plutovg_rect_t r;
     plutovg_path_extents(path, &r, false);
-    double x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
-    if (!nd::touches(view, x0, y0, x1, y1)) return -1;
-    if (nd::within(view, x0, y0, x1, y1, 1 / hair)) return 1;
-    return x0 <= view[0] && y0 <= view[1] && x1 >= view[2] && y1 >= view[3] ? 0 : -1;
+    return nd::touches(view, r.x, r.y, r.x + r.w, r.y + r.h);
 }
 
 // base: device to the canvas; hair: a canvas pixel in device units; view: the visible device rectangle
@@ -2048,15 +2044,13 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
             plutovg_canvas_save(c);
             plutovg_canvas_set_matrix(c, &base);
             for (const Clip &cl : it.clips) {
-                int fit = clipFits(cl.path.get(), hair, view);
-                if (fit == 0) continue;
                 plutovg_canvas_set_fill_rule(c, cl.evenodd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
-                if (fit > 0) plutovg_canvas_clip_path(c, cl.path.get());
+                if (clipShows(cl.path.get(), view)) plutovg_canvas_clip_path(c, cl.path.get());
                 else plutovg_canvas_clip_rect(c, 0, 0, 0, 0);
             }
             continue;
         }
-        if (!nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, 1 / hair, 2 * hair)) continue;   // (or too far: plutovg's fixed point)
+        if (!nd::touches(view, it.bx0, it.by0, it.bx1, it.by1, 2 * hair)) continue;
         plutovg_canvas_set_fill_rule(c, it.evenodd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
         if (it.img && !textureFits(it, base, view)) continue;
         switch (it.kind) {
@@ -2082,6 +2076,7 @@ int drawList(const nitrometa &meta, plutovg_canvas_t *c, const plutovg_matrix_t 
             plutovg_canvas_set_line_cap(c, it.width > 0 ? (plutovg_line_cap_t)it.cap : PLUTOVG_LINE_CAP_BUTT);
             plutovg_canvas_set_line_join(c, it.width > 0 ? (plutovg_line_join_t)it.join : PLUTOVG_LINE_JOIN_BEVEL);
             if (!it.dash.empty()) {
+                if (!nd::within(view, it.bx0, it.by0, it.bx1, it.by1, 1 / hair)) break;
                 dashes.resize(it.dash.size());
                 for (size_t i = 0; i < it.dash.size(); i++) dashes[i] = std::max(it.dash[i] * w, hair);
                 plutovg_canvas_set_dash(c, 0, dashes.data(), (int)dashes.size());

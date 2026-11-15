@@ -3,8 +3,8 @@
 //
 // nitro_draw: what the display-list renderers (nitrodxf, nitrometa, nitrocdr, nitrodio; nitrosvg
 // for the background) share: the backgrounds the viewers choose from, a render's canvas over the
-// caller's BGRA buffer, the "stop now" callback, an item's box against the view (and against
-// plutovg's fixed point), the boxes of paths and of turned rectangles, the union of boxes a page's
+// caller's BGRA buffer, the "stop now" callback, an item's box against the view (a dashed stroke's:
+// also how far out it reaches), the boxes of paths and of turned rectangles, the union of boxes a page's
 // area is made of, a colour on a canvas. Header only (C++), included by every reader of libnitrovec.
 #pragma once
 #include <plutovg.h>
@@ -63,19 +63,16 @@ struct Cancel {
     bool operator()() const { return fn && fn(ctx); }
 };
 
-// plutovg's fixed point overflows this many pixels out of the view (a damaged file's far-off strays)
-constexpr double kFar = 1 << 24;
 // whether a box (in the view's units) reaches the view, margin around it
 inline bool touches(const double view[4], double bx0, double by0, double bx1, double by1, double margin = 0) {
     return !(bx1 + margin < view[0] || bx0 - margin > view[2] || by1 + margin < view[1] || by0 - margin > view[3]);
 }
-// ... and lies within kFar pixels of it (scale: pixels per unit)
+// plutovg clips far-off geometry itself, but dashes a whole path: a dashed stroke reaching more than
+// kFar pixels out of the view (millions of dashes) is left out
+constexpr double kFar = 1 << 24;
+// whether a box lies within kFar pixels of the view (scale: pixels per unit)
 inline bool within(const double view[4], double bx0, double by0, double bx1, double by1, double scale) {
     return std::max(std::max(view[0] - bx0, bx1 - view[2]), std::max(view[1] - by0, by1 - view[3])) * scale <= kFar;
-}
-// an item to draw: both
-inline bool inView(const double view[4], double bx0, double by0, double bx1, double by1, double scale, double margin = 0) {
-    return touches(view, bx0, by0, bx1, by1, margin) && within(view, bx0, by0, bx1, by1, scale);
 }
 
 struct Box {

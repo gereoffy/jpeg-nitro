@@ -2875,7 +2875,7 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
             rc = 1;
             break;
         }
-        if (!nd::inView(vb, it.box.x0, it.box.y0, it.box.x1, it.box.y1, scale, 2 / scale)) continue;
+        if (!nd::touches(vb, it.box.x0, it.box.y0, it.box.x1, it.box.y1, 2 / scale)) continue;
         // (a stroke within a pixel of a rectangle clip left out: drawn at least a pixel wide, it may reach out)
         int clip = it.kind == Item::STROKE && it.clipOwn != it.clip && it.clipGap * scale < 1 ? it.clipOwn : it.clip;
         if (clip != curClip) {   // (the clip chain, from its outermost)

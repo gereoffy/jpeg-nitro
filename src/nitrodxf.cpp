@@ -2653,16 +2653,16 @@ static int draw_page(const nitrodxf *dxf, const Page &pg, plutovg_canvas_t *c, d
         if (it.kind == O_CLIP) clip[0] = it.bx0, clip[1] = it.by0, clip[2] = it.bx1, clip[3] = it.by1;
         else if (it.kind == O_UNCLIP) clip[0] = clip[1] = -FLT_MAX, clip[2] = clip[3] = FLT_MAX;
         else if (it.kind != O_XLINE && it.kind != O_RAY &&
-                 (!nd::touches(view, std::max(it.bx0, clip[0]), std::max(it.by0, clip[1]), std::min(it.bx1, clip[2]), std::min(it.by1, clip[3]),
-                               it.kind == O_POINTS ? pointSize / 2 + hair : 0) ||
-                  !nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale)))
-            continue;   // (within: plutovg's fixed point would overflow; far-off strays of a damaged file)
+                 !nd::touches(view, std::max(it.bx0, clip[0]), std::max(it.by0, clip[1]), std::min(it.bx1, clip[2]), std::min(it.by1, clip[3]),
+                              it.kind == O_POINTS ? pointSize / 2 + hair : 0))
+            continue;
         uint32_t rgba = on_background(it.rgba, dxf->background);
         switch (it.kind) {
         case O_STROKE: {
             nd::setRgba(c, rgba);
             const Dash *d = it.dash >= 0 ? &dxf->dashes[it.dash] : nullptr;
             bool dashed = d && d->total * fs >= 4;   // (finer than that: drawn solid)
+            if (dashed && !nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale)) break;
             if (it.width <= hair && !dashed) {
                 if (!hairline_quads(tmp, it.path, hair, fs, &cancel)) {
                     rc = 1;

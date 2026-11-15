@@ -1656,7 +1656,8 @@ void nitrodio_size(const nitrodio *dio, int page, double *w, double *h) {
 
 namespace {
 
-void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
+// dashOk: a dashed stroke that does not reach too far out of the view (nd::within)
+void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
     if (it.label) {
         const Label &l = *it.label;
         plutovg_canvas_save(c);
@@ -1687,7 +1688,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
         plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
         plutovg_canvas_fill_path(c, it.path.get());
     }
-    if (it.stroke >> 24) {
+    if ((it.stroke >> 24) && dashOk) {
         nd::setRgba(c, it.stroke);
         plutovg_canvas_set_line_width(c, std::max(it.width, 1 / scale));   // (a pixel at least)
         plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
@@ -1716,7 +1717,8 @@ int nitrodio_render(nitrodio *dio, int page, uint8_t *bgra, int w, int h, size_t
             rc = 1;
             break;
         }
-        if (nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, scale)) drawItem(c, it, (float)scale);
+        if (nd::touches(view, it.bx0, it.by0, it.bx1, it.by1))
+            drawItem(c, it, (float)scale, it.dash.empty() || nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale));
     }
     return rc;
 }

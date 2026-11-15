@@ -1768,7 +1768,8 @@ void drawMarkers(plutovg_canvas_t *c, const Style &st, const plutovg_path_t *pat
     draw(st.markerEnd, st.markerPre[1], last, before);
 }
 
-void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
+// dashOk: a dashed stroke that does not reach too far out of the view (nd::within)
+void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
     plutovg_canvas_save(c);
     if (it.kind == Item::PATH) {
         const Style &st = *it.style;
@@ -1778,7 +1779,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale) {
             plutovg_canvas_set_fill_rule(c, st.evenodd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path.get());
         }
-        if (st.stroke) {
+        if (st.stroke && (st.dashes.empty() || dashOk)) {
             plutovg_canvas_set_opacity(c, 1);
             setColor(c, st.strokeColor, 1);
             // never thinner than one device pixel (as CorelDRAW and PDF viewers draw them):
@@ -2034,14 +2035,14 @@ int nitrocdr_render(nitrocdr *cdr, int page, uint8_t *bgra, int w, int h, size_t
     size_t n = 0;
     int rc = 0;
     for (const Item &it : cdr->pages[page].items) {
-        bool shown = nd::inView(view, it.bx0, it.by0, it.bx1, it.by1, scale);
+        bool shown = nd::touches(view, it.bx0, it.by0, it.bx1, it.by1);
         // (asked every 256th item, and before a picture: an embedded DWG, a long WMF or an SVG rendered
         // for the band's scale takes a while)
         if (((++n & 255) == 0 || (shown && it.kind == Item::IMAGE)) && cancelled && cancelled(ctx)) {
             rc = 1;
             break;
         }
-        if (shown) drawItem(c, it, (float)scale);
+        if (shown) drawItem(c, it, (float)scale, nd::within(view, it.bx0, it.by0, it.bx1, it.by1, scale));
     }
     return rc;
 }
