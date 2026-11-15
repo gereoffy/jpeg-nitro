@@ -108,7 +108,7 @@ typedef struct {
 typedef struct { int orient, x0, y0, x1, y1, nx, ny, mb; double step; Block *cb; Tree inc, zero; } Band;
 typedef struct { Band band[3]; } Precinct;
 typedef struct { int x0, y0, x1, y1, px0, py0, nx, ny; Precinct *prec; } Resolution;
-typedef struct { int x0, y0, x1, y1; Resolution res[LEVELS]; double *plane; } Component;
+typedef struct { int x0, y0, x1, y1; Resolution res[LEVELS]; void *plane; } Component;   // (plane: int32 if reversible, else float)
 typedef struct { uint64_t key[5]; int c, r, p, l; } Packet;
 typedef struct {
     int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags;
@@ -503,7 +503,7 @@ static void significant(Coeff *c, int x, int y, int bp) {
     c->state[k + stride - 1] |= NE; c->state[k + stride] |= N; c->state[k + stride + 1] |= NW;
     c->mag[k] = 3u << bp;   // twice the magnitude, with the unknown suffix at its midpoint
 }
-static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co, double *dst, int stride, int ox, int oy) {
+static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co, void *dst, int stride, int ox, int oy) {
     if (!cb->passes) return 0;
     Coeff c = {0}; c.w = cb->x1 - cb->x0; c.h = cb->y1 - cb->y0; c.stride = c.w + 2;
     c.orient = b->orient; c.causal = co->style & 8;
@@ -565,8 +565,9 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
         int k = (y + 1) * c.stride + x + 1;
         uint32_t mag = c.mag[k];
         if (co->roi && (mag >> 1) >= (1u << co->roi)) mag >>= co->roi;
-        double v = co->reversible ? (double)(mag >> 1) : mag * 0.5 * b->step;
-        dst[(size_t)(oy + y) * stride + ox + x] = c.state[k] & NEG ? -v : v;
+        size_t at = (size_t)(oy + y) * stride + ox + x;
+        if (co->reversible) ((int32_t *)dst)[at] = c.state[k] & NEG ? -(int32_t)(mag >> 1) : (int32_t)(mag >> 1);
+        else { float v = (float)(mag * 0.5 * b->step); ((float *)dst)[at] = c.state[k] & NEG ? -v : v; }
     }
     rc = 0;
 done:
@@ -574,102 +575,151 @@ done:
 }
 
 // --- inverse wavelets and component transforms (annexes E, F, G) ------------------------------
+// The coefficients: int32 for the reversible 5/3 wavelet (exact: at most 30 magnitude bit-planes,
+// the lifting sums in 64 bits), float for the irreversible 9/7 (its output is 16 bits at most).
+// Half the memory traffic of doubles: the wavelets and the output are bound by it.
 // v is in spatial parity order, not packed low/high order. Reflection duplicates the single
-// available neighbour at an edge. Double arithmetic keeps reversible sums exact for our limits.
-static void inverse_line(double *v, int n, int origin, int reversible) {
-    if (n == 1) { if (origin & 1) v[0] *= 0.5; return; }
+// available neighbour at an edge.
+static void inverse_line_i(int32_t *v, int n, int origin) {
+    if (n == 1) { if (origin & 1) v[0] /= 2; return; }   // (exact: a lone high-pass sample is even)
     int even = origin & 1, odd = 1 - even;
-    if (reversible) {
-        for (int i = even; i < n; i += 2) {
-            double a = v[i ? i - 1 : i + 1], b = v[i + 1 < n ? i + 1 : i - 1];
-            v[i] -= floor((a + b + 2) / 4);
-        }
-        for (int i = odd; i < n; i += 2) {
-            double a = v[i ? i - 1 : i + 1], b = v[i + 1 < n ? i + 1 : i - 1];
-            v[i] += floor((a + b) / 2);
-        }
-    } else {
-        const double k = 1.230174104914001;
-        for (int i = 0; i < n; i++) v[i] *= ((i + origin) & 1) ? 1 / k : k;
-        static const double coeff[4] = {-0.443506852043971, -0.882911075530934, 0.052980118572961, 1.586134342059924};
-        for (int s = 0; s < 4; s++) for (int i = (s & 1) ? odd : even; i < n; i += 2) {
-            double a = v[i ? i - 1 : i + 1], b = v[i + 1 < n ? i + 1 : i - 1];
-            v[i] += coeff[s] * (a + b);
-        }
+    for (int i = even; i < n; i += 2) {
+        int64_t a = v[i ? i - 1 : i + 1], b = v[i + 1 < n ? i + 1 : i - 1];
+        v[i] = (int32_t)(v[i] - ((a + b + 2) >> 2));   // (64 bits: a damaged image wraps, not overflows)
+    }
+    for (int i = odd; i < n; i += 2) {
+        int64_t a = v[i ? i - 1 : i + 1], b = v[i + 1 < n ? i + 1 : i - 1];
+        v[i] = (int32_t)(v[i] + ((a + b) >> 1));
+    }
+}
+static const float K97 = 1.230174104914001f;
+static const float C97[4] = {-0.443506852043971f, -0.882911075530934f, 0.052980118572961f, 1.586134342059924f};
+static void inverse_line_f(float *v, int n, int origin) {
+    if (n == 1) { if (origin & 1) v[0] *= 0.5f; return; }
+    int even = origin & 1, odd = 1 - even;
+    for (int i = 0; i < n; i++) v[i] *= ((i + origin) & 1) ? 1 / K97 : K97;
+    for (int s = 0; s < 4; s++) {
+        float k = C97[s];
+        int i = (s & 1) ? odd : even;
+        if (i == 0) { v[0] += k * 2 * v[1]; i = 2; }   // (the edges reflected, the inside without checks)
+        for (; i + 1 < n; i += 2) v[i] += k * (v[i - 1] + v[i + 1]);
+        if (i < n) v[i] += k * 2 * v[i - 1];
     }
 }
 // Work on a narrow strip of adjacent columns in row order. Gathering/scattering a whole
 // column touches one cache line per sample; strips reuse the lines and let the lifting
-// steps operate on consecutive doubles (SIMD on the host), with the same rounding order.
+// steps operate on consecutive samples (SIMD on the host), with the same rounding order.
 #define COLUMN_BATCH 16
-static void inverse_columns(double *plane, int stride, int w, int h, int origin, int low,
-                            int reversible, double *tmp) {
-    int batch = imin(w, COLUMN_BATCH);
-    int even = origin & 1, odd = 1 - even;
+static void inverse_columns_i(int32_t *plane, int stride, int w, int h, int origin, int low, int32_t *tmp) {
+    int batch = imin(w, COLUMN_BATCH), even = origin & 1, odd = 1 - even;
     for (int x0 = 0; x0 < w; x0 += batch) {
         int cols = imin(batch, w - x0), lo = 0, hi = low;
         for (int y = 0; y < h; y++) {
             int sy = ((y + origin) & 1) ? hi++ : lo++;
-            memcpy(tmp + (size_t)y * batch, plane + (size_t)sy * stride + x0, (size_t)cols * sizeof(double));
+            memcpy(tmp + (size_t)y * batch, plane + (size_t)sy * stride + x0, (size_t)cols * sizeof(int32_t));
         }
         if (h == 1) {
-            if (origin & 1) for (int x = 0; x < cols; x++) tmp[x] *= 0.5;
-        } else if (reversible) {
+            if (origin & 1) for (int x = 0; x < cols; x++) tmp[x] /= 2;
+        } else {
             for (int y = even; y < h; y += 2) {
-                double *v = tmp + (size_t)y * batch;
-                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
-                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
-                for (int x = 0; x < cols; x++) v[x] -= floor((a[x] + b[x] + 2) / 4);
+                int32_t *v = tmp + (size_t)y * batch;
+                const int32_t *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch, *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] = (int32_t)(v[x] - (((int64_t)a[x] + b[x] + 2) >> 2));
             }
             for (int y = odd; y < h; y += 2) {
-                double *v = tmp + (size_t)y * batch;
-                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
-                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
-                for (int x = 0; x < cols; x++) v[x] += floor((a[x] + b[x]) / 2);
-            }
-        } else {
-            const double k = 1.230174104914001;
-            for (int y = 0; y < h; y++) {
-                double scale = ((y + origin) & 1) ? 1 / k : k;
-                for (int x = 0; x < cols; x++) tmp[(size_t)y * batch + x] *= scale;
-            }
-            static const double coeff[4] = {-0.443506852043971, -0.882911075530934, 0.052980118572961, 1.586134342059924};
-            for (int s = 0; s < 4; s++) for (int y = (s & 1) ? odd : even; y < h; y += 2) {
-                double *v = tmp + (size_t)y * batch;
-                const double *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch;
-                const double *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
-                for (int x = 0; x < cols; x++) v[x] += coeff[s] * (a[x] + b[x]);
+                int32_t *v = tmp + (size_t)y * batch;
+                const int32_t *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch, *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] = (int32_t)(v[x] + (((int64_t)a[x] + b[x]) >> 1));
             }
         }
-        for (int y = 0; y < h; y++)
-            memcpy(plane + (size_t)y * stride + x0, tmp + (size_t)y * batch, (size_t)cols * sizeof(double));
+        for (int y = 0; y < h; y++) memcpy(plane + (size_t)y * stride + x0, tmp + (size_t)y * batch, (size_t)cols * sizeof(int32_t));
+    }
+}
+static void inverse_columns_f(float *plane, int stride, int w, int h, int origin, int low, float *tmp) {
+    int batch = imin(w, COLUMN_BATCH), even = origin & 1, odd = 1 - even;
+    for (int x0 = 0; x0 < w; x0 += batch) {
+        int cols = imin(batch, w - x0), lo = 0, hi = low;
+        for (int y = 0; y < h; y++) {
+            int sy = ((y + origin) & 1) ? hi++ : lo++;
+            memcpy(tmp + (size_t)y * batch, plane + (size_t)sy * stride + x0, (size_t)cols * sizeof(float));
+        }
+        if (h == 1) {
+            if (origin & 1) for (int x = 0; x < cols; x++) tmp[x] *= 0.5f;
+        } else {
+            for (int y = 0; y < h; y++) {
+                float scale = ((y + origin) & 1) ? 1 / K97 : K97;
+                for (int x = 0; x < cols; x++) tmp[(size_t)y * batch + x] *= scale;
+            }
+            for (int s = 0; s < 4; s++) for (int y = (s & 1) ? odd : even; y < h; y += 2) {
+                float *v = tmp + (size_t)y * batch, k = C97[s];
+                const float *a = tmp + (size_t)(y ? y - 1 : y + 1) * batch, *b = tmp + (size_t)(y + 1 < h ? y + 1 : y - 1) * batch;
+                for (int x = 0; x < cols; x++) v[x] += k * (a[x] + b[x]);
+            }
+        }
+        for (int y = 0; y < h; y++) memcpy(plane + (size_t)y * stride + x0, tmp + (size_t)y * batch, (size_t)cols * sizeof(float));
     }
 }
 typedef struct {
     const Block *cb; const Band *band; const Coding *coding;
-    double *plane; int stride, x, y;
+    void *plane; int stride, x, y;
 } BlockJob;
 
-static int component_wavelet(Jpx *j, Component *tc, const Coding *co) {
+// A component's inverse wavelets, level by level: its rows, then its columns (F.3). With parallel,
+// the rows in groups and the columns in groups of strips at once, each group with its own buffer
+// (the rows of a level are independent, so are the strips of columns).
+static int component_wavelet(Jpx *j, Component *tc, const Coding *co, int parallel) {
     int stride = tc->x1 - tc->x0, height = tc->y1 - tc->y0;
     if (!stride || !height || co->nl <= j->reduce) return 0;
-    double *line = jalloc(j, (size_t)imax(stride, height * imin(stride, COLUMN_BATCH)) * sizeof(double));
-    if (!line) return -1;
-    for (int r = 1; r <= co->nl - j->reduce; r++) {
+    int error = 0, *err = &error;
+    for (int r = 1; r <= co->nl - j->reduce && !error; r++) {
         Resolution *rs = tc->res + r;
         int lw = cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1);
         int lh = cshift(tc->y1, co->nl - r + 1) - cshift(tc->y0, co->nl - r + 1);
-        int w = rs->x1 - rs->x0, h = rs->y1 - rs->y0;
-        // Invert rows, then columns (F.3).
-        for (int y = 0; y < h; y++) {
-            int lo = 0, hi = lw;
-            for (int x = 0; x < w; x++) line[x] = tc->plane[(size_t)y * stride + (((x + rs->x0) & 1) ? hi++ : lo++)];
-            inverse_line(line, w, rs->x0, co->reversible);
-            memcpy(tc->plane + (size_t)y * stride, line, (size_t)w * sizeof(double));
-        }
-        inverse_columns(tc->plane, stride, w, h, rs->y0, lh, co->reversible, line);
+        int w = rs->x1 - rs->x0, h = rs->y1 - rs->y0, rx0 = rs->x0, ry0 = rs->y0, rev = co->reversible;
+        void *plane = tc->plane;
+        // (groups: enough of them to keep the workers busy, not so many that their buffers cost)
+        int rowGroups = parallel && (size_t)w * h >= (32u << 10) ? imin(h, 64) : 1;
+        nitro_body rows = ^(size_t g) {
+            int y0 = (int)((int64_t)h * g / rowGroups), y1 = (int)((int64_t)h * (g + 1) / rowGroups);
+            void *line = jalloc(j, (size_t)w * 4);
+            if (!line) { __atomic_store_n(err, 1, __ATOMIC_RELAXED); return; }
+            // (a row: its low half to the even places, its high half to the odd ones, then lifted)
+            int first = rx0 & 1, nlow = (w + 1 - first) / 2;
+            for (int y = y0; y < y1; y++) {
+                if (rev) {
+                    int32_t *row = (int32_t *)plane + (size_t)y * stride, *l = line;
+                    for (int i = 0; i < nlow; i++) l[first + 2 * i] = row[i];
+                    for (int i = 0; i < w - nlow; i++) l[1 - first + 2 * i] = row[lw + i];
+                    inverse_line_i(l, w, rx0);
+                    memcpy(row, l, (size_t)w * 4);
+                } else {
+                    float *row = (float *)plane + (size_t)y * stride, *l = line;
+                    for (int i = 0; i < nlow; i++) l[first + 2 * i] = row[i];
+                    for (int i = 0; i < w - nlow; i++) l[1 - first + 2 * i] = row[lw + i];
+                    inverse_line_f(l, w, rx0);
+                    memcpy(row, l, (size_t)w * 4);
+                }
+            }
+            jfree(j, line);
+        };
+        if (rowGroups > 1) nitro_parallel((size_t)rowGroups, rows);
+        else rows(0);
+        if (error) break;
+        int strips = cdiv(w, COLUMN_BATCH), colGroups = parallel && (size_t)w * h >= (32u << 10) ? imin(strips, 16) : 1;   // (each its column buffer: within the memory limit)
+        nitro_body cols = ^(size_t g) {
+            int s0 = (int)((int64_t)strips * g / colGroups), s1 = (int)((int64_t)strips * (g + 1) / colGroups);
+            int x0 = s0 * COLUMN_BATCH, x1 = imin(w, s1 * COLUMN_BATCH);
+            if (x1 <= x0) return;
+            void *tmp = jalloc(j, (size_t)h * COLUMN_BATCH * 4);
+            if (!tmp) { __atomic_store_n(err, 1, __ATOMIC_RELAXED); return; }
+            if (rev) inverse_columns_i((int32_t *)plane + x0, stride, x1 - x0, h, ry0, lh, tmp);
+            else inverse_columns_f((float *)plane + x0, stride, x1 - x0, h, ry0, lh, tmp);
+            jfree(j, tmp);
+        };
+        if (colGroups > 1) nitro_parallel((size_t)colGroups, cols);
+        else cols(0);
     }
-    jfree(j, line); return 0;
+    return error ? -1 : 0;
 }
 static int tile_decode(Jpx *j, Tile *t) {
     size_t count = 0, samples = 0;
@@ -677,7 +727,7 @@ static int tile_decode(Jpx *j, Tile *t) {
         Component *tc = t->comp + c;
         if (t->coding[c].nl < j->reduce) return -1;
         size_t n = (size_t)(tc->x1 - tc->x0) * (tc->y1 - tc->y0);
-        if (n && !(tc->plane = jalloc(j, n * sizeof(double)))) return -1;
+        if (n && !(tc->plane = jalloc(j, n * 4))) return -1;
         samples += n;
         for (int r = 0; r <= t->coding[c].nl - j->reduce; r++) {
             Resolution *rs = tc->res + r;
@@ -724,39 +774,130 @@ static int tile_decode(Jpx *j, Tile *t) {
     else for (size_t i = 0; i < count; i++) decode(i);
     jfree(j, jobs);
     if (error) return -1;
-    nitro_body wavelet = ^(size_t c) {
-        if (component_wavelet(j, t->comp + c, t->coding + c)) __atomic_store_n(err, 1, __ATOMIC_RELAXED);
-    };
-    if (parallel && j->nc > 1) nitro_parallel((size_t)j->nc, wavelet);
-    else for (int c = 0; c < j->nc; c++) wavelet((size_t)c);
-    if (error) return -1;
+    // (the components one after the other, each in parallel inside: three of them kept three workers busy)
+    for (int c = 0; c < j->nc; c++)
+        if (component_wavelet(j, t->comp + c, t->coding + c, !j->serial)) return -1;
     // (the samples: the resolution reduce levels below the finest, the plane's top left corner)
+    // Three components alike (no sub-sampling, one wavelet, one precision; an RGB or YCC photo): the
+    // component transform and the output in one pass, a pixel's three samples written together
+    const Resolution *r0 = t->comp[0].res + t->coding[0].nl - j->reduce;
+    int fused = j->nc == 3;
+    for (int c = 0; c < 3 && fused; c++) {
+        const Resolution *rc = t->comp[c].res + t->coding[c].nl - j->reduce;
+        fused = j->dx[c] == 1 && j->dy[c] == 1 && j->prec[c] == j->prec[0] && t->coding[c].reversible == t->coding[0].reversible &&
+                rc->x0 == r0->x0 && rc->y0 == r0->y0 && rc->x1 == r0->x1 && rc->y1 == r0->y1 && t->comp[c].x1 - t->comp[c].x0 == t->comp[0].x1 - t->comp[0].x0;
+    }
+    if (fused) {
+        int stride = t->comp[0].x1 - t->comp[0].x0, rh = r0->y1 - r0->y0, rev = t->coding[0].reversible, mct = t->mct;
+        int w = j->oxs - j->ox0, oh = j->oys - j->oy0;
+        int sx0 = imax(r0->x0, j->ox0), sx1 = imin(r0->x1, j->ox0 + w);
+        void *pa = t->comp[0].plane, *pb = t->comp[1].plane, *pc = t->comp[2].plane;
+        uint16_t *output = j->output;
+        int64_t ib = (int64_t)1 << (j->prec[0] - 1), im = ((int64_t)1 << j->prec[0]) - 1;
+        float fb = (float)ib, fm = (float)im;
+        int groups = parallel ? imin(rh, 64) : 1;
+        nitro_body pass = ^(size_t g) {
+            for (int y = (int)((int64_t)rh * g / groups); y < (int)((int64_t)rh * (g + 1) / groups); y++) {
+                int oy = r0->y0 + y - j->oy0;
+                if (oy < 0 || oy >= oh) continue;
+                size_t row = (size_t)y * stride;   // (x - r0->x0 in it, x - j->ox0 on the output)
+                uint16_t *o = output + (size_t)oy * w * 3;
+                int ax = r0->x0, ox = j->ox0;
+                if (rev) {
+                    const int32_t *a = (const int32_t *)pa + row, *b = (const int32_t *)pb + row, *c = (const int32_t *)pc + row;
+                    for (int x = sx0; x < sx1; x++) {
+                        int64_t r = a[x - ax], gg = b[x - ax], bb = c[x - ax];
+                        if (mct) { int64_t u = gg, v = bb; gg = r - ((u + v) >> 2); r = v + gg; bb = u + gg; }
+                        r += ib, gg += ib, bb += ib;
+                        uint16_t *q = o + 3 * (size_t)(x - ox);
+                        q[0] = (uint16_t)(r <= 0 ? 0 : r >= im ? im : r);
+                        q[1] = (uint16_t)(gg <= 0 ? 0 : gg >= im ? im : gg);
+                        q[2] = (uint16_t)(bb <= 0 ? 0 : bb >= im ? im : bb);
+                    }
+                } else {
+                    const float *a = (const float *)pa + row, *b = (const float *)pb + row, *c = (const float *)pc + row;
+                    for (int x = sx0; x < sx1; x++) {
+                        float r = a[x - ax], gg = b[x - ax], bb = c[x - ax];
+                        if (mct) { float yy = r, u = gg, v = bb; r = yy + 1.402f * v; gg = yy - 0.34413f * u - 0.71414f * v; bb = yy + 1.772f * u; }
+                        r += fb, gg += fb, bb += fb;
+                        if (r != r || gg != gg || bb != bb) { __atomic_store_n(err, 1, __ATOMIC_RELAXED); return; }   // (NaN: damaged)
+                        uint16_t *q = o + 3 * (size_t)(x - ox);
+                        q[0] = (uint16_t)(r <= 0 ? 0 : r >= fm ? fm : floorf(r + 0.5f));
+                        q[1] = (uint16_t)(gg <= 0 ? 0 : gg >= fm ? fm : floorf(gg + 0.5f));
+                        q[2] = (uint16_t)(bb <= 0 ? 0 : bb >= fm ? fm : floorf(bb + 0.5f));
+                    }
+                }
+            }
+        };
+        if (groups > 1) nitro_parallel((size_t)groups, pass);
+        else pass(0);
+        return error ? -1 : 0;
+    }
+    // The component transform and the output, row by row (in groups at once with parallel: on one
+    // worker they took as long as the wavelets on all)
     if (t->mct) {
         const Resolution *rs = t->comp[0].res + t->coding[0].nl - j->reduce;
-        int stride = t->comp[0].x1 - t->comp[0].x0;
-        for (int y = 0; y < rs->y1 - rs->y0; y++) {
-            double *a = t->comp[0].plane + (size_t)y * stride, *b = t->comp[1].plane + (size_t)y * stride, *c = t->comp[2].plane + (size_t)y * stride;
-            for (int i = 0; i < rs->x1 - rs->x0; i++) {
-                double yy = a[i], u = b[i], v = c[i];
-                if (t->coding[0].reversible) { b[i] = yy - floor((u + v) / 4); a[i] = v + b[i]; c[i] = u + b[i]; }
-                else { a[i] = yy + 1.402 * v; b[i] = yy - 0.34413 * u - 0.71414 * v; c[i] = yy + 1.772 * u; }
+        int stride = t->comp[0].x1 - t->comp[0].x0, rw = rs->x1 - rs->x0, rh = rs->y1 - rs->y0, rev = t->coding[0].reversible;
+        void *pa = t->comp[0].plane, *pb = t->comp[1].plane, *pc = t->comp[2].plane;
+        int groups = parallel ? imin(rh, 64) : 1;
+        nitro_body mct = ^(size_t g) {
+            for (int y = (int)((int64_t)rh * g / groups); y < (int)((int64_t)rh * (g + 1) / groups); y++) {
+                size_t o = (size_t)y * stride;
+                if (rev) {
+                    int32_t *a = (int32_t *)pa + o, *b = (int32_t *)pb + o, *c = (int32_t *)pc + o;
+                    for (int i = 0; i < rw; i++) { int64_t yy = a[i], u = b[i], v = c[i], g = yy - ((u + v) >> 2); b[i] = (int32_t)g; a[i] = (int32_t)(v + g); c[i] = (int32_t)(u + g); }
+                } else {
+                    float *a = (float *)pa + o, *b = (float *)pb + o, *c = (float *)pc + o;
+                    for (int i = 0; i < rw; i++) { float yy = a[i], u = b[i], v = c[i]; a[i] = yy + 1.402f * v; b[i] = yy - 0.34413f * u - 0.71414f * v; c[i] = yy + 1.772f * u; }
+                }
             }
-        }
+        };
+        if (groups > 1) nitro_parallel((size_t)groups, mct);
+        else mct(0);
     }
-    int w = j->oxs - j->ox0;
-    for (int c = 0; c < j->nc; c++) {
+    int w = j->oxs - j->ox0, oh = j->oys - j->oy0, nc = j->nc;
+    uint16_t *output = j->output;
+    for (int c = 0; c < nc; c++) {
         Component *tc = t->comp + c;
         const Resolution *rs = tc->res + t->coding[c].nl - j->reduce;
-        for (int sy = rs->y0; sy < rs->y1; sy++) for (int sx = rs->x0; sx < rs->x1; sx++) {
-            double v = tc->plane[(size_t)(sy - rs->y0) * (tc->x1 - tc->x0) + sx - rs->x0];
-            // Both signed and unsigned samples are exposed with an unsigned bias to the caller.
-            v += (unsigned)1 << (j->prec[c] - 1);
-            double max = ((unsigned)1 << j->prec[c]) - 1;
-            if (!isfinite(v)) return -1;
-            int x = sx * j->dx[c] - j->ox0, y = sy * j->dy[c] - j->oy0;
-            if (x < 0 || y < 0 || x >= w || y >= j->oys - j->oy0) continue;   // (reduced: a sub-sampled component's edge)
-            j->output[((size_t)y * w + x) * j->nc + c] = (uint16_t)(v <= 0 ? 0 : v >= max ? max : floor(v + 0.5));
-        }
+        int stride = tc->x1 - tc->x0, rh = rs->y1 - rs->y0, dx = j->dx[c], dy = j->dy[c];
+        // Both signed and unsigned samples are exposed with an unsigned bias to the caller.
+        double bias = (double)((unsigned)1 << (j->prec[c] - 1)), max = ((unsigned)1 << j->prec[c]) - 1;
+        // (the samples whose x is on the output: reduced, a sub-sampled component's edge may not be)
+        int sx0 = rs->x0, sx1 = rs->x1;
+        while (sx0 < sx1 && sx0 * dx - j->ox0 < 0) sx0++;
+        while (sx1 > sx0 && (sx1 - 1) * dx - j->ox0 >= w) sx1--;
+        const void *plane = tc->plane;
+        int rev = t->coding[c].reversible;
+        int groups = parallel ? imin(rh, 64) : 1;
+        nitro_body out = ^(size_t g) {
+            for (int sy = rs->y0 + (int)((int64_t)rh * g / groups); sy < rs->y0 + (int)((int64_t)rh * (g + 1) / groups); sy++) {
+                int y = sy * dy - j->oy0;
+                if (y < 0 || y >= oh) continue;
+                size_t row = (size_t)(sy - rs->y0) * stride;   // (sx - rs->x0 in it)
+                int ax = rs->x0;
+                uint16_t *o = output + (size_t)y * w * nc + c;
+                if (rev) {
+                    const int32_t *s = (const int32_t *)plane + row;
+                    int64_t ib = (int64_t)bias, im = (int64_t)max;
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        int64_t v = (int64_t)s[sx - ax] + ib;
+                        o[(size_t)(sx * dx - j->ox0) * nc] = (uint16_t)(v <= 0 ? 0 : v >= im ? im : v);
+                    }
+                } else {
+                    const float *s = (const float *)plane + row;
+                    float fb = (float)bias, fm = (float)max;
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        float v = s[sx - ax] + fb;
+                        if (v != v) { __atomic_store_n(err, 1, __ATOMIC_RELAXED); return; }   // (NaN: a damaged image)
+                        o[(size_t)(sx * dx - j->ox0) * nc] = (uint16_t)(v <= 0 ? 0 : v >= fm ? fm : floorf(v + 0.5f));
+                    }
+                }
+            }
+        };
+        if (groups > 1) nitro_parallel((size_t)groups, out);
+        else out(0);
+        if (error) return -1;
     }
     return 0;
 }
@@ -967,13 +1108,22 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             if (t->next >= t->npackets || packet(&j, t, &t->packets[t->next++], &p, partend)) goto done;
         }
         t->parts++;
-        if (t->next == t->npackets) {
-            if (tile_decode(&j, t)) goto done;
-            tile_free(&j, t); t->done = 1;
-        }
+        if (t->next == t->npackets) t->done = 1;   // (decoded below, once all are read)
     }
     if (!eoc || !j.tiles) goto done;
     for (int i = 0; i < j.nx * j.ny; i++) if (!j.tiles[i].done) goto done;
+    {   // The tiles: many of them at once, each on one worker (small ones kept few workers busy
+        // inside); a few one after the other, each in parallel inside
+        int ntiles = j.nx * j.ny, error = 0, *err = &error;
+        Jpx *jp = &j;
+        nitro_body one = ^(size_t i) {
+            if (!__atomic_load_n(err, __ATOMIC_RELAXED) && tile_decode(jp, jp->tiles + i)) __atomic_store_n(err, 1, __ATOMIC_RELAXED);
+            tile_free(jp, jp->tiles + i);
+        };
+        if (!j.serial && ntiles > 1 && ntiles >= nitro_ncpu() / 2) nitro_parallel((size_t)ntiles, one);
+        else for (int i = 0; i < ntiles; i++) one((size_t)i);
+        if (error) goto done;
+    }
     j.x0 = j.ox0, j.y0 = j.oy0, j.xs = j.oxs, j.ys = j.oys;   // (from here the output's grid)
     // Expand sub-sampled components only after all tiles have supplied their grid points:
     // a pixel just across an odd tile boundary can use a sample from the preceding tile.

@@ -25,8 +25,9 @@ enum { NJPX_UNKNOWN = 0, NJPX_CMYK = 12, NJPX_SRGB = 16, NJPX_GRAY = 17, NJPX_SY
 // A PDF with /ColorSpace supplies its own interpretation of the codestream's components.
 // Ignore JP2 palette/colour-channel mapping in that case, retaining opacity information.
 enum { NJPX_RAW_COLORS = 1 };
-// Default: independent code-blocks/components use nitro_os's worker pool. The caller
-// can keep a decode serial when distributing several images across its own workers.
+// Default: nitro_os's worker pool decodes the code-blocks, the wavelets' rows and column strips
+// and the output's rows at once (many tiles: the tiles). The caller can keep a decode serial
+// when distributing several images across its own workers.
 enum { NJPX_SINGLE_THREAD = 2 };
 // NJPX_REDUCE(n): the image at 1/2^n of its size (n = 1..7), its n finest resolution levels left
 // out (their code-blocks not decoded, the inverse wavelets stopped there): the reduced grid,
