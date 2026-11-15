@@ -378,13 +378,24 @@ struct Clip {
     nd::Box box;   // in the page's coordinates, the parents' too
 };
 
+// A function-based (1) or mesh shading (4-7) as Gouraud-shaded triangles in the shading's space: a
+// function's grid, the triangles, the patches cut into a grid of them (8.7.4.5.2, 8.7.4.5.5-8)
+struct Mesh {
+    std::vector<float> v;        // per vertex x, y and its colour: r g b (0-1), or t in v[2] (0-1, through lut)
+    std::vector<uint32_t> tri;   // the triangles' vertices
+    std::vector<uint32_t> lut;   // (a Function: t interpolated, then its colour of 256, 0xffrrggbb)
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the vertices' box
+    static const int STRIDE = 5;
+};
+
 // An axial (2) or radial (3) shading as plutovg's gradient: its function sampled into stops, in the
-// shading's own space (8.7.4.5.3, 8.7.4.5.4)
+// shading's own space (8.7.4.5.3, 8.7.4.5.4); the others as a mesh
 struct Shade {
     int type = 2;
     float c[6] = {0};   // x0 y0 x1 y1 (axial); x0 y0 r0 x1 y1 r1 (radial)
     bool extend[2] = {false, false};
     std::vector<plutovg_gradient_stop_t> stops;
+    std::shared_ptr<Mesh> mesh;
 };
 
 struct Item {
@@ -2185,6 +2196,7 @@ struct Interp {
             sh = st->dict;
         }
         int type = toInt(doc.get(sh, "ShadingType").num(0));
+        if (type == 1 || (type >= 4 && type <= 7)) return loadMesh(ref, sh, type, res);
         auto co = nums(doc, doc.get(sh, "Coords"));
         if ((type != 2 || co.size() < 4) && (type != 3 || co.size() < 6)) return nullptr;
         auto cs = loadCS(P, doc.get(sh, "ColorSpace"), res, 0);
@@ -2211,6 +2223,194 @@ struct Interp {
             st.color = {clampf(col[0], 0, 1), clampf(col[1], 0, 1), clampf(col[2], 0, 1), 1};
             s->stops.push_back(st);
         }
+        return s;
+    }
+
+    // a function-based (1) or mesh shading (4-7): its triangles; null if it has none or is not read
+    std::shared_ptr<Shade> loadMesh(Val ref, Val sh, int type, Val res) {
+        auto cs = loadCS(P, doc.get(sh, "ColorSpace"), res, 0);
+        if (!cs || cs->k == CS::PATTERN) return nullptr;
+        Val fv = doc.get(sh, "Function");
+        std::shared_ptr<Func> fn = fv.t == pp::NUL ? nullptr : loadFunc(P, fv, 0);
+        if (fv.t != pp::NUL && !fn) return nullptr;
+        auto mesh = std::make_shared<Mesh>();
+        Mesh &M = *mesh;
+        const int S = Mesh::STRIDE;
+        auto rgbOf = [&](const float *comp, float *out) {   // (its colour components: RGB)
+            float col[3];
+            cs->toRGB(comp, col);
+            for (int k = 0; k < 3; k++) out[k] = clampf(col[k], 0, 1);
+        };
+        if (type == 1) {   // the function over its Domain, mapped by Matrix: a grid of its colours
+            if (!fn || fn->nin != 2) return nullptr;
+            auto dom = nums(doc, doc.get(sh, "Domain"));
+            if (dom.size() < 4) dom = {0, 1, 0, 1};
+            auto mx = nums(doc, doc.get(sh, "Matrix"));
+            plutovg_matrix_t fm;
+            if (mx.size() >= 6) plutovg_matrix_init(&fm, mx[0], mx[1], mx[2], mx[3], mx[4], mx[5]);
+            else plutovg_matrix_init_identity(&fm);
+            const int G = 48;
+            for (int j = 0; j <= G; j++)
+                for (int i = 0; i <= G; i++) {
+                    float in[2] = {dom[0] + (dom[1] - dom[0]) * i / G, dom[2] + (dom[3] - dom[2]) * j / G}, out[MAX_COMPS] = {0};
+                    plutovg_point_t p = {in[0], in[1]}, q;
+                    plutovg_matrix_map_point(&fm, &p, &q);
+                    fn->eval(in, out);
+                    float c[3];
+                    rgbOf(out, c);
+                    M.v.insert(M.v.end(), {q.x, q.y, c[0], c[1], c[2]});
+                }
+            for (int j = 0; j < G; j++)
+                for (int i = 0; i < G; i++) {
+                    uint32_t a = j * (G + 1) + i;
+                    M.tri.insert(M.tri.end(), {a, a + 1, a + G + 1, a + 1, a + G + 2, a + G + 1});
+                }
+        } else {
+            const pp::Stream *st = ref.t == pp::REF ? doc.stream(ref.oid()) : nullptr;
+            if (!st) return nullptr;
+            int bc = toInt(doc.get(sh, "BitsPerCoordinate").num(0)), bk = toInt(doc.get(sh, "BitsPerComponent").num(0));
+            int bf = type == 5 ? 0 : toInt(doc.get(sh, "BitsPerFlag").num(0));
+            int nc = fn ? 1 : cs->n;
+            auto dec = nums(doc, doc.get(sh, "Decode"));
+            if (bc < 1 || bc > 32 || bk < 1 || bk > 16 || bf < 0 || bf > 8 || nc > MAX_COMPS || dec.size() < 4 + 2u * nc) return nullptr;
+            pp::Decoded data;
+            doc.decode(*st, data, 64u << 20);
+            const uint8_t *b = (const uint8_t *)data.data.data();
+            uint64_t bits = (uint64_t)data.data.size() * 8, at = 0;
+            auto get = [&](int n) -> double {   // (n bits, high first)
+                uint64_t v = 0;
+                for (int k = 0; k < n; k++, at++) v = v << 1 | (b[at >> 3] >> (7 - (at & 7)) & 1);
+                return (double)v;
+            };
+            double cmax = std::pow(2.0, bc) - 1, kmax = std::pow(2.0, bk) - 1;
+            auto point = [&](float *xy) {
+                xy[0] = (float)(dec[0] + get(bc) * (dec[1] - dec[0]) / cmax);
+                xy[1] = (float)(dec[2] + get(bc) * (dec[3] - dec[2]) / cmax);
+            };
+            auto colour = [&](float *c) {   // (its components, or t made 0-1 over its Decode range)
+                for (int k = 0; k < nc; k++) {
+                    double v = get(bk) / kmax;
+                    c[k] = fn ? (float)v : (float)(dec[4 + 2 * k] + v * (dec[5 + 2 * k] - dec[4 + 2 * k]));
+                }
+            };
+            if (fn) {   // t's colours: the function at 256 points of the Decode range
+                M.lut.resize(256);
+                for (int k = 0; k < 256; k++) {
+                    float t = dec[4] + (dec[5] - dec[4]) * k / 255.f, out[MAX_COMPS] = {0}, c[3];
+                    fn->eval(&t, out);
+                    rgbOf(out, c);
+                    M.lut[k] = 0xff000000u | (uint32_t)lrintf(c[0] * 255) << 16 | (uint32_t)lrintf(c[1] * 255) << 8 | (uint32_t)lrintf(c[2] * 255);
+                }
+            }
+            auto vertex = [&](const float *xy, const float *comp) {   // (appended; its index)
+                float c[3] = {comp[0], 0, 0};
+                if (!fn) rgbOf(comp, c);
+                M.v.insert(M.v.end(), {xy[0], xy[1], c[0], c[1], c[2]});
+                return (uint32_t)(M.v.size() / S - 1);
+            };
+            const size_t MAX_VERTICES = 4u << 20;
+            if (type == 4 || type == 5) {
+                int perRow = type == 5 ? toInt(doc.get(sh, "VerticesPerRow").num(0)) : 0;
+                if (type == 5 && perRow < 2) return nullptr;
+                uint64_t need = bf + 2 * bc + nc * bk;
+                uint32_t va = 0, vb = 0, vc = 0;
+                int have = 0;   // (type 4: the vertices of the triangle being started)
+                while (at + need <= bits && M.v.size() / S < MAX_VERTICES) {
+                    int flag = bf ? (int)get(bf) & 3 : 0;
+                    float xy[2], comp[MAX_COMPS];
+                    point(xy), colour(comp);
+                    at = (at + 7) & ~7ull;   // (each vertex whole bytes)
+                    uint32_t v = vertex(xy, comp);
+                    if (type == 5) continue;
+                    if (have < 3 && (have > 0 || flag == 0)) {
+                        (have == 0 ? va : have == 1 ? vb : vc) = v;
+                        if (++have == 3) M.tri.insert(M.tri.end(), {va, vb, vc});
+                    } else if (flag == 0) va = v, have = 1;
+                    else if (have == 3) {
+                        if (flag == 1) va = vb, vb = vc, vc = v;
+                        else vb = vc, vc = v;   // (2: side va vc)
+                        M.tri.insert(M.tri.end(), {va, vb, vc});
+                    }
+                }
+                if (type == 5) {
+                    uint32_t rows = (uint32_t)(M.v.size() / S / perRow);
+                    for (uint32_t i = 0; i + 1 < rows; i++)
+                        for (uint32_t j = 0; j + 1 < (uint32_t)perRow; j++) {
+                            uint32_t a = i * perRow + j, c2 = a + perRow;
+                            M.tri.insert(M.tri.end(), {a, a + 1, c2, a + 1, c2, c2 + 1});
+                        }
+                }
+            } else {   // the patches: 16 control points p[i][j] (column i, row j), the corners' colours
+                static const uint8_t ORDER[16][2] = {{0, 0}, {0, 1}, {0, 2}, {0, 3}, {1, 3}, {2, 3}, {3, 3}, {3, 2},
+                                                     {3, 1}, {3, 0}, {2, 0}, {1, 0}, {1, 1}, {1, 2}, {2, 2}, {2, 1}};
+                float p[4][4][2], prev[4][4][2] = {}, cc[4][MAX_COMPS] = {}, pc[4][MAX_COMPS] = {};   // (cc: c00 c03 c33 c30)
+                int npts = type == 6 ? 12 : 16;
+                bool any = false;
+                uint64_t patches = 0;
+                while (M.v.size() / S < MAX_VERTICES) {
+                    if (at + bf > bits) break;
+                    int flag = (int)get(bf) & 3;
+                    if (!any) flag = 0;
+                    int first = flag ? 4 : 0;
+                    if (at + (npts - first) * 2ull * bc + (flag ? 2 : 4) * (uint64_t)nc * bk > bits) break;
+                    if (flag) {   // (the shared edge, the previous patch's: Table 85, 86)
+                        static const uint8_t EDGE[4][4][2] = {{}, {{0, 3}, {1, 3}, {2, 3}, {3, 3}}, {{3, 3}, {3, 2}, {3, 1}, {3, 0}},
+                                                              {{3, 0}, {2, 0}, {1, 0}, {0, 0}}};
+                        static const uint8_t CEDGE[4][2] = {{0, 0}, {1, 2}, {2, 3}, {3, 0}};
+                        for (int k = 0; k < 4; k++)
+                            p[0][k][0] = prev[EDGE[flag][k][0]][EDGE[flag][k][1]][0], p[0][k][1] = prev[EDGE[flag][k][0]][EDGE[flag][k][1]][1];
+                        memcpy(cc[0], pc[CEDGE[flag][0]], sizeof cc[0]);
+                        memcpy(cc[1], pc[CEDGE[flag][1]], sizeof cc[1]);
+                    }
+                    for (int k = first; k < npts; k++) point(p[ORDER[k][0]][ORDER[k][1]]);
+                    for (int k = flag ? 2 : 0; k < 4; k++) colour(cc[k]);
+                    at = (at + 7) & ~7ull;
+                    if (type == 6)   // (a Coons patch: its inner points from the edges, 8.7.4.5.8)
+                        for (int d = 0; d < 2; d++) {
+                            auto P_ = [&](int i, int j) { return p[i][j][d]; };
+                            p[1][1][d] = (-4 * P_(0, 0) + 6 * (P_(0, 1) + P_(1, 0)) - 2 * (P_(0, 3) + P_(3, 0)) + 3 * (P_(3, 1) + P_(1, 3)) - P_(3, 3)) / 9;
+                            p[1][2][d] = (-4 * P_(0, 3) + 6 * (P_(0, 2) + P_(1, 3)) - 2 * (P_(0, 0) + P_(3, 3)) + 3 * (P_(3, 2) + P_(1, 0)) - P_(3, 0)) / 9;
+                            p[2][1][d] = (-4 * P_(3, 0) + 6 * (P_(3, 1) + P_(2, 0)) - 2 * (P_(3, 3) + P_(0, 0)) + 3 * (P_(0, 1) + P_(2, 3)) - P_(0, 3)) / 9;
+                            p[2][2][d] = (-4 * P_(3, 3) + 6 * (P_(3, 2) + P_(2, 3)) - 2 * (P_(3, 0) + P_(0, 3)) + 3 * (P_(0, 2) + P_(2, 0)) - P_(0, 0)) / 9;
+                        }
+                    memcpy(prev, p, sizeof p);
+                    memcpy(pc, cc, sizeof cc);
+                    any = true;
+                    // a grid of N x N cells over (u, v); rows of v last, so that a patch folding over itself shows its larger v
+                    int N = patches < 512 ? 16 : patches < 8192 ? 8 : 4;
+                    patches++;
+                    uint32_t base0 = (uint32_t)(M.v.size() / S);
+                    for (int jv = 0; jv <= N; jv++)
+                        for (int iu = 0; iu <= N; iu++) {
+                            float u = (float)iu / N, v = (float)jv / N, bu[4], bv[4];
+                            float mu = 1 - u, mv = 1 - v;
+                            bu[0] = mu * mu * mu, bu[1] = 3 * u * mu * mu, bu[2] = 3 * u * u * mu, bu[3] = u * u * u;
+                            bv[0] = mv * mv * mv, bv[1] = 3 * v * mv * mv, bv[2] = 3 * v * v * mv, bv[3] = v * v * v;
+                            float xy[2] = {0, 0}, comp[MAX_COMPS];
+                            for (int i = 0; i < 4; i++)
+                                for (int j = 0; j < 4; j++) xy[0] += p[i][j][0] * bu[i] * bv[j], xy[1] += p[i][j][1] * bu[i] * bv[j];
+                            for (int k = 0; k < nc; k++)   // (c00 at u 0 v 0, c03 at u 0 v 1, c33 at 1 1, c30 at 1 0)
+                                comp[k] = mu * mv * cc[0][k] + mu * v * cc[1][k] + u * v * cc[2][k] + u * mv * cc[3][k];
+                            vertex(xy, comp);
+                        }
+                    for (int jv = 0; jv < N; jv++)
+                        for (int iu = 0; iu < N; iu++) {
+                            uint32_t a = base0 + jv * (N + 1) + iu, c2 = a + N + 1;
+                            M.tri.insert(M.tri.end(), {a, a + 1, c2, a + 1, c2 + 1, c2});
+                        }
+                }
+            }
+        }
+        if (M.tri.empty()) return nullptr;
+        M.x0 = M.y0 = 1e30f, M.x1 = M.y1 = -1e30f;
+        for (size_t k = 0; k < M.v.size(); k += S) {
+            if (!std::isfinite(M.v[k]) || !std::isfinite(M.v[k + 1])) return nullptr;
+            M.x0 = std::min(M.x0, M.v[k]), M.x1 = std::max(M.x1, M.v[k]);
+            M.y0 = std::min(M.y0, M.v[k + 1]), M.y1 = std::max(M.y1, M.v[k + 1]);
+        }
+        auto s = std::make_shared<Shade>();
+        s->type = type;
+        s->mesh = mesh;
         return s;
     }
 
@@ -2248,7 +2448,10 @@ struct Interp {
             cut(1, 0, std::min(bb[0], bb[2])), cut(-1, 0, -std::max(bb[0], bb[2]));
             cut(0, 1, std::min(bb[1], bb[3])), cut(0, -1, -std::max(bb[1], bb[3]));
         }
-        if (s->type == 2) {
+        if (s->mesh) {
+            // (a mesh: the area not cut at its box, its triangles' own edges show it; cut, the edges smoothed
+            // where meshes meet would leave a lighter line between them)
+        } else if (s->type == 2) {
             float dx = s->c[2] - s->c[0], dy = s->c[3] - s->c[1];
             if (!s->extend[0]) cut(dx, dy, dx * s->c[0] + dy * s->c[1]);
             if (!s->extend[1]) cut(-dx, -dy, -(dx * s->c[2] + dy * s->c[3]));
@@ -2268,6 +2471,12 @@ struct Interp {
         it.alpha = gs.fillA;
         it.m = m;
         it.box = box(area, m, 0);
+        if (s->mesh) {   // (what it covers: within its triangles' box)
+            const Mesh &M = *s->mesh;
+            nd::Box mb = boxOf(M.x0, M.y0, M.x1, M.y1, m);
+            it.box.x0 = std::max(it.box.x0, mb.x0), it.box.y0 = std::max(it.box.y0, mb.y0);
+            it.box.x1 = std::min(it.box.x1, mb.x1), it.box.y1 = std::min(it.box.y1, mb.y1);
+        }
         it.shade = s;
         plutovg_matrix_init_identity(&it.shadeM);
         if (clipBox(it.box, it.clip)) {
@@ -2835,6 +3044,103 @@ void readOptionalContent(nitropdf &P) {
         if (on.at(k).t == pp::REF) P.ocOn.insert(on.at(k).oid());
 }
 
+// A mesh's triangles, Gouraud-shaded, into a surface of w x h pixels: d maps the shading's space to its
+// pixels. Opaque where the triangles are, transparent elsewhere: a pixel is a triangle's if its centre is
+// in it (not smoothed, so that neighbours meet without a seam), the later triangle's where they overlap.
+void rasterMesh(const Mesh &M, const plutovg_matrix_t &d, plutovg_surface_t *s) {
+    int w = plutovg_surface_get_width(s), h = plutovg_surface_get_height(s), stride = plutovg_surface_get_stride(s);
+    uint8_t *px = plutovg_surface_get_data(s);
+    const int S = Mesh::STRIDE;
+    bool lut = !M.lut.empty();
+    for (size_t t = 0; t + 2 < M.tri.size(); t += 3) {
+        const float *v[3];
+        float x[3], y[3];
+        for (int k = 0; k < 3; k++) {
+            v[k] = &M.v[(size_t)M.tri[t + k] * S];
+            x[k] = d.a * v[k][0] + d.c * v[k][1] + d.e, y[k] = d.b * v[k][0] + d.d * v[k][1] + d.f;
+        }
+        float area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
+        if (!(fabsf(area) > 1e-12f)) continue;
+        if (area < 0) std::swap(x[1], x[2]), std::swap(y[1], y[2]), std::swap(v[1], v[2]), area = -area;
+        float fx0 = std::min({x[0], x[1], x[2]}), fx1 = std::max({x[0], x[1], x[2]});
+        float fy0 = std::min({y[0], y[1], y[2]}), fy1 = std::max({y[0], y[1], y[2]});
+        if (!(fx1 >= 0 && fy1 >= 0 && fx0 < w && fy0 < h)) continue;
+        int ix0 = std::max(0, (int)floorf(fx0)), ix1 = std::min(w - 1, (int)ceilf(fx1));
+        int iy0 = std::max(0, (int)floorf(fy0)), iy1 = std::min(h - 1, (int)ceilf(fy1));
+        // the edge functions (e_k: of the edge opposite vertex k, positive inside), each edge moved out by a
+        // quarter pixel: two meshes meant to meet but a hair apart (their coordinates rounded each its own
+        // way) leave no row of pixels between them
+        float ea[3], eb[3], ec[3], out[3];
+        for (int k = 0; k < 3; k++) {
+            int i = (k + 1) % 3, j = (k + 2) % 3;
+            ea[k] = y[i] - y[j], eb[k] = x[j] - x[i], ec[k] = x[i] * y[j] - x[j] * y[i];
+            out[k] = -0.25f * sqrtf(ea[k] * ea[k] + eb[k] * eb[k]);
+        }
+        float inv = 1 / area;
+        for (int py = iy0; py <= iy1; py++) {
+            uint32_t *row = (uint32_t *)(px + (size_t)py * stride);
+            float cy = py + 0.5f;
+            for (int pxi = ix0; pxi <= ix1; pxi++) {
+                float cx = pxi + 0.5f, e[3];
+                bool in = true;
+                for (int k = 0; k < 3 && in; k++) {
+                    e[k] = ea[k] * cx + eb[k] * cy + ec[k];
+                    in = e[k] >= out[k];
+                }
+                if (!in) continue;
+                float b0 = e[0] * inv, b1 = e[1] * inv, b2 = 1 - b0 - b1;
+                uint32_t col;
+                if (lut) {
+                    float tt = b0 * v[0][2] + b1 * v[1][2] + b2 * v[2][2];
+                    col = M.lut[(int)lrintf(clampf(tt, 0, 1) * 255)];
+                } else {
+                    float r = b0 * v[0][2] + b1 * v[1][2] + b2 * v[2][2];
+                    float g = b0 * v[0][3] + b1 * v[1][3] + b2 * v[2][3];
+                    float bl = b0 * v[0][4] + b1 * v[1][4] + b2 * v[2][4];
+                    col = 0xff000000u | (uint32_t)lrintf(clampf(r, 0, 1) * 255) << 16 | (uint32_t)lrintf(clampf(g, 0, 1) * 255) << 8 |
+                          (uint32_t)lrintf(clampf(bl, 0, 1) * 255);
+                }
+                row[pxi] = col;
+            }
+        }
+    }
+}
+
+// A fill by a mesh: its triangles drawn into a surface over the part of the canvas the item's box covers
+// (coarser if that is very large), filling the path as a texture
+void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, const plutovg_matrix_t &view) {
+    plutovg_surface_t *cs = plutovg_canvas_get_surface(c);
+    int W = plutovg_surface_get_width(cs), H = plutovg_surface_get_height(cs);
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int k = 0; k < 4; k++) {   // (the item's box on the canvas)
+        plutovg_point_t p = {k & 1 ? it.box.x1 : it.box.x0, k & 2 ? it.box.y1 : it.box.y0}, q;
+        plutovg_matrix_map_point(&view, &p, &q);
+        x0 = std::min(x0, q.x), x1 = std::max(x1, q.x), y0 = std::min(y0, q.y), y1 = std::max(y1, q.y);
+    }
+    int ox = std::max(0, (int)floorf(x0) - 1), oy = std::max(0, (int)floorf(y0) - 1);
+    int ex = std::min(W, (int)ceilf(x1) + 1), ey = std::min(H, (int)ceilf(y1) + 1);
+    if (ex <= ox || ey <= oy) return;
+    int f = 1;
+    while ((double)(ex - ox) / f * ((ey - oy) / f) > (16 << 20)) f *= 2;
+    int sw = (ex - ox + f - 1) / f, sh = (ey - oy + f - 1) / f;
+    plutovg_surface_t *s = plutovg_surface_create(sw, sh);
+    if (!s) return;
+    plutovg_matrix_t toDev, d, sc;   // (the shading's space -> the canvas -> the surface)
+    plutovg_matrix_multiply(&toDev, &it.shadeM, &m);
+    plutovg_matrix_init(&sc, 1.f / f, 0, 0, 1.f / f, -(float)ox / f, -(float)oy / f);
+    plutovg_matrix_multiply(&d, &toDev, &sc);
+    rasterMesh(*it.shade->mesh, d, s);
+    plutovg_matrix_t inv, back, tm;   // (the texture: the surface's pixels -> the path's space)
+    if (plutovg_matrix_invert(&m, &inv)) {
+        plutovg_matrix_init(&back, (float)f, 0, 0, (float)f, (float)ox, (float)oy);
+        plutovg_matrix_multiply(&tm, &back, &inv);
+        plutovg_canvas_set_texture(c, s, PLUTOVG_TEXTURE_TYPE_PLAIN, it.alpha, &tm);
+        plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
+        plutovg_canvas_fill_path(c, it.path->p);
+    }
+    plutovg_surface_destroy(s);
+}
+
 void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg_matrix_t &view, const double vb[4], double scale,
                const nd::Cancel &cancel, int &rc) {
     (void)P;
@@ -2867,7 +3173,9 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
         plutovg_matrix_t m;
         plutovg_matrix_multiply(&m, &it.m, &view);
         plutovg_canvas_set_matrix(c, &m);
-        if (it.kind == Item::FILL) {
+        if (it.kind == Item::FILL && it.shade && it.shade->mesh) {
+            meshFill(c, it, m, view);
+        } else if (it.kind == Item::FILL) {
             if (it.shade) {
                 const Shade &s = *it.shade;
                 std::vector<plutovg_gradient_stop_t> stops = s.stops;
