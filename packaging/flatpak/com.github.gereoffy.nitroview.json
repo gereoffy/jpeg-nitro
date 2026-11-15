@@ -47,7 +47,7 @@
       "buildsystem": "simple",
       "build-commands": [
         "make clean",
-        "case \"$FLATPAK_ARCH\" in x86_64) cpu='-march=x86-64-v3 -maes' ;; aarch64) cpu='-mcpu=generic' ;; *) cpu='' ;; esac; make CPUFLAGS=\"$cpu\" DAV1D_DIR=/app gnome",
+        "case \"$FLATPAK_ARCH\" in x86_64) cpu='-march=x86-64-v3' ;; aarch64) cpu='-mcpu=generic' ;; *) cpu='' ;; esac; make CPUFLAGS=\"$cpu\" DAV1D_DIR=/app gnome",
         "install -Dm755 nitroview-gnome /app/bin/nitroview-gnome",
         "install -Dm644 packaging/gnome/com.github.gereoffy.nitroview.desktop /app/share/applications/com.github.gereoffy.nitroview.desktop",
         "install -Dm644 packaging/icon.png /app/share/icons/hicolor/512x512/apps/com.github.gereoffy.nitroview.png",
