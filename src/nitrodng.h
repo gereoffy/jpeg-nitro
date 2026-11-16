@@ -45,4 +45,19 @@ int ndng_read_info(const uint8_t *data, size_t len, ndng_info *info);
 // nthreads 1: on the calling thread, else in parallel. Returns 0 on success.
 int ndng_decode(const uint8_t *data, size_t len, const ndng_info *info, uint8_t *bgrx, size_t pitch, int nthreads);
 
+// ---------------------------------------------------------------------------
+// The lossless JPEG decoder by itself (T.81 process 14: Huffman coded, predictors 1-7, 2..16 bits,
+// 1..4 components without subsampling, restart intervals), for the other formats that have such
+// pictures (DICOM: nitrodicom).
+
+// The frame header of a lossless JPEG: its size, components and sample precision. -1: not one
+// (another JPEG process, or no JPEG).
+int ndng_ljpeg_info(const uint8_t *d, size_t n, int *w, int *h, int *nc, int *prec);
+
+// Decodes one lossless JPEG into out (tw x th samples, row stride ostride): its samples, the
+// components of a pixel one after the other, fill the tile row by row (a DNG's JPEG row may hold
+// one or two raw rows; w * nc * h may be less than tw * th: the last strip). par: a long scan is
+// decoded in parallel. Returns 0 on success.
+int ndng_ljpeg_decode(const uint8_t *d, size_t n, uint16_t *out, int tw, int th, size_t ostride, int par);
+
 #endif

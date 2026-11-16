@@ -141,7 +141,8 @@ int ndng_read_info(const uint8_t *data, size_t len, ndng_info *info) {
 }
 
 // ---------------------------------------------------------------------------
-// lossless JPEG (T.81 process 14)
+// lossless JPEG (T.81 process 14): ndng_ljpeg_info, ndng_ljpeg_decode. Nothing of the DNG in it:
+// a DICOM picture's (nitrodicom) is decoded with it too.
 
 #define FAST_BITS 11
 typedef struct {
@@ -578,9 +579,32 @@ static int scan_parallel(const uint8_t *d, size_t n, const Huff *hf, uint16_t *o
     return 0;
 }
 
-// Decodes one lossless JPEG (a tile or strip) into out (tw x th samples, row stride ostride).
-// par: a long scan is decoded in parallel.
-static int lossless_jpeg(const uint8_t *d, size_t n, uint16_t *out, int tw, int th, size_t ostride, int par) {
+int ndng_ljpeg_info(const uint8_t *d, size_t n, int *w, int *h, int *nc, int *prec) {
+    if (n < 4 || d[0] != 0xFF || d[1] != 0xD8) return -1;
+    for (size_t p = 2; p + 4 <= n;) {
+        if (d[p] != 0xFF) return -1;
+        int m = d[p + 1];
+        if (m == 0xFF) {
+            p++;
+            continue;
+        }
+        size_t l = (size_t)d[p + 2] << 8 | d[p + 3];
+        if (l < 2 || p + 2 + l > n || m == 0xDA || m == 0xD9) return -1;
+        if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {   // a frame header: SOF3 is the lossless one
+            if (m != 0xC3 || l < 8) return -1;
+            const uint8_t *s = d + p + 4;
+            *prec = s[0];
+            *h = s[1] << 8 | s[2];
+            *w = s[3] << 8 | s[4];
+            *nc = s[5];
+            return *nc >= 1 && *nc <= 4 && *prec >= 2 && *prec <= 16 && *w > 0 && *h > 0 ? 0 : -1;
+        }
+        p += 2 + l;
+    }
+    return -1;
+}
+
+int ndng_ljpeg_decode(const uint8_t *d, size_t n, uint16_t *out, int tw, int th, size_t ostride, int par) {
     if (n < 4 || d[0] != 0xFF || d[1] != 0xD8) return -1;
     Huff *huff = malloc(4 * sizeof(Huff));
     if (!huff) return -1;
@@ -721,7 +745,7 @@ out:
 }
 
 // ---------------------------------------------------------------------------
-// development, row by row: the samples of five rows around the current one normalised (black /
+// the DNG's development, row by row: the samples of five rows around the current one normalised (black /
 // white levels, white balance) and split into even and odd columns, so that the loops over a
 // row run without branches (the compiler vectorizes them)
 
@@ -869,11 +893,11 @@ int ndng_decode(const uint8_t *data, size_t len, const ndng_info *in, uint8_t *b
         int w = MIN(pin->tile_w, rw - tx), h = MIN(pin->tile_h, rh - ty);
         const uint8_t *src = data + off;
         if (pin->compression == 7 && pin->tile_w == rw && ty + pin->tile_h <= rh) {   // whole rows: in place
-            if (lossless_jpeg(src, (size_t)cnt, praw + (size_t)ty * rw, rw, pin->tile_h, (size_t)rw, par)) atomic_store(pf, 1);
+            if (ndng_ljpeg_decode(src, (size_t)cnt, praw + (size_t)ty * rw, rw, pin->tile_h, (size_t)rw, par)) atomic_store(pf, 1);
         } else if (pin->compression == 7) {
             // a whole tile is coded (also its part beyond the image): decode into a scratch buffer
             uint16_t *tile = malloc((size_t)pin->tile_w * pin->tile_h * 2);
-            if (!tile || lossless_jpeg(src, (size_t)cnt, tile, pin->tile_w, pin->tile_h, (size_t)pin->tile_w, par)) {
+            if (!tile || ndng_ljpeg_decode(src, (size_t)cnt, tile, pin->tile_w, pin->tile_h, (size_t)pin->tile_w, par)) {
                 free(tile);
                 atomic_store(pf, 1);
                 return;
