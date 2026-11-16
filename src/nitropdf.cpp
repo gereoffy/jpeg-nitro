@@ -402,6 +402,8 @@ struct Shade {
 // (clipped by its /BBox), repeated every xs and ys; an uncoloured one (PaintType 2) drawn in the colour
 // given with it
 struct PageDL;
+struct SoftMask;
+struct Group;
 struct Tiling {
     std::shared_ptr<PageDL> cell;
     float bbox[4] = {0};   // x0 y0 x1 y1
@@ -410,7 +412,10 @@ struct Tiling {
 };
 
 struct Item {
-    enum : uint8_t { FILL, STROKE, IMAGE } kind;
+    enum : uint8_t { FILL, STROKE, IMAGE, GROUP } kind;
+    uint8_t blend = 0;   // (its blend mode: BLEND_NAMES' index)
+    std::shared_ptr<SoftMask> smask;   // (the soft mask it is drawn through)
+    std::shared_ptr<Group> group;      // (a GROUP: its items, composed as one at alpha)
     bool evenOdd = false;
     uint8_t cap = 0, join = 0;
     int clip = -1;
@@ -431,6 +436,26 @@ struct Item {
     nd::Box box;
 };
 
+// A transparency group drawn as one (11.4.7): its items into a layer of their own, the layer composed
+// with the backdrop by the group item's alpha, blend mode and soft mask
+struct Group {
+    std::vector<Item> items;
+};
+
+// A soft mask (11.6.5.2): its group's items in the page's display coordinates, drawn over the backdrop
+// colour (luminosity) or nothing (alpha), each pixel's luminosity or alpha through the transfer function
+// the mask. Outside the items' box the backdrop alone: the same value everywhere there.
+struct SoftMask {
+    std::vector<Item> items;
+    bool luminosity = true;
+    uint32_t bc = 0;     // (the backdrop, rgb)
+    uint8_t tr[256];     // (the transfer function)
+    nd::Box box{0, 0, -1, -1};
+};
+
+const char *const BLEND_NAMES[] = {"Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "ColorDodge", "ColorBurn",
+                                   "HardLight", "SoftLight", "Difference", "Exclusion", "Hue", "Saturation", "Color", "Luminosity"};
+
 struct Font;
 
 struct PageDL {
@@ -439,6 +464,7 @@ struct PageDL {
     std::vector<Clip> clips;
     uint64_t lastUse = 0;   // (when last drawn: the least recent lists are let go of first)
     size_t bytes = 0;       // (built: about what it holds, its pictures most of it)
+    bool blends = false;    // (something in it is drawn in a blend mode: the page drawn on nothing, then on its background)
 };
 
 }  // namespace
@@ -1783,7 +1809,8 @@ struct GState {
     std::shared_ptr<Shade> fillShade;   // (a shading pattern's: fills by it)
     std::shared_ptr<Tiling> fillTile;   // (a tiling pattern's)
     plutovg_matrix_t fillShadeM;        // (their space -> the page's display coordinates)
-    bool softMask = false;   // (a soft mask set, not drawn: its shadings as before, a colour or nothing)
+    std::shared_ptr<SoftMask> smask;   // (the soft mask set: what is painted is drawn through it)
+    uint8_t blend = 0;                 // (the blend mode: BLEND_NAMES' index)
     float width = 1, miter = 10, dashOffset = 0;
     uint8_t cap = 0, join = 0;
     std::shared_ptr<std::vector<float>> dash;
@@ -1804,6 +1831,26 @@ struct Interp {
     float pageW = 0, pageH = 0;   // (its size there)
     int patDepth = 0;   // (a tiling pattern's cell being read: how deep in patterns)
     std::unordered_map<uint32_t, std::shared_ptr<Tiling>> tilings;   // (read on this page, by object number)
+    std::vector<Item> *out;   // (where items go: the page's list, a group's, a soft mask's)
+    std::unordered_map<std::string, std::shared_ptr<SoftMask>> masks;   // (read on this page: by dictionary and matrix)
+    int maskDepth = 0;
+    // the items' boxes together (none: x1 < x0)
+    static nd::Box itemsBox(const std::vector<Item> &items) {
+        nd::Box b{0, 0, -1, -1};
+        for (size_t k = 0; k < items.size(); k++) {
+            const nd::Box &x = items[k].box;
+            if (!k) b = x;
+            else b.x0 = std::min(b.x0, x.x0), b.y0 = std::min(b.y0, x.y0), b.x1 = std::max(b.x1, x.x1), b.y1 = std::max(b.y1, x.y1);
+        }
+        return b;
+    }
+    // an item to the list, drawn in the blend mode and through the soft mask set
+    void emit(Item &&it) {
+        it.blend = gs.blend;
+        it.smask = gs.smask;
+        if (gs.blend) pg.blends = true;
+        out->push_back(std::move(it));
+    }
     std::unordered_map<std::string, int> clipIds;   // (the clips made: their index by parent, rule, matrix, path)
     GState gs;
     std::vector<GState> stack;
@@ -1824,7 +1871,7 @@ struct Interp {
     plutovg_path_t *textClip = nullptr;  // (render modes 4-7: the glyphs clip at ET)
     std::vector<std::shared_ptr<Img>> decoded;   // (the images decoded for this page, held until it is built: one clipped away is not decoded again)
 
-    Interp(nitropdf &p, PageDL &dl) : P(p), doc(p.doc), pg(dl) {}
+    Interp(nitropdf &p, PageDL &dl) : P(p), doc(p.doc), pg(dl), out(&dl.items) {}
     ~Interp() {
         if (path) plutovg_path_destroy(path);
         if (textClip) plutovg_path_destroy(textClip);
@@ -1981,7 +2028,7 @@ struct Interp {
                 it.m = m;
                 it.box = box(path, m, 0);
                 plutovg_matrix_t inv;
-                if (gs.fillPattern && gs.fillShade && !gs.softMask && plutovg_matrix_invert(&m, &inv)) {
+                if (gs.fillPattern && gs.fillShade && plutovg_matrix_invert(&m, &inv)) {
                     it.shade = gs.fillShade;
                     mul(it.shadeM, gs.fillShadeM, inv);
                 } else if (gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv)) {
@@ -1991,7 +2038,7 @@ struct Interp {
                 if (clipBox(it.box, it.clip)) {
                     shared = std::make_shared<PathRef>(plutovg_path_reference(path));
                     it.path = shared;
-                    pg.items.push_back(std::move(it));
+                    emit(std::move(it));
                 }
             }
             if (stroke && !gs.strokeNone) strokeItem(m, shared);
@@ -2009,9 +2056,9 @@ struct Interp {
         int elements = plutovg_path_get_elements(run, nullptr);
         plutovg_matrix_t inv;
         bool tiled = gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv);
-        if (!pg.items.empty() && gs.fillA >= 1 && !tiled) {
-            Item &l = pg.items.back();
-            if (l.kind == Item::FILL && l.text && !l.tile && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
+        if (!out->empty() && gs.fillA >= 1 && !tiled) {
+            Item &l = out->back();
+            if (l.kind == Item::FILL && l.text && !l.tile && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= 4 * (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, run, nullptr);
                 l.segments += elements;
@@ -2035,7 +2082,7 @@ struct Interp {
         plutovg_path_add_path(own, run, nullptr);
         it.path = std::make_shared<PathRef>(own);
         it.segments = elements;
-        pg.items.push_back(std::move(it));
+        emit(std::move(it));
     }
 
     // a string shown by Tj / TJ / ' / ": its glyphs drawn by the render mode, the text matrix advanced
@@ -2180,9 +2227,9 @@ struct Interp {
         plutovg_rect_t unused;
         float length = gs.dash ? plutovg_path_extents(path, &unused, false) : 0;
         // the same stroke as the last item, opaque: one path (a CAD plot's "m l S" lines)
-        if (!pg.items.empty() && gs.strokeA >= 1 && !shared) {
-            Item &l = pg.items.back();
-            if (l.kind == Item::STROKE && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
+        if (!out->empty() && gs.strokeA >= 1 && !shared) {
+            Item &l = out->back();
+            if (l.kind == Item::STROKE && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
                 l.join == gs.join && l.miter == gs.miter && l.dash == gs.dash && l.dashOffset == gs.dashOffset && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, path, nullptr);
@@ -2211,11 +2258,19 @@ struct Interp {
         }
         it.segments = elements;
         it.length = length;
-        pg.items.push_back(std::move(it));
+        emit(std::move(it));
     }
 
     // an axial or radial shading (a dictionary or a stream) as gradient stops; null for the others
+    // a shading, once a page for each object (a mesh in a soft mask set before each of many objects)
+    std::unordered_map<uint32_t, std::shared_ptr<Shade>> shades;
     std::shared_ptr<Shade> loadShade(Val ref, Val res) {
+        if (ref.t != pp::REF) return readShade(ref, res);
+        auto known = shades.find(ref.oid());
+        if (known != shades.end()) return known->second;
+        return shades[ref.oid()] = readShade(ref, res);
+    }
+    std::shared_ptr<Shade> readShade(Val ref, Val res) {
         Val sh = doc.resolve(ref);
         if (sh.t != pp::DICT) {   // (a stream: its dictionary)
             const pp::Stream *st = ref.t == pp::REF ? doc.stream(ref.oid()) : nullptr;
@@ -2444,7 +2499,7 @@ struct Interp {
     // sh: the shading painted over the clip (its /BBox, if any, limiting it; an axial one not
     // extended: only between the lines its ends are on)
     void shFill(Val name, Val res) {
-        if (hidden || gs.softMask) return;
+        if (hidden) return;
         Val ref = resource(P, res, "Shading", name);
         auto s = loadShade(ref, res);
         if (!s) return;
@@ -2508,7 +2563,7 @@ struct Interp {
         plutovg_matrix_init_identity(&it.shadeM);
         if (clipBox(it.box, it.clip)) {
             it.path = std::make_shared<PathRef>(area);
-            pg.items.push_back(std::move(it));
+            emit(std::move(it));
         } else plutovg_path_destroy(area);
     }
 
@@ -2638,8 +2693,20 @@ struct Interp {
         Val v;
         if ((v = doc.get(g, "LW")).isNum()) gs.width = (float)v.num();
         v = doc.get(g, "SMask");
-        if (v.t == pp::NAME) gs.softMask = false;
-        else if (v.t == pp::DICT) gs.softMask = true;
+        if (v.t == pp::NAME) gs.smask.reset();
+        else if (v.t == pp::DICT) gs.smask = loadSoftMask(g.get("SMask"), res);
+        v = doc.get(g, "BM");   // (an array: the first of its modes known)
+        for (size_t k = 0; k < (v.t == pp::ARRAY ? v.size() : 1); k++) {
+            Val b = v.t == pp::ARRAY ? doc.resolve(v.at(k)) : v;
+            if (b.t != pp::NAME) continue;
+            int found = b.is("Compatible") ? 0 : -1;
+            for (int i = 0; i < 16 && found < 0; i++)
+                if (b.is(BLEND_NAMES[i])) found = i;
+            if (found >= 0) {
+                gs.blend = (uint8_t)found;
+                break;
+            }
+        }
         if ((v = doc.get(g, "LC")).isNum()) gs.cap = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "LJ")).isNum()) gs.join = (uint8_t)std::max(0, std::min(2, toInt(v.num())));
         if ((v = doc.get(g, "ML")).isNum()) gs.miter = (float)v.num();
@@ -2647,6 +2714,57 @@ struct Interp {
         if ((v = doc.get(g, "ca")).isNum()) gs.fillA = clampf((float)v.num(), 0, 1) * gs.groupA;
         if ((v = doc.get(g, "D")).t == pp::ARRAY && v.size() >= 2) setDash(doc.resolve(v.at(0)), doc.resolve(v.at(1)));
     }
+    // A soft mask dictionary's group read into a list of its own, in the current matrix (11.6.5.2), its
+    // painting in the initial state (no alpha, mask, blend mode or clip); once a page for the same
+    // dictionary and matrix (Illustrator sets the same one before each object). Null: none (no group).
+    std::shared_ptr<SoftMask> loadSoftMask(Val ref, Val res) {
+        Val d = doc.resolve(ref);
+        Val g = d.get("G");
+        const pp::Stream *st = g.t == pp::REF ? doc.stream(g.oid()) : nullptr;
+        if (!st || maskDepth >= 4) return nullptr;
+        std::string key((const char *)&d.v, sizeof d.v);
+        key.append((const char *)&gs.ctm, sizeof gs.ctm);
+        auto known = masks.find(key);
+        if (known != masks.end()) return known->second;
+        auto sm = std::make_shared<SoftMask>();
+        sm->luminosity = !doc.get(d, "S").is("Alpha");
+        Val grp = doc.get(st->dict, "Group");
+        auto bc = nums(doc, d.get("BC"));
+        Val gres = doc.get(st->dict, "Resources");
+        auto cs = loadCS(P, doc.get(grp, "CS"), gres.t == pp::DICT ? gres : res, 0);
+        if (cs && cs->k != CS::PATTERN && !bc.empty()) {
+            float c[32] = {0}, col[3];
+            for (size_t k = 0; k < bc.size() && k < 32; k++) c[k] = bc[k];
+            cs->toRGB(c, col);
+            sm->bc = packRgb(col);
+        }
+        Val tr = doc.get(d, "TR");
+        auto fn = tr.t == pp::NAME ? nullptr : loadFunc(P, d.get("TR"), 0);
+        for (int k = 0; k < 256; k++) {
+            float in = k / 255.f, o[MAX_COMPS] = {in};
+            if (fn) fn->eval(&in, o);
+            sm->tr[k] = (uint8_t)lrintf(clampf(o[0], 0, 1) * 255);
+        }
+        std::vector<Item> *savedOut = out;
+        out = &sm->items;
+        stack.push_back(gs);
+        GState fresh;
+        fresh.ctm = gs.ctm;
+        gs = fresh;
+        resetColors();
+        int savedHidden = hidden;
+        hidden = 0;
+        maskDepth++;
+        doForm(g.oid(), *st, res, 0);
+        maskDepth--;
+        hidden = savedHidden;
+        gs = stack.back();
+        stack.pop_back();
+        out = savedOut;
+        sm->box = itemsBox(sm->items);
+        return masks[key] = sm;
+    }
+
     void setDash(Val arr, Val phase) {
         auto d = nums(doc, arr);
         bool any = false;
@@ -2707,7 +2825,7 @@ struct Interp {
         it.img = img;
         it.box = boxOf(0, 0, 1, 1, m);
         if (!clipBox(it.box, it.clip)) return;
-        pg.items.push_back(std::move(it));
+        emit(std::move(it));
     }
 
     void doXObject(Val res, Val name, int depth) {
@@ -2754,13 +2872,24 @@ struct Interp {
         Val fres = doc.get(d, "Resources");
         if (fres.t != pp::DICT) fres = doc.resolve(res);
         stack.push_back(gs);
-        // a transparency group: composed with the alpha it was painted with (ca), its own content's
-        // starting at 1 (11.6.6), whatever alpha it sets inside then of that. (Each of its items
-        // takes it: where they overlap inside the group, more opaque than the group drawn apart.)
+        // A transparency group painted with an alpha, a blend mode or a soft mask: its items in a
+        // group of their own, painted from the initial state of those, the group composed by them
+        // (11.4.7, 11.6.6). Without them it is drawn as its items, as a non-isolated group is.
+        // (Isolated or not, the group is composed alone: what its blend modes do with the
+        // backdrop beneath it is not seen.)
         Val grp = doc.get(d, "Group");
+        std::shared_ptr<Group> group;
+        Item gi;
+        std::vector<Item> *savedOut = this->out;
         if (grp.t == pp::DICT && doc.get(grp, "S").is("Transparency")) {
-            gs.groupA = gs.fillA;
-            gs.strokeA = gs.fillA;
+            if (gs.blend || gs.smask || gs.fillA < 1) {
+                group = std::make_shared<Group>();
+                gi.alpha = gs.fillA, gi.blend = gs.blend, gi.smask = gs.smask;
+                this->out = &group->items;
+                gs.fillA = gs.strokeA = gs.groupA = 1;
+                gs.blend = 0;
+                gs.smask.reset();
+            } else gs.groupA = gs.strokeA = gs.fillA;
         }
         auto mtx = nums(doc, d.get("Matrix"));
         if (mtx.size() == 6) {
@@ -2786,6 +2915,15 @@ struct Interp {
         patBase = savedPatBase;
         gs = stack.back();
         stack.pop_back();
+        this->out = savedOut;
+        if (group && !group->items.empty()) {
+            gi.kind = Item::GROUP;
+            gi.group = group;
+            gi.box = itemsBox(group->items);
+            plutovg_matrix_init_identity(&gi.m);
+            if (gi.blend) pg.blends = true;
+            savedOut->push_back(std::move(gi));
+        }
     }
 
     void run(const char *data, size_t len, Val res, int depth) {
@@ -3231,13 +3369,32 @@ struct TileCache {
         plutovg_surface_t *s;
     };
     std::vector<Entry> e;
+    // the soft masks drawn: over a canvas of w x h under view, the part their items cover
+    struct Mask {
+        const SoftMask *m;
+        int cw, ch;
+        float view[6];
+        int x0, y0, w, h;
+        std::vector<uint8_t> v;
+        uint8_t outside;   // (beyond it)
+        uint8_t at(int x, int y) const {
+            x -= x0, y -= y0;
+            return x >= 0 && y >= 0 && x < w && y < h ? v[(size_t)y * w + x] : outside;
+        }
+    };
+    std::vector<std::unique_ptr<Mask>> masks;
     ~TileCache() {
         for (auto &x : e) plutovg_surface_destroy(x.s);
     }
 };
 
+void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vector<Clip> &clips, plutovg_canvas_t *c,
+               const plutovg_matrix_t &view, const double vb[4], double scale, const nd::Cancel &cancel, int &rc, TileCache *tc,
+               bool plain = false);
 void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg_matrix_t &view, const double vb[4], double scale,
-               const nd::Cancel &cancel, int &rc, TileCache *tc = nullptr);
+               const nd::Cancel &cancel, int &rc, TileCache *tc = nullptr) {
+    drawItems(P, pg.items.data(), pg.items.data() + pg.items.size(), pg.clips, c, view, vb, scale, cancel, rc, tc);
+}
 
 const int MAX_TILE_PIXELS = 4 << 20, MIN_TILE = 16, MAX_TILE_COPIES = 4096;
 
@@ -3318,28 +3475,217 @@ void tileFill(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_ma
     plutovg_canvas_fill_path(c, it.path->p);
 }
 
-void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg_matrix_t &view, const double vb[4], double scale,
-               const nd::Cancel &cancel, int &rc, TileCache *tc) {
+// --- transparency: blend modes (11.3.5), soft masks (11.6.5), groups (11.4.7) --------------------
+
+// a separable blend mode's B(cb, cs), colours 0-1
+inline float blendSep(int bm, float cb, float cs) {
+    switch (bm) {
+    case 1: return cb * cs;                                                   // Multiply
+    case 2: return cb + cs - cb * cs;                                         // Screen
+    case 3: return cb <= 0.5f ? 2 * cs * cb : 1 - 2 * (1 - cs) * (1 - cb);    // Overlay: HardLight(cs, cb)
+    case 4: return std::min(cb, cs);                                          // Darken
+    case 5: return std::max(cb, cs);                                          // Lighten
+    case 6: return cb <= 0 ? 0 : cs >= 1 ? 1 : std::min(1.f, cb / (1 - cs)); // ColorDodge
+    case 7: return cb >= 1 ? 1 : cs <= 0 ? 0 : 1 - std::min(1.f, (1 - cb) / cs);   // ColorBurn
+    case 8: return cs <= 0.5f ? 2 * cs * cb : 1 - 2 * (1 - cs) * (1 - cb);    // HardLight
+    case 9: {                                                                 // SoftLight
+        if (cs <= 0.5f) return cb - (1 - 2 * cs) * cb * (1 - cb);
+        float d = cb <= 0.25f ? ((16 * cb - 12) * cb + 4) * cb : sqrtf(cb);
+        return cb + (2 * cs - 1) * (d - cb);
+    }
+    case 10: return fabsf(cb - cs);            // Difference
+    case 11: return cb + cs - 2 * cb * cs;     // Exclusion
+    default: return cs;
+    }
+}
+inline float lumOf(const float c[3]) { return 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]; }
+inline void setLum(float c[3], float l) {
+    float d = l - lumOf(c);
+    for (int k = 0; k < 3; k++) c[k] += d;
+    l = lumOf(c);   // (ClipColor)
+    float n = std::min({c[0], c[1], c[2]}), x = std::max({c[0], c[1], c[2]});
+    for (int k = 0; k < 3; k++) {
+        if (n < 0 && l - n > 1e-6f) c[k] = l + (c[k] - l) * l / (l - n);
+        if (x > 1 && x - l > 1e-6f) c[k] = l + (c[k] - l) * (1 - l) / (x - l);
+    }
+}
+inline void setSat(float c[3], float s) {
+    int mx = 0, mn = 0;
+    for (int k = 1; k < 3; k++) mx = c[k] > c[mx] ? k : mx, mn = c[k] < c[mn] ? k : mn;
+    if (mx == mn) {
+        c[0] = c[1] = c[2] = 0;
+        return;
+    }
+    int md = 3 - mx - mn;
+    c[md] = (c[md] - c[mn]) * s / (c[mx] - c[mn]);
+    c[mx] = s, c[mn] = 0;
+}
+// a non-separable one's (Hue, Saturation, Color, Luminosity)
+inline void blendNonSep(int bm, const float cb[3], const float cs[3], float out[3]) {
+    auto sat = [](const float c[3]) { return std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]}); };
+    const float *from = bm == 12 || bm == 14 ? cs : cb;
+    for (int k = 0; k < 3; k++) out[k] = from[k];
+    if (bm == 12) setSat(out, sat(cb));
+    if (bm == 13) setSat(out, sat(cs));
+    setLum(out, bm == 15 ? lumOf(cs) : lumOf(cb));
+}
+
+// The layer src composed onto dst at (ox, oy): its pixels by alpha and the mask, in blend mode bm
+void compose(plutovg_surface_t *dst, plutovg_surface_t *src, int ox, int oy, const TileCache::Mask *mk, float alpha, int bm) {
+    int dw = plutovg_surface_get_width(dst), dh = plutovg_surface_get_height(dst), ds = plutovg_surface_get_stride(dst);
+    int sw = plutovg_surface_get_width(src), sh = plutovg_surface_get_height(src), ss = plutovg_surface_get_stride(src);
+    uint8_t *dp = plutovg_surface_get_data(dst);
+    const uint8_t *sp = plutovg_surface_get_data(src);
+    for (int y = 0; y < sh; y++) {
+        int dy = oy + y;
+        if (dy < 0 || dy >= dh) continue;
+        const uint32_t *srow = (const uint32_t *)(sp + (size_t)y * ss);
+        uint32_t *drow = (uint32_t *)(dp + (size_t)dy * ds);
+        for (int x = 0; x < sw; x++) {
+            int dx = ox + x;
+            uint32_t s = srow[x];
+            if (dx < 0 || dx >= dw || !(s >> 24)) continue;
+            float f = alpha * (mk ? mk->at(dx, dy) / 255.f : 1.f) / 255.f;
+            if (f <= 0) continue;
+            float sa = (s >> 24) * f, S[3] = {(s >> 16 & 255) * f, (s >> 8 & 255) * f, (s & 255) * f};
+            uint32_t d = drow[dx];
+            float da = (d >> 24) / 255.f, D[3] = {(d >> 16 & 255) / 255.f, (d >> 8 & 255) / 255.f, (d & 255) / 255.f}, o[3];
+            if (!bm || da <= 0) {
+                for (int k = 0; k < 3; k++) o[k] = S[k] + D[k] * (1 - sa);
+            } else {   // (premultiplied: (1 - ab) Cs + (1 - as) Cb + as ab B(cb, cs))
+                float cs[3], cb[3], B[3];
+                for (int k = 0; k < 3; k++) cs[k] = std::min(1.f, S[k] / sa), cb[k] = std::min(1.f, D[k] / da);
+                if (bm < 12)
+                    for (int k = 0; k < 3; k++) B[k] = blendSep(bm, cb[k], cs[k]);
+                else blendNonSep(bm, cb, cs, B);
+                for (int k = 0; k < 3; k++) o[k] = (1 - da) * S[k] + (1 - sa) * D[k] + sa * da * clampf(B[k], 0, 1);
+            }
+            float a = sa + da - sa * da;
+            auto c8 = [&](float v) { return (uint32_t)lrintf(clampf(v, 0, a) * 255); };
+            drow[dx] = c8(a) << 24 | c8(o[0]) << 16 | c8(o[1]) << 8 | c8(o[2]);
+        }
+    }
+}
+
+// a box of the page's display coordinates on the canvas: its pixels, margin around, within the canvas
+void pixelRect(const nd::Box &b, const plutovg_matrix_t &view, int W, int H, int margin, int &x0, int &y0, int &x1, int &y1) {
+    float a0 = 1e30f, b0 = 1e30f, a1 = -1e30f, b1 = -1e30f;
+    for (int k = 0; k < 4; k++) {
+        plutovg_point_t p = {k & 1 ? b.x1 : b.x0, k & 2 ? b.y1 : b.y0}, q;
+        plutovg_matrix_map_point(&view, &p, &q);
+        a0 = std::min(a0, q.x), a1 = std::max(a1, q.x), b0 = std::min(b0, q.y), b1 = std::max(b1, q.y);
+    }
+    x0 = (int)std::max(0.f, std::min((float)W, floorf(a0) - margin)), y0 = (int)std::max(0.f, std::min((float)H, floorf(b0) - margin));
+    x1 = (int)std::max(0.f, std::min((float)W, ceilf(a1) + margin)), y1 = (int)std::max(0.f, std::min((float)H, ceilf(b1) + margin));
+    if (!(b.x1 >= b.x0 && b.y1 >= b.y0)) x1 = x0, y1 = y0;
+}
+
+// A soft mask over a canvas of W x H under view: drawn once a render (TileCache keeps the last few)
+const TileCache::Mask *maskFor(nitropdf &P, const SoftMask &sm, const std::vector<Clip> &clips, int W, int H, const plutovg_matrix_t &view,
+                               const double vb[4], double scale, const nd::Cancel &cancel, int &rc, TileCache &tc) {
+    float key[6] = {view.a, view.b, view.c, view.d, view.e, view.f};
+    for (auto &m : tc.masks)
+        if (m->m == &sm && m->cw == W && m->ch == H && !memcmp(m->view, key, sizeof key)) return m.get();
+    auto mk = std::make_unique<TileCache::Mask>();
+    mk->m = &sm, mk->cw = W, mk->ch = H;
+    memcpy(mk->view, key, sizeof key);
+    uint32_t bc = sm.bc;
+    mk->outside = sm.luminosity ? sm.tr[((bc >> 16 & 255) * 77 + (bc >> 8 & 255) * 151 + (bc & 255) * 28 + 128) >> 8] : sm.tr[0];
+    int x0, y0, x1, y1;
+    pixelRect(sm.box, view, W, H, 2, x0, y0, x1, y1);
+    mk->x0 = x0, mk->y0 = y0, mk->w = x1 - x0, mk->h = y1 - y0;
+    plutovg_surface_t *s = mk->w > 0 && mk->h > 0 ? plutovg_surface_create(mk->w, mk->h) : nullptr;
+    if (s) {
+        uint8_t *px = plutovg_surface_get_data(s);
+        int stride = plutovg_surface_get_stride(s);
+        if (sm.luminosity)   // (over the backdrop colour, opaque)
+            for (int y = 0; y < mk->h; y++)
+                for (int x = 0; x < mk->w; x++) ((uint32_t *)(px + (size_t)y * stride))[x] = 0xff000000u | bc;
+        plutovg_canvas_t *mc = plutovg_canvas_create(s);
+        plutovg_matrix_t lv = view;
+        lv.e -= (float)x0, lv.f -= (float)y0;
+        if (mc) drawItems(P, sm.items.data(), sm.items.data() + sm.items.size(), clips, mc, lv, vb, scale, cancel, rc, &tc);
+        plutovg_canvas_destroy(mc);
+        mk->v.resize((size_t)mk->w * mk->h);
+        for (int y = 0; y < mk->h; y++) {
+            const uint32_t *row = (const uint32_t *)(px + (size_t)y * stride);
+            for (int x = 0; x < mk->w; x++) {
+                uint32_t p = row[x];
+                mk->v[(size_t)y * mk->w + x] =
+                    sm.tr[sm.luminosity ? ((p >> 16 & 255) * 77 + (p >> 8 & 255) * 151 + (p & 255) * 28 + 128) >> 8 : p >> 24];
+            }
+        }
+        plutovg_surface_destroy(s);
+    } else mk->w = mk->h = 0;
+    if (tc.masks.size() >= 4) tc.masks.erase(tc.masks.begin());
+    tc.masks.push_back(std::move(mk));
+    return tc.masks.back().get();
+}
+
+// An item with a blend mode or soft mask, or a group: drawn into a layer over its part of the canvas
+// (and the mask's, where nothing is beyond it), the layer composed onto the canvas
+void composeItem(nitropdf &P, plutovg_canvas_t *c, const Item &it, const std::vector<Clip> &clips, const plutovg_matrix_t &view,
+                 const double vb[4], double scale, const nd::Cancel &cancel, int &rc, TileCache &tc) {
+    plutovg_surface_t *cs = plutovg_canvas_get_surface(c);
+    int W = plutovg_surface_get_width(cs), H = plutovg_surface_get_height(cs);
+    int x0, y0, x1, y1;
+    pixelRect(it.box, view, W, H, 2, x0, y0, x1, y1);
+    if (it.smask) {
+        const TileCache::Mask *mk = maskFor(P, *it.smask, clips, W, H, view, vb, scale, cancel, rc, tc);
+        if (rc) return;
+        if (!mk->outside) {
+            x0 = std::max(x0, mk->x0), y0 = std::max(y0, mk->y0);
+            x1 = std::min(x1, mk->x0 + mk->w), y1 = std::min(y1, mk->y0 + mk->h);
+        }
+    }
+    if (x1 <= x0 || y1 <= y0) return;
+    plutovg_surface_t *layer = plutovg_surface_create(x1 - x0, y1 - y0);
+    if (!layer) return;
+    plutovg_canvas_t *lc = plutovg_canvas_create(layer);
+    plutovg_matrix_t lv = view;
+    lv.e -= (float)x0, lv.f -= (float)y0;
+    if (lc) {
+        if (it.kind == Item::GROUP)
+            drawItems(P, it.group->items.data(), it.group->items.data() + it.group->items.size(), clips, lc, lv, vb, scale, cancel, rc, &tc);
+        else drawItems(P, &it, &it + 1, clips, lc, lv, vb, scale, cancel, rc, &tc, true);
+        plutovg_canvas_destroy(lc);
+    }
+    if (!rc) {   // (the mask asked for again: drawing the layer may have let it go)
+        const TileCache::Mask *mk = it.smask ? maskFor(P, *it.smask, clips, W, H, view, vb, scale, cancel, rc, tc) : nullptr;
+        if (!rc) compose(cs, layer, x0, y0, mk, it.kind == Item::GROUP ? it.alpha : 1, it.blend);
+    }
+    plutovg_surface_destroy(layer);
+}
+
+void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vector<Clip> &clips, plutovg_canvas_t *c,
+               const plutovg_matrix_t &view, const double vb[4], double scale, const nd::Cancel &cancel, int &rc, TileCache *tc,
+               bool plain) {
     TileCache own;
     if (!tc) tc = &own;
     plutovg_canvas_save(c);
     int curClip = -1;
     size_t k = 0;
-    for (const Item &it : pg.items) {
+    for (const Item *ip = first; ip != last; ip++) {
+        const Item &it = *ip;
         if ((++k & 255) == 0 && cancel()) {
             rc = 1;
             break;
         }
         if (!nd::touches(vb, it.box.x0, it.box.y0, it.box.x1, it.box.y1, 2 / scale)) continue;
+        if (it.kind == Item::GROUP || (!plain && (it.blend || it.smask))) {   // (in a layer of its own, composed)
+            composeItem(P, c, it, clips, view, vb, scale, cancel, rc, *tc);
+            if (rc) break;
+            continue;
+        }
         // (a stroke within a pixel of a rectangle clip left out: drawn at least a pixel wide, it may reach out)
         int clip = it.kind == Item::STROKE && it.clipOwn != it.clip && it.clipGap * scale < 1 ? it.clipOwn : it.clip;
         if (clip != curClip) {   // (the clip chain, from its outermost)
             plutovg_canvas_restore(c);
             plutovg_canvas_save(c);
             std::vector<int> chain;
-            for (int x = clip; x >= 0 && chain.size() < 1024; x = pg.clips[x].parent) chain.push_back(x);
+            for (int x = clip; x >= 0 && chain.size() < 1024; x = clips[x].parent) chain.push_back(x);
             for (size_t i = chain.size(); i-- > 0;) {
-                const Clip &cl = pg.clips[chain[i]];
+                const Clip &cl = clips[chain[i]];
                 plutovg_matrix_t m;
                 plutovg_matrix_multiply(&m, &cl.m, &view);
                 plutovg_canvas_set_matrix(c, &m);
@@ -3514,14 +3860,20 @@ void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h) {
 
 // About the memory a page's list holds: its pictures (each once: a page may draw one many times;
 // with their halved copies, a third more) and its items
-size_t listBytes(const PageDL &pg, std::unordered_set<const void *> &seen) {
-    size_t n = pg.items.size() * sizeof(Item) + pg.clips.size() * sizeof(Clip);
-    for (const Item &it : pg.items) {
+size_t listBytes(const PageDL &pg, std::unordered_set<const void *> &seen);
+size_t listBytes(const std::vector<Item> &items, std::unordered_set<const void *> &seen) {
+    size_t n = items.size() * sizeof(Item);
+    for (const Item &it : items) {
         if (it.img && it.img->s && seen.insert(it.img.get()).second)
             n += (size_t)plutovg_surface_get_stride(it.img->s) * plutovg_surface_get_height(it.img->s) * 4 / 3;
         if (it.tile && seen.insert(it.tile.get()).second) n += listBytes(*it.tile->cell, seen);   // (a pattern's cell)
+        if (it.group && seen.insert(it.group.get()).second) n += listBytes(it.group->items, seen);
+        if (it.smask && seen.insert(it.smask.get()).second) n += listBytes(it.smask->items, seen);
     }
     return n;
+}
+size_t listBytes(const PageDL &pg, std::unordered_set<const void *> &seen) {
+    return pg.clips.size() * sizeof(Clip) + listBytes(pg.items, seen);
 }
 size_t listBytes(const PageDL &pg) {
     std::unordered_set<const void *> seen;
@@ -3568,12 +3920,26 @@ int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t
             trimLists(*pdf, page);
         }
     }
-    nd::Target t(bgra, w, h, pitch, pdf->background == 3 ? nd::background(3) : nd::background(0));
+    // The page is an isolated group (11.4.7): what is drawn in a blend mode blends with what is drawn
+    // before it, not with the paper (a light colour in Lighten over nothing is that colour, over white
+    // white). Drawn on nothing then, the page composed onto its background at the end.
+    uint32_t bg = pdf->background == 3 ? nd::background(3) : nd::background(0);
+    bool onNothing = pg.blends && bg;
+    nd::Target t(bgra, w, h, pitch, onNothing ? 0 : bg);
     if (!t.canvas) return -1;
     plutovg_matrix_t view;
     plutovg_matrix_init(&view, (float)scale, 0, 0, (float)scale, (float)(-x0 * scale), (float)(-y0 * scale));
     double vb[4] = {x0, y0, x0 + w / scale, y0 + h / scale};
     int rc = 0;
     drawItems(*pdf, pg, t.canvas, view, vb, scale, cancel, rc);
+    if (onNothing)   // (premultiplied: the background where the page is not opaque; it is opaque itself)
+        for (int y = 0; y < h; y++) {
+            uint32_t *row = (uint32_t *)(bgra + (size_t)y * pitch);
+            for (int x = 0; x < w; x++) {
+                uint32_t p = row[x], na = 255 - (p >> 24), o = 0xff000000u;
+                for (int sh = 0; sh < 24; sh += 8) o |= std::min(255u, (p >> sh & 255) + ((bg >> sh & 255) * na + 127) / 255) << sh;
+                row[x] = o;
+            }
+        }
     return rc;
 }
