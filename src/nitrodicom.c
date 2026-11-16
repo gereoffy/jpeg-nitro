@@ -498,7 +498,9 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
     f->stored = in->stored;
     f->shift = in->high + 1 - in->stored;
     f->is_signed = in->is_signed;
-    f->ycc = in->photometric == P_YBR || in->photometric == P_YBR422;
+    // (YBR_FULL_422 of a lossless codec's picture cannot be: its components come in full; such files hold R G B,
+    // the name is left from the lossy JPEG they were made of)
+    f->ycc = in->photometric == P_YBR || (in->photometric == P_YBR422 && in->syntax == S_RAW);
     f->planar = in->planar && in->spp > 1;
     if (in->syntax == S_RAW) {
         size_t avail = in->pixel_len < n - in->pixel_pos ? in->pixel_len : n - in->pixel_pos, need, at;
@@ -570,7 +572,6 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
                 f->planar = 0;
                 // (signed when either says so: a codestream or a data set that says unsigned of a CT's values is wrong)
                 f->stored = prec, f->shift = 0, f->is_signed = sgn || in->is_signed;
-                f->ycc = in->photometric == P_YBR || in->photometric == P_YBR422;
                 rc = 0;
             }
         }
