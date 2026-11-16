@@ -3864,18 +3864,23 @@ std::string illustratorPrivate(nitropdf &P) {
             content += dec.data.size();
         }
     if (content > 256) return std::string();   // (a page drawn)
+    // (the blocks together: no more than a drawing's text may be; and they are read on only while
+    // the PostScript's first line is, or may yet come, in their first megabyte)
+    const size_t LIMIT = 256u << 20, HEAD = 1u << 20;
     std::string all;
+    size_t at = std::string::npos;
     int n = std::min(toInt(doc.get(priv, "NumBlock").num(0)), 1000);
     for (int k = 1; k <= n; k++) {
         Val r = priv.get(("AIPrivateData" + std::to_string(k)).c_str());
         const pp::Stream *st = r.t == pp::REF ? doc.stream(r.oid()) : nullptr;
         if (!st) return std::string();
         pp::Decoded dec;
-        doc.decode(*st, dec, 512u << 20);
+        doc.decode(*st, dec, LIMIT - all.size());
         all += dec.data;
+        if (at == std::string::npos) at = all.substr(0, HEAD + 16).find("%!PS-Adobe");   // (CorelDRAW's first block: a thumbnail)
+        if (all.size() >= LIMIT || (at == std::string::npos && all.size() > HEAD + 16)) return std::string();
     }
-    size_t at = all.find("%!PS-Adobe");   // (CorelDRAW's first block: a thumbnail)
-    return at == std::string::npos || at > 1u << 20 ? std::string() : all.substr(at);
+    return at == std::string::npos || at > HEAD ? std::string() : all.substr(at);
 }
 }  // namespace
 
