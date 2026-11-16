@@ -11,6 +11,7 @@
 #include "nitrocdr.h"
 #include "nitro_draw.h"
 #include "nitro_font.h"
+#include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
 #include "nitrodxf.h"
 #include "nitrometa.h"
 #include "nitrosvg.h"
@@ -852,9 +853,9 @@ public:
             float raise = 0, scale = .58f;
             if (!pos.compare(0, 5, "super")) raise = .33f;
             else if (!pos.compare(0, 3, "sub")) raise = -.33f;
-            else raise = (float)atof(pos.c_str()) / 100;
+            else raise = (float)nn_strtod(pos.c_str(), nullptr) / 100;
             size_t sp = pos.find(' ');
-            if (sp != std::string::npos && atof(pos.c_str() + sp + 1) > 0) scale = (float)atof(pos.c_str() + sp + 1) / 100;
+            if (sp != std::string::npos && nn_strtod(pos.c_str() + sp + 1, nullptr) > 0) scale = (float)nn_strtod(pos.c_str() + sp + 1, nullptr) / 100;
             if (raise != 0 && raise > -1 && raise < 1 && scale > .05f && scale <= 1) {
                 m_span.rise = raise * m_span.size;
                 m_span.size *= scale;

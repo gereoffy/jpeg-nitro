@@ -12,6 +12,7 @@
 #include "nitroai.h"   // (Illustrator 1-8 documents, read as a PDF)
 #include "nitro_draw.h"
 #include "nitro_font.h"   // (stand-ins for the fonts not embedded)
+#include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
 #include "nitropdf_glyphs.h"
 #include "nitro_convert.h"   // (nc_jpeg_to_bgra)
 #include "nitro_cmyk.h"
@@ -166,7 +167,7 @@ bool compilePs(const char *s, size_t n, std::vector<Func::Ins> &code) {
         }
         if (!pending.back().empty()) return false;   // (a block not followed by if / ifelse)
         char *end = nullptr;
-        double v = strtod(tok.c_str(), &end);
+        double v = nn_strtod(tok.c_str(), &end);
         if (end && *end == 0 && !tok.empty()) {
             cur.push_back({PS_NUM, (float)v, 0});
             continue;

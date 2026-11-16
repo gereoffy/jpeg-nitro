@@ -11,6 +11,7 @@
 #include "nitrodio.h"
 #include "nitro_draw.h"
 #include "nitro_font.h"
+#include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
 
 #include <libxml/parser.h>
 #include <libxml/tree.h>
@@ -110,7 +111,7 @@ double num(const Style &s, const char *k, double def) {
     const std::string &v = str(s, k);
     if (v.empty()) return def;
     char *end = nullptr;
-    double d = strtod(v.c_str(), &end);
+    double d = nn_strtod(v.c_str(), &end);
     return end != v.c_str() && std::isfinite(d) && std::fabs(d) < 1e7 ? d : def;   // (a damaged file's huge numbers: the default)
 }
 
@@ -246,7 +247,7 @@ std::string attr(xmlNode *n, const char *name) {
 double attrNum(xmlNode *n, const char *name, double def = 0) {
     std::string v = attr(n, name);
     if (v.empty()) return def;
-    double d = strtod(v.c_str(), nullptr);
+    double d = nn_strtod(v.c_str(), nullptr);
     return std::isfinite(d) && std::fabs(d) < 1e8 ? d : def;
 }
 bool is(xmlNode *n, const char *name) { return n->type == XML_ELEMENT_NODE && !strcmp((const char *)n->name, name); }
@@ -724,7 +725,7 @@ struct Builder {
             if (pat.empty()) pat = "3 3";
             const char *c = pat.c_str();
             char *end;
-            for (double d; (d = strtod(c, &end)), end != c && dash.size() < 16; c = end)
+            for (double d; (d = nn_strtod(c, &end)), end != c && dash.size() < 16; c = end)
                 if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * std::max(width, 1.f)));
             if (dash.size() % 2) dash.insert(dash.end(), dash.begin(), dash.end());
             float total = 0;
@@ -940,7 +941,7 @@ struct Builder {
         const char *kx = source ? "exitX" : "entryX", *ky = source ? "exitY" : "entryY";
         const std::string &vx = str(s, kx), &vy = str(s, ky);
         if (vx.empty() || vy.empty()) return false;
-        double fx = strtod(vx.c_str(), nullptr), fy = strtod(vy.c_str(), nullptr);
+        double fx = nn_strtod(vx.c_str(), nullptr), fy = nn_strtod(vy.c_str(), nullptr);
         if (!std::isfinite(fx) || !std::isfinite(fy) || std::fabs(fx) > 1e6 || std::fabs(fy) > 1e6) return false;
         p = {t.b.x + fx * t.b.w + num(s, source ? "exitDx" : "entryDx", 0), t.b.y + fy * t.b.h + num(s, source ? "exitDy" : "entryDy", 0)};
         if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = perimeterPoint(t, p, false);
@@ -1144,7 +1145,7 @@ struct Builder {
             }
             return 20;
         }
-        double d = strtod(v.c_str(), nullptr);
+        double d = nn_strtod(v.c_str(), nullptr);
         return std::isfinite(d) && std::fabs(d) < 1e6 ? d : 10;
     }
     static void orthConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, const Style &s,

@@ -31,6 +31,7 @@
 - `nitrotype.cpp/.h`: font files (TrueType, OpenType, collections, Type 1, WOFF, WOFF2, EOT, SVG fonts) as a specimen: sample lines and every glyph, FreeType's outlines drawn with plutovg
 - `nitro_ft.h`: a FreeType glyph's outline as a plutovg path, shared by nitropdf and nitrotype
 - `nitro_xmltag.h`: an XML text's tags one by one (nitrotype: an SVG font's glyphs; nitrosvg: a sprite's symbols)
+- `nitro_num.h`: numbers read and written with '.' whatever the process's locale is (nitropdf, nitrodio, nitrocdr, nitrotype)
 - `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 

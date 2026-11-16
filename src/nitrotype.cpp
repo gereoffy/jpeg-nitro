@@ -11,6 +11,7 @@
 #include "nitro_draw.h"
 #include "nitro_font.h"
 #include "nitro_ft.h"
+#include "nitro_num.h"   // (numbers read and written the same in every locale)
 #include "nitropdf.h"   // (nitropdf_glyph_unicode: a glyph name's character)
 #include "nitrosvg.h"   // (a colour glyph's SVG document)
 #include "nitro_xmltag.h"
@@ -310,7 +311,7 @@ bool unsvg(const uint8_t *d, size_t n, std::string &out) {
     auto number = [](const std::string *v, float otherwise) {
         if (!v || v->empty()) return otherwise;
         char *e = nullptr;
-        float f = strtof(v->c_str(), &e);
+        float f = (float)nn_strtod(v->c_str(), &e);
         return e == v->c_str() || !(f > -1e6f && f < 1e6f) ? otherwise : f;
     };
     nxt::Tag t;
@@ -435,6 +436,7 @@ bool unsvg(const uint8_t *d, size_t n, std::string &out) {
           psname + " def\n/PaintType 0 def\n/FontType 1 def\n";
     snprintf(b, sizeof b, "/FontMatrix [%.9g 0 0 %.9g 0 0] readonly def\n/Encoding StandardEncoding def\n/FontBBox {0 %d %d %d} readonly def\n",
              1.0 / upm, 1.0 / upm, T1Path::unit(descent), T1Path::unit(widest), T1Path::unit(ascent));
+    nn_cpoint(b);
     out += b;
     out += "currentdict end\ncurrentfile eexec\n";
     std::string coded = t1crypt(priv, 55665);
@@ -824,7 +826,7 @@ void glyphBox(std::string &svg, float upm, float asc, float desc, float adv) {
     const char *p = nums.c_str();
     for (int k = 0; k < 4; k++) {
         char *next = nullptr;
-        v[k] = strtod(p, &next);
+        v[k] = nn_strtod(p, &next);
         if (next == p) return;
         p = next;
     }
@@ -832,6 +834,7 @@ void glyphBox(std::string &svg, float upm, float asc, float desc, float adv) {
     double k = v[2] / upm;   // the viewBox's units to a font unit
     char b[160];
     snprintf(b, sizeof b, "%g %g %g %g", v[0], v[1] - asc * k, adv * k, (asc + desc) * k);
+    nn_cpoint(b);
     svg.replace(q + 1, close - q - 1, b);
 }
 

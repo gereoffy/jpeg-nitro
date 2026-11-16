@@ -56,6 +56,10 @@ std::string fmt(double v) {
     v = std::max(-1e9, std::min(1e9, v));
     char b[64];
     snprintf(b, sizeof b, "%.5f", v);
+    // (printf writes the locale's decimal point, a ',' in many: the digits before it and the five after it are kept)
+    size_t n = strlen(b), i = b[0] == '-';
+    while (b[i] >= '0' && b[i] <= '9') i++;
+    if (n >= i + 6) b[i] = '.', memmove(b + i + 1, b + n - 5, 6);
     char *e = b + strlen(b);
     while (e > b && e[-1] == '0') e--;
     if (e > b && e[-1] == '.') e--;
