@@ -13,7 +13,8 @@
 // The picture: grey (MONOCHROME1 / 2) through the rescale (slope, intercept) and the window the
 // file gives (its first window, or its VOI lookup table; neither, or a window that would leave the
 // picture all white: 8-bit pictures as they are, the others from their smallest to their largest
-// value), made lighter or darker by info.ev; palette
+// value, the thousandth of the pixels at either end not counted), made lighter or darker by
+// info.ev; palette
 // colour, RGB and YBR_FULL (_422).
 // Of a file of several frames one frame at a time (all of the same size: the viewers step through them).
 // Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG, HTJ2K, JPEG XL, the video

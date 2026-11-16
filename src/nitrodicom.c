@@ -777,14 +777,22 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
             double c = in->center - 0.5, ww = in->width_w - 1;
             if (ww > 0) S.a = 255.0 / ww, S.b = (0.5 - c / ww) * 255.0;
             else S.a = 1e30, S.b = -c * 1e30;   // (a width of 1: black up to the centre, white above)
-        } else if (stored <= 8) {   // an 8-bit picture as it is
+        } else if (stored <= 8 && in->stored <= 8) {   // an 8-bit picture as it is (one the data set too calls so)
             double lo = sgn ? -(double)(1 << (stored - 1)) : 0, top = (double)mask;
             S.a = top > 0 ? 255.0 / (top * fabs(S.slope)) : 0;
             S.b = -(S.slope > 0 ? lo * S.slope + S.intercept : (lo + top) * S.slope + S.intercept) * S.a;
-        } else {   // from the smallest to the largest value of the frame (those of the padding left out)
-            int64_t lo = INT64_MAX, hi = INT64_MIN;
+        } else {
+            // From the smallest to the largest value of the frame (those of the padding left out), but for the
+            // thousandth of its pixels at either end: a few stray ones (a marker's white, one black pixel) would
+            // stretch the scale and leave the picture dark or flat.
+            int64_t lo = INT64_MAX, hi = INT64_MIN, bias = sgn && stored < 32 ? (int64_t)1 << (stored - 1) : 0;
             uint32_t pad = (uint32_t)in->padding & mask, *row = malloc((size_t)w * sizeof *row);
-            if (!row) return -1;
+            uint32_t *hist = stored <= 16 ? calloc((size_t)mask + 1, sizeof *hist) : NULL;   // (by value: v + bias)
+            size_t counted = 0;
+            if (!row) {
+                free(hist);
+                return -1;
+            }
             for (int y = 0; y < h; y++) {
                 row_samples(f, w, h, y, row);
                 for (int x = 0; x < w; x++) {
@@ -793,10 +801,19 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
                     int64_t v = value_of(bits, stored, sgn);
                     if (v < lo) lo = v;
                     if (v > hi) hi = v;
+                    if (hist) hist[v + bias]++, counted++;
                 }
             }
             free(row);
             if (lo > hi) lo = hi = 0;
+            if (hist && counted) {
+                size_t tail = counted / 1000, n = 0;
+                int64_t a = lo + bias, b = hi + bias;
+                while (a < b && n + hist[a] <= tail) n += hist[a++];
+                for (n = 0; b > a && n + hist[b] <= tail; ) n += hist[b--];
+                if (b > a) lo = a - bias, hi = b - bias;   // (else almost all pixels have one value: the whole range)
+            }
+            free(hist);
             double m0 = (double)lo * S.slope + S.intercept, m1 = (double)hi * S.slope + S.intercept;
             if (m0 > m1) { double t = m0; m0 = m1; m1 = t; }
             S.a = m1 > m0 ? 255.0 / (m1 - m0) : 0;
