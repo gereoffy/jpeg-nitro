@@ -17,6 +17,7 @@
     <mediatype>image/gif</mediatype>
     <mediatype>image/bmp</mediatype>
     <mediatype>image/webp</mediatype>
+    <mediatype>image/jp2</mediatype>
     <mediatype>image/heic</mediatype>
     <mediatype>image/heif</mediatype>
     <mediatype>image/avif</mediatype>

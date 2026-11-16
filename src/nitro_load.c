@@ -7,6 +7,7 @@
 #include "nitrojpeg.h"
 #include "nitropng.h"
 #include "nitropsd.h"
+#include "nitrojpx.h"
 #include "nitrotiff.h"
 #include "nitrowebp.h"
 #ifdef NV_DAV1D
@@ -26,7 +27,7 @@
 // file names
 
 const char *const nv_image_exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "avif", "webp", "tif", "tiff",
-                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", NULL};
+                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", NULL};
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -269,6 +270,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_NITRODNG: return "nitrodng";
     case NV_MODE_NITROWEBP: return "nitrowebp";
     case NV_MODE_NITROTIFF: return "nitrotiff";
+    case NV_MODE_NITROJPX: return "nitrojpx";
     case NV_MODE_NITROAVIF: return "nitroavif";
     default: return NULL;
     }
@@ -549,6 +551,37 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
             GIVE_BACK(b);
             img->error = "TIFF decode failed";
         }
+    } else if ((n >= 12 && !memcmp(data, "\0\0\0\x0cjP  \r\n\x87\n", 12)) || (n >= 4 && !memcmp(data, "\xff\x4f\xff\x51", 4))) {
+        // JPEG 2000 (a JP2 file or a raw codestream): nitrojpx (code-blocks, wavelets, tiles in parallel).
+        // One beyond max_tex at half, a quarter ... of its size: its finest resolution levels left out.
+        int jw = 0, jh = 0, r = 0;
+        njpx_image ji;
+        if (njpx_size(data, n, &jw, &jh)) {
+            img->error = "Unsupported JPEG 2000";
+        } else {
+            while (r < 7 && (((jw - 1) >> r) + 1 > mt || ((jh - 1) >> r) + 1 > mt)) r++;
+            if (njpx_decode(data, n, NJPX_IMAGE | (r ? NJPX_REDUCE(r) : 0) | (dec->threads == 1 ? NJPX_SINGLE_THREAD : 0), &ji)) {
+                img->error = "Unsupported JPEG 2000 (Part 2, HTJ2K, too large ...)";
+            } else {
+                if (ji.width > mt || ji.height > mt) {
+                    img->error = "Unsupported JPEG 2000 (too large)";
+                } else {
+                    b = bgra_buffer(dec, img, ji.width, ji.height, cap);
+                    if (b && !njpx_bgra(&ji, b, img->pitch[0])) {
+                        img->orientation = 1;
+                        img->icc = ji.ncomp - (ji.alpha >= 0) == 3 ? ji.icc : NULL;
+                        img->icc_len = ji.icc_len;
+                        img->mode = NV_MODE_NITROJPX;
+                        njpx_free(&ji);
+                        *buf = b;
+                        return 0;
+                    }
+                    GIVE_BACK(b);
+                    img->error = "Unsupported JPEG 2000 (CMYK ...)";
+                }
+                njpx_free(&ji);
+            }
+        }
     }
     return oom ? -1 : 1;
 }
@@ -607,6 +640,12 @@ int nv_image_size_from_file(const char *path, double *w, double *h) {
     }
     if (!ok && n >= 3 && b[0] == 0xFF && b[1] == 0xD8 && !nj_read_info(b, n, &ji)) {
         *w = ji.width; *h = ji.height; o = ji.orientation; ok = 1;
+    }
+    if (!ok) {   // JPEG 2000
+        int jw, jh;
+        if (!njpx_size(b, n, &jw, &jh)) {
+            *w = jw; *h = jh; ok = 1;
+        }
     }
     if (!ok && !np_read_info(b, n, &pi)) {   // (an eXIf after the first MB: not seen here)
         *w = pi.width; *h = pi.height; o = pi.orientation; ok = 1;

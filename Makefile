@@ -24,7 +24,7 @@
 #                        signed with a Developer ID and notarized by Apple: opens without a
 #                        Gatekeeper warning (once: xcrun notarytool store-credentials name ...)
 #   make tools           benchmarks and tests (need scripts/get-deps.sh first)
-#   make lib             build/libnitro.a: the decoders (JPEG, PNG, PSD, HEIC, DNG, WebP, TIFF; AVIF with
+#   make lib             build/libnitro.a: the decoders (JPEG, PNG, PSD, HEIC, DNG, WebP, TIFF, JPEG 2000; AVIF with
 #                        dav1d) and nitro_load (file -> decoded image) as one static library. The viewers
 #                        link it (built again per target: the app's architectures, Windows, the portable
 #                        Linux build); any other program can too, with nitro_os.h's blocks runtime
@@ -85,9 +85,9 @@ FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework Q
 # compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
 NITROHEVC  ?= 0
 LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/nitrodng.c src/nitrowebp.c \
-              src/nitrotiff.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
+              src/nitrotiff.c src/nitrojpx.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
 LIB_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitroheic.h src/nitrohevc.h src/nitrodng.h src/nitrowebp.h \
-              src/nitrotiff.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/heif.h src/tiff.h
+              src/nitrotiff.h src/nitrojpx.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/heif.h src/tiff.h
 LIB_AVIF    = $(if $(filter 1,$(DAV1D)),src/nitroavif.c)
 LIB_DEFS    = $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
 HEVC_DEFS  := $(if $(filter 1,$(NITROHEVC)),-DNV_NITROHEVC)
@@ -394,7 +394,7 @@ NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitromet
 NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
               src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrotiff.h \
-              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.c src/nitrojpx.h \
+              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h \
               src/nitrotype.h src/nitro_ft.h
 # (zlib-ng's include/ for the librevenge-based parts, nitrodio and pdfparse3 too, where the system has no zlib.h:
 # Windows, the portable Linux build)
@@ -441,7 +441,6 @@ endef
 	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -I$(LCMS)/include -Isrc -c src/nitro_cmyk.c -o $(@D)/nitro_cmyk.o)
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojbig2.c -o $(@D)/nitrojbig2.o)
-	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojpx.c -o $(@D)/nitrojpx.o)
 	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@

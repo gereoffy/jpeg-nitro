@@ -13,6 +13,7 @@
 
 #define LEVELS 33
 #define BANDS (3 * (LEVELS - 1) + 1)
+// (an image a document embeds; NJPX_IMAGE: a picture file, four and sixteen times these)
 #define MEM_LIMIT ((size_t)512 << 20)
 #define SAMPLE_LIMIT ((size_t)64 << 20)
 #define ITEM_LIMIT 1000000
@@ -116,13 +117,13 @@ typedef struct {
     Packet *packets; size_t npackets, next;
 } Tile;
 typedef struct {
-    size_t memory, items;
+    size_t memory, items, mem_limit, sample_limit;
     int xs, ys, x0, y0, tw, th, tx0, ty0, nx, ny, nc, siz, layers, order, mct, flags;
     int prec[NJPX_MAX_COMPS], sign[NJPX_MAX_COMPS], dx[NJPX_MAX_COMPS], dy[NJPX_MAX_COMPS];
     Coding coding[NJPX_MAX_COMPS]; Tile *tiles;
     int colorspace, alpha, premult, raw_colors, serial;
     int reduce, ox0, oy0, oxs, oys;   // (NJPX_REDUCE: the levels left out; the output grid, reduced)
-    const uint8_t *palette, *cmap, *cdef; size_t plen, mlen, dlen;
+    const uint8_t *palette, *cmap, *cdef, *icc; size_t plen, mlen, dlen, icc_len;
     uint16_t *output;
 } Jpx;
 
@@ -131,7 +132,7 @@ typedef struct {
 static int reserve(Jpx *j, size_t n) {
     size_t used = __atomic_load_n(&j->memory, __ATOMIC_RELAXED);
     do {
-        if (n > MEM_LIMIT - used) return -1;
+        if (used > j->mem_limit || n > j->mem_limit - used) return -1;
     } while (!__atomic_compare_exchange_n(&j->memory, &used, used + n, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     return 0;
 }
@@ -216,7 +217,8 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
         if (j->nc < 1 || j->nc > NJPX_MAX_COMPS || n != 36u + 3u * j->nc ||
             j->xs <= j->x0 || j->ys <= j->y0 || !j->tw || !j->th || j->tx0 > j->x0 || j->ty0 > j->y0 ||
             j->tx0 + j->tw <= j->x0 || j->ty0 + j->th <= j->y0 ||
-            (uint64_t)(j->xs - j->x0) * (j->ys - j->y0) * j->nc > SAMPLE_LIMIT) return -1;
+            (uint64_t)(cshift(j->xs, j->reduce) - cshift(j->x0, j->reduce)) * (cshift(j->ys, j->reduce) - cshift(j->y0, j->reduce)) * j->nc >
+                j->sample_limit) return -1;   // (of the output's grid: a huge image can be asked for reduced)
         j->nx = cdiv(j->xs - j->tx0, j->tw); j->ny = cdiv(j->ys - j->ty0, j->th);
         if ((int64_t)j->nx * j->ny > 65535) return -1;
         for (int i = 0; i < j->nc; i++) {
@@ -939,6 +941,7 @@ static int boxes(Jpx *j, const uint8_t *p, size_t len, const uint8_t **stream, s
             if (size < 3) return -1;
             if (d[0] == 1) { if (size != 7) return -1; if (!j->colorspace) j->colorspace = (int)be32(d + 3); }
             else if (d[0] == 2 && size >= 3 + 128 && !j->colorspace) {
+                j->icc = d + 3; j->icc_len = size - 3;
                 unsigned cs = be32(d + 3 + 16); // ICC's data colour space; like nitropdf's ICC alternate
                 j->colorspace = cs == 0x47524159 ? NJPX_GRAY : cs == 0x52474220 ? NJPX_SRGB : cs == 0x434d594b ? NJPX_CMYK : 0;
             }
@@ -1021,7 +1024,7 @@ static int channels(Jpx *j, njpx_image *out) {
         for (int c = 0; c < n; c++) { if (used[order[c]]++) return -1; }
     }
     size_t pixels = (size_t)(j->xs - j->x0) * (j->ys - j->y0);
-    if (pixels * n > SAMPLE_LIMIT) return -1;
+    if (pixels * n > j->sample_limit) return -1;
     int change = n != j->nc;
     for (int c = 0; c < n; c++) if (col[c] >= 0 || map[c] != c || order[c] != c) change = 1;
     if (change) {
@@ -1050,8 +1053,9 @@ static int channels(Jpx *j, njpx_image *out) {
 int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out)); out->alpha = -1;
-    if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD | NJPX_REDUCE(7)))) return -1;
+    if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD | NJPX_IMAGE | NJPX_REDUCE(7)))) return -1;
     Jpx j = {0}; j.alpha = -1; j.raw_colors = (flags & NJPX_RAW_COLORS) != 0; j.serial = (flags & NJPX_SINGLE_THREAD) != 0;
+    j.mem_limit = flags & NJPX_IMAGE ? MEM_LIMIT * 4 : MEM_LIMIT; j.sample_limit = flags & NJPX_IMAGE ? SAMPLE_LIMIT * 16 : SAMPLE_LIMIT;
     j.reduce = (int)(flags >> 8 & 7);
     const uint8_t *stream = data; size_t slen = len;
     if (be16(data) != 0xff4f) {
@@ -1137,6 +1141,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         }
     }
     rc = channels(&j, out);
+    if (!rc) { out->icc = j.icc; out->icc_len = j.icc_len; }
 done:
     if (j.tiles) for (int i = 0; i < j.nx * j.ny; i++) tile_free(&j, j.tiles + i);
     jfree(&j, j.tiles); jfree(&j, j.output);
@@ -1145,3 +1150,77 @@ done:
 void njpx_free(njpx_image *image) {
     if (image) { if (image->samples) free((size_t *)image->samples - 1); memset(image, 0, sizeof(*image)); image->alpha = -1; }
 }
+
+int njpx_size(const uint8_t *data, size_t len, int *width, int *height) {
+    if (!data || len < 12) return -1;
+    const uint8_t *s = data; size_t n = len;
+    if (be16(data) != 0xff4f) {   // a JP2 file: its codestream box (which may go on beyond what was given)
+        if (be32(data) != 12 || be32(data + 4) != 0x6a502020 || be32(data + 8) != 0x0d0a870a) return -1;
+        size_t at = 0; s = NULL;
+        while (len - at >= 8) {
+            uint64_t size = be32(data + at); size_t head = 8;
+            if (size == 1) { if (len - at < 16) return -1; size = (uint64_t)be32(data + at + 8) << 32 | be32(data + at + 12); head = 16; }
+            if (be32(data + at + 4) == 0x6a703263) { s = data + at + head; n = len - at - head; break; }
+            if (!size || size < head || size > len - at) return -1;
+            at += (size_t)size;
+        }
+        if (!s) return -1;
+    }
+    if (n < 24 || be16(s) != 0xff4f || be16(s + 2) != 0xff51) return -1;
+    uint32_t xs = be32(s + 8), ys = be32(s + 12), x0 = be32(s + 16), y0 = be32(s + 20);
+    if (xs <= x0 || ys <= y0 || xs - x0 > INT_MAX || ys - y0 > INT_MAX) return -1;
+    *width = (int)(xs - x0); *height = (int)(ys - y0);
+    return 0;
+}
+
+int njpx_bgra(const njpx_image *im, uint8_t *bgra, size_t pitch) {
+    if (!im || !im->samples || !bgra || im->width <= 0 || im->height <= 0 || pitch < (size_t)im->width * 4) return -1;
+    int n = im->ncomp, a = im->alpha, colors = n - (a >= 0), ch[3] = {0, 0, 0}, k = 0;
+    if (a >= n || (colors != 1 && colors != 3)) return -1;
+    if (im->colorspace == NJPX_GRAY ? colors != 1 : im->colorspace == NJPX_SRGB || im->colorspace == NJPX_SYCC ? colors != 3 : im->colorspace != NJPX_UNKNOWN) return -1;
+    for (int c = 0; c < n && k < colors; c++) if (c != a) ch[k++] = c;
+    if (colors == 1) ch[1] = ch[2] = ch[0];
+    // each channel's values to 8 bits (rounded): a table for up to 12 bits, the shift and rounding beyond
+    uint8_t *lut[4] = {NULL, NULL, NULL, NULL}; int prec[4], src[4] = {ch[0], ch[1], ch[2], a};
+    for (int c = 0; c < 4; c++) {
+        prec[c] = src[c] >= 0 ? im->precision[src[c]] : 8;
+        if (prec[c] < 1 || prec[c] > 16) { for (int d = 0; d < c; d++) free(lut[d]); return -1; }
+        if (prec[c] == 8 || prec[c] > 12) continue;
+        uint32_t max = (1u << prec[c]) - 1;
+        lut[c] = malloc(max + 1);
+        if (!lut[c]) { for (int d = 0; d < c; d++) free(lut[d]); return -1; }
+        for (uint32_t v = 0; v <= max; v++) lut[c][v] = (uint8_t)((v * 255 + max / 2) / max);
+    }
+    int ycc = im->colorspace == NJPX_SYCC, premult = im->premultiplied, w = im->width, h = im->height;
+    const uint16_t *samples = im->samples;
+    uint8_t **lp = lut; const int *pp = prec, *sp = src;
+    int groups = h >= 64 ? imin(64, cdiv(h, 16)) : 1;
+    nitro_body rows = ^(size_t g) {
+        for (int y = (int)((int64_t)h * (int64_t)g / groups), y1 = (int)((int64_t)h * (int64_t)(g + 1) / groups); y < y1; y++) {
+            const uint16_t *s = samples + (size_t)y * w * n;
+            uint8_t *o = bgra + (size_t)y * pitch;
+            for (int x = 0; x < w; x++, s += n, o += 4) {
+                int v[4] = {0, 0, 0, 255};
+                for (int c = 0; c < 4; c++) {
+                    if (sp[c] < 0) continue;
+                    unsigned t = s[sp[c]];
+                    unsigned max = (1u << pp[c]) - 1;
+                    if (t > max) t = max;
+                    v[c] = pp[c] == 8 ? (int)t : lp[c] ? lp[c][t] : (int)((t * 255u + max / 2) / max);
+                }
+                if (ycc) {   // (full range, the chroma around 128)
+                    int Y = v[0], cb = v[1] - 128, cr = v[2] - 128;
+                    int r = Y + ((91881 * cr + 32768) >> 16), gg = Y - ((22554 * cb + 46802 * cr + 32768) >> 16), b = Y + ((116130 * cb + 32768) >> 16);
+                    v[0] = r < 0 ? 0 : r > 255 ? 255 : r, v[1] = gg < 0 ? 0 : gg > 255 ? 255 : gg, v[2] = b < 0 ? 0 : b > 255 ? 255 : b;
+                }
+                if (v[3] < 255 && !premult) v[0] = (v[0] * v[3] + 127) / 255, v[1] = (v[1] * v[3] + 127) / 255, v[2] = (v[2] * v[3] + 127) / 255;
+                o[0] = (uint8_t)v[2], o[1] = (uint8_t)v[1], o[2] = (uint8_t)v[0], o[3] = (uint8_t)v[3];
+            }
+        }
+    };
+    if (groups > 1) nitro_parallel((size_t)groups, rows);
+    else rows(0);
+    for (int c = 0; c < 4; c++) free(lut[c]);
+    return 0;
+}
+

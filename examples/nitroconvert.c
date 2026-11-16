@@ -2,7 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitroconvert: an example of using libnitro - any image the library decodes (JPEG, PNG, PSD,
-// HEIC, AVIF, WebP, TIFF, DNG, a camera raw's embedded JPEG) -> an uncompressed 24-bit BMP.
+// HEIC, AVIF, WebP, TIFF, JPEG 2000, DNG, a camera raw's embedded JPEG) -> an uncompressed 24-bit BMP.
 //
 //   nitroconvert photo.jpg photo.bmp
 //

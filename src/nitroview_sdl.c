@@ -2412,7 +2412,7 @@ static int do_register(int on) {
             "Icon=" APP_ID "\n"
             "Terminal=false\n"
             "Categories=Graphics;Viewer;\n"
-            "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;"
+            "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;image/jp2;image/jpx;image/x-jp2-codestream;"
             "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;%s\n"
             "StartupNotify=true\n", q, nh_decoder() ? "image/heic;image/heif;" : "", nv_vector_mimes());   // (the drawings this build renders)
         bad = !text || !SDL_CreateDirectory(apps) || !SDL_CreateDirectory(icons) || !SDL_SaveFile(desktop, text, strlen(text)) ||

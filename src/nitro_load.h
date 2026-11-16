@@ -2,7 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitro_load: loading an image with the decoders of this library (nitrojpeg, nitropng, nitropsd,
-// nitroheic, nitrodng, nitrowebp, nitrotiff; nitroavif when built with dav1d): which files are
+// nitroheic, nitrodng, nitrowebp, nitrotiff, nitrojpx; nitroavif when built with dav1d): which files are
 // images, reading them (a PSD's merged image only, a camera raw's embedded JPEG only), trying
 // the decoders in turn, the size from a header. Plain C, no platform code: paths are UTF-8 (on
 // Windows they are converted for the file API). The viewers (nitroview.m, nitroview_sdl.c,
@@ -63,7 +63,7 @@ typedef enum { NV_YUV = 0, NV_BGRA = 1, NV_PNG = 2, NV_PLANAR = 3 } NvKind;   //
 // decoder otherwise; the viewers' own fallback decoders use -1 .. -3.
 enum { NV_MODE_NITROPNG = -4, NV_MODE_NITROPSD = -5, NV_MODE_SVG = -6, NV_MODE_CDR = -7, NV_MODE_NITROHEIC = -8,
        NV_MODE_NITRODNG = -9, NV_MODE_NITROWEBP = -10, NV_MODE_NITROTIFF = -11, NV_MODE_NITROAVIF = -12,
-       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16, NV_MODE_PDF = -17, NV_MODE_FONT = -18 };
+       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16, NV_MODE_PDF = -17, NV_MODE_FONT = -18, NV_MODE_NITROJPX = -19 };
 const char *nv_mode_name(int mode);   // of the modes above; NULL for others
 
 // A decoded image in a host buffer (what the GPU shaders or a CPU conversion read).
@@ -99,7 +99,8 @@ typedef struct {
 } NvDecoder;
 
 // Decodes data (as nv_read_image read it; a camera raw's or DNG's embedded JPEG is moved to its
-// start, *len shortened) with our decoders: DNG, JPEG, PNG, PSD, HEIC, AVIF (NV_DAV1D), WebP, TIFF.
+// start, *len shortened) with our decoders: DNG, JPEG, PNG, PSD, HEIC, AVIF (NV_DAV1D), WebP, TIFF,
+// JPEG 2000 (one beyond max_tex: at half, a quarter ... of its size).
 // Returns 0: decoded, *img describes the pixels in *buf (from dec->get, *cap its size); 1: not
 // one of ours, or a file they cannot decode (img->error says which; img->orientation may be known
 // already): the platform's decoder gets it; -1: out of memory.
