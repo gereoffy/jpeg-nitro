@@ -2,6 +2,8 @@
 #include "nitro-window.h"
 #include "nitro-image.h"
 
+#include <locale.h>
+
 #define NITRO_APP_ID "com.github.gereoffy.nitroview"
 #define NITRO_RESOURCE_BASE "/com/github/gereoffy/nitroview"
 
@@ -81,6 +83,11 @@ static void quit_action_cb(GSimpleAction *action, GVariant *parameter, gpointer 
 
 static void startup_cb(GApplication *application, gpointer user_data) {
     (void)user_data;
+
+    // GTK has set the user's locale by now (its startup runs before this handler): the numbers go back
+    // to the C locale's '.', which the readers and their libraries read and write (strtod, printf),
+    // before any of them runs; translations, dates and the rest stay the user's
+    setlocale(LC_NUMERIC, "C");
 
     static const GActionEntry actions[] = {
         {"open", open_action_cb, NULL, NULL, NULL, {0}},
