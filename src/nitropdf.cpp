@@ -398,6 +398,17 @@ struct Shade {
     std::shared_ptr<Mesh> mesh;
 };
 
+// A tiling pattern (8.7.3.1): its cell's content as a display list of its own, in the pattern's space
+// (clipped by its /BBox), repeated every xs and ys; an uncoloured one (PaintType 2) drawn in the colour
+// given with it
+struct PageDL;
+struct Tiling {
+    std::shared_ptr<PageDL> cell;
+    float bbox[4] = {0};   // x0 y0 x1 y1
+    float xs = 0, ys = 0;
+    bool uncoloured = false;
+};
+
 struct Item {
     enum : uint8_t { FILL, STROKE, IMAGE } kind;
     bool evenOdd = false;
@@ -412,7 +423,8 @@ struct Item {
     std::shared_ptr<std::vector<float>> dash;
     std::shared_ptr<Img> img;
     std::shared_ptr<Shade> shade;   // (a fill: by this gradient instead of rgb)
-    plutovg_matrix_t shadeM;        // (its space -> the path's)
+    std::shared_ptr<Tiling> tile;   // (or by this pattern: rgb an uncoloured one's colour)
+    plutovg_matrix_t shadeM;        // (their space -> the path's)
     int segments = 0;   // (merged strokes: the path's elements so far)
     float length = 0;   // (a dashed stroke: its path's length, in its own units)
     bool text = false;  // (a glyph run's fill: merged with the next)
@@ -1769,7 +1781,8 @@ struct GState {
     float groupA = 1;   // (the alpha the transparency groups around compose with: in fillA and strokeA)
     bool fillPattern = false, strokePattern = false, fillNone = false, strokeNone = false;
     std::shared_ptr<Shade> fillShade;   // (a shading pattern's: fills by it)
-    plutovg_matrix_t fillShadeM;        // (its space -> the page's display coordinates)
+    std::shared_ptr<Tiling> fillTile;   // (a tiling pattern's)
+    plutovg_matrix_t fillShadeM;        // (their space -> the page's display coordinates)
     bool softMask = false;   // (a soft mask set, not drawn: its shadings as before, a colour or nothing)
     float width = 1, miter = 10, dashOffset = 0;
     uint8_t cap = 0, join = 0;
@@ -1785,7 +1798,12 @@ struct Interp {
     pp::Doc &doc;
     PageDL &pg;
     plutovg_matrix_t base;   // the page's user space -> its display coordinates
+    // the default space of the content stream being read (the page's, a form's: its matrix in the
+    // state it was drawn in) -> the display coordinates: what a pattern's matrix maps to (8.7.3.1)
+    plutovg_matrix_t patBase;
     float pageW = 0, pageH = 0;   // (its size there)
+    int patDepth = 0;   // (a tiling pattern's cell being read: how deep in patterns)
+    std::unordered_map<uint32_t, std::shared_ptr<Tiling>> tilings;   // (read on this page, by object number)
     std::unordered_map<std::string, int> clipIds;   // (the clips made: their index by parent, rule, matrix, path)
     GState gs;
     std::vector<GState> stack;
@@ -1966,6 +1984,9 @@ struct Interp {
                 if (gs.fillPattern && gs.fillShade && !gs.softMask && plutovg_matrix_invert(&m, &inv)) {
                     it.shade = gs.fillShade;
                     mul(it.shadeM, gs.fillShadeM, inv);
+                } else if (gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv)) {
+                    it.tile = gs.fillTile;
+                    mul(it.shadeM, gs.fillShadeM, inv);
                 }
                 if (clipBox(it.box, it.clip)) {
                     shared = std::make_shared<PathRef>(plutovg_path_reference(path));
@@ -1986,9 +2007,11 @@ struct Interp {
         int clip = gs.clip;
         if (!clipBox(b, clip)) return;
         int elements = plutovg_path_get_elements(run, nullptr);
-        if (!pg.items.empty() && gs.fillA >= 1) {
+        plutovg_matrix_t inv;
+        bool tiled = gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv);
+        if (!pg.items.empty() && gs.fillA >= 1 && !tiled) {
             Item &l = pg.items.back();
-            if (l.kind == Item::FILL && l.text && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
+            if (l.kind == Item::FILL && l.text && !l.tile && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= 4 * (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, run, nullptr);
                 l.segments += elements;
@@ -2003,6 +2026,10 @@ struct Interp {
         it.clip = clip;
         it.rgb = gs.fillRgb, it.alpha = gs.fillA;
         it.m = m;
+        if (tiled) {
+            it.tile = gs.fillTile;
+            mul(it.shadeM, gs.fillShadeM, inv);
+        }
         it.box = b;
         plutovg_path_t *own = plutovg_path_create();
         plutovg_path_add_path(own, run, nullptr);
@@ -2485,20 +2512,72 @@ struct Interp {
         } else plutovg_path_destroy(area);
     }
 
+    // A tiling pattern's cell read into a display list of its own (in the pattern's space, clipped by
+    // its BBox), once a page; null if it cannot be (no steps, a pattern in itself, too deep). Its
+    // operators and bytes count against the page's.
+    std::shared_ptr<Tiling> loadTiling(Val ref, Val res) {
+        if (ref.t != pp::REF) return nullptr;
+        auto known = tilings.find(ref.oid());
+        if (known != tilings.end()) return known->second;
+        tilings[ref.oid()] = nullptr;   // (while it is read: a pattern drawn in its own cell is not)
+        const pp::Stream *st = doc.stream(ref.oid());
+        if (!st || patDepth >= 4) return nullptr;
+        Val d = st->dict;
+        auto bb = nums(doc, d.get("BBox"));
+        float xs = fabsf((float)doc.get(d, "XStep").num(0)), ys = fabsf((float)doc.get(d, "YStep").num(0));
+        if (bb.size() != 4 || !(xs > 1e-6f && xs < 1e9f) || !(ys > 1e-6f && ys < 1e9f)) return nullptr;
+        for (float v : bb)
+            if (!std::isfinite(v) || fabsf(v) > 1e9f) return nullptr;
+        pp::Decoded dec;
+        if (!content(*st, dec, 64u << 20)) return nullptr;
+        auto t = std::make_shared<Tiling>();
+        t->cell = std::make_shared<PageDL>();
+        t->bbox[0] = std::min(bb[0], bb[2]), t->bbox[1] = std::min(bb[1], bb[3]);
+        t->bbox[2] = std::max(bb[0], bb[2]), t->bbox[3] = std::max(bb[1], bb[3]);
+        t->xs = xs, t->ys = ys;
+        t->uncoloured = toInt(doc.get(d, "PaintType").num(1)) == 2;
+        Interp in(P, *t->cell);
+        in.cancel = cancel, in.ops = ops, in.bytes = bytes;
+        in.patDepth = patDepth + 1;
+        plutovg_matrix_init_identity(&in.base);
+        in.patBase = in.base;
+        in.pageW = in.pageH = 1e30f;   // (no "page" a clip could cover)
+        plutovg_matrix_init_identity(&in.gs.ctm);
+        plutovg_matrix_init_identity(&in.tm);
+        in.tlm = in.tm;
+        in.resetColors();
+        in.newPath();
+        plutovg_path_add_rect(in.path, t->bbox[0], t->bbox[1], t->bbox[2] - t->bbox[0], t->bbox[3] - t->bbox[1]);
+        in.addClip(false);
+        in.newPath();
+        Val pres = doc.get(d, "Resources");
+        in.run(dec.data.data(), dec.data.size(), pres.t == pp::DICT ? pres : res, 0);
+        ops = in.ops, bytes = in.bytes;
+        if (in.stopped) stopped = true;
+        decoded.insert(decoded.end(), in.decoded.begin(), in.decoded.end());
+        return tilings[ref.oid()] = t;
+    }
+
     void setColor(bool fill, const Val *args, size_t n, Val res) {
         std::shared_ptr<CS> &cs = fill ? gs.fillCS : gs.strokeCS;
         float *c = fill ? gs.fillC : gs.strokeC;
         bool &pat = fill ? gs.fillPattern : gs.strokePattern;
         uint32_t &rgb = fill ? gs.fillRgb : gs.strokeRgb;
         bool &none = fill ? gs.fillNone : gs.strokeNone;
-        if (fill) gs.fillShade.reset();
+        if (fill) gs.fillShade.reset(), gs.fillTile.reset();
         if (cs->k == CS::PATTERN) {
-            // a pattern: a shading pattern fills with its middle colour, a tiling one with grey (not yet drawn)
+            // a pattern: a shading pattern fills by its shading, a tiling one by its cell; what they
+            // cannot (a stroke) with the shading's middle colour, grey, an uncoloured pattern's colour
             pat = true;
             none = false;
             rgb = 0x808080;
             if (n && args[n - 1].t == pp::NAME) {
-                Val p = doc.resolve(resource(P, res, "Pattern", args[n - 1]));
+                Val pref = resource(P, res, "Pattern", args[n - 1]);
+                Val p = doc.resolve(pref);
+                auto pm = nums(doc, doc.get(p, "Matrix"));   // (the pattern's space -> the content stream's default one)
+                plutovg_matrix_t pmat;
+                if (pm.size() == 6) plutovg_matrix_init(&pmat, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5]);
+                else plutovg_matrix_init_identity(&pmat);
                 if (toInt(doc.get(p, "PatternType").num(0)) == 2) {
                     Val sh = doc.get(p, "Shading");
                     auto scs = loadCS(P, doc.resolve(sh).get("ColorSpace"), res, 0);
@@ -2511,19 +2590,16 @@ struct Interp {
                         scs->toRGB(out, col);
                         rgb = packRgb(col);
                     }
-                    if (fill && (gs.fillShade = loadShade(sh, res))) {   // (its matrix: to the page's default space)
-                        auto pm = nums(doc, doc.get(p, "Matrix"));
-                        plutovg_matrix_t pmat;
-                        if (pm.size() == 6) plutovg_matrix_init(&pmat, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5]);
-                        else plutovg_matrix_init_identity(&pmat);
-                        mul(gs.fillShadeM, pmat, base);
+                    if (fill && (gs.fillShade = loadShade(sh, res))) mul(gs.fillShadeM, pmat, patBase);
+                } else {
+                    if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
+                        float cc[32];
+                        for (size_t k = 0; k + 1 < n && k < 32; k++) cc[k] = (float)args[k].num();
+                        float col[3];
+                        cs->base->toRGB(cc, col);
+                        rgb = packRgb(col);
                     }
-                } else if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
-                    float cc[32];
-                    for (size_t k = 0; k + 1 < n && k < 32; k++) cc[k] = (float)args[k].num();
-                    float col[3];
-                    cs->base->toRGB(cc, col);
-                    rgb = packRgb(col);
+                    if (fill && (gs.fillTile = loadTiling(pref, res))) mul(gs.fillShadeM, pmat, patBase);
                 }
             }
             return;
@@ -2539,7 +2615,7 @@ struct Interp {
     void setSpace(bool fill, Val name, Val res) {
         auto cs = loadCS(P, name, res, 0);
         if (!cs) cs = deviceCS(CS::GRAY);
-        if (fill) gs.fillShade.reset();
+        if (fill) gs.fillShade.reset(), gs.fillTile.reset();
         (fill ? gs.fillCS : gs.strokeCS) = cs;
         float *c = fill ? gs.fillC : gs.strokeC;
         cs->initial(c);
@@ -2693,6 +2769,8 @@ struct Interp {
             mul(out, fm, gs.ctm);
             gs.ctm = out;
         }
+        plutovg_matrix_t savedPatBase = patBase;
+        mul(patBase, gs.ctm, base);
         auto bb = nums(doc, d.get("BBox"));
         if (bb.size() == 4) {   // (the form's box clips it)
             plutovg_path_t *saved = path;
@@ -2705,6 +2783,7 @@ struct Interp {
         forms.push_back(oid);
         run(dec.data.data(), dec.data.size(), fres, depth + 1);
         forms.pop_back();
+        patBase = savedPatBase;
         gs = stack.back();
         stack.pop_back();
     }
@@ -3018,6 +3097,7 @@ bool buildPage(nitropdf &P, int k, PageDL &pg, const nd::Cancel &cancel) {
     in.cancel = cancel;
     double pw, ph;
     pageGeometry(page, &pw, &ph, &in.base);
+    in.patBase = in.base;
     in.pageW = (float)pw, in.pageH = (float)ph;
     plutovg_matrix_init_identity(&in.gs.ctm);
     plutovg_matrix_init_identity(&in.tm);
@@ -3141,9 +3221,107 @@ void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, co
     plutovg_surface_destroy(s);
 }
 
+// The tiles a render has drawn, by pattern, size and colour: a pattern filling many paths is drawn once
+struct TileCache {
+    struct Entry {
+        const Tiling *t;
+        int w, h, nx, ny;
+        uint32_t rgb;
+        float a, b, c, d;   // (the linear part of the pattern's space -> the canvas)
+        plutovg_surface_t *s;
+    };
+    std::vector<Entry> e;
+    ~TileCache() {
+        for (auto &x : e) plutovg_surface_destroy(x.s);
+    }
+};
+
 void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg_matrix_t &view, const double vb[4], double scale,
-               const nd::Cancel &cancel, int &rc) {
-    (void)P;
+               const nd::Cancel &cancel, int &rc, TileCache *tc = nullptr);
+
+const int MAX_TILE_PIXELS = 4 << 20, MIN_TILE = 16, MAX_TILE_COPIES = 4096;
+
+// A fill by a tiling pattern: its cell drawn into a tile at the canvas's resolution (nx x ny cells
+// of a small pattern in one tile, at least MIN_TILE pixels across; coarser if more than
+// MAX_TILE_PIXELS), with the neighbouring cells' parts reaching into it (a BBox larger than the
+// steps), filling the path as a repeated texture. An uncoloured one: the tile in its colour.
+void tileFill(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, TileCache &tc, const nd::Cancel &cancel,
+              int &rc) {
+    const Tiling &T = *it.tile;
+    plutovg_matrix_t pd;   // (the pattern's space -> the canvas)
+    plutovg_matrix_multiply(&pd, &it.shadeM, &m);
+    double ux = hypot(pd.a, pd.b), uy = hypot(pd.c, pd.d), w = T.xs * ux, h = T.ys * uy;
+    if (!(w > 1e-4 && h > 1e-4 && w < 1e9 && h < 1e9)) return;
+    int nx = std::min(64, std::max(1, (int)ceil(MIN_TILE / w))), ny = std::min(64, std::max(1, (int)ceil(MIN_TILE / h)));
+    double W = w * nx, H = h * ny;
+    if (W * H > MAX_TILE_PIXELS) {
+        double k = sqrt(MAX_TILE_PIXELS / (W * H));
+        W *= k, H *= k;
+    }
+    int iw = std::max(1, (int)lround(W)), ih = std::max(1, (int)lround(H));
+    uint32_t rgb = T.uncoloured ? it.rgb : 0;
+    plutovg_surface_t *s = nullptr;
+    for (auto &x : tc.e)
+        if (x.t == &T && x.w == iw && x.h == ih && x.nx == nx && x.ny == ny && x.rgb == rgb && x.a == pd.a && x.b == pd.b && x.c == pd.c &&
+            x.d == pd.d)
+            s = x.s;
+    float kx = (float)(iw / (T.xs * nx)), ky = (float)(ih / (T.ys * ny));   // (tile pixels per pattern unit)
+    if (!s) {
+        if (!(s = plutovg_surface_create(iw, ih))) return;
+        plutovg_canvas_t *tcv = plutovg_canvas_create(s);
+        if (!tcv) {
+            plutovg_surface_destroy(s);
+            return;
+        }
+        // the cells whose box reaches into the tile's nx x ny of them
+        float X = T.xs * nx, Y = T.ys * ny;
+        int i0 = (int)std::max(-1e6, floor(-T.bbox[2] / (double)T.xs)), i1 = (int)std::min(1e6, ceil((X - T.bbox[0]) / (double)T.xs));
+        int j0 = (int)std::max(-1e6, floor(-T.bbox[3] / (double)T.ys)), j1 = (int)std::min(1e6, ceil((Y - T.bbox[1]) / (double)T.ys));
+        long copies = 0;
+        for (int j = j0; j <= j1 && !rc; j++)
+            for (int i = i0; i <= i1 && !rc && copies < MAX_TILE_COPIES; i++) {
+                float dx = i * T.xs, dy = j * T.ys;
+                if (T.bbox[2] + dx <= 0 || T.bbox[0] + dx >= X || T.bbox[3] + dy <= 0 || T.bbox[1] + dy >= Y) continue;
+                copies++;
+                plutovg_matrix_t cv;
+                plutovg_matrix_init(&cv, kx, 0, 0, ky, dx * kx, dy * ky);
+                double vb[4] = {-dx, -dy, X - dx, Y - dy};
+                drawItems(P, *T.cell, tcv, cv, vb, std::min(kx, ky), cancel, rc, &tc);
+            }
+        plutovg_canvas_destroy(tcv);
+        if (T.uncoloured) {   // (premultiplied: the colour by each pixel's alpha)
+            uint8_t *px = plutovg_surface_get_data(s);
+            int stride = plutovg_surface_get_stride(s);
+            uint32_t r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+            for (int y = 0; y < ih; y++) {
+                uint32_t *row = (uint32_t *)(px + (size_t)y * stride);
+                for (int x = 0; x < iw; x++) {
+                    uint32_t a = row[x] >> 24;
+                    row[x] = a << 24 | (r * a + 127) / 255 << 16 | (g * a + 127) / 255 << 8 | (b * a + 127) / 255;
+                }
+            }
+        }
+        size_t total = (size_t)iw * ih;
+        for (auto &x : tc.e) total += (size_t)x.w * x.h;
+        while (!tc.e.empty() && (tc.e.size() >= 16 || total > 4 * (size_t)MAX_TILE_PIXELS)) {
+            total -= (size_t)tc.e[0].w * tc.e[0].h;
+            plutovg_surface_destroy(tc.e[0].s);
+            tc.e.erase(tc.e.begin());
+        }
+        tc.e.push_back({&T, iw, ih, nx, ny, rgb, pd.a, pd.b, pd.c, pd.d, s});
+    }
+    plutovg_matrix_t sc, tm;   // (the tile's pixels -> the pattern's space -> the path's)
+    plutovg_matrix_init_scale(&sc, 1 / kx, 1 / ky);
+    plutovg_matrix_multiply(&tm, &sc, &it.shadeM);
+    plutovg_canvas_set_texture(c, s, PLUTOVG_TEXTURE_TYPE_TILED, it.alpha, &tm);
+    plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
+    plutovg_canvas_fill_path(c, it.path->p);
+}
+
+void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg_matrix_t &view, const double vb[4], double scale,
+               const nd::Cancel &cancel, int &rc, TileCache *tc) {
+    TileCache own;
+    if (!tc) tc = &own;
     plutovg_canvas_save(c);
     int curClip = -1;
     size_t k = 0;
@@ -3175,6 +3353,9 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
         plutovg_canvas_set_matrix(c, &m);
         if (it.kind == Item::FILL && it.shade && it.shade->mesh) {
             meshFill(c, it, m, view);
+        } else if (it.kind == Item::FILL && it.tile) {
+            tileFill(P, c, it, m, *tc, cancel, rc);
+            if (rc) break;
         } else if (it.kind == Item::FILL) {
             if (it.shade) {
                 const Shade &s = *it.shade;
@@ -3333,13 +3514,18 @@ void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h) {
 
 // About the memory a page's list holds: its pictures (each once: a page may draw one many times;
 // with their halved copies, a third more) and its items
-size_t listBytes(const PageDL &pg) {
-    std::unordered_set<const Img *> seen;
+size_t listBytes(const PageDL &pg, std::unordered_set<const void *> &seen) {
     size_t n = pg.items.size() * sizeof(Item) + pg.clips.size() * sizeof(Clip);
-    for (const Item &it : pg.items)
+    for (const Item &it : pg.items) {
         if (it.img && it.img->s && seen.insert(it.img.get()).second)
             n += (size_t)plutovg_surface_get_stride(it.img->s) * plutovg_surface_get_height(it.img->s) * 4 / 3;
+        if (it.tile && seen.insert(it.tile.get()).second) n += listBytes(*it.tile->cell, seen);   // (a pattern's cell)
+    }
     return n;
+}
+size_t listBytes(const PageDL &pg) {
+    std::unordered_set<const void *> seen;
+    return listBytes(pg, seen);
 }
 
 // The lists beyond MAX_LIST_BYTES let go of, the least recently drawn first; never keep's (the page
