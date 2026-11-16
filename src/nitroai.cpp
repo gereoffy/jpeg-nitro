@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -34,7 +35,9 @@ struct Obj {
     double n = 0;
     std::string s;
     std::vector<Obj> a;
+    int nest = 0;   // an array's: how deep the arrays in it go
 };
+const int MAX_NEST = 32;   // (the format's arrays: a matrix, a dash pattern, a pattern's layers, an encoding)
 
 struct Mtx {
     double a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
@@ -255,7 +258,12 @@ struct Run {
                 size_t b0 = base();
                 Obj a;
                 a.t = Obj::ARR;
-                a.a.assign(st.begin() + b0, st.end());
+                for (size_t k = b0; k < st.size(); k++)
+                    if (st[k].t == Obj::ARR) a.nest = std::max(a.nest, st[k].nest + 1);
+                // (its items moved, not copied: an array in an array in an array ... took time by the
+                // square of the depth; and one nested deeper than any drawing has them is left empty)
+                if (a.nest <= MAX_NEST) a.a.assign(std::make_move_iterator(st.begin() + b0), std::make_move_iterator(st.end()));
+                else a.nest = 0;
                 st.resize(b0 ? b0 - 1 : 0);
                 st.push_back(std::move(a));
             } else if (ch == '{') skipProc();
