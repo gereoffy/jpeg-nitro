@@ -988,15 +988,17 @@ struct Run {
 };
 
 
-// the PostScript of a DOS EPS file (a binary header, then the PostScript, a TIFF or WMF preview)
-std::string postscript(const void *data, size_t len) {
+// The PostScript of the file: all of it, or the part a DOS EPS file's binary header names (a TIFF or
+// WMF preview is the rest). false: such a header that points outside the file.
+bool postscript(const void *data, size_t len, const char *&ps, size_t &n) {
     const uint8_t *d = (const uint8_t *)data;
+    ps = (const char *)data, n = len;
     if (len >= 30 && d[0] == 0xC5 && d[1] == 0xD0 && d[2] == 0xD3 && d[3] == 0xC6) {
-        uint32_t off = d[4] | d[5] << 8 | d[6] << 16 | (uint32_t)d[7] << 24, n = d[8] | d[9] << 8 | d[10] << 16 | (uint32_t)d[11] << 24;
-        if (off >= len || n > len - off) return std::string();
-        return std::string((const char *)d + off, n);
+        uint32_t off = d[4] | d[5] << 8 | d[6] << 16 | (uint32_t)d[7] << 24, size = d[8] | d[9] << 8 | d[10] << 16 | (uint32_t)d[11] << 24;
+        if (off >= len || size > len - off) return false;
+        ps += off, n = size;
     }
-    return std::string((const char *)data, len);
+    return true;
 }
 
 bool header(const char *d, size_t len) {
@@ -1056,17 +1058,16 @@ bool box(const std::string &ps, const char *key, double b[4]) {
 }  // namespace
 
 bool nitroai_is(const void *data, size_t len) {
-    const uint8_t *d = (const uint8_t *)data;
-    if (len >= 30 && d[0] == 0xC5 && d[1] == 0xD0 && d[2] == 0xD3 && d[3] == 0xC6) {
-        std::string ps = postscript(data, std::min(len, (size_t)1 << 30));
-        return header(ps.data(), ps.size());
-    }
-    return header((const char *)data, len);
+    const char *ps;
+    size_t n;
+    return data && postscript(data, len, ps, n) && header(ps, n);
 }
 
 std::string nitroai_pdf(const void *data, size_t len) {
-    if (!data || !nitroai_is(data, len)) return std::string();
-    std::string ps = postscript(data, len);
+    const char *text;
+    size_t n;
+    if (!data || !postscript(data, len, text, n) || !header(text, n)) return std::string();
+    std::string ps(text, n);
     Pdf D;
     for (int k = 0; k < 4; k++) D.add("");   // catalog, pages, page, resources
     std::string content;
