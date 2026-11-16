@@ -9,6 +9,7 @@
 // "m l S") are one path. Lines are never thinner than a device pixel, as PDF viewers draw thin
 // lines by default (Acrobat's "enhance thin lines"), or 0.1 pt plan lines would fade away.
 #include "nitropdf.h"
+#include "nitroai.h"   // (Illustrator 1-8 documents, read as a PDF)
 #include "nitro_draw.h"
 #include "nitro_font.h"   // (stand-ins for the fonts not embedded)
 #include "nitropdf_glyphs.h"
@@ -3839,7 +3840,61 @@ nitropdf *loadDepth(const void *data, size_t len, int depth) {
 
 uint32_t nitropdf_glyph_unicode(const char *name) { return glyphUnicode(name); }
 
-nitropdf *nitropdf_load(const void *data, size_t len) { return loadDepth(data, len, 0); }
+namespace {
+// An .ai saved as a PDF keeps Illustrator's own data too (/PieceInfo /Illustrator /Private, in blocks).
+// CorelDRAW writes the format of Illustrator 1-8 there (PostScript) and leaves the page empty: that,
+// for such a page (Illustrator's own data, compressed, is not read).
+std::string illustratorPrivate(nitropdf &P) {
+    if (P.pages.size() != 1 || !P.parts.empty()) return std::string();
+    pp::Doc &doc = P.doc;
+    Val pg = P.pages[0].dict;
+    Val priv = doc.get(doc.get(doc.get(pg, "PieceInfo"), "Illustrator"), "Private");
+    if (priv.t != pp::DICT) return std::string();
+    Val c = pg.get("Contents");
+    std::vector<Val> parts;
+    if (doc.resolve(c).t == pp::ARRAY)
+        for (size_t k = 0; k < doc.resolve(c).size(); k++) parts.push_back(doc.resolve(c).at(k));
+    else
+        parts.push_back(c);
+    size_t content = 0;
+    for (Val v : parts)
+        if (const pp::Stream *st = v.t == pp::REF ? doc.stream(v.oid()) : nullptr) {
+            pp::Decoded dec;
+            doc.decode(*st, dec, 4096);
+            content += dec.data.size();
+        }
+    if (content > 256) return std::string();   // (a page drawn)
+    std::string all;
+    int n = std::min(toInt(doc.get(priv, "NumBlock").num(0)), 1000);
+    for (int k = 1; k <= n; k++) {
+        Val r = priv.get(("AIPrivateData" + std::to_string(k)).c_str());
+        const pp::Stream *st = r.t == pp::REF ? doc.stream(r.oid()) : nullptr;
+        if (!st) return std::string();
+        pp::Decoded dec;
+        doc.decode(*st, dec, 512u << 20);
+        all += dec.data;
+    }
+    size_t at = all.find("%!PS-Adobe");   // (CorelDRAW's first block: a thumbnail)
+    return at == std::string::npos || at > 1u << 20 ? std::string() : all.substr(at);
+}
+}  // namespace
+
+nitropdf *nitropdf_load(const void *data, size_t len) {
+    if (data && nitroai_is(data, len)) {   // an Illustrator document before version 9: as the PDF it makes
+        std::string pdf = nitroai_pdf(data, len);
+        return pdf.empty() ? nullptr : loadDepth(pdf.data(), pdf.size(), 0);
+    }
+    nitropdf *p = loadDepth(data, len, 0);
+    if (p) {
+        std::string ai = illustratorPrivate(*p);
+        std::string pdf = ai.empty() ? std::string() : nitroai_pdf(ai.data(), ai.size());
+        if (nitropdf *q = pdf.empty() ? nullptr : loadDepth(pdf.data(), pdf.size(), 0)) {
+            delete p;
+            return q;
+        }
+    }
+    return p;
+}
 
 void nitropdf_free(nitropdf *pdf) { delete pdf; }
 

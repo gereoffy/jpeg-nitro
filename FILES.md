@@ -20,6 +20,7 @@
 - `nitrocdr.cpp/.h`: CorelDRAW with libcdr and Visio with libvisio (one painter for librevenge's drawing interface), drawn with plutovg; the pictures inside through nitrometa, nitrotiff and nitrodxf (an embedded DWG)
 - `nitrodio.cpp/.h`: draw.io, our own reader (libxml2, zlib), drawn with plutovg
 - `nitropdf.cpp/.h`: PDF over pdfparse3, our own renderer, drawn with plutovg
+- `nitroai.cpp/.h`: Adobe Illustrator 1–8 documents (PostScript, also as EPS), read into a PDF page for nitropdf
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
 - `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder, written from ITU-T T.800: JP2 / J2K files (through nitro_load) and PDF's JPXDecode
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs

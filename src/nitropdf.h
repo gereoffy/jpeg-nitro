@@ -10,8 +10,9 @@
 // system fonts standing in for the others (nitro_font). Annotations: their appearance streams.
 // Embedded PDFs (a portfolio's documents, attachments): their pages after its own, a portfolio's
 // cover page left out.
-// Shadings: axial and radial (the others fill with a middle colour). Not yet: tiling patterns, soft
-// masks, blend modes.
+// Shadings (all seven types), tiling patterns, soft masks, blend modes and transparency groups.
+// Adobe Illustrator files: the PDF of version 9 and later; the PostScript of versions 1-8 (also as
+// EPS, or kept as Illustrator's private data of an empty PDF page) through nitroai.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

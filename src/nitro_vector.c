@@ -271,8 +271,10 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrocdr_pages(v->doc);
         v->mode = is_visio ? NV_MODE_VISIO : NV_MODE_CDR;
     }
-    static const char *const pdf_exts[] = {"pdf", "ai", NULL};   // (Illustrator 9+ saves a PDF; also by content: "%PDF-" in the first 1 KB)
-    if (!v->doc && (nv_has_ext(name, pdf_exts) || has(p, head, "%PDF-")) && (v->doc = nitropdf_load(data, len))) {
+    // (Illustrator 9+ saves a PDF; also by content: "%PDF-" in the first 1 KB; earlier ones and their EPS files: PostScript, see nitroai)
+    static const char *const pdf_exts[] = {"pdf", "ai", NULL};
+    int ai_ps = len > 10 && (!memcmp(p, "%!PS-Adobe", 10) || (p[0] == 0xC5 && p[1] == 0xD0)) && has(p, head, "Illustrator");
+    if (!v->doc && (nv_has_ext(name, pdf_exts) || has(p, head, "%PDF-") || ai_ps) && (v->doc = nitropdf_load(data, len))) {
         nitropdf_set_background(v->doc, v->background);
         v->render = pdf_render;
         v->size = pdf_size;
