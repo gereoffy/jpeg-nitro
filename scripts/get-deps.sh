@@ -32,7 +32,7 @@ mkdir -p third_party && cd third_party
 TP=$PWD
 LJT_VER=3.1.2
 NASM_VER=3.02   # (3.01+: Mach-O objects with their platform, see macho-min.asm below)
-LUNASVG_COMMIT=4e88067003c5ded1cf2cf83f3d41790b096dd2ae   # 2026-11-15, github.com/gereoffy/lunasvg (and in packaging/flatpak/*.json, with its sha256)
+LUNASVG_COMMIT=0e502f0857690aaddbec78e0c90bbde3e2c3f165   # 2026-11-16, github.com/gereoffy/lunasvg (and in packaging/flatpak/*.json, with its sha256)
 LIBCDR_COMMIT=3afe6c91a08383af25038ef057332afa2d5ba981    # 2026-11-11, github.com/gereoffy/libcdr (and in packaging/flatpak/*.json)
 LIBVISIO_COMMIT=7fd688eb9d984a699a08f89a012d919cb626530e  # 2026-11-04, github.com/gereoffy/libvisio (and in packaging/flatpak/*.json)
 PDFPARSE3_COMMIT=1a7447e65ca930f23f15e385c7ed4f98713b55bd  # 2026-11-15, github.com/gereoffy/pdfparse3 (and in packaging/flatpak/*.json)
