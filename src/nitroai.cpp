@@ -185,6 +185,7 @@ struct Run {
     Pdf &D;
     std::string &out;
     const char *p = nullptr, *e = nullptr;
+    const char *prologEnd = nullptr;   // the next "%%EndProlog" line of the text being read (e: none), once looked for
     int depth;
     bool draw;   // in the script body (the setup only defines)
     bool stop = false;
@@ -237,7 +238,7 @@ struct Run {
     // ---- the tokens
 
     void feed(const char *b, const char *end) {
-        p = b, e = end;
+        p = b, e = end, prologEnd = nullptr;
         while (p < e && !stop) {
             while (p < e && isSpace(*p)) p++;
             if (p >= e) break;
@@ -306,7 +307,11 @@ struct Run {
         for (auto &s : skips)
             if (!l.compare(0, strlen(s[0]), s[0])) {
                 p = findLine(eol, e, s[1]);
-                if (strcmp(s[0], "%%BeginProlog")) p = std::min(p, findLine(eol, e, "%%EndProlog"));   // (a procset left open)
+                if (strcmp(s[0], "%%BeginProlog")) {   // (a procset left open: no further than the prolog's end)
+                    // (looked for once, not for every section: after the prolog that was a search to the file's end each time)
+                    if (!prologEnd || prologEnd < eol) prologEnd = findLine(eol, e, "%%EndProlog");
+                    p = std::min(p, prologEnd);
+                }
                 return;
             }
         if (!l.compare(0, 10, "%%EndSetup")) draw = true;
