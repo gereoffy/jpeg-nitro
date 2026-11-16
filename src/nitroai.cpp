@@ -108,6 +108,12 @@ struct Pattern {
     std::string content;
     int form = 0;   // the tile as a form, once it is used: the patterns made of it (one for each matrix) draw that
 };
+// a colour, as a PDF content stream sets it for fills and for strokes
+struct Colour {
+    std::string f = "0 g", s = "0 G";
+    Colour() {}
+    Colour(const std::string &v, const char *fop, const char *sop) : f(v + " " + fop), s(v + " " + sop) {}
+};
 struct Reenc {   // a font re-encoded (TZ)
     std::string base;
     std::vector<Obj> pairs;
@@ -197,7 +203,18 @@ struct Run {
     bool eo = false, clip = false;
     int pola = 0;   // compound paths open
     char crender = 0;
-    std::string fill = "0 g", stroke = "0 G", efill, estroke;
+    // The paint styles. The procsets keep the fill's and the stroke's colour in variables (the colour
+    // operators set those), and PostScript's one current colour is loaded from one of them when a
+    // fill or a stroke needs it and it is not that one already (their _lp: the last paint). So q / Q
+    // (gsave / grestore) do not bring a variable back, but they do bring back the loaded colour: an
+    // object painted after a Q without a colour operator has the colour that was current at the q,
+    // if the last paint in the group was of its own kind (the variable is thought loaded, and is not
+    // loaded again); the group's colour otherwise. Illustrator sets the colour again after a Q.
+    Colour fill, stroke;         // the variables
+    Colour gcol;                 // the loaded colour
+    int lp = 0;                  // which it is: 0 neither (a colour operator came since), 1 the fill's, 2 the stroke's
+    std::vector<Colour> saved;   // gcol at each q
+    std::string efill, estroke;  // what the PDF's graphics state has
     int qd = 0;
     // a gradient instance (Bb ... BB)
     bool grad = false, hasBh = false;
@@ -405,11 +422,15 @@ struct Run {
         out += fmt(mul(s, tlm)) + " Tm\n";
     }
     void useFill() {
-        if (efill != fill) out += fill + "\n", efill = fill;
+        if (lp != 1) gcol = fill, lp = 1;
+        if (efill != gcol.f) out += gcol.f + "\n", efill = gcol.f;
     }
     void useStroke() {
-        if (estroke != stroke) out += stroke + "\n", estroke = stroke;
+        if (lp != 2) gcol = stroke, lp = 2;
+        if (estroke != gcol.s) out += gcol.s + "\n", estroke = gcol.s;
     }
+    void setFill(const Colour &c) { fill = c, lp = 0; }
+    void setStroke(const Colour &c) { stroke = c, lp = 0; }
 
     void pt(int n, const char *opname) {   // a path segment of n points
         if (!nums(0, 2 * n)) return;
@@ -546,26 +567,28 @@ struct Run {
 
     // ---- colours
 
-    static std::string cmyk(double c, double m, double y, double k, double tint, const char *op) {
+    static Colour grey(double v) { return Colour(fmt(clamp01(v)), "g", "G"); }
+    static Colour cmyk(double c, double m, double y, double k, double tint) {
         double t = 1 - clamp01(tint);
-        return fmt(clamp01(c) * t) + " " + fmt(clamp01(m) * t) + " " + fmt(clamp01(y) * t) + " " + fmt(clamp01(k) * t) + " " + op;
+        return Colour(fmt(clamp01(c) * t) + " " + fmt(clamp01(m) * t) + " " + fmt(clamp01(y) * t) + " " + fmt(clamp01(k) * t), "k", "K");
     }
-    static std::string rgb(double r, double g, double b, double tint, const char *op) {
+    static Colour rgb(double r, double g, double b, double tint) {
         double t = 1 - clamp01(tint);
-        return fmt(1 - (1 - clamp01(r)) * t) + " " + fmt(1 - (1 - clamp01(g)) * t) + " " + fmt(1 - (1 - clamp01(b)) * t) + " " + op;
+        return Colour(fmt(1 - (1 - clamp01(r)) * t) + " " + fmt(1 - (1 - clamp01(g)) * t) + " " + fmt(1 - (1 - clamp01(b)) * t), "rg", "RG");
     }
     // a custom colour of Xx / Xk: components, name, tint, type (0 CMYK, 1 RGB)
-    bool custom(std::string &to, bool isFill) {
+    bool custom(Colour &to) {
         if (!nums(0, 2)) return false;
         int type = inum(0);
         double tint = num(1);
         if (!arg(2) || arg(2)->t != Obj::STR) return false;
-        if (type == 1 && nums(3, 3)) to = rgb(num(5), num(4), num(3), tint, isFill ? "rg" : "RG");
-        else if (type == 0 && nums(3, 4)) to = cmyk(num(6), num(5), num(4), num(3), tint, isFill ? "k" : "K");
+        if (type == 1 && nums(3, 3)) to = rgb(num(5), num(4), num(3), tint);
+        else if (type == 0 && nums(3, 4)) to = cmyk(num(6), num(5), num(4), num(3), tint);
+        else return false;
         return true;
     }
 
-    std::string patternFor(bool isFill) {   // (name) px py sx sy angle rf r k ka [matrix] p
+    std::string patternFor() {   // (name) px py sx sy angle rf r k ka [matrix] p: the pattern's resource name ("": none)
         size_t k0 = arg(0) && arg(0)->t == Obj::ARR ? 1 : 0;
         if (!nums(k0, 9) || !arg(k0 + 9) || arg(k0 + 9)->t != Obj::STR) return "";
         auto it = D.pats.find(arg(k0 + 9)->s);
@@ -599,7 +622,7 @@ struct Run {
             D.patterns += "/" + name + " " + std::to_string(o) + " 0 R";
             r2 = D.patRes.emplace(key, name).first;
         }
-        return isFill ? "/Pattern cs /" + r2->second + " scn" : "/Pattern CS /" + r2->second + " SCN";
+        return r2->second;
     }
 
     // (name) llx lly urx ury [ (colour) @ (tile) & ... ] E
@@ -769,10 +792,13 @@ struct Run {
             case 'W': clip = true; return;
             case 'N': case 'n': case 'F': case 'f': case 'S': case 's': case 'B': case 'b': paint(s[0]); return;
             case 'q':
-                if (!pola && emit()) endText(), out += "q\n", qd++;
+                if (!pola && emit()) endText(), out += "q\n", qd++, saved.push_back(gcol);
                 return;
             case 'Q':
-                if (!pola && emit() && qd > 0) endText(), out += "Q\n", qd--, efill.clear(), estroke.clear();
+                if (!pola && emit() && qd > 0) {
+                    endText(), out += "Q\n", qd--, efill.clear(), estroke.clear();
+                    if (!saved.empty()) gcol = saved.back(), saved.pop_back();
+                }
                 return;
             case 'u': case 'U': return;
             case '*': path.clear(), clip = false; return;   // (a guide)
@@ -787,17 +813,20 @@ struct Run {
                     out += a + "] " + fmt(num(0)) + " d\n";
                 }
                 return;
-            case 'g': if (nums(0, 1)) fill = fmt(clamp01(num(0))) + " g"; return;
-            case 'G': if (nums(0, 1)) stroke = fmt(clamp01(num(0))) + " G"; return;
-            case 'k': if (nums(0, 4)) fill = cmyk(num(3), num(2), num(1), num(0), 0, "k"); return;
-            case 'K': if (nums(0, 4)) stroke = cmyk(num(3), num(2), num(1), num(0), 0, "K"); return;
+            case 'g': if (nums(0, 1)) setFill(grey(num(0))); return;
+            case 'G': if (nums(0, 1)) setStroke(grey(num(0))); return;
+            case 'k': if (nums(0, 4)) setFill(cmyk(num(3), num(2), num(1), num(0), 0)); return;
+            case 'K': if (nums(0, 4)) setStroke(cmyk(num(3), num(2), num(1), num(0), 0)); return;
             case 'x': case 'X':   // c m y k (name) tint
                 if (nums(0, 1) && arg(1) && arg(1)->t == Obj::STR && nums(2, 4))
-                    (s[0] == 'x' ? fill : stroke) = cmyk(num(5), num(4), num(3), num(2), num(0), s[0] == 'x' ? "k" : "K");
+                    s[0] == 'x' ? setFill(cmyk(num(5), num(4), num(3), num(2), num(0))) : setStroke(cmyk(num(5), num(4), num(3), num(2), num(0)));
                 return;
             case 'p': case 'P': {
-                std::string c = patternFor(s[0] == 'p');
-                if (!c.empty()) (s[0] == 'p' ? fill : stroke) = c;
+                std::string name = patternFor();
+                if (name.empty()) return;
+                Colour c;
+                c.f = "/Pattern cs /" + name + " scn", c.s = "/Pattern CS /" + name + " SCN";
+                s[0] == 'p' ? setFill(c) : setStroke(c);
                 return;
             }
             case 'E': definePattern(); return;
@@ -814,9 +843,14 @@ struct Run {
             if (!pola && gradLater) endGradient();
         } else if (o == "XR") eo = num(0) != 0;
         else if (o == "Xa" || o == "XA") {   // r g b (Illustrator 8 writes c m y k r g b)
-            if (nums(0, 3)) (o == "Xa" ? fill : stroke) = rgb(num(2), num(1), num(0), 0, o == "Xa" ? "rg" : "RG");
-        } else if (o == "Xx" || o == "Xk") custom(fill, true);
-        else if (o == "XX" || o == "XK") custom(stroke, false);
+            if (nums(0, 3)) o == "Xa" ? setFill(rgb(num(2), num(1), num(0), 0)) : setStroke(rgb(num(2), num(1), num(0), 0));
+        } else if (o == "Xx" || o == "Xk") {
+            Colour c;
+            if (custom(c)) setFill(c);
+        } else if (o == "XX" || o == "XK") {
+            Colour c;
+            if (custom(c)) setStroke(c);
+        }
         else if (o == "Lb") {
             bool vis = nargs() == 0 || st[base()].t != Obj::NUM || st[base()].n != 0;
             layers.push_back(vis);
