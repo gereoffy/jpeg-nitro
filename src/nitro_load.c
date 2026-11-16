@@ -347,8 +347,10 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
         }
         img->error = "DNG decode failed";
     }
+    // (a DICOM file may be a TIFF file too, its header in the preamble: it is read as DICOM, which says how to show it)
+    int dicom = n >= 132 && !memcmp(data + 128, "DICM", 4);
     size_t eoff, esize;
-    if (!raw_read && !nj_find_embedded(data, n, &eoff, &esize, &orient) && eoff < n && esize <= n - eoff) {
+    if (!raw_read && !dicom && !nj_find_embedded(data, n, &eoff, &esize, &orient) && eoff < n && esize <= n - eoff) {
         memmove(data, data + eoff, esize);   // (a raw file with another extension: read whole)
         memset(data + esize, 0, PAD);        // (the zero padding nv_read_file leaves after the data)
         n = *len = esize;
@@ -535,7 +537,7 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
             GIVE_BACK(b);
             img->error = "WebP decode failed";
         }
-    } else if (n >= 8 && data[0] == data[1] && (data[0] == 'I' || data[0] == 'M')) {
+    } else if (!dicom && n >= 8 && data[0] == data[1] && (data[0] == 'I' || data[0] == 'M')) {
         nt_info ti;   // TIFF: nitrotiff (strips / tiles in parallel; uncompressed: straight from the file)
         if (nt_read_info(data, n, &ti)) {
             img->error = "Unsupported TIFF (JPEG, YCbCr, floating point ...)";
