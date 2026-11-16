@@ -458,6 +458,21 @@ static int rle(const uint8_t *s, size_t sl, const ndcm_info *in, Frame *f) {
     return 0;
 }
 
+// The neighbours in a row (of every 8th row) that differ by a quarter of the 16-bit range or more, as numbers
+// around zero: next to none in a picture, many in the noise a wrong prediction leaves. 0 when they are few
+// (under a hundredth of the pairs looked at).
+static size_t jumps(const uint16_t *p, int rowlen, int h, int nc) {
+    size_t n = 0, pairs = 0;
+    for (int y = 0; y < h; y += 8) {
+        const uint16_t *r = p + (size_t)y * rowlen;
+        for (int x = nc; x < rowlen; x++, pairs++) {
+            int d = (int16_t)r[x] - (int16_t)r[x - nc];
+            n += d >= 16384 || d <= -16384;
+        }
+    }
+    return n * 100 > pairs ? n : 0;
+}
+
 // A JPEG stream's frame header: *sof its marker (0xC0 ...), *prec the samples' bits; 0 if it has one.
 // *ycc: the stream itself says its three components are Y Cb Cr (a JFIF marker, components of the
 // ids 1 2 3, or the last two with fewer samples), whatever the data set says.
@@ -542,7 +557,21 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
         int w, h, nc, prec;
         if (!ndng_ljpeg_info(s, sl, &w, &h, &nc, &prec) && w == in->width && h == in->height && nc == in->spp) {
             uint16_t *out = malloc(px * (size_t)nc * 2 + 64);
-            if (out && !ndng_ljpeg_decode(s, sl, out, w * nc, h, (size_t)w * nc, nthreads != 1)) {
+            int par = nthreads != 1 ? NDNG_LJPEG_PARALLEL : 0;
+            if (out && !ndng_ljpeg_decode(s, sl, out, w * nc, h, (size_t)w * nc, par)) {
+                // 16-bit samples that jump by half the range all over: the file of an encoder that predicted from
+                // them as signed numbers. Decoded its way; kept if that is the smoother picture.
+                size_t rough = prec == 16 ? jumps(out, w * nc, h, nc) : 0;
+                uint16_t *other = rough ? malloc(px * (size_t)nc * 2 + 64) : NULL;
+                if (other && !ndng_ljpeg_decode(s, sl, other, w * nc, h, (size_t)w * nc, par | NDNG_LJPEG_SIGNED)) {
+                    for (size_t i = 0; i < px * (size_t)nc; i++) other[i] ^= 0x8000;
+                    if (jumps(other, w * nc, h, nc) < rough) {
+                        uint16_t *t = out;
+                        out = other;
+                        other = t;
+                    }
+                }
+                free(other);
                 f->p = f->own = (uint8_t *)out;
                 f->len = px * (size_t)nc * 2;
                 f->bytes = 2;

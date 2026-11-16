@@ -661,10 +661,12 @@ int ndng_ljpeg_decode(const uint8_t *d, size_t n, uint16_t *out, int tw, int th,
             // the samples fill the tile row by row (a JPEG row may hold one or two raw rows; the
             // last strip may be shorter)
             if ((uint64_t)w * nc * h > (uint64_t)tw * th) goto out;
-            int initial = 1 << (prec - pt - 1);
+            // (NDNG_LJPEG_SIGNED: an encoder that predicted from the samples as signed numbers; with the top bit
+            // of every sample flipped its arithmetic is the standard's, and its first prediction is 0)
+            int initial = par & NDNG_LJPEG_SIGNED ? 0 : 1 << (prec - pt - 1);
             int one_table = 1;
             for (int c = 1; c < nc; c++) one_table &= tbl[c] == tbl[0];
-            if (par && !ri && one_table && ostride == (size_t)tw && n - (p + 2 + l) >= (1 << 20) &&
+            if ((par & NDNG_LJPEG_PARALLEL) && !ri && one_table && ostride == (size_t)tw && n - (p + 2 + l) >= (1 << 20) &&
                 !scan_parallel(d + p + 2 + l, n - (p + 2 + l), &huff[tbl[0]], out, w, h, nc, pred, initial, pt)) {
                 rc = 0;
                 goto out;

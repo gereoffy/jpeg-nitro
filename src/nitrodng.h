@@ -56,8 +56,13 @@ int ndng_ljpeg_info(const uint8_t *d, size_t n, int *w, int *h, int *nc, int *pr
 
 // Decodes one lossless JPEG into out (tw x th samples, row stride ostride): its samples, the
 // components of a pixel one after the other, fill the tile row by row (a DNG's JPEG row may hold
-// one or two raw rows; w * nc * h may be less than tw * th: the last strip). par: a long scan is
-// decoded in parallel. Returns 0 on success.
-int ndng_ljpeg_decode(const uint8_t *d, size_t n, uint16_t *out, int tw, int th, size_t ostride, int par);
+// one or two raw rows; w * nc * h may be less than tw * th: the last strip). Returns 0 on success.
+// flags: NDNG_LJPEG_PARALLEL: a long scan is decoded in parallel. NDNG_LJPEG_SIGNED: the file of an
+// encoder that took 16-bit samples for signed numbers when it predicted from them (the predictors
+// that halve, 5 - 7, then give other values than the standard's, and a standard decoder gets noise:
+// medical images of signed values): decoded as that encoder meant it, the samples come with their
+// top bit flipped (flip it back).
+enum { NDNG_LJPEG_PARALLEL = 1, NDNG_LJPEG_SIGNED = 2 };
+int ndng_ljpeg_decode(const uint8_t *d, size_t n, uint16_t *out, int tw, int th, size_t ostride, int flags);
 
 #endif
