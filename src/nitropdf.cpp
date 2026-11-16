@@ -2282,7 +2282,7 @@ struct Interp {
         auto co = nums(doc, doc.get(sh, "Coords"));
         if ((type != 2 || co.size() < 4) && (type != 3 || co.size() < 6)) return nullptr;
         auto cs = loadCS(P, doc.get(sh, "ColorSpace"), res, 0);
-        auto fn = loadFunc(P, doc.get(sh, "Function"), 0);
+        auto fn = loadFunc(P, sh.get("Function"), 0);   // (its reference: a sampled or PostScript one is a stream)
         if (!cs || !fn || cs->k == CS::PATTERN) return nullptr;
         auto s = std::make_shared<Shade>();
         s->type = type;
@@ -2312,9 +2312,9 @@ struct Interp {
     std::shared_ptr<Shade> loadMesh(Val ref, Val sh, int type, Val res) {
         auto cs = loadCS(P, doc.get(sh, "ColorSpace"), res, 0);
         if (!cs || cs->k == CS::PATTERN) return nullptr;
-        Val fv = doc.get(sh, "Function");
-        std::shared_ptr<Func> fn = fv.t == pp::NUL ? nullptr : loadFunc(P, fv, 0);
-        if (fv.t != pp::NUL && !fn) return nullptr;
+        Val fv = sh.get("Function");   // (as above)
+        std::shared_ptr<Func> fn = doc.resolve(fv).t == pp::NUL ? nullptr : loadFunc(P, fv, 0);
+        if (doc.resolve(fv).t != pp::NUL && !fn) return nullptr;
         auto mesh = std::make_shared<Mesh>();
         Mesh &M = *mesh;
         const int S = Mesh::STRIDE;
