@@ -5,6 +5,7 @@
 //   mkdir -p /tmp/jpx-tests
 //   bench/jpxverify --selftest /tmp/jpx-tests     (all coding styles, geometry, depth, layers)
 //   bench/jpxverify images.jp2 images.j2k ...    (existing codestreams)
+//   bench/jpxverify --image --reduce 2 big.jp2  (picture limits, quarter resolution)
 #include "../src/nitrojpx.h"
 #include <openjpeg.h>
 #include <stdio.h>
@@ -12,7 +13,8 @@
 #include <string.h>
 
 static int checked, failed, rejected, worst_diff;
-static unsigned rng = 7;
+static unsigned rng = 7, decode_flags;
+static int reduction;
 static unsigned rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 static void loud(const char *message, void *ctx) { (void)ctx; fputs(message, stderr); }
 static void quiet(const char *message, void *ctx) { (void)message; (void)ctx; }
@@ -29,9 +31,9 @@ static int verify(const char *path, int tolerance) {
     size_t len = 0; uint8_t *d = load(path, &len);
     if (!d || len < 2) { free(d); fprintf(stderr, "cannot read %s\n", path); failed++; return -1; }
     njpx_image im;
-    int ours = njpx_decode(d, len, 0, &im);
+    int ours = njpx_decode(d, len, decode_flags, &im);
     njpx_image serial;
-    int serial_rc = njpx_decode(d, len, NJPX_SINGLE_THREAD, &serial);
+    int serial_rc = njpx_decode(d, len, decode_flags | NJPX_SINGLE_THREAD, &serial);
     int parallel_diff = ours != serial_rc || (!ours &&
         (im.width != serial.width || im.height != serial.height || im.ncomp != serial.ncomp ||
          im.colorspace != serial.colorspace || im.alpha != serial.alpha || im.premultiplied != serial.premultiplied ||
@@ -39,6 +41,7 @@ static int verify(const char *path, int tolerance) {
          memcmp(im.samples, serial.samples, (size_t)im.width * im.height * im.ncomp * sizeof(uint16_t))));
     njpx_free(&serial);
     opj_dparameters_t params; opj_set_default_decoder_parameters(&params);
+    params.cp_reduce = (unsigned)reduction;
     opj_codec_t *codec = opj_create_decompress(d[0] == 255 && d[1] == 79 ? OPJ_CODEC_J2K : OPJ_CODEC_JP2);
     opj_set_error_handler(codec, quiet, NULL); opj_set_warning_handler(codec, quiet, NULL);
     opj_stream_t *stream = opj_stream_create_default_file_stream(path, OPJ_TRUE);
@@ -48,11 +51,15 @@ static int verify(const char *path, int tolerance) {
     int bad = parallel_diff, maxdiff = 0;
     if (parallel_diff) printf("FAIL serial/parallel mismatch: %s\n", path);
     if (!ok) { rejected++; printf("reference rejected (%s): %s\n", ours ? "both reject" : "nitrojpx decoded", path); }
-    else if (ours || im.width != (int)(ref->x1 - ref->x0) || im.height != (int)(ref->y1 - ref->y0) || im.ncomp != (int)ref->numcomps) bad = 1;
+    else if (ours || im.width != (int)((ref->x1 + (1u << reduction) - 1) >> reduction) - (int)((ref->x0 + (1u << reduction) - 1) >> reduction) ||
+             im.height != (int)((ref->y1 + (1u << reduction) - 1) >> reduction) - (int)((ref->y0 + (1u << reduction) - 1) >> reduction) ||
+             im.ncomp != (int)ref->numcomps) bad = 1;
     else {
         for (int y = 0; y < im.height; y++) for (int x = 0; x < im.width; x++) for (int c = 0; c < im.ncomp; c++) {
             const opj_image_comp_t *q = ref->comps + c;
-            int sx = (int)((ref->x0 + x) / q->dx) - (int)q->x0, sy = (int)((ref->y0 + y) / q->dy) - (int)q->y0;
+            unsigned scale = 1u << reduction;
+            int sx = (int)((((ref->x0 + scale - 1) >> reduction) + x) / q->dx) - (int)((q->x0 + scale - 1) >> reduction);
+            int sy = (int)((((ref->y0 + scale - 1) >> reduction) + y) / q->dy) - (int)((q->y0 + scale - 1) >> reduction);
             if (sx < 0) sx = 0; if (sy < 0) sy = 0;
             if (sx >= (int)q->w) sx = (int)q->w - 1; if (sy >= (int)q->h) sy = (int)q->h - 1;
             int v = q->data[(size_t)sy * q->w + sx] + (q->sgnd ? 1 << (q->prec - 1) : 0);
@@ -113,10 +120,45 @@ static int generate(const char *path, int style, int config, int large) {
     if (!ok) { fprintf(stderr, "reference encoder failed: %s\n", path); failed++; return -1; }
     return verify(path, lossy ? (precision > 8 ? 4 : 2) : 0);
 }
+// Empty trailing tile-parts are legal, even after every packet has been supplied.
+// Also use an all-empty packet body to exercise a huge image without a huge fixture.
+static void geometry_regressions(const char *dir) {
+    char path[4096]; snprintf(path, sizeof(path), "%s/style-0.j2k", dir);
+    size_t n = 0; uint8_t *d = load(path, &n);
+    if (!d || n < 45) { free(d); failed++; return; }
+    size_t sot = 2;
+    while (sot + 4 < n && !(d[sot] == 255 && d[sot + 1] == 144))
+        sot += 2 + ((size_t)d[sot + 2] << 8 | d[sot + 3]);
+    if (sot + 12 >= n) { free(d); failed++; return; }
+    const uint8_t empty[] = {255,144,0,10,0,0,0,0,0,14,1,2,255,147};
+    d[sot + 11] = 2;
+    snprintf(path, sizeof(path), "%s/empty-trailing-part.j2k", dir);
+    FILE *f = fopen(path, "wb"); if (!f) { free(d); failed++; return; }
+    fwrite(d, 1, n - 2, f); fwrite(empty, 1, sizeof(empty), f); fwrite(d + n - 2, 1, 2, f); fclose(f);
+    verify(path, 0);
+    // Four resolutions, three layers, one precinct each; all blocks absent: neutral grey.
+    // A full 32768-square coefficient plane exceeds the default memory limit;
+    // its 1/8-resolution plane does not. OpenJPEG supplies the expected pixels.
+    for (int i = 8; i <= 28; i += 4) if (i == 8 || i == 12 || i == 24 || i == 28) {
+        d[i] = 0; d[i + 1] = 0; d[i + 2] = 128; d[i + 3] = 0;
+    }
+    uint8_t tile[] = {255,144,0,10,0,0,0,0,0,26,0,1,255,147,
+                      0,0,0,0,0,0,0,0,0,0,0,0,255,217};
+    snprintf(path, sizeof(path), "%s/large-reduced-empty.j2k", dir);
+    f = fopen(path, "wb"); if (!f) { free(d); failed++; return; }
+    fwrite(d, 1, sot, f); fwrite(tile, 1, sizeof(tile), f); fclose(f); free(d);
+    unsigned saved_flags = decode_flags; int saved_reduction = reduction;
+    reduction = 3; decode_flags = NJPX_REDUCE(3); verify(path, 0);
+    reduction = saved_reduction; decode_flags = saved_flags;
+}
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: jpxverify [--selftest existing-directory] [files.jp2 files.j2k ...]\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: jpxverify [--image] [--reduce 0..7] [--selftest existing-directory] [files.jp2 files.j2k ...]\n"); return 2; }
     for (int a = 1; a < argc; a++) {
-        if (!strcmp(argv[a], "--selftest") && a + 1 < argc) {
+        if (!strcmp(argv[a], "--image")) decode_flags |= NJPX_IMAGE;
+        else if (!strcmp(argv[a], "--reduce") && a + 1 < argc) {
+            reduction = atoi(argv[++a]); if (reduction < 0 || reduction > 7) return 2;
+            decode_flags = (decode_flags & ~NJPX_REDUCE(7)) | NJPX_REDUCE(reduction);
+        } else if (!strcmp(argv[a], "--selftest") && a + 1 < argc) {
             const char *dir = argv[++a]; char path[4096];
             for (int style = 0; style < 64; style++) {
                 snprintf(path, sizeof(path), "%s/style-%d.j2k", dir, style); generate(path, style, -1, 0);
@@ -129,6 +171,7 @@ int main(int argc, char **argv) {
             for (size_t i = 0; i < sizeof(configs) / sizeof(*configs); i++) {
                 snprintf(path, sizeof(path), "%s/parallel-config-%d.j2k", dir, configs[i]); generate(path, 0, configs[i], 1);
             }
+            geometry_regressions(dir);
         } else verify(argv[a], -1);
     }
     printf("%d compared, %d failed, %d reference-rejected, max difference %d.\n", checked, failed, rejected, worst_diff);

@@ -30,7 +30,8 @@ enum { NJPX_RAW_COLORS = 1 };
 // when distributing several images across its own workers.
 enum { NJPX_SINGLE_THREAD = 2 };
 // NJPX_IMAGE: a picture file a viewer opens, not an image a document embeds: a picture's limits
-// (2 GiB working memory, 1 Gi output samples; with NJPX_REDUCE: of the reduced image).
+// (2 GiB working memory, 1 Gi output samples, 4 million code-blocks/packets;
+// with NJPX_REDUCE: output samples and coefficient planes of the reduced image).
 enum { NJPX_IMAGE = 4 };
 // NJPX_REDUCE(n): the image at 1/2^n of its size (n = 1..7), its n finest resolution levels left
 // out (their code-blocks not decoded, the inverse wavelets stopped there): the reduced grid,

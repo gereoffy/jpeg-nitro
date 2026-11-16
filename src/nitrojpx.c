@@ -109,7 +109,7 @@ typedef struct {
 typedef struct { int orient, x0, y0, x1, y1, nx, ny, mb; double step; Block *cb; Tree inc, zero; } Band;
 typedef struct { Band band[3]; } Precinct;
 typedef struct { int x0, y0, x1, y1, px0, py0, nx, ny; Precinct *prec; } Resolution;
-typedef struct { int x0, y0, x1, y1; Resolution res[LEVELS]; void *plane; } Component;   // (plane: int32 if reversible, else float)
+typedef struct { int x0, y0, x1, y1, stride; Resolution res[LEVELS]; void *plane; } Component;   // (plane: int32 if reversible, else float)
 typedef struct { uint64_t key[5]; int c, r, p, l; } Packet;
 typedef struct {
     int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags;
@@ -117,7 +117,7 @@ typedef struct {
     Packet *packets; size_t npackets, next;
 } Tile;
 typedef struct {
-    size_t memory, items, mem_limit, sample_limit;
+    size_t memory, items, mem_limit, sample_limit, item_limit;
     int xs, ys, x0, y0, tw, th, tx0, ty0, nx, ny, nc, siz, layers, order, mct, flags;
     int prec[NJPX_MAX_COMPS], sign[NJPX_MAX_COMPS], dx[NJPX_MAX_COMPS], dy[NJPX_MAX_COMPS];
     Coding coding[NJPX_MAX_COMPS]; Tile *tiles;
@@ -269,7 +269,7 @@ static int band_new(Jpx *j, Band *b, const Coding *c, const Component *tc, int r
     int cbx = imin(c->cbx, ppx), cby = imin(c->cby, ppy);
     int cx0 = b->x0 >> cbx, cy0 = b->y0 >> cby;
     b->nx = cshift(b->x1, cbx) - cx0; b->ny = cshift(b->y1, cby) - cy0;
-    if ((size_t)b->nx * b->ny > ITEM_LIMIT - j->items) return -1;
+    if ((size_t)b->nx * b->ny > j->item_limit - j->items) return -1;
     j->items += (size_t)b->nx * b->ny;
     int q = r ? 3 * (r - 1) + orient : 0;
     int exponent = c->exp[c->quant == 1 ? 0 : q];
@@ -311,7 +311,7 @@ static int tile_new(Jpx *j, Tile *t) {
             rs->px0 = rs->x0 >> px; rs->py0 = rs->y0 >> py;
             rs->nx = cshift(rs->x1, px) - rs->px0; rs->ny = cshift(rs->y1, py) - rs->py0;
             size_t np = (size_t)rs->nx * rs->ny;
-            if (np > (ITEM_LIMIT - count) / t->layers) return -1;
+            if (np > (j->item_limit - count) / t->layers) return -1;
             count += np * t->layers;
             rs->prec = jalloc(j, np * sizeof(Precinct));
             if (!rs->prec) return -1;
@@ -324,7 +324,7 @@ static int tile_new(Jpx *j, Tile *t) {
     if (t->mct) for (int c = 1; c < 3; c++)
         if (j->dx[c] != j->dx[0] || j->dy[c] != j->dy[0] || j->prec[c] != j->prec[0] ||
             t->coding[c].reversible != t->coding[0].reversible) return -1;
-    if (count > ITEM_LIMIT - j->items) return -1;
+    if (count > j->item_limit - j->items) return -1;
     j->items += count;
     t->packets = jalloc(j, count * sizeof(Packet)); t->npackets = count;
     if (!t->packets) return -1;
@@ -670,7 +670,7 @@ typedef struct {
 // the rows in groups and the columns in groups of strips at once, each group with its own buffer
 // (the rows of a level are independent, so are the strips of columns).
 static int component_wavelet(Jpx *j, Component *tc, const Coding *co, int parallel) {
-    int stride = tc->x1 - tc->x0, height = tc->y1 - tc->y0;
+    int stride = tc->stride, height = cshift(tc->y1, j->reduce) - cshift(tc->y0, j->reduce);
     if (!stride || !height || co->nl <= j->reduce) return 0;
     int error = 0, *err = &error;
     for (int r = 1; r <= co->nl - j->reduce && !error; r++) {
@@ -728,7 +728,11 @@ static int tile_decode(Jpx *j, Tile *t) {
     for (int c = 0; c < j->nc; c++) {
         Component *tc = t->comp + c;
         if (t->coding[c].nl < j->reduce) return -1;
-        size_t n = (size_t)(tc->x1 - tc->x0) * (tc->y1 - tc->y0);
+        // Only the retained resolutions occupy the coefficient plane. Full-grid tile
+        // coordinates still describe packet/sub-band geometry, not this allocation.
+        const Resolution *rs = tc->res + t->coding[c].nl - j->reduce;
+        tc->stride = rs->x1 - rs->x0;
+        size_t n = (size_t)tc->stride * (rs->y1 - rs->y0);
         if (n && !(tc->plane = jalloc(j, n * 4))) return -1;
         samples += n;
         for (int r = 0; r <= t->coding[c].nl - j->reduce; r++) {
@@ -744,7 +748,7 @@ static int tile_decode(Jpx *j, Tile *t) {
     size_t at = 0;
     for (int c = 0; c < j->nc; c++) {
         Component *tc = t->comp + c; const Coding *co = t->coding + c;
-        int stride = tc->x1 - tc->x0;
+        int stride = tc->stride;
         for (int r = 0; r <= co->nl - j->reduce; r++) {
             Resolution *rs = tc->res + r;
             int lw = r ? cshift(tc->x1, co->nl - r + 1) - cshift(tc->x0, co->nl - r + 1) : 0;
@@ -787,10 +791,10 @@ static int tile_decode(Jpx *j, Tile *t) {
     for (int c = 0; c < 3 && fused; c++) {
         const Resolution *rc = t->comp[c].res + t->coding[c].nl - j->reduce;
         fused = j->dx[c] == 1 && j->dy[c] == 1 && j->prec[c] == j->prec[0] && t->coding[c].reversible == t->coding[0].reversible &&
-                rc->x0 == r0->x0 && rc->y0 == r0->y0 && rc->x1 == r0->x1 && rc->y1 == r0->y1 && t->comp[c].x1 - t->comp[c].x0 == t->comp[0].x1 - t->comp[0].x0;
+                rc->x0 == r0->x0 && rc->y0 == r0->y0 && rc->x1 == r0->x1 && rc->y1 == r0->y1 && t->comp[c].stride == t->comp[0].stride;
     }
     if (fused) {
-        int stride = t->comp[0].x1 - t->comp[0].x0, rh = r0->y1 - r0->y0, rev = t->coding[0].reversible, mct = t->mct;
+        int stride = t->comp[0].stride, rh = r0->y1 - r0->y0, rev = t->coding[0].reversible, mct = t->mct;
         int w = j->oxs - j->ox0, oh = j->oys - j->oy0;
         int sx0 = imax(r0->x0, j->ox0), sx1 = imin(r0->x1, j->ox0 + w);
         void *pa = t->comp[0].plane, *pb = t->comp[1].plane, *pc = t->comp[2].plane;
@@ -839,7 +843,7 @@ static int tile_decode(Jpx *j, Tile *t) {
     // worker they took as long as the wavelets on all)
     if (t->mct) {
         const Resolution *rs = t->comp[0].res + t->coding[0].nl - j->reduce;
-        int stride = t->comp[0].x1 - t->comp[0].x0, rw = rs->x1 - rs->x0, rh = rs->y1 - rs->y0, rev = t->coding[0].reversible;
+        int stride = t->comp[0].stride, rw = rs->x1 - rs->x0, rh = rs->y1 - rs->y0, rev = t->coding[0].reversible;
         void *pa = t->comp[0].plane, *pb = t->comp[1].plane, *pc = t->comp[2].plane;
         int groups = parallel ? imin(rh, 64) : 1;
         nitro_body mct = ^(size_t g) {
@@ -862,7 +866,7 @@ static int tile_decode(Jpx *j, Tile *t) {
     for (int c = 0; c < nc; c++) {
         Component *tc = t->comp + c;
         const Resolution *rs = tc->res + t->coding[c].nl - j->reduce;
-        int stride = tc->x1 - tc->x0, rh = rs->y1 - rs->y0, dx = j->dx[c], dy = j->dy[c];
+        int stride = tc->stride, rh = rs->y1 - rs->y0, dx = j->dx[c], dy = j->dy[c];
         // Both signed and unsigned samples are exposed with an unsigned bias to the caller.
         double bias = (double)((unsigned)1 << (j->prec[c] - 1)), max = ((unsigned)1 << j->prec[c]) - 1;
         // (the samples whose x is on the output: reduced, a sub-sampled component's edge may not be)
@@ -1056,6 +1060,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
     if (!data || len < 4 || (flags & ~(NJPX_RAW_COLORS | NJPX_SINGLE_THREAD | NJPX_IMAGE | NJPX_REDUCE(7)))) return -1;
     Jpx j = {0}; j.alpha = -1; j.raw_colors = (flags & NJPX_RAW_COLORS) != 0; j.serial = (flags & NJPX_SINGLE_THREAD) != 0;
     j.mem_limit = flags & NJPX_IMAGE ? MEM_LIMIT * 4 : MEM_LIMIT; j.sample_limit = flags & NJPX_IMAGE ? SAMPLE_LIMIT * 16 : SAMPLE_LIMIT;
+    j.item_limit = flags & NJPX_IMAGE ? ITEM_LIMIT * 4u : ITEM_LIMIT;
     j.reduce = (int)(flags >> 8 & 7);
     const uint8_t *stream = data; size_t slen = len;
     if (be16(data) != 0xff4f) {
@@ -1088,7 +1093,9 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         Tile *t = j.tiles + index;
         // Some Adobe writers put 5 in TNsot for six resolution tile-parts. Treat the
         // declared count as advisory; sequence numbers, lengths, packets and EOC still check.
-        if (t->done || part != (unsigned)t->parts) goto done;
+        // A writer may finish a tile with empty tile-parts after its last packet.
+        // Sequence numbers still check here; the packet loop rejects any extra data.
+        if (part != (unsigned)t->parts) goto done;
         if (!t->parts) {
             t->x0 = imax(j.x0, j.tx0 + (index % j.nx) * j.tw); t->x1 = imin(j.xs, j.tx0 + (index % j.nx + 1) * j.tw);
             t->y0 = imax(j.y0, j.ty0 + (index / j.nx) * j.th); t->y1 = imin(j.ys, j.ty0 + (index / j.nx + 1) * j.th);
