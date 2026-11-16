@@ -3,152 +3,18 @@
 //
 // nitrodjvu: see nitrodjvu.h. Sections of the DjVu Reference in brackets. Where the reference's
 // text leaves something out (the two coding templates' figures, the relative locations' rules) the
-// code says so: those follow what the files themselves decode to.
+// code says so: those follow what the files themselves decode to. The pictures: nitroiw44.
 #include "nitrodjvu.h"
 #include "nitro_bilevel.h"
+#include "nitro_zp.h"
+#include "nitroiw44.h"
 #include <limits.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-
-// --- the Z'-coder (appendix 3) --------------------------------------------------------------------
-
-// Its table 9: the interval's reduction for a more probable symbol, the threshold above which one
-// moves the state on, and the next state after a more and after a less probable symbol.
-static const struct { uint16_t p, m; uint8_t up, dn; } ZP[251] = {
-    {0x8000, 0x0000,  84, 145}, {0x8000, 0x0000,   3,   4}, {0x8000, 0x0000,   4,   3}, {0x6bbd, 0x10a5,   5,   1},
-    {0x6bbd, 0x10a5,   6,   2}, {0x5d45, 0x1f28,   7,   3}, {0x5d45, 0x1f28,   8,   4}, {0x51b9, 0x2bd3,   9,   5},
-    {0x51b9, 0x2bd3,  10,   6}, {0x4813, 0x36e3,  11,   7}, {0x4813, 0x36e3,  12,   8}, {0x3fd5, 0x408c,  13,   9},
-    {0x3fd5, 0x408c,  14,  10}, {0x38b1, 0x48fd,  15,  11}, {0x38b1, 0x48fd,  16,  12}, {0x3275, 0x505d,  17,  13},
-    {0x3275, 0x505d,  18,  14}, {0x2cfd, 0x56d0,  19,  15}, {0x2cfd, 0x56d0,  20,  16}, {0x2825, 0x5c71,  21,  17},
-    {0x2825, 0x5c71,  22,  18}, {0x23ab, 0x615b,  23,  19}, {0x23ab, 0x615b,  24,  20}, {0x1f87, 0x65a5,  25,  21},
-    {0x1f87, 0x65a5,  26,  22}, {0x1bbb, 0x6962,  27,  23}, {0x1bbb, 0x6962,  28,  24}, {0x1845, 0x6ca2,  29,  25},
-    {0x1845, 0x6ca2,  30,  26}, {0x1523, 0x6f74,  31,  27}, {0x1523, 0x6f74,  32,  28}, {0x1253, 0x71e6,  33,  29},
-    {0x1253, 0x71e6,  34,  30}, {0x0fcf, 0x7404,  35,  31}, {0x0fcf, 0x7404,  36,  32}, {0x0d95, 0x75d6,  37,  33},
-    {0x0d95, 0x75d6,  38,  34}, {0x0b9d, 0x7768,  39,  35}, {0x0b9d, 0x7768,  40,  36}, {0x09e3, 0x78c2,  41,  37},
-    {0x09e3, 0x78c2,  42,  38}, {0x0861, 0x79ea,  43,  39}, {0x0861, 0x79ea,  44,  40}, {0x0711, 0x7ae7,  45,  41},
-    {0x0711, 0x7ae7,  46,  42}, {0x05f1, 0x7bbe,  47,  43}, {0x05f1, 0x7bbe,  48,  44}, {0x04f9, 0x7c75,  49,  45},
-    {0x04f9, 0x7c75,  50,  46}, {0x0425, 0x7d0f,  51,  47}, {0x0425, 0x7d0f,  52,  48}, {0x0371, 0x7d91,  53,  49},
-    {0x0371, 0x7d91,  54,  50}, {0x02d9, 0x7dfe,  55,  51}, {0x02d9, 0x7dfe,  56,  52}, {0x0259, 0x7e5a,  57,  53},
-    {0x0259, 0x7e5a,  58,  54}, {0x01ed, 0x7ea6,  59,  55}, {0x01ed, 0x7ea6,  60,  56}, {0x0193, 0x7ee6,  61,  57},
-    {0x0193, 0x7ee6,  62,  58}, {0x0149, 0x7f1a,  63,  59}, {0x0149, 0x7f1a,  64,  60}, {0x010b, 0x7f45,  65,  61},
-    {0x010b, 0x7f45,  66,  62}, {0x00d5, 0x7f6b,  67,  63}, {0x00d5, 0x7f6b,  68,  64}, {0x00a5, 0x7f8d,  69,  65},
-    {0x00a5, 0x7f8d,  70,  66}, {0x007b, 0x7faa,  71,  67}, {0x007b, 0x7faa,  72,  68}, {0x0057, 0x7fc3,  73,  69},
-    {0x0057, 0x7fc3,  74,  70}, {0x003b, 0x7fd7,  75,  71}, {0x003b, 0x7fd7,  76,  72}, {0x0023, 0x7fe7,  77,  73},
-    {0x0023, 0x7fe7,  78,  74}, {0x0013, 0x7ff2,  79,  75}, {0x0013, 0x7ff2,  80,  76}, {0x0007, 0x7ffa,  81,  77},
-    {0x0007, 0x7ffa,  82,  78}, {0x0001, 0x7fff,  81,  79}, {0x0001, 0x7fff,  82,  80}, {0x5695, 0x0000,   9,  85},
-    {0x24ee, 0x0000,  86, 226}, {0x8000, 0x0000,   5,   6}, {0x0d30, 0x0000,  88, 176}, {0x481a, 0x0000,  89, 143},
-    {0x0481, 0x0000,  90, 138}, {0x3579, 0x0000,  91, 141}, {0x017a, 0x0000,  92, 112}, {0x24ef, 0x0000,  93, 135},
-    {0x007b, 0x0000,  94, 104}, {0x1978, 0x0000,  95, 133}, {0x0028, 0x0000,  96, 100}, {0x10ca, 0x0000,  97, 129},
-    {0x000d, 0x0000,  82,  98}, {0x0b5d, 0x0000,  99, 127}, {0x0034, 0x0000,  76,  72}, {0x078a, 0x0000, 101, 125},
-    {0x00a0, 0x0000,  70, 102}, {0x050f, 0x0000, 103, 123}, {0x0117, 0x0000,  66,  60}, {0x0358, 0x0000, 105, 121},
-    {0x01ea, 0x0000, 106, 110}, {0x0234, 0x0000, 107, 119}, {0x0144, 0x0000,  66, 108}, {0x0173, 0x0000, 109, 117},
-    {0x0234, 0x0000,  60,  54}, {0x00f5, 0x0000, 111, 115}, {0x0353, 0x0000,  56,  48}, {0x00a1, 0x0000,  69, 113},
-    {0x05c5, 0x0000, 114, 134}, {0x011a, 0x0000,  65,  59}, {0x03cf, 0x0000, 116, 132}, {0x01aa, 0x0000,  61,  55},
-    {0x0285, 0x0000, 118, 130}, {0x0286, 0x0000,  57,  51}, {0x01ab, 0x0000, 120, 128}, {0x03d3, 0x0000,  53,  47},
-    {0x011a, 0x0000, 122, 126}, {0x05c5, 0x0000,  49,  41}, {0x00ba, 0x0000, 124,  62}, {0x08ad, 0x0000,  43,  37},
-    {0x007a, 0x0000,  72,  66}, {0x0ccc, 0x0000,  39,  31}, {0x01eb, 0x0000,  60,  54}, {0x1302, 0x0000,  33,  25},
-    {0x02e6, 0x0000,  56,  50}, {0x1b81, 0x0000,  29, 131}, {0x045e, 0x0000,  52,  46}, {0x24ef, 0x0000,  23,  17},
-    {0x0690, 0x0000,  48,  40}, {0x2865, 0x0000,  23,  15}, {0x09de, 0x0000,  42, 136}, {0x3987, 0x0000, 137,   7},
-    {0x0dc8, 0x0000,  38,  32}, {0x2c99, 0x0000,  21, 139}, {0x10ca, 0x0000, 140, 172}, {0x3b5f, 0x0000,  15,   9},
-    {0x0b5d, 0x0000, 142, 170}, {0x5695, 0x0000,   9,  85}, {0x078a, 0x0000, 144, 168}, {0x8000, 0x0000, 141, 248},
-    {0x050f, 0x0000, 146, 166}, {0x24ee, 0x0000, 147, 247}, {0x0358, 0x0000, 148, 164}, {0x0d30, 0x0000, 149, 197},
-    {0x0234, 0x0000, 150, 162}, {0x0481, 0x0000, 151,  95}, {0x0173, 0x0000, 152, 160}, {0x017a, 0x0000, 153, 173},
-    {0x00f5, 0x0000, 154, 158}, {0x007b, 0x0000, 155, 165}, {0x00a1, 0x0000,  70, 156}, {0x0028, 0x0000, 157, 161},
-    {0x011a, 0x0000,  66,  60}, {0x000d, 0x0000,  81, 159}, {0x01aa, 0x0000,  62,  56}, {0x0034, 0x0000,  75,  71},
-    {0x0286, 0x0000,  58,  52}, {0x00a0, 0x0000,  69, 163}, {0x03d3, 0x0000,  54,  48}, {0x0117, 0x0000,  65,  59},
-    {0x05c5, 0x0000,  50,  42}, {0x01ea, 0x0000, 167, 171}, {0x08ad, 0x0000,  44,  38}, {0x0144, 0x0000,  65, 169},
-    {0x0ccc, 0x0000,  40,  32}, {0x0234, 0x0000,  59,  53}, {0x1302, 0x0000,  34,  26}, {0x0353, 0x0000,  55,  47},
-    {0x1b81, 0x0000,  30, 174}, {0x05c5, 0x0000, 175, 193}, {0x24ef, 0x0000,  24,  18}, {0x03cf, 0x0000, 177, 191},
-    {0x2b74, 0x0000, 178, 222}, {0x0285, 0x0000, 179, 189}, {0x201d, 0x0000, 180, 218}, {0x01ab, 0x0000, 181, 187},
-    {0x1715, 0x0000, 182, 216}, {0x011a, 0x0000, 183, 185}, {0x0fb7, 0x0000, 184, 214}, {0x00ba, 0x0000,  69,  61},
-    {0x0a67, 0x0000, 186, 212}, {0x01eb, 0x0000,  59,  53}, {0x06e7, 0x0000, 188, 210}, {0x02e6, 0x0000,  55,  49},
-    {0x0496, 0x0000, 190, 208}, {0x045e, 0x0000,  51,  45}, {0x030d, 0x0000, 192, 206}, {0x0690, 0x0000,  47,  39},
-    {0x0206, 0x0000, 194, 204}, {0x09de, 0x0000,  41, 195}, {0x0155, 0x0000, 196, 202}, {0x0dc8, 0x0000,  37,  31},
-    {0x00e1, 0x0000, 198, 200}, {0x2b74, 0x0000, 199, 243}, {0x0094, 0x0000,  72,  64}, {0x201d, 0x0000, 201, 239},
-    {0x0188, 0x0000,  62,  56}, {0x1715, 0x0000, 203, 237}, {0x0252, 0x0000,  58,  52}, {0x0fb7, 0x0000, 205, 235},
-    {0x0383, 0x0000,  54,  48}, {0x0a67, 0x0000, 207, 233}, {0x0547, 0x0000,  50,  44}, {0x06e7, 0x0000, 209, 231},
-    {0x07e2, 0x0000,  46,  38}, {0x0496, 0x0000, 211, 229}, {0x0bc0, 0x0000,  40,  34}, {0x030d, 0x0000, 213, 227},
-    {0x1178, 0x0000,  36,  28}, {0x0206, 0x0000, 215, 225}, {0x19da, 0x0000,  30,  22}, {0x0155, 0x0000, 217, 223},
-    {0x24ef, 0x0000,  26,  16}, {0x00e1, 0x0000, 219, 221}, {0x320e, 0x0000,  20, 220}, {0x0094, 0x0000,  71,  63},
-    {0x432a, 0x0000,  14,   8}, {0x0188, 0x0000,  61,  55}, {0x447d, 0x0000,  14, 224}, {0x0252, 0x0000,  57,  51},
-    {0x5ece, 0x0000,   8,   2}, {0x0383, 0x0000,  53,  47}, {0x8000, 0x0000, 228,  87}, {0x0547, 0x0000,  49,  43},
-    {0x481a, 0x0000, 230, 246}, {0x07e2, 0x0000,  45,  37}, {0x3579, 0x0000, 232, 244}, {0x0bc0, 0x0000,  39,  33},
-    {0x24ef, 0x0000, 234, 238}, {0x1178, 0x0000,  35,  27}, {0x1978, 0x0000, 138, 236}, {0x19da, 0x0000,  29,  21},
-    {0x2865, 0x0000,  24,  16}, {0x24ef, 0x0000,  25,  15}, {0x3987, 0x0000, 240,   8}, {0x320e, 0x0000,  19, 241},
-    {0x2c99, 0x0000,  22, 242}, {0x432a, 0x0000,  13,   7}, {0x3b5f, 0x0000,  16,  10}, {0x447d, 0x0000,  13, 245},
-    {0x5695, 0x0000,  10,   2}, {0x5ece, 0x0000,   7,   1}, {0x8000, 0x0000, 244,  83}, {0x8000, 0x0000, 249, 250},
-    {0x5695, 0x0000,  10,   2}, {0x481a, 0x0000,  89, 143}, {0x481a, 0x0000, 230, 246},
-};
-
-#define ZP_PAST 32   // bytes read past the end before a stream counts as cut short (its last decisions take them as 0xff)
-
-typedef struct {
-    const uint8_t *p, *end;
-    uint32_t a, c, fence;   // (fence: below it a more probable symbol needs no look at c)
-    uint8_t byte;
-    int nbits, over;        // bits left of byte; the bytes read past the end (they read as 0xff)
-} Zp;
-
-static inline unsigned zp_bit(Zp *z) {
-    if (!z->nbits) {
-        if (z->p < z->end) z->byte = *z->p++;
-        else z->byte = 0xff, z->over++;
-        z->nbits = 8;
-    }
-    return z->byte >> --z->nbits & 1;
-}
-static void zp_init(Zp *z, const uint8_t *p, size_t len) {
-    memset(z, 0, sizeof *z);
-    z->p = p, z->end = p + len;
-    for (int k = 0; k < 16; k++) z->c = z->c << 1 | zp_bit(z);
-    z->fence = z->c >= 0x8000 ? 0x7fff : z->c;
-}
-// (after a less probable symbol: the interval grown back to at least half; after a more probable one, once)
-static inline void zp_shift(Zp *z) {
-    do {
-        z->a = z->a << 1 & 0xffff;
-        z->c = (z->c << 1 & 0xffff) | zp_bit(z);
-    } while (z->a >= 0x8000);
-    z->fence = z->c >= 0x8000 ? 0x7fff : z->c;
-}
-// A decision in the context k (its state, whose parity is the more probable symbol). The state moves
-// on after a less probable symbol, and after a more probable one that fills the interval (figure 1).
-static inline int zp_decode(Zp *z, uint8_t *k) {
-    unsigned s = *k, zz = z->a + ZP[s].p;
-    if (zz <= z->fence) {
-        z->a = zz;
-        return (int)(s & 1);
-    }
-    unsigned d = 0x6000 + ((zz + z->a) >> 2);
-    if (zz > d) zz = d;
-    if (zz > z->c) {
-        zz = 0x10000 - zz;
-        z->a += zz, z->c += zz;
-        *k = ZP[s].dn;
-        zp_shift(z);
-        return (int)(~s & 1);
-    }
-    if (z->a >= ZP[s].m) *k = ZP[s].up;
-    z->a = zz;
-    zp_shift(z);
-    return (int)(s & 1);
-}
-// a decision without a context: both values near enough as likely (figure 2)
-static inline int zp_raw(Zp *z) {
-    unsigned zz = 0x8000 + ((z->a * 3) >> 3);
-    if (zz > z->c) {
-        zz = 0x10000 - zz;
-        z->a += zz, z->c += zz;
-        zp_shift(z);
-        return 1;
-    }
-    z->a = zz;
-    zp_shift(z);
-    return 0;
-}
 
 // --- BZZ (appendix 4): the directory's names ------------------------------------------------------
 
@@ -294,6 +160,12 @@ typedef struct {
     int started, width, height, err, old;   // (old: files up to version 18 code a copy's place by its whole bitmap)
     Bm page;
     int have_page;
+    // a page whose shapes have colours of their own (FGbz): the palette entry of each shape put on
+    // the page, in their order; `entry`: the entries of the shapes' pixels (width x height, rows from
+    // the top; made at the start of the image when blit_entry is set, NULL if there was no memory)
+    const uint8_t *blit_entry;
+    int blit_entries, blits;
+    uint8_t *entry;
     // where the last symbols were put (rows from the bottom, 1 the lowest: 11.3)
     int last_right, last_row_left, last_row_bottom, base[3], base_at;
 } Jb2;
@@ -489,8 +361,18 @@ static void jb2_place(Jb2 *j, int rows, int cols, int *left, int *bottom) {
 
 // the shape onto the page, its lower left pixel at left, bottom (from 1; rows from the bottom)
 static void jb2_blit(Jb2 *j, const Bm *b, int left, int bottom) {
-    if (j->have_page && left > -70000 && left < 70000 && bottom > -70000 && bottom < 70000)
-        bm_compose(&j->page, b, left - 1, j->height - (bottom - 1 + b->h), 0);
+    int k = j->blits++;
+    if (!j->have_page || left <= -70000 || left >= 70000 || bottom <= -70000 || bottom >= 70000) return;
+    int x0 = left - 1, y0 = j->height - (bottom - 1 + b->h);
+    bm_compose(&j->page, b, x0, y0, 0);
+    if (!j->entry || k >= j->blit_entries) return;
+    uint8_t e = j->blit_entry[k];
+    for (int y = y0 < 0 ? -y0 : 0; y < b->h && y0 + y < j->height; y++) {
+        const uint8_t *s = bm_row(b, y);
+        uint8_t *o = j->entry + (size_t)(y0 + y) * (size_t)j->width;
+        for (int x = x0 < 0 ? -x0 : 0; x < b->w && x0 + x < j->width; x++)
+            if (s[x]) o[x0 + x] = e;
+    }
 }
 
 // The records of a JB2 stream (11.4): a page's (page: its picture built) or a dictionary's. dict:
@@ -512,6 +394,7 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             if (page) {
                 if (w < 1 || h < 1 || w > 65535 || h > 65535 || (size_t)w * (size_t)h > JB2_MAX_PIXELS || bm_new(&j->page, w, h)) break;
                 j->have_page = 1;
+                if (j->blit_entry) j->entry = calloc((size_t)w, (size_t)h);
             }
             j->width = w, j->height = h, j->started = 1;
             j->last_right = j->last_row_left = 0, j->last_row_bottom = h;
@@ -592,7 +475,7 @@ static void jb2_free(Jb2 *j, int keep_lib) {
         for (int k = j->inherited; k < j->nlib; k++) free(j->lib[k].bm.mem);
         free(j->lib);
     }
-    free(j->page.mem);
+    free(j->page.mem), free(j->entry);
 }
 
 // --- the document ----------------------------------------------------------------------------------
@@ -605,14 +488,32 @@ typedef struct {   // a component file of the document: a page, or one others in
     int dict_tried, dict_own;
 } Comp;
 
+// A picture layer of a page (its background or its foreground colours), decoded: planes as nitroiw44
+// gives them, turned like the page. It is smaller than the page by a whole factor, and lies on it
+// from its bottom left corner (the picture's top row may reach above the page's).
+typedef struct {
+    uint8_t *y, *cb, *cr;   // (cb, cr NULL: grey)
+    int w, h, r;            // r: the page's pixels to one of its
+    int ox, oy;             // where its top left corner is on the turned page (0 or less)
+} Layer;
+
 typedef struct {
     int comp, w, h, turn, version;   // (turn: quarter turns clockwise to show it upright)
-    uint8_t *bits;                    // decoded: rows of packed bits (1: black), turned; NULL: not (or no mask: blank)
+    int decoded;                      // what it has is in memory: the mask, the layers
+    int unread;                       // it has a mask or a picture, but none that could be decoded (a grey sheet;
+                                      //   a page with nothing on it is a white one)
+    uint8_t *bits;                    // the mask: rows of packed bits (1: foreground), turned; NULL: none
     size_t rowbytes;
-    int bw, bh, blank, users, stamp;
+    int bw, bh;
+    Layer bg, fg;                     // (y NULL: none. Without foreground colours the mask is black)
+    uint8_t *pal, *entry;             // the foreground's colours by a palette (FGbz): RGB triplets; each mask
+                                      //   pixel's entry (bw x bh; NULL: all of the mask is entry 0)
+    size_t bytes;
+    int users, stamp;
 } Page;
 
-#define KEEP_PAGES 4
+#define KEEP_PAGES 4            // decoded pages kept (the ones drawn last), and no more of them than
+#define KEEP_BYTES (96u << 20)  // this (a photograph page at full size is tens of MB)
 
 struct nitrodjvu {
     uint8_t *data;
@@ -678,41 +579,167 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth) {
     return NULL;
 }
 
-// A page decoded: its mask (Sjbz) with the dictionary its file has or includes, turned as its INFO
-// says, as packed rows. Without a mask: blank (a grey sheet); a mask cut short or damaged: as much
-// of it as was drawn (what follows a damaged spot decodes as noise: a stray letter here and there).
+// a plane of w x h bytes turned by quarter turns clockwise, into a new one (NULL: out of memory); the old one is freed
+static uint8_t *plane_turn(uint8_t *src, int w, int h, int turn) {
+    if (!src || !turn) return src;
+    int ow = turn & 1 ? h : w;
+    uint8_t *dst = malloc((size_t)w * (size_t)h);
+    for (int y = 0; dst && y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int ox = turn == 1 ? h - 1 - y : turn == 2 ? w - 1 - x : y;
+            int oy = turn == 1 ? x : turn == 2 ? h - 1 - y : w - 1 - x;
+            dst[(size_t)oy * (size_t)ow + (size_t)ox] = src[(size_t)y * (size_t)w + (size_t)x];
+        }
+    free(src);
+    return dst;
+}
+
+static void layer_free(Layer *l) {
+    free(l->y), free(l->cb), free(l->cr);
+    memset(l, 0, sizeof *l);
+}
+
+// A layer of a page decoded: all its chunks of the kind `id` (BG44: the slices of one picture, each
+// refining it; FG44: one), as planes turned like the page. pw x ph: the page as its file has it.
+static void layer_decode(const nitrodjvu *d, const Comp *co, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
+    niw44 *iw = NULL;
+    const uint8_t *id, *data;
+    size_t at = co->at, n;
+    while (chunk(d, &at, co->at + co->len, &id, &data, &n))
+        if (!memcmp(id, kind, 4) && (iw || (iw = niw44_new())) && niw44_chunk(iw, data, n)) break;
+    int w, h, nc = iw ? niw44_size(iw, &w, &h) : 0;
+    if (nc) {
+        // how many times smaller than the page it is [10.3: its size is the page's divided by 1 .. 12, rounded up]
+        int r = 0;
+        for (int k = 1; k <= 12 && !r; k++)
+            if ((pw + k - 1) / k == w && (ph + k - 1) / k == h) r = k;
+        if (!r) r = (pw + w / 2) / w;
+        if (r < 1) r = 1;
+        size_t px = (size_t)w * (size_t)h;
+        uint8_t *y = malloc(px), *cb = nc == 3 ? malloc(px) : NULL, *cr = nc == 3 ? malloc(px) : NULL;
+        if (y && (nc == 1 || (cb && cr)) && !niw44_planes(iw, y, cb, cr, (size_t)w)) {
+            // its corners on the page: the left and the bottom edges are the page's; then turned with it
+            int x0 = 0, y0 = ph - h * r, x1 = w * r, y1 = ph, t = pg->turn;
+            l->ox = t == 1 ? ph - y1 : t == 2 ? pw - x1 : t == 3 ? y0 : x0;
+            l->oy = t == 1 ? x0 : t == 2 ? ph - y1 : t == 3 ? pw - x1 : y0;
+            l->w = t & 1 ? h : w, l->h = t & 1 ? w : h, l->r = r;
+            l->y = plane_turn(y, w, h, t), l->cb = plane_turn(cb, w, h, t), l->cr = plane_turn(cr, w, h, t);
+            if (!l->y || (nc == 3 && (!l->cb || !l->cr))) layer_free(l);
+        } else
+            free(y), free(cb), free(cr);
+    }
+    niw44_free(iw);
+}
+
+// The colours of a page's shapes [8.3.10]: a palette (BGR), then for each shape put on the page, in
+// their order, its palette index (16 bits each, BZZ coded). Out: the colours in use as RGB triplets
+// (at most 256: one beyond takes the nearest of those), and each blit's entry among them. 0: none.
+static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries_out, int *blits_out) {
+    if (n < 6 || !(p[0] & 0x80)) return 0;   // (without the per-shape part there is nothing to colour by)
+    size_t np = (size_t)(p[1] << 8 | p[2]);
+    if (!np || n < 3 + 3 * np + 3) return 0;
+    const uint8_t *bgr = p + 3, *q = bgr + 3 * np;
+    size_t blits = (size_t)q[0] << 16 | (size_t)q[1] << 8 | q[2], len = 0;
+    if (!blits || blits > (4u << 20)) return 0;
+    uint8_t *idx = bzz_decode(q + 3, n - 3 - 3 * np - 3, 2 * blits, &len);
+    if (!idx) return 0;
+    if (len / 2 < blits) blits = len / 2;
+    uint8_t *pal = malloc(256 * 3), *entries = malloc(blits ? blits : 1);
+    int *entry_of = malloc(np * sizeof *entry_of), used = 0;
+    if (!pal || !entries || !entry_of || !blits) {
+        free(idx), free(pal), free(entries), free(entry_of);
+        return 0;
+    }
+    for (size_t k = 0; k < np; k++) entry_of[k] = -1;
+    for (size_t k = 0; k < blits; k++) {
+        size_t i = (size_t)(idx[2 * k] << 8 | idx[2 * k + 1]);
+        if (i >= np) i = 0;
+        if (entry_of[i] < 0) {
+            const uint8_t *c = bgr + 3 * i;
+            if (used < 256) {
+                pal[3 * used] = c[2], pal[3 * used + 1] = c[1], pal[3 * used + 2] = c[0];
+                entry_of[i] = used++;
+            } else {
+                long best = LONG_MAX;
+                for (int e = 0; e < 256; e++) {
+                    long dr = pal[3 * e] - c[2], dg = pal[3 * e + 1] - c[1], db = pal[3 * e + 2] - c[0], dist = dr * dr + dg * dg + db * db;
+                    if (dist < best) best = dist, entry_of[i] = e;
+                }
+            }
+        }
+        entries[k] = (uint8_t)entry_of[i];
+    }
+    free(idx), free(entry_of);
+    *pal_out = pal, *entries_out = entries, *blits_out = (int)blits;
+    return used;
+}
+
+// A page decoded: its mask (Sjbz) with the dictionary its file has or includes, as packed rows; its
+// background picture (BG44) and its foreground's colours (a palette entry for each shape: FGbz, or
+// a picture: FG44); all turned as its INFO says. A mask
+// cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
+// a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
 static void page_decode(nitrodjvu *d, Page *pg) {
     Comp *co = &d->comps[pg->comp];
     const Dict *dict = comp_dict(d, pg->comp, 0);
-    const uint8_t *id, *data, *sjbz = NULL;
-    size_t at = co->at, n, sjbz_len = 0;
-    while (chunk(d, &at, co->at + co->len, &id, &data, &n))
+    const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
+    size_t at = co->at, n, sjbz_len = 0, colours_len = 0;
+    int layers = 0;
+    while (chunk(d, &at, co->at + co->len, &id, &data, &n)) {
         if (!memcmp(id, "Sjbz", 4) && !sjbz) sjbz = data, sjbz_len = n;
-    pg->blank = 1;
+        if (!memcmp(id, "FGbz", 4) && !colours) colours = data, colours_len = n;
+        layers |= !memcmp(id, "Sjbz", 4) || !memcmp(id, "Smmr", 4) || !memcmp(id, "BG44", 4) || !memcmp(id, "BGjp", 4);
+    }
+    pg->decoded = 1, pg->bytes = 0;
+    int pw = pg->turn & 1 ? pg->h : pg->w, ph = pg->turn & 1 ? pg->w : pg->h;
+    layer_decode(d, co, "BG44", pg, pw, ph, &pg->bg);
     Jb2 *j = sjbz ? calloc(1, sizeof *j) : NULL;
-    if (!j) return;
-    j->old = pg->version <= 18;
-    jb2_decode(j, sjbz, sjbz_len, dict, 1);   // (cut short or damaged: what there is of it)
-    if (j->have_page) {
-        const Bm *b = &j->page;
-        int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
-        size_t rb = ((size_t)ow + 7) / 8;
-        uint8_t *bits = calloc(rb * (size_t)oh, 1);
-        if (bits) {
-            for (int y = 0; y < b->h; y++) {
-                const uint8_t *s = bm_row(b, y);
-                for (int x = 0; x < b->w; x++) {
-                    if (!s[x]) continue;
-                    int ox = pg->turn == 1 ? b->h - 1 - y : pg->turn == 2 ? b->w - 1 - x : pg->turn == 3 ? y : x;
-                    int oy = pg->turn == 1 ? x : pg->turn == 2 ? b->h - 1 - y : pg->turn == 3 ? b->w - 1 - x : y;
-                    bits[(size_t)oy * rb + (ox >> 3)] |= (uint8_t)(0x80 >> (ox & 7));
+    if (j) {
+        j->old = pg->version <= 18;
+        uint8_t *entries = NULL;
+        int used = colours ? fgbz(colours, colours_len, &pg->pal, &entries, &j->blit_entries) : 0;
+        if (used > 1) j->blit_entry = entries;   // (one colour: no need to tell the pixels apart)
+        jb2_decode(j, sjbz, sjbz_len, dict, 1);   // (cut short or damaged: what there is of it)
+        free(entries);
+        if (j->have_page) {
+            const Bm *b = &j->page;
+            int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
+            size_t rb = ((size_t)ow + 7) / 8;
+            uint8_t *bits = calloc(rb * (size_t)oh, 1);
+            if (bits) {
+                for (int y = 0; y < b->h; y++) {
+                    const uint8_t *s = bm_row(b, y);
+                    for (int x = 0; x < b->w; x++) {
+                        if (!s[x]) continue;
+                        int ox = pg->turn == 1 ? b->h - 1 - y : pg->turn == 2 ? b->w - 1 - x : pg->turn == 3 ? y : x;
+                        int oy = pg->turn == 1 ? x : pg->turn == 2 ? b->h - 1 - y : pg->turn == 3 ? b->w - 1 - x : y;
+                        bits[(size_t)oy * rb + (ox >> 3)] |= (uint8_t)(0x80 >> (ox & 7));
+                    }
+                }
+                pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh;
+                pg->bytes += rb * (size_t)oh;
+                if (j->entry) {
+                    pg->entry = plane_turn(j->entry, b->w, b->h, pg->turn), j->entry = NULL;
+                    if (pg->entry) pg->bytes += (size_t)ow * (size_t)oh;
                 }
             }
-            pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh, pg->blank = 0;
         }
+        jb2_free(j, 0);
+        free(j);
     }
-    jb2_free(j, 0);
-    free(j);
+    if (pg->bits && !pg->pal) layer_decode(d, co, "FG44", pg, pw, ph, &pg->fg);
+    for (int k = 0; k < 2; k++) {
+        const Layer *l = k ? &pg->fg : &pg->bg;
+        if (l->y) pg->bytes += (size_t)l->w * (size_t)l->h * (l->cb ? 3 : 1);
+    }
+    pg->unread = layers && !pg->bits && !pg->bg.y;
+}
+
+static void page_drop(Page *pg) {
+    free(pg->bits), free(pg->pal), free(pg->entry);
+    pg->bits = pg->pal = pg->entry = NULL;
+    layer_free(&pg->bg), layer_free(&pg->fg);
+    pg->decoded = 0, pg->bytes = 0;
 }
 
 // a page's file read for what a page is: its INFO (the size, the version, the turn)
@@ -812,7 +839,7 @@ void nitrodjvu_free(nitrodjvu *d) {
         }
         free(co->id);
     }
-    for (int k = 0; k < d->npages; k++) free(d->pages[k].bits);
+    for (int k = 0; k < d->npages; k++) page_drop(&d->pages[k]);
     free(d->comps), free(d->pages), free(d->data);
     pthread_mutex_destroy(&d->lock);
     free(d);
@@ -843,59 +870,166 @@ static unsigned black(const uint8_t *row, int x0, int x1) {
     return n;
 }
 
+// The pixels of a layer an output pixel takes along one axis. Enlarged (f >= 0): a and b = a + 1,
+// b's share f / 256. Reduced (f < 0): every -f-th of the run a .. b - 1, averaged.
+typedef struct {
+    int a, b, f;
+} Span;
+
+// (a coordinate far off any page: kept within what an int holds)
+static int whole(double v) { return v < -1e9 ? -1000000000 : v > 1e9 ? 1000000000 : (int)v; }
+
+// pa .. pb: the output pixel's extent on the page; o, r: the layer's origin and reduction; n: its size
+static void span(Span *s, double pa, double pb, int o, int r, int n) {
+    double la = (pa - o) / r, lb = (pb - o) / r;
+    if (lb - la > 1) {
+        int a = whole(floor(la)), b = whole(ceil(lb));
+        if (a < 0) a = 0;
+        if (b > n) b = n;
+        if (b <= a) a = a >= n ? n - 1 : a, b = a + 1;
+        s->a = a, s->b = b, s->f = -((b - a + 3) / 4);
+    } else {
+        double v = (la + lb) / 2 - 0.5, fl = floor(v);
+        int a = whole(fl), f = (int)((v - fl) * 256);
+        if (a < 0) a = 0, f = 0;
+        if (a >= n - 1) a = n - 1, f = 0;
+        s->a = a, s->b = a + 1 < n ? a + 1 : a, s->f = f;
+    }
+}
+
+// the layer's colour for an output pixel, as RGB
+static void layer_rgb(const Layer *l, const Span *sx, const Span *sy, uint8_t *rgb) {
+    const uint8_t *pl[3] = {l->y, l->cb, l->cr};
+    int v[3] = {0, 128, 128}, nc = l->cb ? 3 : 1;
+    size_t w = (size_t)l->w;
+    if (sx->f >= 0) {
+        int fx = sx->f, fy = sy->f;
+        for (int k = 0; k < nc; k++) {
+            const uint8_t *r0 = pl[k] + (size_t)sy->a * w, *r1 = pl[k] + (size_t)sy->b * w;
+            int top = r0[sx->a] * (256 - fx) + r0[sx->b] * fx, bot = r1[sx->a] * (256 - fx) + r1[sx->b] * fx;
+            v[k] = (top * (256 - fy) + bot * fy + 32768) >> 16;
+        }
+    } else {
+        for (int k = 0; k < nc; k++) {
+            unsigned sum = 0, cnt = 0;
+            for (int y = sy->a; y < sy->b; y -= sy->f) {
+                const uint8_t *r = pl[k] + (size_t)y * w;
+                for (int x = sx->a; x < sx->b; x -= sx->f) sum += r[x], cnt++;
+            }
+            v[k] = (int)((sum + cnt / 2) / cnt);
+        }
+    }
+    if (nc == 3) niw44_rgb(v[0], v[1], v[2], rgb);
+    else rgb[0] = rgb[1] = rgb[2] = (uint8_t)v[0];
+}
+
+// the palette colours of the mask's pixels in the rows r0 .. r1 - 1 and columns c0 .. c1 - 1, added up
+static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, unsigned *sum) {
+    for (int r = r0; r < r1; r++) {
+        const uint8_t *row = pg->bits + (size_t)r * pg->rowbytes, *e = pg->entry + (size_t)r * (size_t)pg->bw;
+        for (int x = c0; x < c1; x++) {
+            if (!(x & 7) && x + 8 <= c1 && !row[x >> 3]) {
+                x += 7;
+                continue;
+            }
+            if (row[x >> 3] >> (7 - (x & 7)) & 1) {
+                const uint8_t *c = pg->pal + 3 * e[x];
+                sum[0] += c[0], sum[1] += c[1], sum[2] += c[2];
+            }
+        }
+    }
+}
+
 int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx) {
     if (!d || page < 0 || page >= d->npages || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
     Page *pg = &d->pages[page];
     // decoded now, or still kept: the pages drawn longest ago are let go, but for those being drawn
     pthread_mutex_lock(&d->lock);
-    if (!pg->bits && !pg->blank) {
+    if (!pg->decoded) {
         page_decode(d, pg);
-        int kept = 0;
-        for (int k = 0; k < d->npages; k++) kept += d->pages[k].bits != NULL;
-        while (kept > KEEP_PAGES) {
+        for (;;) {
+            int kept = 0;
+            size_t bytes = 0;
             Page *old = NULL;
             for (int k = 0; k < d->npages; k++) {
                 Page *o = &d->pages[k];
-                if (o->bits && o != pg && !o->users && (!old || o->stamp < old->stamp)) old = o;
+                if (!o->decoded) continue;
+                kept++, bytes += o->bytes;
+                if (o != pg && !o->users && (!old || o->stamp < old->stamp)) old = o;
             }
-            if (!old) break;
-            free(old->bits);
-            old->bits = NULL, kept--;
+            if (!old || (kept <= KEEP_PAGES && bytes <= KEEP_BYTES)) break;
+            page_drop(old);
         }
     }
     pg->stamp = ++d->stamp;
     pg->users++;
     pthread_mutex_unlock(&d->lock);
     int rc = 0;
+    const Layer *bg = pg->bg.y ? &pg->bg : NULL, *fg = pg->fg.y ? &pg->fg : NULL;
+    // per column: the mask's columns it covers (enlarged: the one at its middle), the layers' pixels
+    int *c0 = NULL, *c1 = NULL;
+    Span *bx = NULL, *fx = NULL;
+    if (pg->bits || bg) {
+        c0 = malloc((size_t)w * 2 * sizeof *c0), c1 = c0 ? c0 + w : NULL;
+        bx = malloc((size_t)w * 2 * sizeof *bx), fx = bx ? bx + w : NULL;
+        if (!c0 || !bx) {
+            free(c0), free(bx);
+            pthread_mutex_lock(&d->lock);
+            pg->users--;
+            pthread_mutex_unlock(&d->lock);
+            return -1;
+        }
+        for (int i = 0; i < w; i++) {
+            double xa = x0 + i / scale, xb = x0 + (i + 1) / scale;
+            int a = whole(floor(scale >= 1 ? (xa + xb) / 2 : xa)), b = scale >= 1 ? a + 1 : whole(ceil(xb));
+            if (a < 0) a = 0;
+            if (b > pg->bw) b = pg->bw;
+            c0[i] = a, c1[i] = b;
+            if (bg) span(&bx[i], xa, xb, bg->ox, bg->r, bg->w);
+            if (fg) span(&fx[i], xa, xb, fg->ox, fg->r, fg->w);
+        }
+    }
     for (int j = 0; j < h; j++) {
         if ((j & 63) == 0 && cancelled && cancelled(ctx)) {
             rc = 1;
             break;
         }
         uint32_t *o = (uint32_t *)(bgra + (size_t)j * pitch);
-        if (!pg->bits) {   // (no mask: a grey sheet)
-            for (int i = 0; i < w; i++) o[i] = 0xffd8d8d8u;
+        if (!pg->bits && !bg) {   // (neither a mask nor a picture: an empty page, or one that cannot be read)
+            for (int i = 0; i < w; i++) o[i] = pg->unread ? 0xffd8d8d8u : 0xffffffffu;
             continue;
         }
-        // the page's rows this row of pixels covers (enlarged: the one at its middle)
         double ya = y0 + j / scale, yb = y0 + (j + 1) / scale;
-        int r0 = scale >= 1 ? (int)((ya + yb) / 2) : (int)ya, r1 = scale >= 1 ? r0 + 1 : (int)yb + (yb > (int)yb);
-        if (ya < 0 && scale >= 1) r0 = -1, r1 = 0;
+        int r0 = whole(floor(scale >= 1 ? (ya + yb) / 2 : ya)), r1 = scale >= 1 ? r0 + 1 : whole(ceil(yb));
         if (r0 < 0) r0 = 0;
         if (r1 > pg->bh) r1 = pg->bh;
+        Span by, fy;
+        if (bg) span(&by, ya, yb, bg->oy, bg->r, bg->h);
+        if (fg) span(&fy, ya, yb, fg->oy, fg->r, fg->h);
         for (int i = 0; i < w; i++) {
-            double xa = x0 + i / scale, xb = x0 + (i + 1) / scale;
-            int c0 = scale >= 1 ? (int)((xa + xb) / 2) : (int)xa, c1 = scale >= 1 ? c0 + 1 : (int)xb + (xb > (int)xb);
-            if (xa < 0 && scale >= 1) c0 = -1, c1 = 0;
-            if (c0 < 0) c0 = 0;
-            if (c1 > pg->bw) c1 = pg->bw;
-            unsigned n = 0, area = r1 > r0 && c1 > c0 ? (unsigned)(r1 - r0) * (unsigned)(c1 - c0) : 0;
-            for (int r = r0; r < r1 && c1 > c0; r++) n += black(pg->bits + (size_t)r * pg->rowbytes, c0, c1);
-            unsigned v = area ? 255 - (n * 255 + area / 2) / area : 255;
-            o[i] = 0xff000000u | v << 16 | v << 8 | v;
+            // the mask's share of the pixel: the foreground's colour over the background's
+            unsigned n = 0, area = pg->bits && r1 > r0 && c1[i] > c0[i] ? (unsigned)(r1 - r0) * (unsigned)(c1[i] - c0[i]) : 0;
+            if (area == 1) n = pg->bits[(size_t)r0 * pg->rowbytes + (size_t)(c0[i] >> 3)] >> (7 - (c0[i] & 7)) & 1;
+            else
+                for (int r = r0; area && r < r1; r++) n += black(pg->bits + (size_t)r * pg->rowbytes, c0[i], c1[i]);
+            uint8_t b[3] = {255, 255, 255}, f[3] = {0, 0, 0};
+            if (bg && n < area + !area) layer_rgb(bg, &bx[i], &by, b);
+            if (n) {
+                if (pg->entry) {
+                    unsigned sum[3] = {0, 0, 0};
+                    palette_sum(pg, r0, r1, c0[i], c1[i], sum);
+                    for (int k = 0; k < 3; k++) f[k] = (uint8_t)((sum[k] + n / 2) / n);
+                } else if (pg->pal)
+                    memcpy(f, pg->pal, 3);
+                else if (fg)
+                    layer_rgb(fg, &fx[i], &fy, f);
+                for (int k = 0; k < 3; k++) b[k] = (uint8_t)((b[k] * (area - n) + f[k] * n + area / 2) / area);
+            }
+            o[i] = 0xff000000u | (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
         }
     }
+    free(c0), free(bx);
     pthread_mutex_lock(&d->lock);
     pg->users--;
     pthread_mutex_unlock(&d->lock);

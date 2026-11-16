@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitrodjvu: DjVu documents for the viewers, their mask layer alone: the bilevel picture of the
-// text and line art (JB2), black on white - all there is to a scanned black and white book, which
-// most DjVu files are. Not decoded: the wavelet layers (IW44: a page's photographs and coloured
-// background, the colour of its text), so a compound page shows its text and drawings without
-// them, and a page of a picture alone is a grey sheet; the hidden text, outlines and annotations;
-// indirect documents (their pages in files of their own). Written from the format's public
-// reference (DjVu Reference, version 3: Lizardtech 2005) without another decoder's code: the IFF
-// container and the bundled documents' directory (BZZ), the Z'-coder, JB2 with its shared shape
-// dictionaries.
+// nitrodjvu: DjVu documents for the viewers. A page is a mask (the bilevel picture of its text and
+// line art: JB2, with shared shape dictionaries) that picks, pixel by pixel, the foreground's colour
+// over the background picture: the background (the paper, photographs: IW44 wavelets, nitroiw44) is
+// several times smaller than the page, the foreground's colours come as a palette entry for each
+// shape (FGbz) or as a still smaller picture (FG44). A black and white book is its mask alone, a
+// photograph page its background alone. The layers are decoded when a page is first drawn and kept
+// as they are (the mask as bits, the pictures as their small YCbCr planes); a render mixes and
+// scales them for the pixels it draws. Not read: JPEG coded layers (BGjp, FGjp), the hidden text,
+// outlines and annotations; indirect documents (their pages in files of their own). Written from
+// the format's public reference (DjVu Reference, version 3: Lizardtech 2005): the IFF container
+// and the bundled documents' directory (BZZ), the Z'-coder, JB2.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -31,8 +33,10 @@ void nitrodjvu_size(const nitrodjvu *doc, int page, double *w, double *h);
 
 // Renders a page into a w x h BGRA buffer (opaque): pixel (i, j) shows the point
 // (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the page; smaller than its pixels, each is
-// the average of the pixels it covers (grey). Several renders at once (the bands of one): the
-// first one of a page decodes it. Returns 0 on success, 1 if cancelled (may be NULL) said to stop.
+// the average of the pixels it covers; the pictures are interpolated up to the page. An empty page
+// is white; one whose layers cannot be read (damaged, JPEG coded) is a grey sheet. Several renders
+// at once (the bands of one): the first one of a page decodes it. Returns 0 on success, 1 if
+// cancelled (may be NULL) said to stop, -1 out of memory.
 int nitrodjvu_render(nitrodjvu *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx);
 

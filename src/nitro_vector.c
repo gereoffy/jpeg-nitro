@@ -289,7 +289,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrotype_pages(v->doc);
         v->mode = NV_MODE_FONT;
     }
-    // DjVu (its mask layer: nitrodjvu); its file says what it is, whatever its name
+    // DjVu (nitrodjvu); its file says what it is, whatever its name
     if (!v->doc && len >= 16 && !memcmp(p, "AT&TFORM", 8) && (v->doc = nitrodjvu_load(data, len))) {
         v->render = djvu_render;
         v->size = djvu_size;
