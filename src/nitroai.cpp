@@ -676,7 +676,7 @@ struct Run {
         if (p < e && *p == '\r') p++;
         if (p < e && *p == '\n') p++;
         bool ok = w >= 1 && h >= 1 && w * h <= 1e8 && (bits == 1 || bits == 8) && (ch == 1 || ch == 3 || ch == 4) && alpha >= 0 && alpha < 4 && !comp;
-        int comps = bits == 1 ? 1 : ch + alpha;
+        int comps = ok ? (bits == 1 ? 1 : ch + alpha) : 0;   // (ch and alpha only checked when ok)
         size_t W = ok ? (size_t)w : 0, H = ok ? (size_t)h : 0, row = bits == 1 ? (W + 7) / 8 : W * comps, need = row * H;
         if (need > (size_t)(e - p) + (PAD_MAX - D.padded)) ok = false, need = 0;   // (far more than the file has)
         std::string data;
