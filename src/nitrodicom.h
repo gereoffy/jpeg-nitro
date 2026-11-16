@@ -14,7 +14,7 @@
 // picture all white: 8-bit pictures as they are, the others from their smallest to their largest
 // value), made lighter or darker by info.ev; palette
 // colour, RGB and YBR_FULL (_422).
-// Of a file of several frames one frame at a time.
+// Of a file of several frames one frame at a time (all of the same size: the viewers step through them).
 // Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG, HTJ2K, JPEG XL, the video
 // codecs, the deflated transfer syntaxes, floating point pixel data, segmented palettes; overlays,
 // a modality lookup table and the pixels' aspect ratio are ignored.

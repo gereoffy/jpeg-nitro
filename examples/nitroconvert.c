@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     uint8_t *data = nv_read_image(argv[1], &len, INT_MAX, &raw_orientation, &raw_read);
     if (!data) { fprintf(stderr, "%s: cannot read\n", argv[1]); return 1; }
 
-    NvDecoder dec = {get_buffer, put_buffer, NULL, 1 /* align */, INT_MAX /* max size */, 0 /* threads: all CPUs */, 0 /* DNG: 0 EV */};
+    NvDecoder dec = {get_buffer, put_buffer, NULL, 1 /* align */, INT_MAX /* max size */, 0 /* threads: all CPUs */, 0 /* DNG: 0 EV */, 0 /* the first frame */};
     NvImage img;
     uint8_t *buf = NULL;
     size_t cap = 0;

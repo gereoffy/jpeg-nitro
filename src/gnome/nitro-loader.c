@@ -62,7 +62,8 @@ static void *ld_decode(void *path, char **error, void *ctx) {
 static void ld_free(void *image, void *ctx) { nitro_image_free(image); }
 static int ld_stale(const void *image, void *ctx) {
     const NitroImage *i = image;
-    return (i->dng && i->ev3 != nitro_image_get_dng_ev3()) || (i->vector && i->background != nv_vector_background());
+    return (i->dng && i->ev3 != nitro_image_get_dng_ev3()) || (i->frames > 1 && i->frame != nv_frame_for(nitro_image_get_frame(), i->frames)) ||
+           (i->vector && i->background != nv_vector_background());
 }
 static int ld_too_small(const void *image, void *ctx) {
     const NitroImage *i = image;

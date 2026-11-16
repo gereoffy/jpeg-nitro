@@ -184,6 +184,12 @@ static void update_title(NitroWindow *self) {
         title = with_tail;
     }
 
+    if (self->image && self->image->frames > 1) {
+        char *with_frame = g_strdup_printf("%s  [frame %d/%d]", title, self->image->frame + 1, self->image->frames);
+        g_free(title);
+        title = with_frame;
+    }
+
     if (self->image && self->image->dng && self->image->ev3) {
         char *with_ev = g_strdup_printf("%s  %+.1f EV", title, self->image->ev3 / 3.0);
         g_free(title);
@@ -437,7 +443,17 @@ static void page_done(GObject *source, GAsyncResult *result, gpointer user_data)
     }
 }
 
+// [ / ]: another page of a document; another frame of a file that has several (the setting changes and the
+// image is decoded again, as on E)
 static void show_page(NitroWindow *self, int delta) {
+    if (self->image && self->image->frames > 1) {
+        int frames = self->image->frames, fr = nv_frame_for(nv_frame_for(nitro_image_get_frame(), frames) + delta, frames);
+        if (fr == nitro_image_get_frame()) return;
+        nitro_image_set_frame(fr);
+        nitro_loader_setting_changed(self->loader);
+        show_current(self);
+        return;
+    }
     if (!self->image || !self->image->vector) return;
     int page = self->image->page + delta;
     if (page < 0 || page >= nv_vector_pages(self->image->vector)) return;

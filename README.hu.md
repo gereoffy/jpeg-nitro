@@ -75,7 +75,7 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF, DjVu, egy betűtípus glyphjei) előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF, DjVu, egy betűtípus glyphjei) előző / következő oldala (címsor: [page 2/5]); többképes DICOM-fájl előző / következő képe (címsor: [frame 2/40]; a kép sorszáma lapozáskor megmarad) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
@@ -163,7 +163,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **JPEG 2000** (JP2, J2K) | 1. rész: veszteségmentes (5/3) és veszteséges (9/7), csempék, rétegek, bármelyik feldolgozási sorrend, 1–16 bit, szürke / RGB / sYCC, paletta, alfa; a GPU textúrakorlátjánál nagyobb kép fél vagy negyed méretben nyílik meg (a legfinomabb felbontási szintjei nélkül) | CMYK, a 2. rész kiterjesztései (JPX), HTJ2K, POC és PPM / PPT |
 | **PSD / PSB** | 8 bites RGB és szürkeárnyalatos fájlok összefésült (kompozit) képe, mind a négy tömörítéssel; az összefésült átlátszóság fekete háttéren | más színmódok és bitmélységek; a „Maximize Compatibility” nélkül mentett fájlok |
 | **DNG** | a nyers adatból teljes felbontásban előhívva (Bayer, veszteségmentes JPEG vagy tömörítetlen): gyors betekintés, hogy mi van a képen, nem raw-konverter; E / Shift + E az expozícióhoz | a zajszűrés, az objektívkorrekció és a többi DNG-opkód nem érvényesül |
-| **DICOM** (orvosi képek) | röntgen-, CT-, MR-, ultrahangképek: tömörítetlen, RLE, JPEG, veszteségmentes JPEG és JPEG 2000; 1–32 bites szürke a fájl ablakával (vagy a legkisebb értéktől a legnagyobbig), palettás, RGB / YBR színes; Part 10 fejléccel vagy anélkül, régi ACR-NEMA fájlok is; E / Shift + E világosít / sötétít | JPEG-LS, 12 bites veszteséges JPEG, HTJ2K, JPEG XL, videó, deflate-tel tömörített fájl; többképes fájlnak csak az első képe; a rárajzolt rétegek (overlay) nem jelennek meg |
+| **DICOM** (orvosi képek) | röntgen-, CT-, MR-, ultrahangképek: tömörítetlen, RLE, JPEG, veszteségmentes JPEG és JPEG 2000; 1–32 bites szürke a fájl ablakával (vagy a legkisebb értéktől a legnagyobbig), palettás, RGB / YBR színes; Part 10 fejléccel vagy anélkül, régi ACR-NEMA fájlok is; E / Shift + E világosít / sötétít, [ / ] a többképes fájl képei között lép | JPEG-LS, 12 bites veszteséges JPEG, HTJ2K, JPEG XL, videó, deflate-tel tömörített fájl; a rárajzolt rétegek (overlay) nem jelennek meg |
 | **fényképezőgépes raw** (CR2, NEF, NRW, ARW, RAF) | a gép által a fájlba tett teljes méretű JPEG (a fájlnak csak ez a része olvasódik be) | |
 | **SVG**, SVGZ | alakzatok, útvonalak, színátmenetek, vágás, maszk, minta, `<style>` stíluslap, szöveg a rendszer betűtípusaival, beágyazott képek; a csak szimbólumokból álló sprite a szimbólumai áttekintő lapjaként | a szűrők kimaradnak (árnyék, elmosás); a HTML nem jelenik meg |
 | **CorelDRAW** (CDR 5 – X6, CMX) | rajzok, szöveg (hiányzó font helyett hasonlóval), beágyazott bitképek, többoldalas dokumentumok; a megjelenített terület a rajz befoglaló kerete, nem a lap | a mintakitöltések nincsenek elforgatva vagy ferdítve |

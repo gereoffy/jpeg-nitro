@@ -86,6 +86,7 @@ typedef struct {
     size_t size;                // bytes of image data in the buffer
     int mode, bands;            // the decoder (see above), the parallel pieces it worked in
     int ev3;                    // a DNG, a DICOM picture: the exposure correction it was developed with (1/3 EV)
+    int frames, frame;          // a file of several frames (DICOM): how many, the one decoded (from 0); else 0
     const uint8_t *icc;         // the file's ICC profile when the decoder read one (TIFF: RGB images only;
     size_t icc_len;             //   HEIC, AVIF, WebP): into the file data, valid as long as that is
     const char *error;          // not decoded by us: why, when a decoder recognised the file (static text)
@@ -100,11 +101,16 @@ typedef struct {
     int max_tex;       // images wider or taller than this are left to the platform's decoder
     int threads;       // decoder threads (0: all)
     int dng_ev3;       // DNG (and DICOM) exposure correction, 1/3 EV
+    int frame;         // of a file of several frames: the one to decode (from 0; its last one if it has fewer)
 } NvDecoder;
+// The frame decoded of a file of `frames` frames when `want` is asked for (NvDecoder.frame): the viewers' keys
+// [ / ] change one setting, as E does, and the image is decoded again; an image is stale when its NvImage.frame
+// is not this.
+static inline int nv_frame_for(int want, int frames) { return want < 0 || frames < 1 ? 0 : want >= frames ? frames - 1 : want; }
 
 // Decodes data (as nv_read_image read it; a camera raw's or DNG's embedded JPEG is moved to its
 // start, *len shortened) with our decoders: DNG, JPEG, PNG, PSD, HEIC, AVIF (NV_DAV1D), WebP, TIFF,
-// JPEG 2000 (one beyond max_tex: at half, a quarter ... of its size), DICOM (its first frame).
+// JPEG 2000 (one beyond max_tex: at half, a quarter ... of its size), DICOM (the frame dec->frame).
 // Returns 0: decoded, *img describes the pixels in *buf (from dec->get, *cap its size); 1: not
 // one of ours, or a file they cannot decode (img->error says which; img->orientation may be known
 // already): the platform's decoder gets it; -1: out of memory.

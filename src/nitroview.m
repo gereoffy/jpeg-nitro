@@ -86,6 +86,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 @property(nonatomic) double vectorScale;     // decoded pixels per document unit
 @property(nonatomic) int pages, page;        // a multi-page document: page count, the page shown (from 0)
 @property(nonatomic) int ev3;                // a DNG: the exposure correction it was developed with (1/3 EV)
+@property(nonatomic) int frames, frame;      // a file of several frames: how many, the one decoded
 @property(nonatomic) int background;         // a drawing: the background it was drawn over (nv_vector_background)
 @property(nonatomic) int limited;            // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 @end
@@ -176,6 +177,7 @@ enum { MODE_TURBOJPEG = -1, MODE_WUFFS = -2, MODE_IMAGEIO = -3,
        MODE_NITROTIFF = NV_MODE_NITROTIFF, MODE_NITROAVIF = NV_MODE_NITROAVIF };   // (the rest: nitro_load.h)
 static int g_nthreads = 0;   // -j
 static _Atomic int g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
+static _Atomic int g_frame;     // the frame shown of the files that have several (DICOM; keys [ / ])
 
 static const char *mode_name(int m) {
     const char *n = nv_mode_name(m);
@@ -437,7 +439,7 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     }
 #endif
     DecodeBuffers *bufs = [[DecodeBuffers alloc] initWithPool:pool];
-    NvDecoder dec = {pool_get, pool_put, (__bridge void *)bufs, align, MAX_TEX, g_nthreads, atomic_load(&g_dng_ev3)};
+    NvDecoder dec = {pool_get, pool_put, (__bridge void *)bufs, align, MAX_TEX, g_nthreads, atomic_load(&g_dng_ev3), atomic_load(&g_frame)};
     NvImage img;
     int rc = nv_decode(bytes, &len, raw_orientation, raw_read, &dec, &img, &px, &cap);
     NSData *data = [NSData dataWithBytesNoCopy:bytes length:len freeWhenDone:YES];   // (a camera raw: its JPEG, moved to the start)
@@ -462,6 +464,8 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
         d.mode = img.mode;
         d.bands = img.bands;
         d.ev3 = img.ev3;
+        d.frames = img.frames;
+        d.frame = img.frame;
         switch (img.mode) {   // the colour space the pixel values are in (the display layer is tagged with it)
         case MODE_NITRODNG: case NV_MODE_NITRODICOM: d.colorSpace = srgb_space(); break;
         case MODE_NITROTIFF: case MODE_NITROHEIC: case MODE_NITROAVIF: case MODE_NITROWEBP:
@@ -622,7 +626,7 @@ typedef struct {
 // The size vector images are rendered for changed (nv_vector_set_target): prefetched ones too
 // small for it are dropped and rendered again (the current one is sharpened by vectorDetail).
 - (void)vectorTargetChanged;
-// The DNG exposure correction (g_dng_ev3) or the vector background (nv_vector_background) changed:
+// The DNG exposure correction (g_dng_ev3), the frame shown (g_frame) or the vector background (nv_vector_background) changed:
 // prefetched DNGs / vector images are dropped and decoded again, the current one is replaced when its new
 // decoding is ready (it stays on screen until then); page: the page of it shown (a drawing), shown again.
 - (void)displaySettingChanged:(int)page;
@@ -637,6 +641,7 @@ typedef struct {
 }
 static BOOL stale_setting(Decoded *d) {
     return (nv_mode_has_ev(d.mode) && d.ev3 != atomic_load(&g_dng_ev3)) ||
+           (d.frames > 1 && d.frame != nv_frame_for(atomic_load(&g_frame), d.frames)) ||
            (d.vector && d.background != nv_vector_background());
 }
 
@@ -998,6 +1003,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     char tail[64];   // a drawing's page, background
     t = [t stringByAppendingFormat:@"%s", nv_vector_title_suffix(d.vector, d.page, d.background, tail, sizeof tail)];
+    if (d.frames > 1) t = [t stringByAppendingFormat:@"  [frame %d/%d]", d.frame + 1, d.frames];
     if (nv_mode_has_ev(d.mode) && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
@@ -1091,6 +1097,14 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
 
 // W: back to the image's own size (small images 100%), window follows it again.
 // 0: fit to the screen, enlarging small images too; stays on while paging (until W).
+// [ / ]: another frame of a file that has several: the setting changes and the image is decoded again, as on E
+- (void)showFrame:(int)delta of:(Decoded *)d {
+    int fr = nv_frame_for(nv_frame_for(atomic_load(&g_frame), d.frames) + delta, d.frames);
+    if (fr == atomic_load(&g_frame)) return;
+    atomic_store(&g_frame, fr);
+    [_loader displaySettingChanged:0];
+}
+
 - (void)fitToScreen {
     _fitScreen = YES;
     [self updateVectorTarget];
@@ -1362,7 +1376,10 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
     case '-': [self zoomBy:M_SQRT1_2 image:d view:ds]; break;
     case '0': [self fitToScreen]; break;
     case 'Z': [self zoomFit]; break;   // (test code only, not the keyboard)
-    case '[': case ']': if (d.pages > 1) [_loader showPage:d.page + (k == ']' ? 1 : -1) of:_index]; break;
+    case '[': case ']':
+        if (d.frames > 1) [self showFrame:k == ']' ? 1 : -1 of:d];
+        else if (d.pages > 1) [_loader showPage:d.page + (k == ']' ? 1 : -1) of:_index];
+        break;
     case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8':
         [self zoomTo:k - '0' image:d view:ds];
         break;
@@ -1411,10 +1428,13 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
         default: break;
         }
     }
-    // [ ] (Option+F / G on a Hungarian keyboard, or the keys where US has them): the pages of a document
+    // [ ] (Option+F / G on a Hungarian keyboard, or the keys where US has them): the pages of a document, the
+    // frames of a file that has several
     unichar typed = e.characters.length == 1 ? [e.characters characterAtIndex:0] : 0;
-    if (cur && cur.pages > 1 && (typed == '[' || typed == ']' || e.keyCode == 33 || e.keyCode == 30)) {
-        [_loader showPage:cur.page + (typed == ']' || (typed != '[' && e.keyCode == 30) ? 1 : -1) of:_index];
+    if (cur && (cur.pages > 1 || cur.frames > 1) && (typed == '[' || typed == ']' || e.keyCode == 33 || e.keyCode == 30)) {
+        int delta = typed == ']' || (typed != '[' && e.keyCode == 30) ? 1 : -1;
+        if (cur.frames > 1) [self showFrame:delta of:cur];
+        else [_loader showPage:cur.page + delta of:_index];
         return;
     }
     double step = (e.modifierFlags & NSEventModifierFlagShift) ? 0.5 : 0.125;

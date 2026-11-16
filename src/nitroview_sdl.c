@@ -224,6 +224,7 @@ typedef struct {
     double read_ms, decode_ms, upload_ms, conv_ms;
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
+    int frames, frame;                 // a file of several frames: how many, the one decoded
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
     NvVector *vec;                     // a drawing: the document (this is its page `page`) ...
@@ -909,6 +910,7 @@ static void decoded_free(Decoded *d) {   // main thread
 
 static int g_nthreads = 0;   // -j
 static SDL_AtomicInt g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
+static SDL_AtomicInt g_frame;     // the frame shown of the files that have several (DICOM; keys [ / ])
 
 // Anything stb_image reads, as premultiplied BGRA (transparent areas black). Huge images are
 // scaled down to the GPU's limit. Returns the pixels (pool buffer) or NULL.
@@ -1007,7 +1009,7 @@ static Decoded *decode_file(const char *path, char **error) {
     } else
 #endif
     {
-        NvDecoder dec = {pool_get, pool_put, NULL, 64, g_max_tex, g_nthreads, SDL_GetAtomicInt(&g_dng_ev3)};
+        NvDecoder dec = {pool_get, pool_put, NULL, 64, g_max_tex, g_nthreads, SDL_GetAtomicInt(&g_dng_ev3), SDL_GetAtomicInt(&g_frame)};
         NvImage img;
         if (!nv_decode(data, &len, raw_orientation, raw_read, &dec, &img, &buf, &cap)) {
             d->kind = (Kind)img.kind;
@@ -1029,6 +1031,8 @@ static Decoded *decode_file(const char *path, char **error) {
             d->mode = img.mode;
             d->bands = img.bands;
             d->ev3 = img.ev3;
+            d->frames = img.frames;
+            d->frame = img.frame;
         } else {
             d->orientation = img.orientation;   // (a JPEG's, a camera raw's: known from the header)
             why = img.error;
@@ -1069,7 +1073,10 @@ static void post(int ev, int code, void *data) {
 
 static NvLoader *L;
 
-static int stale_dng(const Decoded *d) { return d && nv_mode_has_ev(d->mode) && d->ev3 != SDL_GetAtomicInt(&g_dng_ev3); }
+static int stale_dng(const Decoded *d) {   // (decoded with another exposure correction, or another frame, than the current one)
+    return d && ((nv_mode_has_ev(d->mode) && d->ev3 != SDL_GetAtomicInt(&g_dng_ev3)) ||
+                 (d->frames > 1 && d->frame != nv_frame_for(SDL_GetAtomicInt(&g_frame), d->frames)));
+}
 static int stale_vector(const Decoded *d) {   // a drawing over another background than the current one
 #ifdef NV_VECTOR
     return d && d->vec && d->background != nv_vector_background();
@@ -1149,8 +1156,8 @@ static int SDLCALL reload_run(void *arg) {
     return 0;
 }
 
-// The DNG exposure correction (g_dng_ev3) or the drawings' background (nv_vector_background)
-// changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
+// The DNG exposure correction (g_dng_ev3), the frame shown (g_frame) or the drawings' background
+// (nv_vector_background) changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
 // when its new decoding is ready (it stays on screen until then); page: the page of it shown (a drawing).
 static void loader_setting_changed(int page) {
     ReloadJob *j = calloc(1, sizeof *j);
@@ -1309,6 +1316,7 @@ static void update_title(void) {
 #ifdef NV_VECTOR
     if (d) n += strlen(nv_vector_title_suffix(d->vec, d->page, d->background, t + n, sizeof t - n));   // a drawing's page, background
 #endif
+    if (d && d->frames > 1) n += (size_t)snprintf(t + n, sizeof t - n, "  [frame %d/%d]", d->frame + 1, d->frames);
     if (d && nv_mode_has_ev(d->mode) && d->ev3) n += (size_t)snprintf(t + n, sizeof t - n, "  %+.1f EV", d->ev3 / 3.0);
     if (V.slide_ms > 0) {
         if (V.paused) snprintf(t + n, sizeof t - n, "   [slideshow paused: P]");
@@ -2003,10 +2011,19 @@ static void on_char(char ch) {   // zoom keys by character (key_char): any keybo
             }
         }
         break;
+    case '[': case ']':   // the frames of a file that has several (decoded again, as on E); the pages of a document
+        if (cur && cur->frames > 1) {
+            int fr = nv_frame_for(nv_frame_for(SDL_GetAtomicInt(&g_frame), cur->frames) + (ch == '[' ? -1 : 1), cur->frames);
+            if (fr != SDL_GetAtomicInt(&g_frame)) {
+                SDL_SetAtomicInt(&g_frame, fr);
+                loader_setting_changed(0);
+            }
+            break;
+        }
 #ifdef NV_VECTOR
-    case '[': show_page(-1); break;   // the pages of a multi-page CorelDRAW drawing
-    case ']': show_page(1); break;
+        show_page(ch == '[' ? -1 : 1);
 #endif
+        break;
     default: break;
     }
 }

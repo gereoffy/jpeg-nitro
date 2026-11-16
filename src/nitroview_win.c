@@ -138,6 +138,7 @@ typedef struct {
     int mode, bands;
 
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
+    int frames, frame;                 // a file of several frames: how many, the one decoded
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
     NvVector *vec;                     // a drawing: the document (this is its page `page`) ...
@@ -681,6 +682,7 @@ static void gpu_finish(void) {
 
 static int g_nthreads = 0;   // -j
 static volatile LONG g_dng_ev3;   // DNG exposure correction in 1/3 EV (keys E / Shift+E)
+static volatile LONG g_frame;     // the frame shown of the files that have several (DICOM; keys [ / ])
 
 static IWICImagingFactory *wic_factory(void) {   // one per thread (COM apartment)
     static __thread IWICImagingFactory *f;
@@ -824,7 +826,7 @@ static Decoded *decode_file(const wchar_t *wpath) {
     free(path);
 #endif
     {
-        NvDecoder dec = {pool_get, pool_put, NULL, 64, MAX_TEX, g_nthreads, (int)g_dng_ev3};
+        NvDecoder dec = {pool_get, pool_put, NULL, 64, MAX_TEX, g_nthreads, (int)g_dng_ev3, (int)g_frame};
         NvImage img;
         if (!nv_decode(data, &len, raw_orientation, raw_read, &dec, &img, &buf, &cap)) {
             d->kind = (Kind)img.kind;
@@ -846,6 +848,8 @@ static Decoded *decode_file(const wchar_t *wpath) {
             d->mode = img.mode;
             d->bands = img.bands;
             d->ev3 = img.ev3;
+            d->frames = img.frames;
+            d->frame = img.frame;
         } else {
             d->orientation = img.orientation;   // (a JPEG's, a camera raw's: known from the header)
         }
@@ -879,7 +883,9 @@ static Decoded *decode_file(const wchar_t *wpath) {
 static NvLoader *L;
 static HWND g_notify;   // the window the decoder thread posts WM_APP_DECODED / WM_APP_RELOAD to
 
-static int stale_dng(const Decoded *d) { return d && nv_mode_has_ev(d->mode) && d->ev3 != (int)g_dng_ev3; }
+static int stale_dng(const Decoded *d) {   // (decoded with another exposure correction, or another frame, than the current one)
+    return d && ((nv_mode_has_ev(d->mode) && d->ev3 != (int)g_dng_ev3) || (d->frames > 1 && d->frame != nv_frame_for((int)g_frame, d->frames)));
+}
 static int stale_vector(const Decoded *d) {   // a drawing over another background than the current one
 #ifdef NV_VECTOR
     return d && d->vec && d->background != nv_vector_background();
@@ -952,7 +958,7 @@ static DWORD WINAPI reload_run(void *arg) {
     return 0;
 }
 
-// The DNG exposure correction (g_dng_ev3) or the drawings' background (nv_vector_background)
+// The DNG exposure correction (g_dng_ev3), the frame shown (g_frame) or the drawings' background (nv_vector_background)
 // changed: prefetched DNGs / drawings are dropped and decoded again, the current one is replaced
 // when its new decoding is ready (it stays on screen until then); page: the page of it shown (a drawing).
 static void loader_setting_changed(int page) {
@@ -1095,6 +1101,10 @@ static void update_title(void) {
         swfmt(t + n, 1024 - n, L"%hs", nv_vector_title_suffix(d->vec, d->page, d->background, tail, sizeof tail));
     }
 #endif
+    if (d && d->frames > 1) {
+        size_t n = wcslen(t);
+        swfmt(t + n, 1024 - n, L"  [frame %d/%d]", d->frame + 1, d->frames);
+    }
     if (d && nv_mode_has_ev(d->mode) && d->ev3) {
         size_t n = wcslen(t);
         swfmt(t + n, 1024 - n, L"  %+.1f EV", d->ev3 / 3.0);
@@ -1705,10 +1715,19 @@ static void on_char(wchar_t ch) {   // zoom keys by character: any keyboard layo
             }
         }
         break;
+    case L'[': case L']':   // the frames of a file that has several (decoded again, as on E); the pages of a document
+        if (cur && cur->frames > 1) {
+            int fr = nv_frame_for(nv_frame_for((int)g_frame, cur->frames) + (ch == L'[' ? -1 : 1), cur->frames);
+            if (fr != (int)g_frame) {
+                InterlockedExchange(&g_frame, fr);
+                loader_setting_changed(0);
+            }
+            break;
+        }
 #ifdef NV_VECTOR
-    case L'[': show_page(-1); break;   // the pages of a multi-page CorelDRAW drawing
-    case L']': show_page(1); break;
+        show_page(ch == L'[' ? -1 : 1);
 #endif
+        break;
     default: break;
     }
 }

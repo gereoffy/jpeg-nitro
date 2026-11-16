@@ -15,6 +15,7 @@
 
 static int decode_threads;
 static gint dng_ev3;   // DNG exposure correction in 1/3 EV (key E / Shift+E)
+static gint shown_frame;   // the frame shown of the files that have several (DICOM; keys [ / ])
 
 // ---------------------------------------------------------------------------
 // Vector drawings (nitro_vector: SVG, DXF, CorelDRAW): rendered at a fixed size here, the visible
@@ -122,6 +123,8 @@ static void attach_mips(GdkTexture *texture) {
 
 void nitro_image_set_dng_ev3(int ev3) { g_atomic_int_set(&dng_ev3, ev3); }
 int nitro_image_get_dng_ev3(void) { return g_atomic_int_get(&dng_ev3); }
+void nitro_image_set_frame(int frame) { g_atomic_int_set(&shown_frame, frame); }
+int nitro_image_get_frame(void) { return g_atomic_int_get(&shown_frame); }
 
 void nitro_image_set_threads(int threads) {
     decode_threads = MAX(threads, 0);
@@ -244,7 +247,7 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
         return vector_image;
     }
 
-    NvDecoder dec = {image_get, image_put, NULL, 1, G_MAXINT, decode_threads, g_atomic_int_get(&dng_ev3)};
+    NvDecoder dec = {image_get, image_put, NULL, 1, G_MAXINT, decode_threads, g_atomic_int_get(&dng_ev3), g_atomic_int_get(&shown_frame)};
     NvImage img;
     uint8_t *buf = NULL;
     size_t cap = 0;
@@ -297,6 +300,8 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     image->source_height = height;
     image->dng = rc == 0 && nv_mode_has_ev(img.mode);
     image->ev3 = image->dng ? img.ev3 : 0;
+    image->frames = rc == 0 ? img.frames : 0;
+    image->frame = rc == 0 ? img.frame : 0;
     image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;
     return image;
 }

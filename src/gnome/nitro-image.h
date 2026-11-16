@@ -22,6 +22,7 @@ typedef struct {
     int source_width;
     int source_height;
     int dng, ev3;          // a DNG developed by nitrodng, with this exposure correction (1/3 EV)
+    int frames, frame;     // a file of several frames (DICOM): how many, the one decoded (from 0); else 0
     double decode_ms;
     unsigned serial;       // (from nitro_loader_get: the cached image this was copied from)
 } NitroImage;
@@ -40,6 +41,9 @@ void nitro_image_set_threads(int threads);
 // DNG exposure correction in 1/3 EV for the images decoded from now on (keys E / Shift+E)
 void nitro_image_set_dng_ev3(int ev3);
 int nitro_image_get_dng_ev3(void);
+// The frame decoded from now on of the files that have several (keys [ / ])
+void nitro_image_set_frame(int frame);
+int nitro_image_get_frame(void);
 // The part r of a page (nv_vector_detail_rect) rendered sharp, as a texture, of an image of
 // vector_scale texture pixels per document unit (nv_vector_detail_render). NULL on failure, or
 // when cancellable (may be NULL) is cancelled meanwhile. Any thread.

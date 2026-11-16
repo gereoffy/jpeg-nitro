@@ -588,7 +588,7 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
             }
         }
     } else {
-        ndcm_info ci;   // DICOM: nitrodicom (its first frame; grey shades by the exposure correction, as a DNG)
+        ndcm_info ci;   // DICOM: nitrodicom (the frame asked for; grey shades by the exposure correction, as a DNG)
         if (!ndcm_read_info(data, n, &ci)) {
             if (ci.error) {
                 img->error = ci.error;
@@ -598,7 +598,9 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
                 b = bgra_buffer(dec, img, ci.width, ci.height, cap);
                 img->ev3 = dec->dng_ev3;
                 ci.ev = img->ev3 / 3.0f;
-                if (b && !ndcm_decode(data, n, &ci, 0, b, img->pitch[0], dec->threads)) {
+                img->frames = ci.frames > 1 ? ci.frames : 0;
+                img->frame = nv_frame_for(dec->frame, ci.frames);
+                if (b && !ndcm_decode(data, n, &ci, img->frame, b, img->pitch[0], dec->threads)) {
                     img->mode = NV_MODE_NITRODICOM;
                     *buf = b;
                     return 0;
