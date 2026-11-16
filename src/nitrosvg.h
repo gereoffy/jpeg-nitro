@@ -3,7 +3,8 @@
 //
 // nitrosvg: a small C interface to lunasvg (third_party/lunasvg, MIT; see
 // scripts/get-deps.sh) for the viewers: load an SVG, ask its size, render any part
-// of it at any scale. No filters (blur, drop shadow ...): lunasvg skips them.
+// of it at any scale. No filters (blur, drop shadow ...): lunasvg skips them. A sprite (symbols
+// alone, drawing nothing by itself) is shown as a sheet of its symbols over their ids.
 // The calls are serialised internally (under nitro_font's lock: the fonts, shared with
 // nitrodxf and nitrocdr, have glyph caches without a lock), so they can come from any thread.
 #pragma once

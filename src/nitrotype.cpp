@@ -13,6 +13,7 @@
 #include "nitro_ft.h"
 #include "nitropdf.h"   // (nitropdf_glyph_unicode: a glyph name's character)
 #include "nitrosvg.h"   // (a colour glyph's SVG document)
+#include "nitro_xmltag.h"
 
 #include FT_FONT_FORMATS_H
 #include FT_SFNT_NAMES_H
@@ -28,6 +29,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -216,11 +218,241 @@ bool uneot(const uint8_t *d, size_t n, std::string &out) {
     return true;
 }
 
+// --- an SVG font, as the Type 1 font FreeType reads ---------------------------------------------
+
+// a number of a Type 1 charstring
+void t1num(std::string &o, int v) {
+    if (v >= -107 && v <= 107) o += (char)(v + 139);
+    else if (v >= 108 && v <= 1131) v -= 108, o += (char)(247 + (v >> 8)), o += (char)v;
+    else if (v >= -1131 && v <= -108) v = -v - 108, o += (char)(251 + (v >> 8)), o += (char)v;
+    else o += (char)255, o += (char)(v >> 24), o += (char)(v >> 16), o += (char)(v >> 8), o += (char)v;
+}
+
+// Type 1's encryption (the charstrings' with r = 4330, the private part's with 55665): four bytes go before the text
+std::string t1crypt(const std::string &plain, unsigned r) {
+    std::string o;
+    o.reserve(plain.size() + 4);
+    for (size_t i = 0; i < plain.size() + 4; i++) {
+        uint8_t c = (uint8_t)((i < 4 ? 0 : (uint8_t)plain[i - 4]) ^ (r >> 8));
+        r = ((c + r) * 52845u + 22719u) & 0xffff;
+        o += (char)c;
+    }
+    return o;
+}
+
+// a glyph's outline (an SVG path's data, in the font's units, y up) as a charstring after its width
+struct T1Path {
+    std::string *o;
+    int x = 0, y = 0;      // the current point (closing a contour does not move it: Type 1's rule)
+    float sx = 0, sy = 0;  // where the open contour began
+    bool open = false;
+    static int unit(float v) { return !(v > -30000) ? -30000 : v > 30000 ? 30000 : (int)lroundf(v); }
+    void to(float fx, float fy, int op) {
+        int nx = unit(fx), ny = unit(fy);
+        t1num(*o, nx - x), t1num(*o, ny - y), *o += (char)op;
+        x = nx, y = ny;
+    }
+    void begin(float fx, float fy) {
+        if (open) *o += (char)9;   // closepath
+        to(fx, fy, 21);            // rmoveto
+        sx = fx, sy = fy, open = true;
+    }
+    static void step(void *closure, plutovg_path_command_t cmd, const plutovg_point_t *p, int) {
+        T1Path &t = *(T1Path *)closure;
+        switch (cmd) {
+        case PLUTOVG_PATH_COMMAND_MOVE_TO:
+            t.begin(p[0].x, p[0].y);
+            break;
+        case PLUTOVG_PATH_COMMAND_LINE_TO:
+            if (!t.open) t.begin(t.sx, t.sy);
+            if (unit(p[0].x) != t.x || unit(p[0].y) != t.y) t.to(p[0].x, p[0].y, 5);   // rlineto
+            break;
+        case PLUTOVG_PATH_COMMAND_CUBIC_TO: {
+            if (!t.open) t.begin(t.sx, t.sy);
+            int c[6] = {unit(p[0].x), unit(p[0].y), unit(p[1].x), unit(p[1].y), unit(p[2].x), unit(p[2].y)};
+            t1num(*t.o, c[0] - t.x), t1num(*t.o, c[1] - t.y), t1num(*t.o, c[2] - c[0]), t1num(*t.o, c[3] - c[1]);
+            t1num(*t.o, c[4] - c[2]), t1num(*t.o, c[5] - c[3]), *t.o += (char)8;   // rrcurveto
+            t.x = c[4], t.y = c[5];
+            break;
+        }
+        case PLUTOVG_PATH_COMMAND_CLOSE:
+            if (t.open) *t.o += (char)9;
+            t.open = false;
+            break;
+        }
+    }
+};
+
+// An SVG font (SVG 1.1's <font>: a webfont kit's fourth file, an icon set) as a Type 1 font: its
+// glyphs' paths as charstrings in the font's own units, named by their character (uniXXXX; the
+// glyph's own name where that names the same character), so that FreeType maps them. false: not
+// an SVG document that is a font and nothing else (a drawing with a font in it stays a drawing).
+bool unsvg(const uint8_t *d, size_t n, std::string &out) {
+    const char *s = (const char *)d;
+    auto has = [&](const char *what) {
+        size_t m = strlen(what);
+        for (size_t i = 0; i + m <= n; i++)
+            if (s[i] == what[0] && !memcmp(s + i, what, m)) return true;
+        return false;
+    };
+    size_t at = n >= 3 && !memcmp(s, "\xef\xbb\xbf", 3) ? 3 : 0;
+    while (at < n && (s[at] == ' ' || s[at] == '\t' || s[at] == '\r' || s[at] == '\n')) at++;
+    if (at >= n || s[at] != '<' || !has("<font") || !has("<glyph")) return false;
+    struct Glyph {
+        std::string name, d;
+        float adv;
+    };
+    std::vector<Glyph> glyphs(1);   // (0: the missing glyph's)
+    std::unordered_set<std::string> names{".notdef"};
+    std::string family, weight = "Regular";
+    float upm = 1000, ascent = 0, descent = 0, adv = -1;
+    bool haveAscent = false, haveDescent = false, inFont = false, done = false, root = false;
+    auto number = [](const std::string *v, float otherwise) {
+        if (!v || v->empty()) return otherwise;
+        char *e = nullptr;
+        float f = strtof(v->c_str(), &e);
+        return e == v->c_str() || !(f > -1e6f && f < 1e6f) ? otherwise : f;
+    };
+    nxt::Tag t;
+    while (nxt::next(s, n, at, t)) {
+        const std::string &nm = t.name;
+        if (!root) {
+            if (t.closing || nm != "svg") return false;
+            root = true;
+            continue;
+        }
+        if (nm == "metadata" && !t.closing && !t.empty) {   // (whatever it holds: not ours)
+            for (nxt::Tag m; nxt::next(s, n, at, m) && !(m.closing && m.name == "metadata");) {}
+            continue;
+        }
+        if (nm == "font") {
+            if (t.closing) inFont = false, done = true;
+            else if (!done) {
+                inFont = !t.empty, adv = number(t.attr("horiz-adv-x"), -1);
+                if (const std::string *v = t.attr("id")) family = *v;   // (its name, unless its font-face has one)
+            }
+            continue;
+        }
+        if (nm == "svg" || nm == "defs" || nm == "title" || nm == "desc" || nm == "hkern" || nm == "vkern" || nm == "font-face-src" ||
+            nm == "font-face-name" || nm == "font-face-uri" || nm == "font-face-format")
+            continue;
+        if (t.closing && (nm == "glyph" || nm == "missing-glyph" || nm == "font-face")) continue;
+        if (nm == "font-face") {
+            if (!inFont) continue;
+            if (const std::string *v = t.attr("font-family"))
+                if (!v->empty()) family = *v;
+            upm = number(t.attr("units-per-em"), 1000);
+            if (!(upm >= 16 && upm <= 16384)) upm = 1000;
+            if (t.attr("ascent")) ascent = number(t.attr("ascent"), 0), haveAscent = true;
+            if (t.attr("descent")) descent = number(t.attr("descent"), 0), haveDescent = true;
+            if (const std::string *v = t.attr("font-weight"))
+                if (*v == "bold" || *v == "bolder" || atoi(v->c_str()) >= 600) weight = "Bold";
+            continue;
+        }
+        if (nm == "glyph" || nm == "missing-glyph") {
+            if (!inFont) continue;
+            Glyph g;
+            g.adv = number(t.attr("horiz-adv-x"), -1);
+            if (const std::string *v = t.attr("d")) g.d = *v;
+            if (nm == "missing-glyph") {
+                glyphs[0].d = g.d, glyphs[0].adv = g.adv;
+                continue;
+            }
+            if (glyphs.size() >= 65000) continue;
+            // its name: by its one character; a ligature's or an unmapped one's: its own, or its number
+            const std::string *uni = t.attr("unicode"), *own = t.attr("glyph-name");
+            uint32_t cp = 0;
+            if (uni && !uni->empty()) {
+                size_t i = 0;
+                uint32_t c = nf_utf8_next(*uni, i);
+                if (i >= uni->size() && c >= 0x20 && c != 0xfffd) cp = c;
+            }
+            std::string clean;
+            if (own)
+                for (char c : *own)
+                    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') clean += c;
+            if (clean.size() > 60 || (!clean.empty() && clean[0] >= '0' && clean[0] <= '9')) clean.clear();
+            char b[24];
+            if (cp) {
+                snprintf(b, sizeof b, cp < 0x10000 ? "uni%04X" : "u%05X", (unsigned)cp);
+                g.name = !clean.empty() && nitropdf_glyph_unicode(clean.c_str()) == cp ? clean : b;
+            } else if (!clean.empty() && !nitropdf_glyph_unicode(clean.c_str()))
+                g.name = clean;
+            if (g.name.empty() || !names.insert(g.name).second) {
+                snprintf(b, sizeof b, "glyph%zu", glyphs.size());
+                g.name = b;
+                names.insert(g.name);
+            }
+            glyphs.push_back(std::move(g));
+            continue;
+        }
+        return false;   // (something that is drawn, or that we do not know: not a font file)
+    }
+    if (glyphs.size() < 2) return false;
+    if (adv < 0) adv = upm;
+    if (!haveAscent) ascent = upm * 0.8f;
+    if (!haveDescent) descent = ascent - upm;
+    if (descent > 0) descent = -descent;   // (some write it as a distance)
+    if (family.empty()) family = "SVG font";
+    std::string psname;
+    for (char c : family)
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') psname += c;
+    if (psname.empty()) psname = "SVGFont";
+    std::string info;
+    for (char c : family) {
+        if (c == '(' || c == ')' || c == '\\') info += '\\';
+        if ((unsigned char)c >= 0x20) info += c;
+    }
+    // the private part: the charstrings (each: its width, its contours, the end)
+    std::string priv = "dup /Private 8 dict dup begin\n/RD {string currentfile exch readstring pop} executeonly def\n"
+                       "/ND {noaccess def} executeonly def\n/NP {noaccess put} executeonly def\n/BlueValues [] def\n"
+                       "/MinFeature {16 16} def\n/password 5839 def\n2 index /CharStrings " +
+                       std::to_string(glyphs.size()) + " dict dup begin\n";
+    float widest = adv;
+    for (size_t k = 0; k < glyphs.size(); k++) {
+        const Glyph &g = glyphs[k];
+        float w = g.adv >= 0 ? g.adv : adv;
+        if (w > widest) widest = w;
+        std::string cs;
+        t1num(cs, 0), t1num(cs, T1Path::unit(w)), cs += (char)13;   // hsbw
+        if (!g.d.empty()) {
+            plutovg_path_t *path = plutovg_path_create();
+            if (g.d.size() < (8u << 20) && plutovg_path_parse(path, g.d.data(), (int)g.d.size())) {
+                T1Path tp{&cs};
+                plutovg_path_traverse(path, T1Path::step, &tp);
+                if (tp.open) cs += (char)9;
+            }
+            plutovg_path_destroy(path);
+        }
+        cs += (char)14;   // endchar
+        std::string coded = t1crypt(cs, 4330);
+        priv += "/" + (k ? g.name : std::string(".notdef")) + " " + std::to_string(coded.size()) + " RD " + coded + " ND\n";
+    }
+    priv += "end\nend\nreadonly put\nnoaccess put\ndup /FontName get exch definefont pop\nmark currentfile closefile\n";
+    char b[256];
+    out = "%!PS-AdobeFont-1.0: " + psname + " 001.000\n12 dict begin\n/FontInfo 4 dict dup begin\n/FamilyName (" + info +
+          ") readonly def\n/FullName (" + info + ") readonly def\n/Weight (" + weight + ") readonly def\n/ItalicAngle 0 def\nend readonly def\n/FontName /" +
+          psname + " def\n/PaintType 0 def\n/FontType 1 def\n";
+    snprintf(b, sizeof b, "/FontMatrix [%.9g 0 0 %.9g 0 0] readonly def\n/Encoding StandardEncoding def\n/FontBBox {0 %d %d %d} readonly def\n",
+             1.0 / upm, 1.0 / upm, T1Path::unit(descent), T1Path::unit(widest), T1Path::unit(ascent));
+    out += b;
+    out += "currentdict end\ncurrentfile eexec\n";
+    std::string coded = t1crypt(priv, 55665);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < coded.size(); i++) {
+        out += hex[(uint8_t)coded[i] >> 4], out += hex[coded[i] & 15];
+        if (i % 32 == 31) out += '\n';
+    }
+    out += '\n';
+    return true;
+}
+
 }   // namespace
 
 struct nitrotype {
     std::string data;   // the font file (a WOFF's sfnt): FreeType reads it in place
     const char *wrapper = "";   // "WOFF: ", "WOFF2: ", "EOT: ": what the font came in
+    bool svgFont = false;       // an SVG font, read as the Type 1 font made of it
     FT_Library lib = nullptr;
     std::vector<Face> faces;
     std::vector<Page> pages;
@@ -400,7 +632,7 @@ struct Layout {
         add(title, TEXT);
         const char *fmt = FT_Get_Font_Format(face.ft);
         std::string s = F.wrapper;
-        s += fmt ? fmt : "font";
+        s += F.svgFont ? "SVG font" : fmt ? fmt : "font";
         if (FT_IS_SFNT(face.ft) && fmt && !strcmp(fmt, "CFF")) s = F.wrapper + std::string("OpenType (CFF)");
         if (FT_HAS_MULTIPLE_MASTERS(face.ft)) s += ", variable (its default instance)";
         char b[200];
@@ -648,6 +880,8 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
         F->wrapper = "WOFF: ";
     } else if (uneot(d, len, F->data))
         F->wrapper = "EOT: ";
+    else if (unsvg(d, len, F->data))
+        F->svgFont = true;
     else {
         F->data.assign((const char *)data, len);
         if (!memcmp(d, "wOF2", 4)) F->wrapper = "WOFF2: ";   // (FreeType unwraps it: Brotli, the glyph table rebuilt)

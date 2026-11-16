@@ -13,7 +13,7 @@
 - `nitrowebp.c/.h`: lossy WebP (VP8) decoder
 - `nitrotiff.c/.h`: TIFF decoder (strips / tiles in parallel)
 - `tiff.h`: reading TIFF directories, shared by nitrotiff, nitrodng, nitrojpeg (raw files, EXIF), nitropng and nitrowebp
-- `nitrosvg.cpp/.h`: SVG with lunasvg and plutovg
+- `nitrosvg.cpp/.h`: SVG with lunasvg and plutovg; a sprite of symbols as a sheet of them
 - `nitrodxf.cpp/.h`: DXF, our own reader, drawn with plutovg
 - `nitrodwg.cpp/.h`: DWG (R13 – R2018, not R2007), our own reader, for nitrodxf
 - `nitrometa.cpp/.h`: WMF / EMF, our own reader (also the pictures inside Visio and CorelDRAW files), drawn with plutovg
@@ -28,8 +28,9 @@
 - `nitroiw44.c/.h`: DjVu's wavelet pictures (IW44: a page's background and foreground layers) into YCbCr planes
 - `nitro_zp.h`: the Z'-coder, DjVu's arithmetic decoder (nitrodjvu, nitroiw44)
 - `nitro_bilevel.h`: the bilevel bitmap nitrojbig2 and nitrodjvu build their pages of
-- `nitrotype.cpp/.h`: font files (TrueType, OpenType, collections, Type 1, WOFF, WOFF2, EOT) as a specimen: sample lines and every glyph, FreeType's outlines drawn with plutovg
+- `nitrotype.cpp/.h`: font files (TrueType, OpenType, collections, Type 1, WOFF, WOFF2, EOT, SVG fonts) as a specimen: sample lines and every glyph, FreeType's outlines drawn with plutovg
 - `nitro_ft.h`: a FreeType glyph's outline as a plutovg path, shared by nitropdf and nitrotype
+- `nitro_xmltag.h`: an XML text's tags one by one (nitrotype: an SVG font's glyphs; nitrosvg: a sprite's symbols)
 - `nitroalloc.cpp`: the vector renderers' mimalloc hookup
 - `nitro_os.h`: what the decoders need from the OS (parallel loop, clock, CPU count)
 

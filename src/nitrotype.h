@@ -3,8 +3,9 @@
 //
 // nitrotype: font files shown as a specimen, for the viewers: TrueType and OpenType (.ttf, .otf),
 // their collections (.ttc, .otc: face after face), Type 1 (.pfb, .pfa), WOFF (its tables
-// inflated with zlib), WOFF2 (FreeType's reader, with Brotli's decoder) and Embedded OpenType (.eot: the font after its
-// header; not a compressed one: that is MicroType Express). FreeType reads the outlines (the modules
+// inflated with zlib), WOFF2 (FreeType's reader, with Brotli's decoder), Embedded OpenType (.eot: the font after its
+// header; not a compressed one: that is MicroType Express) and SVG fonts (an SVG document of a <font>
+// alone: its glyphs' paths made into a Type 1 font for FreeType). FreeType reads the outlines (the modules
 // nitropdf uses), plutovg draws them like the other readers' drawings: at any scale, so a glyph's
 // curves can be zoomed into. A face's first page: its name and what it is, lines of sample text in
 // the languages of Central Europe and the rest of Latin, Cyrillic and Greek (most fonts cover

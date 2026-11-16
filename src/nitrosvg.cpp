@@ -4,14 +4,18 @@
 #include "nitrosvg.h"
 #include "nitro_draw.h"
 #include "nitro_font.h"
+#include "nitro_xmltag.h"
 
 #include <lunasvg.h>
 
+#include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 struct nitrosvg {
     std::unique_ptr<lunasvg::Document> doc;
@@ -118,9 +122,92 @@ static std::string text_newlines(const std::string &s) {
     return out;
 }
 
+// A sprite: an SVG of <symbol>s alone, which other documents take their icons from; by itself it
+// draws nothing. Made into a sheet of its symbols: each in a cell (fitted, by its viewBox) over its
+// id, 16 to a row, as many rows as it takes; the document's own content stays (the symbols, their
+// gradients and styles), the root's size is the sheet's. false: not one (something of it is drawn,
+// or it has no symbol with an id).
+static bool sprite_sheet(const std::string &src, std::string &out) {
+    static const char *const hidden[] = {"symbol", "defs", "metadata", "style", "title", "desc", "clipPath", "mask", "pattern",
+                                         "linearGradient", "radialGradient", "filter", "marker", "script"};
+    struct Symbol {
+        std::string id;
+        bool box;
+    };
+    std::vector<Symbol> symbols;
+    nxt::Tag t, root;
+    size_t at = 0, last_close = std::string::npos;
+    int depth = 0;   // inside how many elements that are not drawn where they stand
+    bool have_root = false;
+    while (nxt::next(src.data(), src.size(), at, t)) {
+        if (!have_root) {
+            if (t.closing || t.empty || t.name != "svg") return false;
+            root = t, have_root = true;
+            continue;
+        }
+        bool container = false;
+        for (const char *h : hidden) container |= t.name == h;
+        if (t.closing) {
+            if (container && depth > 0) depth--;
+            if (t.name == "svg" && !depth) last_close = t.begin;
+            continue;
+        }
+        if (!container && !depth) return false;   // (drawn: a picture, not a sprite)
+        if (t.name == "symbol") {   // (wherever it stands: often inside <defs>)
+            const std::string *id = t.attr("id");
+            if (id && !id->empty() && symbols.size() < 20000) symbols.push_back({*id, t.attr("viewBox") != nullptr});
+        }
+        if (container && !t.empty) depth++;
+    }
+    if (symbols.empty() || last_close == std::string::npos) return false;
+    const int COLS = 16, CELL_W = 96, CELL_H = 112, ICON = 64, MARGIN = 32;
+    int cols = (int)std::min<size_t>(COLS, symbols.size()), rows = (int)((symbols.size() + COLS - 1) / COLS);
+    int w = 2 * MARGIN + cols * CELL_W, h = 2 * MARGIN + rows * CELL_H;
+    out = "<svg";
+    bool ns = false, xlink = false;
+    for (const auto &a : root.attrs) {
+        static const char *const drop[] = {"width", "height", "viewBox", "preserveAspectRatio", "style", "class", "display", "visibility", "x", "y", "hidden", "aria-hidden"};
+        bool skip = false;
+        for (const char *d : drop) skip |= a.first == d;
+        if (skip) continue;
+        ns |= a.first == "xmlns", xlink |= a.first == "xmlns:xlink";
+        out += " " + a.first + "=\"" + nxt::escape(a.second) + "\"";
+    }
+    if (!ns) out += " xmlns=\"http://www.w3.org/2000/svg\"";
+    if (!xlink) out += " xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
+    char b[400];
+    snprintf(b, sizeof b, " width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\">", w, h, w, h);
+    out += b;
+    out.append(src, root.end, last_close - root.end);
+    out += "<g fill=\"#222\" color=\"#222\" font-family=\"sans-serif\" font-size=\"9\" text-anchor=\"middle\">";
+    for (size_t k = 0; k < symbols.size(); k++) {
+        int x = MARGIN + (int)(k % COLS) * CELL_W, y = MARGIN + (int)(k / COLS) * CELL_H;
+        std::string id = nxt::escape(symbols[k].id), label = symbols[k].id;
+        if (label.size() > 18) {   // (cut at a character's start)
+            size_t cut = 17;
+            while (cut > 0 && ((unsigned char)label[cut] & 0xc0) == 0x80) cut--;
+            label = label.substr(0, cut) + "\xe2\x80\xa6";
+        }
+        snprintf(b, sizeof b, "<rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"none\" stroke=\"#c8d4e4\" stroke-width=\"0.5\"/>", x, y, CELL_W, CELL_H);
+        out += b;
+        // (a symbol without a viewBox is drawn at its own size: kept within its cell)
+        snprintf(b, sizeof b, "<svg x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\">", x + (CELL_W - ICON) / 2, y + 14, ICON, ICON);
+        out += b;
+        out += "<use xlink:href=\"#" + id + "\"" + (symbols[k].box ? " width=\"64\" height=\"64\"" : "") + "/></svg>";
+        snprintf(b, sizeof b, "<text x=\"%d\" y=\"%d\" fill=\"#777\">", x + CELL_W / 2, y + CELL_H - 12);
+        out += b + nxt::escape(label) + "</text>";
+    }
+    out += "</g></svg>";
+    return true;
+}
+
 nitrosvg *nitrosvg_load(const void *data, size_t len) {
     std::string src(static_cast<const char *>(data), len);
     if (src.find("<svg:svg") != std::string::npos) src = unprefix(src);
+    if (src.find("<symbol") != std::string::npos) {
+        std::string sheet;
+        if (sprite_sheet(src, sheet)) src = std::move(sheet);
+    }
     if (src.find("var(--") != std::string::npos) src = var_fallbacks(src);
     if (src.find("<text") != std::string::npos && src.find("xml:space=\"preserve\"") == std::string::npos &&
         src.find("xml:space='preserve'") == std::string::npos)

@@ -233,7 +233,17 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
     while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n')) i++;
-    if (!v->doc && (nv_has_ext(name, svg_exts) || (i < len && p[i] == '<')) && (v->doc = nitrosvg_load(data, len))) {
+    int svg = nv_has_ext(name, svg_exts) || (i < len && p[i] == '<');
+    // an SVG font (a document of a <font> and its glyphs alone: lunasvg would draw nothing): a font's specimen
+    if (!v->doc && svg && has(p, len, "<font") && has(p, len, "<glyph") && (v->doc = nitrotype_load(data, len))) {
+        nitrotype_set_background(v->doc, v->background);
+        v->render = type_render;
+        v->size = type_size;
+        v->free = type_free;
+        v->pages = nitrotype_pages(v->doc);
+        v->mode = NV_MODE_FONT;
+    }
+    if (!v->doc && svg && (v->doc = nitrosvg_load(data, len))) {
         nitrosvg_set_background(v->doc, v->background);
         v->render = svg_render;
         v->size = svg_size;
