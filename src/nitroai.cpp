@@ -227,7 +227,8 @@ struct Run {
     // text
     bool bt = false;
     Mtx tlm;
-    double vscale = 1, leading = 0;
+    double vscale = 1, hscale = 100, fsize = 0, leading = 0;
+    std::string fres;   // the font's resource
     int tr = 0;
 
     Run(Pdf &D, std::string &out, int depth, bool draw) : D(D), out(out), depth(depth), draw(draw) {}
@@ -417,9 +418,13 @@ struct Run {
     void beginText() {
         if (!bt) out += "BT\n", bt = true, putTm();
     }
-    void putTm() {
-        Mtx s{1, 0, 0, vscale, 0, 0};
-        out += fmt(mul(s, tlm)) + " Tm\n";
+    void putTm() { out += fmt(tlm) + " Tm\n"; }
+    // the font, at its size times the vertical scale (Tz's second number), and the horizontal scale
+    // relative to that: PDF has a horizontal one only, and the text matrix keeps the line's position
+    void putFont() {
+        if (!emit()) return;
+        if (!fres.empty() && fsize > 0) out += "/" + fres + " " + fmt(fsize * vscale) + " Tf\n";
+        out += fmt(hscale / vscale) + " Tz\n";
     }
     void useFill() {
         if (lp != 1) gcol = fill, lp = 1;
@@ -901,7 +906,7 @@ struct Run {
             D.te.assign(st.begin() + b0, st.end());
         } else if (o == "TZ") reencode();
         // text
-        else if (o == "To") endText(), tlm = Mtx(), vscale = 1;
+        else if (o == "To") endText(), tlm = Mtx();
         else if (o == "TO") endText();
         else if (o == "Tp" || o == "Tm") {
             size_t k = o == "Tp" ? 1 : 0;
@@ -928,14 +933,14 @@ struct Run {
             size_t k = 0;
             while (k < nargs() && arg(k)->t != Obj::NAME) k++;
             if (k < nargs() && k >= 1 && emit()) {
-                double size = num(k - 1);
-                out += "/" + font(arg(k)->s) + " " + fmt(size) + " Tf\n";
+                fres = font(arg(k)->s), fsize = num(k - 1);
+                putFont();
             }
         } else if (o == "Tz") {
             double hz = nums(0, 2) ? num(1) : num(0), vz = nums(0, 2) ? num(0) : 100;
-            if (emit() && hz > 0) out += fmt(hz) + " Tz\n";
+            if (hz > 0 && hz < 10000) hscale = hz;
             vscale = vz > 0 && vz < 10000 ? vz / 100 : 1;
-            if (bt) putTm();
+            putFont();   // (not the text matrix: the text goes on where the run before it ended)
         } else if (o == "Ts" || o == "Tc" || o == "Tw") {
             if (emit() && nums(0, 1)) out += fmt(num(0)) + " " + o + "\n";
         } else if (o == "Tx" || o == "Tj") {
