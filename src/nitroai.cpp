@@ -106,6 +106,7 @@ struct Grad {
 struct Pattern {
     double x0, y0, x1, y1;
     std::string content;
+    int form = 0;   // the tile as a form, once it is used: the patterns made of it (one for each matrix) draw that
 };
 struct Reenc {   // a font re-encoded (TZ)
     std::string base;
@@ -569,7 +570,7 @@ struct Run {
         if (!nums(k0, 9) || !arg(k0 + 9) || arg(k0 + 9)->t != Obj::STR) return "";
         auto it = D.pats.find(arg(k0 + 9)->s);
         if (it == D.pats.end()) return "";
-        const Pattern &P = it->second;
+        Pattern &P = it->second;
         double w = P.x1 - P.x0, h = P.y1 - P.y0;
         if (!(w > 0.01 && h > 0.01 && w < 1e6 && h < 1e6)) return "";
         Mtx m;
@@ -588,9 +589,12 @@ struct Run {
         std::string key = it->first + " " + fmt(m);
         auto r2 = D.patRes.find(key);
         if (r2 == D.patRes.end()) {
-            std::string dict = "/Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 " + fmt(w) + " " + fmt(h) + "]/XStep " +
-                               fmt(w) + "/YStep " + fmt(h) + "/Matrix[" + fmt(m) + "]/Resources " + std::to_string(D.resObj) + " 0 R";
-            int o = D.add(stream(dict, P.content));
+            // (the tile's drawing once, in a form: a pattern filled with many matrices had a copy of it for each)
+            std::string box = "/BBox[0 0 " + fmt(w) + " " + fmt(h) + "]";
+            if (!P.form) P.form = D.add(stream("/Type/XObject/Subtype/Form" + box + "/Resources " + std::to_string(D.resObj) + " 0 R", P.content));
+            std::string dict = "/Type/Pattern/PatternType 1/PaintType 1/TilingType 1" + box + "/XStep " + fmt(w) + "/YStep " + fmt(h) +
+                               "/Matrix[" + fmt(m) + "]/Resources<</XObject<</T " + std::to_string(P.form) + " 0 R>>>>";
+            int o = D.add(stream(dict, "/T Do"));
             std::string name = "P" + std::to_string(D.patRes.size() + 1);
             D.patterns += "/" + name + " " + std::to_string(o) + " 0 R";
             r2 = D.patRes.emplace(key, name).first;
@@ -603,7 +607,7 @@ struct Run {
         size_t n = nargs(), b0 = base(), k = 0;
         while (k + 4 < n && !(st[b0 + k].t == Obj::STR && st[b0 + k + 1].t == Obj::NUM && st[b0 + k + 4].t == Obj::NUM)) k++;
         if (k + 4 >= n || depth > 2) return;
-        Pattern P{st[b0 + k + 1].n, st[b0 + k + 2].n, st[b0 + k + 3].n, st[b0 + k + 4].n, ""};
+        Pattern P{st[b0 + k + 1].n, st[b0 + k + 2].n, st[b0 + k + 3].n, st[b0 + k + 4].n, "", 0};
         std::vector<const Obj *> items;
         for (size_t j = b0 + k + 5; j < st.size(); j++) {
             if (st[j].t == Obj::ARR)
