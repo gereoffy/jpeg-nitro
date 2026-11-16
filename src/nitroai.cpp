@@ -225,6 +225,11 @@ struct Run {
     std::string gname, gpath;
     double g[10] = {}, bh[4] = {};
     bool hasXm = false, hasBm = false, gradLater = false;
+    int gflag = 1;   // Bg's: 0 no clip, 1 clip, 2 not rendered
+    double ext[4] = {HUGE_VAL, HUGE_VAL, -HUGE_VAL, -HUGE_VAL};   // the path's points' extent
+    bool artboard = false;   // a document's artboard (ab), and what was drawn on it and off it
+    double ab[4] = {};
+    long onBoard = 0, offBoard = 0;
     int bbFlag = 0;
     Mtx xm, bm;
     Grad *gdef = nullptr;   // a gradient being defined
@@ -320,6 +325,17 @@ struct Run {
         const char *eol = p;
         while (eol < e && *eol != '\n' && *eol != '\r') eol++;
         std::string l(p, std::min(eol, p + 40));
+        if (!l.compare(0, 14, "%%BeginBinary:")) {   // (by its byte count: the data may have anything in it)
+            double count;
+            const char *t = p + 14, *te;
+            while (t < eol && (*t == ' ' || *t == '\t')) t++;
+            for (te = t; te < eol && !isSpace(*te);) te++;
+            const char *d = eol < e && *eol == '\r' && eol + 1 < e && eol[1] == '\n' ? eol + 2 : eol + (eol < e);
+            if (number(t, te, count) && count >= 0 && count <= (double)(e - d)) {
+                p = findLine(d + (size_t)count, e, "%%EndBinary");
+                return;
+            }
+        }
         static const char *const skips[][2] = {
             {"%%BeginProlog", "%%EndProlog"},       {"%%BeginResource", "%%EndResource"},
             {"%%BeginProcSet", "%%EndProcSet"},     {"%%BeginFont", "%%EndFont"},
@@ -444,6 +460,10 @@ struct Run {
     void pt(int n, const char *opname) {   // a path segment of n points
         if (!nums(0, 2 * n)) return;
         for (int k = 2 * n; k-- > 0;) path += fmt(num(k)) + " ";
+        for (int i = 0; i < n; i++) {   // (the path's extent, for the page: see placed())
+            double x = num(2 * n - 1 - 2 * i), y = num(2 * n - 2 - 2 * i);
+            ext[0] = std::min(ext[0], x), ext[1] = std::min(ext[1], y), ext[2] = std::max(ext[2], x), ext[3] = std::max(ext[3], y);
+        }
         path += opname;
         path += "\n";
     }
@@ -456,14 +476,28 @@ struct Run {
         }
         doPaint(op);
     }
+    // whether what is drawn lies on the artboard (counted for the top level's paths and text)
+    void placed(double x0, double y0, double x1, double y1) {
+        if (!artboard || depth) return;
+        bool in = x0 >= ab[0] && y0 >= ab[1] && x1 <= ab[2] && y1 <= ab[3];
+        (in ? onBoard : offBoard)++;
+    }
     void doPaint(char op) {
         std::string body;
         body.swap(path);
+        double e0 = ext[0], e1 = ext[1], e2 = ext[2], e3 = ext[3];
+        ext[0] = ext[1] = HUGE_VAL, ext[2] = ext[3] = -HUGE_VAL;
         bool clipNow = clip;
         clip = false;
         if (!emit() || body.empty()) return;
+        if (op != 'N' && op != 'n' && e0 <= e2) placed(e0, e1, e2, e3);
         endText();
         bool fills = strchr("FfBb", op), strokes = strchr("SsBb", op);
+        if (grad && fills && gflag == 2) {   // (Bg's flag 2: the gradient is not rendered)
+            if (strokes) useStroke(), out += body + "S\n";
+            if (clipNow) out += body + (eo ? "W* n\n" : "W n\n");
+            return;
+        }
         if (grad && fills && gradFill(body)) {
             gpath = body;
             if (strokes) useStroke(), out += body + "S\n";
@@ -548,8 +582,17 @@ struct Run {
         if (G.radial) {
             double fx = xo, fy = yo;
             if (hasBh && std::isfinite(bh[2] + bh[3])) {
-                double l = std::max(0.0, std::min(0.99, bh[3])) * len, a = bh[2] * DEG;
-                fx += l * cos(a), fy += l * sin(a);
+                // the highlight: its angle and its share of the radius in the instance's space (Bg's),
+                // so its offset goes through Bg's matrix (y down: as above), then into the circle's own
+                // space (that of Xm / Bm, which may be mirrored: Bm is, in the specification's example)
+                double l = std::max(0.0, std::min(0.99, bh[3])) * g[3], a = bh[2] * DEG, dx = l * cos(a), dy = l * sin(a);
+                double px = g[4] * dx - g[6] * dy, py = -g[5] * dx + g[7] * dy;
+                if (unit) {
+                    double ux = (m.d * px - m.c * py) / det, uy = (-m.b * px + m.a * py) / det, r = hypot(ux, uy);
+                    if (r > 0.99) ux *= 0.99 / r, uy *= 0.99 / r;
+                    if (std::isfinite(ux + uy)) fx = ux, fy = uy;
+                } else
+                    fx += dx, fy += dy;
             }
             coords = "/ShadingType 3/Coords[" + fmt(fx) + " " + fmt(fy) + " 0 " + fmt(xo) + " " + fmt(yo) + " " + fmt(fabs(len)) + "]";
         } else
@@ -647,7 +690,7 @@ struct Run {
             else
                 items.push_back(&st[j]);
         }
-        P.content = "1 0 0 1 " + fmt(-P.x0) + " " + fmt(-P.y0) + " cm\n";
+        P.content = "4 M\n1 0 0 1 " + fmt(-P.x0) + " " + fmt(-P.y0) + " cm\n";
         Run r(D, P.content, depth + 1, true);
         for (size_t j = 0; j + 1 < items.size(); j += 2) {
             if (items[j]->t == Obj::STR) r.feed(items[j]->s.data(), items[j]->s.data() + items[j]->s.size());
@@ -762,6 +805,7 @@ struct Run {
             if (c != '\r') s += c;
         if (s.empty()) return;
         beginText();
+        placed(tlm.e, tlm.f, tlm.e, tlm.f);
         if (tr == 0 || tr == 2 || tr == 4 || tr == 6) useFill();
         if (tr == 1 || tr == 2 || tr == 5 || tr == 6) useStroke();
         out += hex(s) + " Tj\n";
@@ -810,7 +854,7 @@ struct Run {
                 }
                 return;
             case 'u': case 'U': return;
-            case '*': path.clear(), clip = false; return;   // (a guide)
+            case '*': path.clear(), clip = false, ext[0] = ext[1] = HUGE_VAL, ext[2] = ext[3] = -HUGE_VAL; return;   // (a guide)
             case 'w': if (emit() && nums(0, 1)) out += fmt(num(0)) + " w\n"; return;
             case 'j': if (emit() && nums(0, 1)) out += std::to_string(std::max(0, std::min(2, inum(0)))) + " j\n"; return;
             case 'J': if (emit() && nums(0, 1)) out += std::to_string(std::max(0, std::min(2, inum(0)))) + " J\n"; return;
@@ -879,7 +923,7 @@ struct Run {
             }
         } else if (o == "Bs") stopDef();
         else if (o == "BD") gdef = nullptr;
-        else if (o == "Bb") grad = true, hasBh = hasXm = hasBm = false, gname.clear(), gpath.clear();
+        else if (o == "Bb") grad = true, hasBh = hasXm = hasBm = false, gflag = 1, gname.clear(), gpath.clear();
         else if (o == "Xm" || o == "Bm") {   // a b c d tx ty (the first Bm: a radial one has one)
             if (grad && nums(0, 6) && (o == "Xm" || !hasBm)) {
                 Mtx t{num(5), num(4), num(3), num(2), num(1), num(0)};
@@ -895,6 +939,7 @@ struct Run {
         } else if (o == "Bg") {   // flag (name) x y angle length a b c d tx ty
             if (nums(0, 10) && arg(10) && arg(10)->t == Obj::STR) {
                 gname = arg(10)->s;
+                gflag = arg(11) && arg(11)->t == Obj::NUM ? ival(arg(11)->n) : 1;
                 for (int k = 0; k < 10; k++) g[k] = num(9 - k);
             }
         } else if (o == "BB") {   // the end of the instance: 1 strokes its path, 2 closes it first
@@ -949,8 +994,17 @@ struct Run {
             if (emit() && nums(0, 1)) out += fmt(num(0)) + " " + o + "\n";
         } else if (o == "Tx" || o == "Tj") {
             if (arg(0) && arg(0)->t == Obj::STR) show(arg(0)->s);
+        } else if (o == "TS") {   // (string) justified TS: a run in the Symbol font at the size set, as the procsets do
+            if (arg(1) && arg(1)->t == Obj::STR && emit() && fsize > 0) {
+                std::string keep = fres;
+                fres = font("Symbol");
+                putFont();
+                show(arg(1)->s);
+                fres = keep;
+                putFont();
+            }
         } else if (o == "Tk") {   // autoKern kern: after the run, the kern in thousandths of an em
-            if (emit() && bt && nums(0, 1) && num(0) != 0) out += "[" + fmt(num(0)) + "] TJ\n";
+            if (emit() && nums(0, 1) && num(0) != 0) beginText(), out += "[" + fmt(num(0)) + "] TJ\n";
         }
     }
 
@@ -1095,7 +1149,7 @@ bool box(const std::string &ps, const char *key, double b[4]) {
         while (p < e && (*p == ' ' || *p == '\t')) p++;
         const char *t = p;
         while (p < e && !isSpace(*p)) p++;
-        if (!number(t, p, b[k])) return false;
+        if (!number(t, p, b[k]) || !(fabs(b[k]) < 1e6)) return false;   // (also the infinite: "1e999")
     }
     return b[2] > b[0] && b[3] > b[1];
 }
@@ -1115,10 +1169,21 @@ std::string nitroai_pdf(const void *data, size_t len) {
     std::string ps(text, n);
     Pdf D;
     for (int k = 0; k < 4; k++) D.add("");   // catalog, pages, page, resources
-    std::string content;
+    std::string content = "4 M\n";   // (Illustrator's first miter limit; PDF's is 10)
     bool setup = findLine(ps.data(), ps.data() + ps.size(), "%%BeginSetup") < ps.data() + ps.size() &&
                  findLine(ps.data(), ps.data() + ps.size(), "%%EndSetup") < ps.data() + ps.size();
     Run r(D, content, 0, !setup);
+    // a document (not an EPS): its artboard, as Illustrator shows it (and the PDF of a later version
+    // has it): the size the header gives, centred on the template box's centre (in the art's coordinates)
+    double art[2], tb[4];
+    size_t eol = ps.find_first_of("\r\n");
+    if (ps.substr(0, eol).find("EPSF") == std::string::npos && values(ps, "%AI5_ArtSize:", 2, art) &&
+        values(ps, "%AI3_TemplateBox:", 4, tb) && art[0] > 1 && art[1] > 1 && art[0] < 1e5 && art[1] < 1e5 &&
+        std::isfinite(tb[0] + tb[1] + tb[2] + tb[3]) && fabs(tb[0]) + fabs(tb[2]) < 1e6 && fabs(tb[1]) + fabs(tb[3]) < 1e6) {
+        double cx = (tb[0] + tb[2]) / 2, cy = (tb[1] + tb[3]) / 2;
+        r.artboard = true;
+        r.ab[0] = cx - art[0] / 2, r.ab[1] = cy - art[1] / 2, r.ab[2] = cx + art[0] / 2, r.ab[3] = cy + art[1] / 2;
+    }
     // F by the even-odd rule: the procsets of some programs that wrote the format (Illustrator's own: nonzero)
     const char *pe = findLine(ps.data(), ps.data() + ps.size(), "%%EndProlog");
     for (const char *q = ps.data(); (q = findLine(q, pe, "/F")) < pe; q += 2) {
@@ -1133,16 +1198,13 @@ std::string nitroai_pdf(const void *data, size_t len) {
     r.feed(ps.data(), ps.data() + ps.size());
     r.finish();
     double b[4];
-    if (!box(ps, "%%HiResBoundingBox:", b) && !box(ps, "%%BoundingBox:", b)) b[0] = b[1] = 0, b[2] = 612, b[3] = 792;
+    bool bbox = box(ps, "%%HiResBoundingBox:", b) || box(ps, "%%BoundingBox:", b);
+    if (!bbox) b[0] = b[1] = 0, b[2] = 612, b[3] = 792;
     // a document (not an EPS): its artboard, as Illustrator shows it (and the PDF of a later version
     // has it): the size the header gives, centred on the template box's centre (in the art's coordinates)
-    double art[2], tb[4];
-    size_t eol = ps.find_first_of("\r\n");
-    if (ps.substr(0, eol).find("EPSF") == std::string::npos && values(ps, "%AI5_ArtSize:", 2, art) &&
-        values(ps, "%AI3_TemplateBox:", 4, tb) && art[0] > 1 && art[1] > 1 && art[0] < 1e5 && art[1] < 1e5) {
-        double cx = (tb[0] + tb[2]) / 2, cy = (tb[1] + tb[3]) / 2;
-        b[0] = cx - art[0] / 2, b[1] = cy - art[1] / 2, b[2] = cx + art[0] / 2, b[3] = cy + art[1] / 2;
-    }
+    // the artboard, unless most of what is drawn lies (in part) off it: a drawing beside its artboard,
+    // as the start of a piece of work often is, gets its bounding box (a stray object far off does not)
+    if (r.artboard && (!bbox || r.onBoard >= r.offBoard)) memcpy(b, r.ab, sizeof b);
     int c = D.add(stream("", content));
     D.objs[0] = "<</Type/Catalog/Pages 2 0 R>>";
     D.objs[1] = "<</Type/Pages/Kids[3 0 R]/Count 1>>";
