@@ -1083,7 +1083,9 @@ bool box(const std::string &ps, const char *key, double b[4]) {
     size_t i = ps.find(key);
     if (i == std::string::npos || i > 65536) return false;
     i += strlen(key);
-    if (ps.compare(i, 7, "(atend)") == 0 || (i < ps.size() && ps.compare(i + 1, 7, "(atend)") == 0)) {   // (the key may end the file)
+    size_t a = i;
+    while (a < ps.size() && (ps[a] == ' ' || ps[a] == '\t')) a++;
+    if (ps.compare(a, 7, "(atend)") == 0) {   // (after any spaces, as the numbers; the key may end the file)
         i = ps.rfind(key);
         if (i == std::string::npos) return false;
         i += strlen(key);
