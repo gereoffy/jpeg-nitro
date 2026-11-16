@@ -266,6 +266,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_DRAWIO: return "drawio";
     case NV_MODE_PDF: return "pdf";
     case NV_MODE_FONT: return "font";
+    case NV_MODE_DJVU: return "djvu";
     case NV_MODE_NITROHEIC: return "nitroheic";
     case NV_MODE_NITRODNG: return "nitrodng";
     case NV_MODE_NITROWEBP: return "nitrowebp";

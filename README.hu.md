@@ -75,7 +75,7 @@ fájlválasztó ablakot nyit.
 | PgDn / Space | következő kép |
 | PgUp / Backspace | előző kép |
 | Home / End | első / utolsó kép |
-| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF, egy betűtípus glyphjei) előző / következő oldala (címsor: [page 2/5]) |
+| [ / ] | többoldalas rajz (CDR, Visio, DXF / DWG, draw.io, PDF, DjVu, egy betűtípus glyphjei) előző / következő oldala (címsor: [page 2/5]) |
 | + / − | nagyítás / kicsinyítés (√2-es lépések, pontosan megáll 100%-nál és az illesztett méretnél) |
 | 0 | illesztés a képernyőhöz: a kis képeket is felnagyítja (lapozáskor is megmarad, a W-ig) |
 | 1 | eredeti méret: egy képpixel = egy képernyőpixel |
@@ -171,6 +171,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **WMF / EMF** (Windows-metafájlok), WMZ / EMZ | a GDI-rajz, szöveg a rendszer betűtípusaival, DIB bitképek a maszkjaikkal, színátmenetes kitöltés, vágás, világtranszformációk | az EMF+ rekordok (GDI+ rajzok) kimaradnak: a kettős fájlok a GDI-részüket mutatják, a csak EMF+-os üres; a másoláson és a maszkpárokon kívüli raszterműveletek közelítőek |
 | **DXF** (AutoCAD R12 – 2018), **DWG** (R13 – R2018, az R2007 nem) | a modelltér és a lapok a nézetablakaikkal, külön oldalanként; DWG: lásd [DWG](#dwg) | a multileaderek, a multiline-ok, a 3D testek, a csatolt képek, a külső hivatkozások (xref) és az AutoCAD Architecture / Mechanical saját elemei nem jelennek meg; a vonalvastagság nem számít; bináris DXF nem nyílik meg |
 | **PDF** | oldalak, színátmenetek, beágyazott betűtípusok, képek, CMYK-színek ICC-profillal, megjegyzések, jelszó nélküli titkosított fájlok; [pdfparse3](https://github.com/gereoffy/pdfparse3) | a JPX feldolgozási sorrendjének váltása (POC) és a külön tárolt packet-fejlécek (PPM/PPT) nem támogatottak; a többi színátmenet-típus és a csempézett minták egy színnel töltenek ki; a keverési módok és a lágy maszkok kimaradnak |
+| **DjVu** | a dokumentum oldalai, a maszkrétegük: a szöveg és a vonalas rajz fekete-fehér képe (JB2), megosztott alakszótárakkal; egy szkennelt fekete-fehér könyvben ez minden | a hullámocska-rétegeket (IW44) nem dekódolja: az összetett oldalon a szöveg és a rajzok látszanak, a fényképek, a háttér és a színek nem, a csak képből álló oldal szürke lap; nincs rejtett szöveg, tartalomjegyzék, megjegyzés; a külön fájlokból álló (indirect) dokumentum nem nyílik meg |
 | **Betűtípusok** (TTF, OTF, TTC / OTC, WOFF, WOFF2, EOT, Type 1 PFB / PFA) | mintalap: a név, mintasorok angolul, a közép-európai nyelveken, további latin betűs nyelveken, cirill és görög betűkkel (a betűtípusból hiányzó karakter piros; ikon-betűtípusnál nincsenek), utána az összes glyph a betűtípus sorrendjében, a sorszámával, a karakterével és a nevével, az alapvonalán a szélességével; ránagyítva a görbék is látszanak; a betűtípus színes glyphjei (az SVG-táblájának rajzai: emojik) külön lapokon a körvonalak után | a tömörített EOT és a bitképes betűtípusok (a bitképes emojik is) nem nyílnak meg; a rétegezett színes glyphek (COLR) egyszínű körvonalként látszanak; változó (variable) betűtípusnak az alappéldánya látszik; alávágás csak a `kern` táblából, ligatúrák nincsenek |
 | **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
 

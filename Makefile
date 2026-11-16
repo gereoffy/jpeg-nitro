@@ -394,7 +394,7 @@ NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitromet
 NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
               src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrotiff.h \
-              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h src/nitro_bilevel.h \
+              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h src/nitrodjvu.c src/nitrodjvu.h src/nitro_bilevel.h \
               src/nitrotype.h src/nitro_ft.h
 # (zlib-ng's include/ for the librevenge-based parts, nitrodio and pdfparse3 too, where the system has no zlib.h:
 # Windows, the portable Linux build)
@@ -441,6 +441,7 @@ endef
 	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR $(VEC_INC)) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -I$(LCMS)/include -Isrc -c src/nitro_cmyk.c -o $(@D)/nitro_cmyk.o)
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojbig2.c -o $(@D)/nitrojbig2.o)
+	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrodjvu.c -o $(@D)/nitrodjvu.o)
 	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@

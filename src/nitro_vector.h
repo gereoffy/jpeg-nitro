@@ -2,8 +2,8 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitro_vector: the vector drawings for the four viewers - SVG (nitrosvg), DXF / DWG (nitrodxf),
-// WMF / EMF (nitrometa), CorelDRAW and Visio (nitrocdr), draw.io (nitrodio), PDF (nitropdf), font
-// files as specimens (nitrotype) - behind one
+// WMF / EMF (nitrometa), CorelDRAW and Visio (nitrocdr), draw.io (nitrodio), PDF (nitropdf), DjVu
+// (nitrodjvu), font files as specimens (nitrotype) - behind one
 // interface: which files they are, loading one, its pages and their size, rendering any part at
 // any scale, a page rendered in full (at the size it is shown at: the target), the part rendered
 // sharp when zoomed in, the background they are drawn over (keys E / Shift+E) and the window

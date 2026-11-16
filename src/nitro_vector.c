@@ -13,6 +13,7 @@
 #include "nitrodio.h"
 #include "nitropdf.h"
 #include "nitrotype.h"
+#include "nitrodjvu.h"
 #include <zlib.h>   // (a gzip'd drawing: SVGZ, EMZ, WMZ)
 #endif
 #include <math.h>
@@ -24,13 +25,13 @@
 const char *const nv_vector_exts[] = {
 #ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
     "svg", "svgz", "dxf", "dwg", "wmf", "emf", "wmz", "emz", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
-    "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "woff2", "eot", "pfb", "pfa",
+    "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "woff2", "eot", "pfb", "pfa", "djvu", "djv",
 #endif
     NULL};
 
 const char *nv_vector_formats(void) {
 #ifdef NV_VECTOR
-    return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io, PDF and fonts";
+    return "SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io, PDF, DjVu and fonts";
 #else
     return "";
 #endif
@@ -41,7 +42,7 @@ const char *nv_vector_mimes(void) {
     return "image/svg+xml;image/svg+xml-compressed;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
            "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;"
-           "font/ttf;font/otf;font/collection;font/woff;font/woff2;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/vnd.ms-fontobject;application/x-font-type1;";
+           "font/ttf;font/otf;font/collection;font/woff;font/woff2;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/vnd.ms-fontobject;application/x-font-type1;image/vnd.djvu;image/x-djvu;";
 #else
     return "";
 #endif
@@ -110,6 +111,12 @@ static int type_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t 
 }
 static void type_size(void *doc, int page, double *w, double *h) { nitrotype_size(doc, page, w, h); }
 static void type_free(void *doc) { nitrotype_free(doc); }
+static int djvu_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                       int (*cancelled)(void *), void *ctx) {
+    return nitrodjvu_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
+}
+static void djvu_size(void *doc, int page, double *w, double *h) { nitrodjvu_size(doc, page, w, h); }
+static void djvu_free(void *doc) { nitrodjvu_free(doc); }
 
 // The drawings by their content, whatever the name (a file opened or dropped on its own): text, magic numbers,
 // a ZIP's or an OLE file's part names. The loaders check the files again.
@@ -281,6 +288,14 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->free = type_free;
         v->pages = nitrotype_pages(v->doc);
         v->mode = NV_MODE_FONT;
+    }
+    // DjVu (its mask layer: nitrodjvu); its file says what it is, whatever its name
+    if (!v->doc && len >= 16 && !memcmp(p, "AT&TFORM", 8) && (v->doc = nitrodjvu_load(data, len))) {
+        v->render = djvu_render;
+        v->size = djvu_size;
+        v->free = djvu_free;
+        v->pages = nitrodjvu_pages(v->doc);
+        v->mode = NV_MODE_DJVU;
     }
     free(plain);
 #endif
