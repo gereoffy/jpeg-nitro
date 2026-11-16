@@ -495,7 +495,7 @@ struct Run {
         for (auto &x : s) sp = x.sp == 2 ? 2 : std::max(sp, x.sp);
         int n = sp == 0 ? 1 : sp == 1 ? 4 : 3;
         for (auto &x : s) {   // all in one space
-            double c[4];
+            double c[4] = {};   // (an RGB one has three: the fourth is 0, not left as it was)
             if (x.sp == sp) continue;
             if (x.sp == 0 && sp == 1) c[0] = c[1] = c[2] = 0, c[3] = 1 - x.c[0];
             else if (x.sp == 0) c[0] = c[1] = c[2] = x.c[0];
