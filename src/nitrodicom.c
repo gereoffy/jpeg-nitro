@@ -96,6 +96,7 @@ static void element(Parse *P, int ctx, uint32_t tag, uint32_t vr, size_t val, ui
         P->ts_known = 1;
         break;
     }
+    case 0x00089205: in->supplemental = len >= 5 && !memcmp(v, "COLOR", 5); break;   // Pixel Presentation
     case 0x00280002: in->spp = us; break;
     case 0x00280004: {
         char s[20] = {0};
@@ -325,6 +326,9 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
             if (!in->palette[c].pos || in->palette[c].n < 1 || in->palette[c].len > n - in->palette[c].pos)
                 in->error = "DICOM: unsupported palette (segmented, or none)";
     }
+    for (int c = 0; c < 3; c++)   // (a supplemental palette that is not there: the picture is grey)
+        if (!in->palette[c].pos || in->palette[c].n < 1 || in->palette[c].len > n - in->palette[c].pos) in->supplemental = 0;
+    if (in->spp != 1 || in->photometric > P_MONO2) in->supplemental = 0;
     return 0;
 }
 
@@ -759,6 +763,8 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
     if (!isfinite(S.slope) || !isfinite(S.intercept) || S.slope == 0) S.slope = 1, S.intercept = 0;
     S.gain = isfinite(in->ev) ? pow(2.0, in->ev) : 1;
     int grey = spp == 1 && in->photometric != P_PALETTE;
+    // PS3.3 C.7.6.19: the values below the palette's first one are grey, those from it on are the palette's colours
+    int supp = grey && in->supplemental && stored <= 16;
     if (grey) {
         if (in->voi.pos && in->voi.n > 0 && lut_entries(&in->voi) > 0) {   // the file's VOI table: its entries spread over black .. white
             S.voi = &in->voi;
@@ -819,13 +825,16 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
             S.a = m1 > m0 ? 255.0 / (m1 - m0) : 0;
             S.b = -m0 * S.a;
         }
-        if (stored <= 16) {
+        if (stored <= 16 && !supp) {
             lut = malloc((size_t)mask + 1);
             if (!lut) return -1;
             for (uint32_t b = 0; b <= mask; b++) lut[b] = shade(&S, value_of(b, stored, sgn));
         }
-    } else if (in->photometric == P_PALETTE) {
+    }
+    if (in->photometric == P_PALETTE || supp) {
         if (stored > 16) return -1;
+        Shade plain = S;   // (the grey values of a supplemental palette's picture: the exposure comes with the colours' below)
+        plain.gain = 1;
         plut = malloc(((size_t)mask + 1) * sizeof *plut);
         if (!plut) return -1;
         int n[3], first[3], wide = 0;   // wide: the entries are of 16 bits (some say 8 and are not)
@@ -837,6 +846,10 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
         for (uint32_t b = 0; b <= mask; b++) {
             uint32_t px = 0xFF000000u;
             int64_t v = value_of(b, stored, sgn);
+            if (supp && v < first[0]) {
+                plut[b] = px | shade(&plain, v) * 0x010101u;
+                continue;
+            }
             for (int c = 0; c < 3; c++) {   // (c 0: red, bits 16..23 of B G R X as a little endian number)
                 int64_t k = v - first[c];
                 uint32_t e = n[c] ? lut_entry(d, &in->palette[c], in->big_endian, k <= 0 ? 0 : k >= n[c] ? n[c] - 1 : (int)k) : 0;
@@ -860,7 +873,12 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
         for (int y = (int)((size_t)h * band / (size_t)bands), y1 = (int)((size_t)h * (band + 1) / (size_t)bands); y < y1; y++) {
             uint8_t *o = bgrx + (size_t)y * pitch;
             row_samples(f, w, h, y, row);
-            if (lut) {
+            if (plut) {
+                for (int x = 0; x < w; x++) {
+                    uint32_t px = plut[row[x] >> f->shift & mask];
+                    o[4 * x] = pg[px & 255], o[4 * x + 1] = pg[px >> 8 & 255], o[4 * x + 2] = pg[px >> 16 & 255], o[4 * x + 3] = 255;
+                }
+            } else if (lut) {
                 for (int x = 0; x < w; x++) {
                     uint8_t g = lut[row[x] >> f->shift & mask];
                     o[4 * x] = o[4 * x + 1] = o[4 * x + 2] = g, o[4 * x + 3] = 255;
@@ -869,11 +887,6 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
                 for (int x = 0; x < w; x++) {
                     uint8_t g = shade(ps, value_of(row[x] >> f->shift & mask, stored, sgn));
                     o[4 * x] = o[4 * x + 1] = o[4 * x + 2] = g, o[4 * x + 3] = 255;
-                }
-            } else if (plut) {
-                for (int x = 0; x < w; x++) {
-                    uint32_t px = plut[row[x] >> f->shift & mask];
-                    o[4 * x] = pg[px & 255], o[4 * x + 1] = pg[px >> 8 & 255], o[4 * x + 2] = pg[px >> 16 & 255], o[4 * x + 3] = 255;
                 }
             } else {
                 for (int x = 0; x < w; x++) {

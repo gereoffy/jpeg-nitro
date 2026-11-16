@@ -15,7 +15,8 @@
 // picture all white: 8-bit pictures as they are, the others from their smallest to their largest
 // value, the thousandth of the pixels at either end not counted), made lighter or darker by
 // info.ev; palette
-// colour, RGB and YBR_FULL (_422).
+// colour, RGB and YBR_FULL (_422); a grey picture with a supplemental palette (perfusion maps: the
+// values the palette is for in its colours, the others grey).
 // Of a file of several frames one frame at a time (all of the same size: the viewers step through them).
 // Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG, HTJ2K, JPEG XL, the video
 // codecs, the deflated transfer syntaxes, floating point pixel data, segmented palettes; overlays,
@@ -49,6 +50,7 @@ typedef struct {
     size_t pixel_pos, pixel_len; // the pixel data element's value (encapsulated: its items)
     int encapsulated, pixel_words;   // pixel_words: its VR is OW (8-bit samples of a big endian file are swapped in pairs)
     int has_window, has_padding, padding;
+    int supplemental;            // a grey picture with a supplemental palette: the values from the palette's first on are colours
     double center, width_w;      // the window
     double slope, intercept;     // the rescale
     ndcm_lut palette[3], voi;
