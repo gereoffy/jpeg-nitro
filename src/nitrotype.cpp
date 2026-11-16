@@ -12,10 +12,13 @@
 #include "nitro_font.h"
 #include "nitro_ft.h"
 #include "nitropdf.h"   // (nitropdf_glyph_unicode: a glyph name's character)
+#include "nitrosvg.h"   // (a colour glyph's SVG document)
 
 #include FT_FONT_FORMATS_H
 #include FT_SFNT_NAMES_H
 #include FT_TRUETYPE_IDS_H
+#include FT_TRUETYPE_TABLES_H
+#include FT_ADVANCES_H
 #include <zlib.h>
 
 #include <atomic>
@@ -62,6 +65,11 @@ const char SAMPLE_ASCII[] = "the quick brown fox jumps over the lazy dog – THE
 // the rows of glyphs on a face's first page, under its sample lines (0: its glyphs under its name), and on each page after it
 inline int rowsUnder(int lines) { return (int)((PAGE_H - MARGIN - (lines ? SAMPLE_TOP + lines * SAMPLE_PITCH + 6 : SAMPLE_TOP)) / CELL_H); }
 const int ROWS_MORE = (int)((PAGE_H - MARGIN - GRID_TOP) / CELL_H);
+// The pages of colour glyphs, after a face's outlines: the pictures of its SVG table, each in a cell
+// twice as large; the pictures of SVG_KEEP such pages stay loaded (a font has thousands).
+const int SVG_COLS = COLS / 2, SVG_ROWS = ROWS_MORE / 2;
+const float SVG_W = 2 * CELL_W, SVG_H = 2 * CELL_H;
+const size_t SVG_KEEP = 4;
 
 enum Role : uint8_t { TEXT, LABEL, FRAME, MARK, MISSING };
 
@@ -72,9 +80,23 @@ struct Item {
     nd::Box box;
 };
 
+struct Picture {   // a colour glyph on its page: which of the face's SVG glyphs, and the box its picture is fitted into
+    uint32_t index;
+    float x, y, w, h;
+};
+struct Pictures {   // a page's SVG documents, loaded (NULL: one lunasvg does not read)
+    std::vector<nitrosvg *> docs;
+    ~Pictures() {
+        for (nitrosvg *d : docs)
+            if (d) nitrosvg_free(d);
+    }
+};
+
 struct PageDL {
     std::atomic<bool> built{false};
     std::vector<Item> items;
+    std::vector<Picture> pictures;
+    std::shared_ptr<Pictures> loaded;   // (under the font's lock; a render holds its own reference)
     ~PageDL() {
         for (Item &it : items) plutovg_path_destroy(it.path);
     }
@@ -99,12 +121,20 @@ struct Face {
     // either: an icon or symbol font, or another script's.
     int samples = NSAMPLES;
     int headRows() const { return rowsUnder(samples); }   // the rows of glyphs on its first page
+    // Its colour glyphs: the SVG table (OpenType's glyphs as SVG pictures, beside their plain outlines)
+    // and the glyphs with a document of their own in it, where in the table it is.
+    struct SvgGlyph {
+        uint32_t glyph, off, len;
+    };
+    std::string svgTable;
+    std::vector<SvgGlyph> svg;
 };
 
 struct Page {
     int face;
-    uint32_t first, count;   // its glyphs
+    uint32_t first, count;   // its glyphs (a page of colour glyphs: of the face's SVG glyphs)
     bool head;               // the face's first page: its name and the samples
+    bool svg;                // a page of colour glyphs
 };
 
 // a letter: what a sample line's coverage is counted by (not the digits, signs and dashes every font has)
@@ -197,6 +227,7 @@ struct nitrotype {
     std::vector<std::unique_ptr<PageDL>> dl;
     int background = 0;
     std::mutex lock;   // (FreeType's faces: one page laid out at a time)
+    std::vector<int> svgPages;   // the pages of colour glyphs whose pictures are loaded, the latest used last
     ~nitrotype() {
         for (Face &f : faces)
             if (f.ft) FT_Done_Face(f.ft);
@@ -375,6 +406,10 @@ struct Layout {
         char b[200];
         snprintf(b, sizeof b, "   ·   %ld glyphs   ·   %zu characters   ·   %d units per em", (long)face.ft->num_glyphs, face.chars, (int)upm);
         s += b;
+        if (!face.svg.empty()) {
+            snprintf(b, sizeof b, "   ·   %zu colour glyphs (SVG, on the last pages)", face.svg.size());
+            s += b;
+        }
         if (F.faces.size() > 1) {
             snprintf(b, sizeof b, "   ·   face %d of %zu in the collection", face.index + 1, F.faces.size());
             s += b;
@@ -403,6 +438,45 @@ struct Layout {
         add(tags, LABEL);
     }
 
+    // a cell's labels around cx: the glyph's number and its character on the baseline y1, its name on y2
+    void label(plutovg_path_t *labels, uint32_t gid, float cx, float y1, float size1, float y2, float size2, float maxw) {
+        char b[80];
+        uint32_t u = gid < face.uni.size() ? face.uni[gid] : 0;
+        if (u) snprintf(b, sizeof b, "%u   U+%04X", gid, u);
+        else snprintf(b, sizeof b, "%u", gid);
+        uiCentered(labels, cx, y1, size1, b, maxw);
+        char nm[64] = "";
+        if (FT_HAS_GLYPH_NAMES(face.ft) && gid < (uint32_t)face.ft->num_glyphs && !FT_Get_Glyph_Name(face.ft, gid, nm, sizeof nm) && nm[0])
+            uiCentered(labels, cx, y2, size2, nm, maxw);
+    }
+
+    // A page of colour glyphs: its heading, the frame of its cells, each glyph's labels, and the boxes
+    // the pictures go into. (The render loads and draws them: nitrosvg takes nitro_font's lock itself.)
+    void pictures(const Page &p) {
+        char b[160];
+        std::string s = faceName();
+        snprintf(b, sizeof b, "   colour glyphs (SVG) %u – %u of %zu", p.first + 1, p.first + p.count, face.svg.size());
+        s += b;
+        plutovg_path_t *head = plutovg_path_create(), *frame = plutovg_path_create(), *labels = plutovg_path_create();
+        uiText(head, ui, MARGIN, MARGIN + 9, 10, s);
+        add(head, LABEL);
+        for (uint32_t i = 0; i < p.count; i++) {
+            float x = MARGIN + (i % SVG_COLS) * SVG_W, y = GRID_TOP + (i / SVG_COLS) * SVG_H;
+            plutovg_path_move_to(frame, x, y + SVG_H);
+            plutovg_path_line_to(frame, x, y);
+            plutovg_path_line_to(frame, x + SVG_W, y);
+            if (i % SVG_COLS == SVG_COLS - 1 || i + 1 == p.count) plutovg_path_line_to(frame, x + SVG_W, y + SVG_H);
+            if (i + SVG_COLS >= p.count) {
+                plutovg_path_move_to(frame, x, y + SVG_H);
+                plutovg_path_line_to(frame, x + SVG_W, y + SVG_H);
+            }
+            pg.pictures.push_back({p.first + i, x + 8, y + 7, SVG_W - 16, SVG_H - 36});
+            label(labels, face.svg[p.first + i].glyph, x + SVG_W / 2, y + SVG_H - 16, 6.5f, y + SVG_H - 7.5f, 4.6f, SVG_W - 6);
+        }
+        add(frame, FRAME, true);
+        add(labels, LABEL);
+    }
+
     // The glyphs p.first .. of the page in cells from top down: the frame, each cell's baseline with
     // the glyph's origin and advance marked, the glyph (made smaller if it would not fit its cell),
     // and under it its number, its character and its name.
@@ -422,7 +496,6 @@ struct Layout {
         }
         add(frame, FRAME, true);
 
-        bool names = FT_HAS_GLYPH_NAMES(face.ft);
         float k0 = CELL_EM / upm;
         for (int r = 0; r < rows; r++) {
             plutovg_path_t *glyphs = plutovg_path_create(), *labels = plutovg_path_create();
@@ -455,13 +528,7 @@ struct Layout {
                             plutovg_path_line_to(marks, tx, base + 2.5f);
                         }
                 }
-                char b[80];
-                uint32_t u = gid < face.uni.size() ? face.uni[gid] : 0;
-                if (u) snprintf(b, sizeof b, "%u   U+%04X", gid, u);
-                else snprintf(b, sizeof b, "%u", gid);
-                uiCentered(labels, cx + CELL_W / 2, cy + 46.5f, 5, b, CELL_W - 4);
-                char nm[64] = "";
-                if (names && !FT_Get_Glyph_Name(face.ft, gid, nm, sizeof nm) && nm[0]) uiCentered(labels, cx + CELL_W / 2, cy + 52.5f, 3.6f, nm, CELL_W - 4);
+                label(labels, gid, cx + CELL_W / 2, cy + 46.5f, 5, cy + 52.5f, 3.6f, CELL_W - 4);
             }
             add(glyphs, TEXT);
             add(labels, LABEL);
@@ -470,6 +537,7 @@ struct Layout {
     }
 
     void build(const Page &p) {
+        if (p.svg) return pictures(p);
         if (p.head) head();
         else heading(p);
         if (p.count) grid(p, p.head ? PAGE_H - MARGIN - face.headRows() * CELL_H : GRID_TOP);
@@ -481,6 +549,89 @@ uint32_t colour(Role r, bool dark) {
     static const uint32_t light[] = {0x000000, 0x6a6a6a, 0xd4d4d4, 0x8fb8f0, 0xd42020};
     static const uint32_t night[] = {0xf2f2f2, 0x9c9c9c, 0x454a50, 0x3a6aa8, 0xff5a5a};
     return (dark ? night : light)[r];
+}
+
+// The glyphs a face's SVG table has a document of their own for (one of several glyphs holds them as
+// elements named by the glyph: those are not shown).
+void readSvgTable(Face &face) {
+    const FT_ULong tag = FT_MAKE_TAG('S', 'V', 'G', ' ');
+    FT_ULong len = 0;
+    if (FT_Load_Sfnt_Table(face.ft, tag, 0, nullptr, &len) || len < 12 || len > (256u << 20)) return;
+    face.svgTable.resize(len);
+    if (FT_Load_Sfnt_Table(face.ft, tag, 0, (FT_Byte *)&face.svgTable[0], &len)) len = 0;
+    const uint8_t *t = (const uint8_t *)face.svgTable.data();
+    uint64_t list = len >= 12 ? be32(t + 2) : len;
+    uint32_t count = list + 2 <= len ? (uint32_t)(t[list] << 8 | t[list + 1]) : 0;
+    for (uint32_t k = 0; k < count && list + 2 + 12 * (uint64_t)(k + 1) <= len; k++) {
+        const uint8_t *e = t + list + 2 + 12 * (size_t)k;
+        uint32_t start = e[0] << 8 | e[1], end = e[2] << 8 | e[3], size = be32(e + 8);
+        uint64_t off = list + be32(e + 4);
+        if (start != end || !size || off > len || size > len - off) continue;
+        face.svg.push_back({start, (uint32_t)off, size});
+    }
+    if (face.svg.empty()) std::string().swap(face.svgTable);
+}
+
+// An SVG glyph's document as a picture of the glyph's box. In a font the root's viewBox is no frame:
+// it is mapped onto the em square hanging from the glyph's origin on the baseline, and what is drawn
+// above that shows too (EmojiOne: viewBox="0 54.4 64 64" around a picture from 0 to 64, the baseline
+// at 54.4). So the viewBox is rewritten to the glyph's box: from the ascender to the descender, its
+// advance wide, in the viewBox's own units. A document without one (drawn in font units, as the
+// specification has it now) is left as it is: nitrosvg shows the bounds of what it draws.
+void glyphBox(std::string &svg, float upm, float asc, float desc, float adv) {
+    size_t tag = svg.find("<svg"), end = tag == std::string::npos ? tag : svg.find('>', tag);
+    size_t at = end == std::string::npos ? end : svg.find("viewBox", tag);
+    if (at == std::string::npos || at > end) return;
+    size_t q = svg.find_first_of("\"'", at);
+    size_t close = q == std::string::npos || q > end ? std::string::npos : svg.find(svg[q], q + 1);
+    if (close == std::string::npos || close > end || close - q > 200) return;
+    std::string nums = svg.substr(q + 1, close - q - 1);
+    for (char &c : nums)
+        if (c == ',') c = ' ';
+    double v[4];
+    const char *p = nums.c_str();
+    for (int k = 0; k < 4; k++) {
+        char *next = nullptr;
+        v[k] = strtod(p, &next);
+        if (next == p) return;
+        p = next;
+    }
+    if (!(v[2] > 0 && v[3] > 0) || !(upm > 0) || !(asc + desc > 0) || !(adv > 0)) return;
+    double k = v[2] / upm;   // the viewBox's units to a font unit
+    char b[160];
+    snprintf(b, sizeof b, "%g %g %g %g", v[0], v[1] - asc * k, adv * k, (asc + desc) * k);
+    svg.replace(q + 1, close - q - 1, b);
+}
+
+// a glyph's SVG document loaded (a gzip'd one inflated first), to be drawn over what is there; NULL: lunasvg does not read it
+nitrosvg *loadSvg(const Face &face, const Face::SvgGlyph &g) {
+    const uint8_t *d = (const uint8_t *)face.svgTable.data() + g.off;
+    size_t len = g.len;
+    std::string plain;
+    if (len >= 2 && d[0] == 0x1f && d[1] == 0x8b) {
+        z_stream z;
+        memset(&z, 0, sizeof z);
+        if (inflateInit2(&z, 15 + 16) != Z_OK) return nullptr;
+        z.next_in = (Bytef *)d, z.avail_in = (uInt)len;
+        int rc = Z_OK;
+        while (rc == Z_OK && plain.size() < (8u << 20)) {   // (a glyph's picture: a few KB)
+            size_t at = plain.size();
+            plain.resize(at + (64u << 10));
+            z.next_out = (Bytef *)&plain[at], z.avail_out = 64u << 10;
+            rc = inflate(&z, Z_NO_FLUSH);
+            plain.resize(at + (64u << 10) - z.avail_out);
+        }
+        inflateEnd(&z);
+        if (rc != Z_STREAM_END) return nullptr;
+    } else
+        plain.assign((const char *)d, len);
+    FT_Face ft = face.ft;
+    FT_Fixed adv = 0;
+    if (FT_Get_Advance(ft, g.glyph, FT_LOAD_NO_SCALE, &adv) || adv <= 0) adv = ft->units_per_EM;
+    glyphBox(plain, ft->units_per_EM, ft->ascender, -ft->descender, (float)adv);
+    nitrosvg *svg = nitrosvg_load(plain.data(), plain.size());
+    if (svg) nitrosvg_set_background(svg, 3);
+    return svg;
 }
 
 }   // namespace
@@ -546,9 +697,13 @@ nitrotype *nitrotype_load(const void *data, size_t len) {
         uint32_t n = (uint32_t)ft->num_glyphs, at = 0;
         for (bool head = true; (head || at < n) && F->pages.size() < MAX_PAGES; head = false) {
             uint32_t room = (uint32_t)((head ? headRows : ROWS_MORE) * COLS), take = std::min(room, n - at);
-            F->pages.push_back({fi, at, take, head});
+            F->pages.push_back({fi, at, take, head, false});
             at += take;
         }
+        readSvgTable(F->faces[fi]);
+        uint32_t pictures = (uint32_t)F->faces[fi].svg.size(), room = (uint32_t)(SVG_COLS * SVG_ROWS);
+        for (uint32_t i = 0; i < pictures && F->pages.size() < MAX_PAGES; i += room)
+            F->pages.push_back({fi, i, std::min(room, pictures - i), false, true});
     }
     if (F->pages.empty()) {
         delete F;
@@ -576,13 +731,32 @@ int nitrotype_render(nitrotype *font, int page, uint8_t *bgra, int w, int h, siz
                      int (*cancelled)(void *ctx), void *ctx) {
     if (!font || page < 0 || page >= (int)font->pages.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
     PageDL &pg = *font->dl[page];
-    if (!pg.built.load(std::memory_order_acquire)) {
+    const Page &p = font->pages[page];
+    std::shared_ptr<Pictures> pictures;   // (a page of colour glyphs: its SVG documents, held while it is drawn)
+    if (!pg.built.load(std::memory_order_acquire) || p.svg) {
         std::lock_guard<std::mutex> g(font->lock);
         if (!pg.built.load(std::memory_order_relaxed)) {
-            std::lock_guard<std::mutex> fonts(nf_lock());
-            const Page &p = font->pages[page];
-            Layout(*font, pg, font->faces[p.face]).build(p);
+            {
+                std::lock_guard<std::mutex> fonts(nf_lock());
+                Layout(*font, pg, font->faces[p.face]).build(p);
+            }
             pg.built.store(true, std::memory_order_release);
+        }
+        if (p.svg) {
+            // its pictures loaded now, or still there; those of the page used longest ago are let go
+            std::vector<int> &recent = font->svgPages;
+            recent.erase(std::remove(recent.begin(), recent.end(), page), recent.end());
+            recent.push_back(page);
+            if (!pg.loaded) {
+                const Face &face = font->faces[p.face];
+                pg.loaded = std::make_shared<Pictures>();
+                for (const Picture &pc : pg.pictures) pg.loaded->docs.push_back(loadSvg(face, face.svg[pc.index]));
+            }
+            pictures = pg.loaded;
+            if (recent.size() > SVG_KEEP) {
+                font->dl[recent.front()]->loaded.reset();
+                recent.erase(recent.begin());
+            }
         }
     }
     int bg = font->background;
@@ -603,6 +777,36 @@ int nitrotype_render(nitrotype *font, int page, uint8_t *bgra, int w, int h, siz
         nd::setRgb(t.canvas, colour(it.role, dark), 1);
         if (it.stroke) plutovg_canvas_stroke_path(t.canvas, it.path);
         else plutovg_canvas_fill_path(t.canvas, it.path);
+    }
+    if (!pictures) return 0;
+    // The colour glyphs: each SVG fitted into its box, the part of it in this buffer rendered by
+    // nitrosvg at the buffer's resolution into a tile of its own, the tile drawn over the page.
+    plutovg_matrix_t ident;
+    plutovg_matrix_init_identity(&ident);
+    plutovg_canvas_set_matrix(t.canvas, &ident);
+    for (size_t i = 0; i < pg.pictures.size() && i < pictures->docs.size(); i++) {
+        const Picture &pc = pg.pictures[i];
+        nitrosvg *svg = pictures->docs[i];
+        if (!svg || !nd::touches(vb, pc.x, pc.y, pc.x + pc.w, pc.y + pc.h)) continue;
+        if (cancel()) return 1;
+        double sw = 0, sh = 0;
+        nitrosvg_size(svg, &sw, &sh);
+        if (!(sw > 0 && sh > 0)) continue;
+        double fit = std::min(pc.w / sw, pc.h / sh), px = fit * scale;   // (px: device pixels per unit of the picture)
+        double left = (pc.x + (pc.w - sw * fit) / 2 - x0) * scale, top = (pc.y + (pc.h - sh * fit) / 2 - y0) * scale;
+        int ix0 = std::max(0, (int)std::floor(left)), iy0 = std::max(0, (int)std::floor(top));
+        int ix1 = (int)std::min<double>(w, std::ceil(left + sw * px)), iy1 = (int)std::min<double>(h, std::ceil(top + sh * px));
+        if (ix1 <= ix0 || iy1 <= iy0) continue;
+        plutovg_surface_t *tile = plutovg_surface_create(ix1 - ix0, iy1 - iy0);
+        if (!tile) continue;
+        if (!nitrosvg_render(svg, plutovg_surface_get_data(tile), ix1 - ix0, iy1 - iy0, (size_t)plutovg_surface_get_stride(tile), px, (ix0 - left) / px,
+                             (iy0 - top) / px)) {
+            plutovg_matrix_t at;
+            plutovg_matrix_init_translate(&at, (float)ix0, (float)iy0);
+            plutovg_canvas_set_texture(t.canvas, tile, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &at);
+            plutovg_canvas_fill_rect(t.canvas, (float)ix0, (float)iy0, (float)(ix1 - ix0), (float)(iy1 - iy0));
+        }
+        plutovg_surface_destroy(tile);
     }
     return 0;
 }
