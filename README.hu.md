@@ -154,14 +154,14 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 
 | formátum | mit nyit meg | korlátok |
 |---|---|---|
-| **JPEG** | baseline és progresszív, bármilyen chroma-mintavételezés, szürkeárnyalatos | CMYK, aritmetikai kódolás, sérült vagy csonka fájlok: ezeket a rendszer dekódere nyitja meg |
-| **PNG** | minden nem interlaced PNG: 8 / 16 bites, palettás, 1 / 2 / 4 bites, átlátszósági kulcs, alfa (fekete háttéren) | interlaced PNG (ritka): a rendszer dekódere nyitja meg |
+| **JPEG** | baseline és progresszív, bármilyen chroma-mintavételezés, szürkeárnyalatos | CMYK, aritmetikai kódolás, sérült vagy csonka fájlok |
+| **PNG** | minden nem interlaced PNG: 8 / 16 bites, palettás, 1 / 2 / 4 bites, átlátszósági kulcs, alfa (fekete háttéren) | interlaced PNG (ritka) |
 | **HEIC** | iPhone-fotók (8 bites 4:2:0 HEVC, a csempézettek is), a rendszer HEVC-dekóderével: lásd [HEIC](#heic) | |
 | **AVIF** | 8 / 10 / 12 bit, 4:2:0 / 4:2:2 / 4:4:4 / szürke, alfa, rácsok, vágás / forgatás / tükrözés (az AV1-et a [dav1d](https://code.videolan.org/videolan/dav1d) bontja ki) | a réteges csempékből álló rácsot (két Apple-tesztfájl) nem dekódolja |
-| **WebP** | veszteséges (VP8) | veszteségmentes és átlátszó WebP: a rendszer dekódere nyitja meg |
-| **TIFF** | tömörítetlen, PackBits, LZW, Deflate, CCITT G3 / G4; 1–16 bites szürke, palettás, RGB, CMYK, alfa; csíkok vagy csempék, chunky vagy planar | JPEG-tömörítésű TIFF: a rendszer dekódere nyitja meg |
+| **WebP** | veszteséges (VP8) | veszteségmentes és átlátszó WebP |
+| **TIFF** | tömörítetlen, PackBits, LZW, Deflate, CCITT G3 / G4; 1–16 bites szürke, palettás, RGB, CMYK, alfa; csíkok vagy csempék, chunky vagy planar | JPEG-tömörítésű TIFF |
 | **JPEG 2000** (JP2, J2K) | 1. rész: veszteségmentes (5/3) és veszteséges (9/7), csempék, rétegek, bármelyik feldolgozási sorrend, 1–16 bit, szürke / RGB / sYCC, paletta, alfa; a GPU textúrakorlátjánál nagyobb kép fél vagy negyed méretben nyílik meg (a legfinomabb felbontási szintjei nélkül) | CMYK, a 2. rész kiterjesztései (JPX), HTJ2K, POC és PPM / PPT |
-| **PSD / PSB** | 8 bites RGB és szürkeárnyalatos fájlok összefésült (kompozit) képe, mind a négy tömörítéssel; az összefésült átlátszóság fekete háttéren | más színmódok és bitmélységek: a rendszer dekódere nyitja meg; a „Maximize Compatibility” nélkül mentett fájlok |
+| **PSD / PSB** | 8 bites RGB és szürkeárnyalatos fájlok összefésült (kompozit) képe, mind a négy tömörítéssel; az összefésült átlátszóság fekete háttéren | más színmódok és bitmélységek; a „Maximize Compatibility” nélkül mentett fájlok |
 | **DNG** | a nyers adatból teljes felbontásban előhívva (Bayer, veszteségmentes JPEG vagy tömörítetlen): gyors betekintés, hogy mi van a képen, nem raw-konverter; E / Shift + E az expozícióhoz | a zajszűrés, az objektívkorrekció és a többi DNG-opkód nem érvényesül |
 | **fényképezőgépes raw** (CR2, NEF, NRW, ARW, RAF) | a gép által a fájlba tett teljes méretű JPEG (a fájlnak csak ez a része olvasódik be) | |
 | **SVG**, SVGZ | alakzatok, útvonalak, színátmenetek, vágás, maszk, minta, `<style>` stíluslap, szöveg a rendszer betűtípusaival, beágyazott képek; a csak szimbólumokból álló sprite a szimbólumai áttekintő lapjaként | a szűrők kimaradnak (árnyék, elmosás); a HTML nem jelenik meg |
@@ -174,7 +174,7 @@ A GNOME-os néző Czirok Ferenc munkája. A windowsos érintőpados gesztusok ni
 | **Adobe Illustrator** | a 9-es és későbbi verziók: PDF-ként; az 1–8-as verziók (PostScript): görbék, színek, színátmenetek, minták, képek, szöveg; ezek EPS-fájljai is (tartalom alapján) | a többi EPS-fájl (általános PostScript) nem nyílik meg; a csatolt (linked) elemek nem látszanak |
 | **DjVu** | a dokumentum oldalai minden rétegükkel: színes szöveg és a háttérkép | a JPEG-kódolású rétegeket (ritka) nem dekódolja; nincs rejtett szöveg, tartalomjegyzék, megjegyzés; a külön fájlokból álló (indirect) dokumentumok |
 | **Betűtípusok** | TTF, OTF, TTC / OTC, WOFF, WOFF2, EOT, Type 1 PFB / PFA, SVG-betűtípusok; mintaszöveg angolul és európai nyelveken, az összes glyph a betűtípus sorrendjében; az SVG-glyphek (emojik) a következő lapokon | a tömörített EOT és a bitképes betűtípusok nem nyílnak meg; COLR; változó betűtípusnak az alappéldánya látszik; nincs alávágás / ligatúra |
-| **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | |
+| **minden más** (GIF, BMP, …) | az operációs rendszer dekóderével (ImageIO, WIC, a GTK betöltői; az SDL-es nézőben az stb_image) | a fenti korlátokba ütköző fájlok is |
 
 A vektoros rajzokat először egészben rajzolja ki, így a lapozás, az illesztés és a kicsinyítés
 ugyanúgy megy, mint a fotóknál. Ennél jobban felnagyítva a látható részt képernyő-felbontásban újra
