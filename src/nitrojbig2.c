@@ -7,6 +7,7 @@
 // (6.4, 7.4.3), the symbol dictionary (6.5, 7.4.2), the integer decoding (annex A) and the
 // arithmetic decoder (annex E: its table E.1 and flow charts).
 #include "nitrojbig2.h"
+#include "nitro_bilevel.h"
 #include "nitrotiff.h"   // nt_ccitt: MMR is CCITT G4
 #include <limits.h>
 #include <stdlib.h>
@@ -101,21 +102,7 @@ static inline int mq_decode(Mq *m, uint8_t *cx) {
 
 // --- the generic region (6.2) --------------------------------------------------------------------
 
-// A bitmap a byte a pixel (1: black), with 4 blank columns either side and 2 blank rows above: the
-// templates' fixed pixels read without checks.
-typedef struct {
-    uint8_t *mem;
-    int w, h;
-    size_t stride;
-} Bm;
-#define MX 4
-
-static int bm_new(Bm *b, int w, int h) {
-    b->w = w, b->h = h, b->stride = (size_t)w + 2 * MX;
-    b->mem = calloc((size_t)(h + 2) * b->stride, 1);
-    return b->mem ? 0 : -1;
-}
-static inline uint8_t *bm_row(const Bm *b, int y) { return b->mem + (size_t)(y + 2) * b->stride + MX; }
+// (The bitmaps: Bm of nitro_bilevel.h, a byte a pixel with blank margins the templates read into.)
 
 // The context of the pixel x of row r (above it: the rows r1, r2) in the template t (figures 3 to 6),
 // with the adaptive pixels at: of this row or one above (6.2.5.4; one below, as a damaged file may
@@ -161,28 +148,6 @@ static inline __attribute__((always_inline)) void generic_rows(int t, Mq *m, uin
     }
 }
 
-// The bitmap r onto page at x, y by the combination operator op (7.4.1.5: OR AND XOR XNOR REPLACE).
-static void compose(Bm *page, const Bm *r, int x0, int y0, int op) {
-    for (int y = 0; y < r->h; y++) {
-        int py = y0 + y;
-        if (py < 0 || py >= page->h) continue;
-        const uint8_t *s = bm_row(r, y);
-        uint8_t *p = bm_row(page, py);
-        for (int x = 0; x < r->w; x++) {
-            int px = x0 + x;
-            if (px < 0 || px >= page->w) continue;
-            uint8_t v = s[x];
-            switch (op) {
-            case 0: p[px] |= v; break;
-            case 1: p[px] &= v; break;
-            case 2: p[px] ^= v; break;
-            case 3: p[px] = (uint8_t)!(p[px] ^ v); break;
-            default: p[px] = v; break;
-            }
-        }
-    }
-}
-
 static void generic_decode(Mq *m, uint8_t *cx, Bm *b, int t, int tpgdon, const int8_t *at) {
     switch (t) {
     case 0: generic_rows(0, m, cx, b, tpgdon, at); break;
@@ -208,10 +173,6 @@ static int generic_mmr(const uint8_t *d, size_t len, Bm *b) {
 
 // --- the generic refinement region (6.3) ---------------------------------------------------------
 
-static inline unsigned px(const Bm *b, int x, int y) {
-    return x >= 0 && x < b->w && y >= 0 && y < b->h ? bm_row(b, y)[x] : 0u;
-}
-
 // b decoded as a refinement of ref, ref's pixel (x - dx, y - dy) over b's (x, y), in the template t
 // (figures 12, 13) with its adaptive pixels at. (TPGRON: only for refinement region segments.)
 static void refine(Mq *m, uint8_t *cx, Bm *b, const Bm *ref, int dx, int dy, int t, const int8_t *at) {
@@ -221,14 +182,14 @@ static void refine(Mq *m, uint8_t *cx, Bm *b, const Bm *ref, int dx, int dy, int
             int rx = x - dx, ry = y - dy;
             unsigned c;
             if (t == 0)
-                c = r[x - 1] | r1[x + 1] << 1 | r1[x] << 2 | px(b, x + at[0], y + at[1]) << 3 |
-                    px(ref, rx + 1, ry + 1) << 4 | px(ref, rx, ry + 1) << 5 | px(ref, rx - 1, ry + 1) << 6 |
-                    px(ref, rx + 1, ry) << 7 | px(ref, rx, ry) << 8 | px(ref, rx - 1, ry) << 9 |
-                    px(ref, rx + 1, ry - 1) << 10 | px(ref, rx, ry - 1) << 11 | px(ref, rx + at[2], ry + at[3]) << 12;
+                c = r[x - 1] | r1[x + 1] << 1 | r1[x] << 2 | bm_px(b, x + at[0], y + at[1]) << 3 |
+                    bm_px(ref, rx + 1, ry + 1) << 4 | bm_px(ref, rx, ry + 1) << 5 | bm_px(ref, rx - 1, ry + 1) << 6 |
+                    bm_px(ref, rx + 1, ry) << 7 | bm_px(ref, rx, ry) << 8 | bm_px(ref, rx - 1, ry) << 9 |
+                    bm_px(ref, rx + 1, ry - 1) << 10 | bm_px(ref, rx, ry - 1) << 11 | bm_px(ref, rx + at[2], ry + at[3]) << 12;
             else
-                c = r[x - 1] | r1[x + 1] << 1 | r1[x] << 2 | r1[x - 1] << 3 | px(ref, rx + 1, ry + 1) << 4 |
-                    px(ref, rx, ry + 1) << 5 | px(ref, rx + 1, ry) << 6 | px(ref, rx, ry) << 7 |
-                    px(ref, rx - 1, ry) << 8 | px(ref, rx, ry - 1) << 9;
+                c = r[x - 1] | r1[x + 1] << 1 | r1[x] << 2 | r1[x - 1] << 3 | bm_px(ref, rx + 1, ry + 1) << 4 |
+                    bm_px(ref, rx, ry + 1) << 5 | bm_px(ref, rx + 1, ry) << 6 | bm_px(ref, rx, ry) << 7 |
+                    bm_px(ref, rx - 1, ry) << 8 | bm_px(ref, rx, ry - 1) << 9;
             r[x] = (uint8_t)mq_decode(m, &cx[c]);
         }
     }
@@ -345,7 +306,7 @@ static int text_region(Mq *m, Ia *ia, Bm *b, const Bm *const *syms, uint32_t nsy
             int64_t x = p->transposed ? t : curs, y = p->transposed ? curs : t;
             if (p->corner == TOPRIGHT || p->corner == BOTTOMRIGHT) x -= wi - 1;
             if (p->corner == BOTTOMLEFT || p->corner == BOTTOMRIGHT) y -= hi - 1;
-            if (x > -(1 << 24) && x < 1 << 24 && y > -(1 << 24) && y < 1 << 24) compose(b, ib, (int)x, (int)y, p->op);
+            if (x > -(1 << 24) && x < 1 << 24 && y > -(1 << 24) && y < 1 << 24) bm_compose(b, ib, (int)x, (int)y, p->op);
             if (!p->transposed && (p->corner == TOPLEFT || p->corner == BOTTOMLEFT)) curs += wi - 1;
             if (p->transposed && (p->corner == TOPLEFT || p->corner == TOPRIGHT)) curs += hi - 1;
             free(rb.mem);
@@ -520,7 +481,7 @@ static int text_segment(Dec *dec, const uint8_t *d, size_t n, const uint32_t *re
         Mq m;
         mq_init(&m, d + i, d + n);
         rc = text_region(&m, ia, &r, syms, nsyms, &p);
-        if (!rc) compose(&dec->page, &r, (int)x, (int)y, op);
+        if (!rc) bm_compose(&dec->page, &r, (int)x, (int)y, op);
     }
     free(r.mem);
     ia_free(ia);
@@ -570,7 +531,7 @@ static int generic_region(Dec *dec, const uint8_t *d, size_t n, size_t *used) {
         else rc = -1;
         free(cx);
     }
-    if (!rc) compose(&dec->page, &r, (int)x, (int)y, op);
+    if (!rc) bm_compose(&dec->page, &r, (int)x, (int)y, op);
     free(r.mem);
     return rc;
 }
@@ -659,13 +620,7 @@ int nj2_decode(const uint8_t *data, size_t len, const uint8_t *globals, size_t g
     int rc = globals && glen ? segments(&dec, globals, glen, width, height) : 0;
     if (rc >= 0) rc = segments(&dec, data, len, width, height);
     if (rc >= 0 && dec.haveInfo)
-        for (int y = 0; y < height; y++) {
-            const uint8_t *s = bm_row(&dec.page, y);
-            uint8_t *o = dst + (size_t)y * prow;
-            memset(o, 0, prow);
-            for (int x = 0; x < width; x++)
-                if (!s[x]) o[x >> 3] |= (uint8_t)(0x80 >> (x & 7));
-        }
+        bm_pack(&dec.page, dst, prow, 0);   // (a white pixel's bit is 1)
     for (int k = 0; k < dec.ndicts; k++) {
         for (uint32_t j = 0; j < dec.dicts[k].n; j++) free(dec.dicts[k].syms[j].mem);
         free(dec.dicts[k].syms);

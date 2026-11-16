@@ -394,7 +394,7 @@ NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitromet
 NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
               src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrotiff.h \
-              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h \
+              src/nitropdf.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h src/nitro_bilevel.h \
               src/nitrotype.h src/nitro_ft.h
 # (zlib-ng's include/ for the librevenge-based parts, nitrodio and pdfparse3 too, where the system has no zlib.h:
 # Windows, the portable Linux build)
