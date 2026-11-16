@@ -345,10 +345,12 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
             int ss = seg[1 + 2 * ns], se = seg[2 + 2 * ns], a = seg[3 + 2 * ns];
             if (ss != 0 || se != 63 || a != 0) ok = 0;
             if (progressive) ok = j->progressive = 1;
-            // colour space: only YCbCr (or gray) goes to the planar path
+            // colour space: only YCbCr (or gray) is "supported" (the viewers' planar path); an RGB one
+            // is decoded all the same for a caller that takes its planes as R, G, B (info.rgb)
+            int rgb = 0;
             if (fi->ncomp == 3) {
-                if (adobe == 0) ok = 0;
-                if (!jfif && adobe < 0 && comp_id[0] == 'R' && comp_id[1] == 'G' && comp_id[2] == 'B') ok = 0;
+                if (adobe == 0) rgb = 1;
+                if (!jfif && adobe < 0 && comp_id[0] == 'R' && comp_id[1] == 'G' && comp_id[2] == 'B') rgb = 1;
             } else if (fi->ncomp == 1 && (fi->h[0] != 1 || fi->v[0] != 1)) {
                 ok = 0;
             }
@@ -398,7 +400,8 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
 #endif
             if (hdr_append(j, sof, sof_len)) return -1;
             if (hdr_append(j, d + pos - 2, L + 2)) return -1;
-            fi->supported = ok;
+            fi->supported = ok && !rgb;
+            fi->rgb = ok && rgb;
             return 0;
         }
         default:
@@ -855,7 +858,7 @@ static int nj_decode(const uint8_t *data, size_t len, const Output *o, int nthre
     if (!st) st = &dummy;
     memset(st, 0, sizeof *st);
     Jpeg *j = malloc(sizeof *j);
-    if (!j || parse(data, len, j) || !j->info.supported || j->progressive || j->hdr_overflow) { free(j); return -1; }
+    if (!j || parse(data, len, j) || !(j->info.supported || j->info.rgb) || j->progressive || j->hdr_overflow) { free(j); return -1; }
     const nj_info *fi = &j->info;
     if (nthreads <= 0) nthreads = 4 * nitro_ncpu();   // many more pieces than cores: dynamic load balance (see README)
     const int R = fi->mcu_rows, mpr = fi->mcus_per_row;
@@ -1799,7 +1802,7 @@ static int nj_decode_prog(const Jpeg *j, const uint8_t *data, size_t len, const 
 
 static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int nthreads, nj_stats *st) {
     Jpeg *j = malloc(sizeof *j);
-    if (!j || parse(data, len, j) || !j->info.supported) { free(j); return -1; }
+    if (!j || parse(data, len, j) || !(j->info.supported || j->info.rgb)) { free(j); return -1; }
     if (j->progressive) {
         int r = nj_decode_prog(j, data, len, o, st);
         free(j);

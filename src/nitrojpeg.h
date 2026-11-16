@@ -41,6 +41,8 @@ typedef struct {
     int restart_interval;       // DRI, 0 if none
     int orientation;            // EXIF orientation 1..8
     int supported;              // 1: nj_decode_* can handle it (else use a fallback)
+    int rgb;                    // 1: not "supported" only because its 3 components are R G B, not Y Cb Cr (Adobe's
+                                // transform 0, or the component ids 'R' 'G' 'B'): nj_decode_planes decodes it too
 } nj_info;
 
 typedef struct {
