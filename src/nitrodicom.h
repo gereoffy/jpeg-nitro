@@ -6,7 +6,8 @@
 // PS3.3 C.7.6.3 and C.11: what the samples mean and how they are shown).
 //
 // The file: a Part 10 file (the 128 byte preamble, "DICM", the meta group), or the bare data set
-// some old programs wrote (ACR-NEMA too); implicit or explicit VR, little or big endian.
+// some old programs wrote (ACR-NEMA too); implicit or explicit VR, little or big endian (and GE's
+// private syntax: a little endian data set with big endian samples).
 // The pixel data: uncompressed (1, 8, 16 or 32 bits a sample), RLE, JPEG baseline (nitrojpeg),
 // lossless JPEG (nitrodng's decoder), JPEG 2000 (nitrojpx).
 // The picture: grey (MONOCHROME1 / 2) through the rescale (slope, intercept) and the window the
@@ -41,7 +42,8 @@ typedef struct {
                          // shades are multiplied by 2^ev before they are cut to black .. white
     // internal
     int syntax;                  // how the pixel data is coded
-    int big_endian;              // the data set's numbers (and the uncompressed samples)
+    int big_endian;              // the data set's numbers
+    int samples_big_endian;      // the uncompressed samples (as the data set, but for GE's old private syntax)
     int spp, alloc, stored, high, is_signed, planar, photometric;
     size_t pixel_pos, pixel_len; // the pixel data element's value (encapsulated: its items)
     int encapsulated, pixel_words;   // pixel_words: its VR is OW (8-bit samples of a big endian file are swapped in pairs)

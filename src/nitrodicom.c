@@ -173,7 +173,8 @@ static size_t walk(Parse *P, size_t pos, size_t end, int ex, int be, int ctx, in
         const uint8_t *p = P->d + pos;
         if (P->meta && depth == 0 && rd16(p, 0) != 2) {   // the meta group is over: the data set, in its transfer syntax
             P->meta = 0;
-            ex = strcmp(P->ts, "1.2.840.10008.1.2") != 0;
+            // (1.2.840.113619.5.2: GE's private syntax, implicit VR little endian with the pixel data big endian)
+            ex = strcmp(P->ts, "1.2.840.10008.1.2") != 0 && strcmp(P->ts, "1.2.840.113619.5.2") != 0;
             be = !strcmp(P->ts, "1.2.840.10008.1.2.2");
             if (!strcmp(P->ts, "1.2.840.10008.1.2.1.99")) return pos;   // (deflated from here on)
             if (!P->ts_known || (!ex && is_vr(p + 4) && rd32(p + 4, 0) > end - pos)) {   // none given (or a wrong one): as it looks
@@ -281,6 +282,7 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
         else if (!strcmp(t, "1.99") || !strncmp(t, "8.", 2)) in->error = "DICOM: deflated data is not supported";
         else if (!strncmp(t, "4.", 2)) in->error = "DICOM: this compression is not supported (video, JPEG process ...)";
     }
+    in->samples_big_endian = in->big_endian || !strcmp(ts, "1.2.840.113619.5.2");
     if (in->frames < 1) in->frames = 1;
     if (in->spp < 1) in->spp = 1;
     if (in->photometric < 0) in->photometric = in->spp == 3 ? P_RGB : P_MONO2;
@@ -518,7 +520,7 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
         f->p = d + in->pixel_pos + at;
         f->len = need;
         f->bytes = in->alloc / 8;
-        f->be = in->big_endian;
+        f->be = in->samples_big_endian;
         f->swap8 = in->big_endian && in->pixel_words && in->alloc == 8;
         if (f->packed422) f->planar = 0;
         return 0;
