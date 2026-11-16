@@ -17,12 +17,15 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
 #include <vector>
 
 namespace {
+
+const double DEG = 3.14159265358979323846 / 180;   // (M_PI is not standard: mingw has none)
 
 // --- PostScript objects, as much as the format uses -------------------------------------------------
 
@@ -41,7 +44,7 @@ Mtx mul(const Mtx &A, const Mtx &B) {   // A, then B
             A.e * B.a + A.f * B.c + B.e, A.e * B.b + A.f * B.d + B.f};
 }
 Mtx rotate(double deg) {
-    double r = deg * M_PI / 180, c = cos(r), s = sin(r);
+    double r = deg * DEG, c = cos(r), s = sin(r);
     return {c, s, -s, c, 0, 0};
 }
 
@@ -477,7 +480,7 @@ struct Run {
         if (it == D.grads.end() || it->second.stops.empty()) return false;
         Grad &G = it->second;
         int fn = gradFunction(G);
-        double xo = g[0], yo = g[1], ang = g[2] * M_PI / 180, len = g[3];
+        double xo = g[0], yo = g[1], ang = g[2] * DEG, len = g[3];
         Mtx m;
         // where it is: by the matrix written for printing (Xm; a radial one's Bm), the unit ramp (or circle)
         // to the page; else by the instance's own (Bg), relative to a canvas whose corner moved between versions
@@ -495,7 +498,7 @@ struct Run {
         if (G.radial) {
             double fx = xo, fy = yo;
             if (hasBh && std::isfinite(bh[2] + bh[3])) {
-                double l = std::max(0.0, std::min(0.99, bh[3])) * len, a = bh[2] * M_PI / 180;
+                double l = std::max(0.0, std::min(0.99, bh[3])) * len, a = bh[2] * DEG;
                 fx += l * cos(a), fy += l * sin(a);
             }
             coords = "/ShadingType 3/Coords[" + fmt(fx) + " " + fmt(fy) + " 0 " + fmt(xo) + " " + fmt(yo) + " " + fmt(fabs(len)) + "]";
@@ -561,7 +564,7 @@ struct Run {
         m = mul(Mtx{sx, 0, 0, sy, 0, 0}, m);
         m = mul(rotate(ang), m);
         if (rf != 0) m = mul(rotate(-r), mul(Mtx{1, 0, 0, -1, 0, 0}, mul(rotate(r), m)));
-        double tn = tan(sk * M_PI / 180);
+        double tn = tan(sk * DEG);
         if (std::isfinite(tn) && fabs(tn) < 1e3) m = mul(rotate(-ska), mul(Mtx{1, 0, tn, 1, 0, 0}, mul(rotate(ska), m)));
         std::string key = it->first + " " + fmt(m);
         auto r2 = D.patRes.find(key);
