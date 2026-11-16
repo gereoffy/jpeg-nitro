@@ -98,7 +98,7 @@
             <key>UTTypeConformsTo</key>     <array><string>public.image</string><string>public.data</string></array>
             <key>UTTypeTagSpecification</key>
             <dict>
-                <key>public.filename-extension</key> <array><string>wmf</string></array>
+                <key>public.filename-extension</key> <array><string>wmf</string><string>wmz</string></array>
                 <key>public.mime-type</key> <array><string>image/wmf</string><string>image/x-wmf</string></array>
             </dict>
         </dict>
@@ -108,7 +108,7 @@
             <key>UTTypeConformsTo</key>     <array><string>public.image</string><string>public.data</string></array>
             <key>UTTypeTagSpecification</key>
             <dict>
-                <key>public.filename-extension</key> <array><string>emf</string></array>
+                <key>public.filename-extension</key> <array><string>emf</string><string>emz</string></array>
                 <key>public.mime-type</key> <array><string>image/emf</string><string>image/x-emf</string></array>
             </dict>
         </dict>

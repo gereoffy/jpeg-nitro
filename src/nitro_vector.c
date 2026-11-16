@@ -13,6 +13,7 @@
 #include "nitrodio.h"
 #include "nitropdf.h"
 #include "nitrotype.h"
+#include <zlib.h>   // (a gzip'd drawing: SVGZ, EMZ, WMZ)
 #endif
 #include <math.h>
 #include <stdatomic.h>
@@ -22,7 +23,7 @@
 
 const char *const nv_vector_exts[] = {
 #ifdef NV_VECTOR   // (the library built with the readers: NITROVEC = 1)
-    "svg", "dxf", "dwg", "wmf", "emf", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
+    "svg", "svgz", "dxf", "dwg", "wmf", "emf", "wmz", "emz", "cdr", "cmx", "vsd", "vsdx", "vsdm", "vdx", "vst", "vstx", "vstm", "vtx", "vss", "vssx", "vssm", "vsx",
     "drawio", "dio", "pdf", "ai", "ttf", "otf", "ttc", "otc", "woff", "woff2", "eot", "pfb", "pfa",
 #endif
     NULL};
@@ -37,7 +38,7 @@ const char *nv_vector_formats(void) {
 
 const char *nv_vector_mimes(void) {
 #ifdef NV_VECTOR
-    return "image/svg+xml;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
+    return "image/svg+xml;image/svg+xml-compressed;image/vnd.dxf;image/vnd.dwg;image/wmf;image/emf;image/x-wmf;image/x-emf;"
            "image/x-coreldraw;application/vnd.visio;application/vnd.ms-visio.drawing.main+xml;application/vnd.ms-visio.drawing.macroEnabled.main+xml;"
            "application/vnd.ms-visio.stencil.main+xml;application/vnd.ms-visio.template.main+xml;application/pdf;application/illustrator;"
            "font/ttf;font/otf;font/collection;font/woff;font/woff2;application/x-font-ttf;application/x-font-otf;application/vnd.ms-opentype;application/vnd.ms-fontobject;application/x-font-type1;";
@@ -150,6 +151,39 @@ static int visio(const uint8_t *p, size_t len, size_t head) {   // VSD: an OLE f
     return has(p, head, "<VisioDocument");
 }
 static unsigned u16be(const uint8_t *p) { return p[0] << 8 | p[1]; }
+// A gzip file's content (SVGZ, EMZ, WMZ: an SVG, an EMF or a WMF as Office and Inkscape pack them), from
+// malloc; NULL: not gzip, damaged, or more than 256 MB.
+static uint8_t *gunzip(const uint8_t *p, size_t len, size_t *out_len) {
+    if (len < 18 || p[0] != 0x1f || p[1] != 0x8b || p[2] != 8 || len > 0xffffffffu) return NULL;
+    z_stream z;
+    memset(&z, 0, sizeof z);
+    if (inflateInit2(&z, 15 + 16) != Z_OK) return NULL;
+    size_t cap = len * 4 + 4096, n = 0;
+    uint8_t *out = malloc(cap);
+    int rc = out ? Z_OK : Z_MEM_ERROR;
+    z.next_in = (Bytef *)p, z.avail_in = (uInt)len;
+    while (rc == Z_OK) {
+        if (n == cap) {
+            uint8_t *more = cap < (256u << 20) ? realloc(out, cap * 2) : NULL;
+            if (!more) {
+                rc = Z_MEM_ERROR;
+                break;
+            }
+            out = more, cap *= 2;
+        }
+        size_t room = cap - n < 0x40000000u ? cap - n : 0x40000000u;
+        z.next_out = out + n, z.avail_out = (uInt)room;
+        rc = inflate(&z, Z_NO_FLUSH);
+        n += room - z.avail_out;
+    }
+    inflateEnd(&z);
+    if (rc != Z_STREAM_END || !n) {
+        free(out);
+        return NULL;
+    }
+    *out_len = n;
+    return out;
+}
 // A font file: an sfnt (TrueType, OpenType: its table count and the search range that goes with it), a collection,
 // WOFF and WOFF2, Embedded OpenType (its magic, and its size the file's), Type 1 (PFB's first segment header before the "%!",
 // PFA's first line)
@@ -174,6 +208,10 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
     v->background = atomic_load(&g_background);
 #ifdef NV_VECTOR
     const uint8_t *p = data;
+    // a gzip'd drawing: what is in it (the readers copy what they keep: it is freed below)
+    size_t plain_len = 0;
+    uint8_t *plain = gunzip(p, len, &plain_len);
+    if (plain) data = p = plain, len = plain_len;
     size_t head = len < 1024 ? len : 1024;   // (the part where the text formats' and PDF's marks are looked for)
     static const char *const dio_exts[] = {"drawio", "dio", NULL};   // (before SVG: its text starts with '<' too)
     if ((nv_has_ext(name, dio_exts) || has(p, head, "<mxfile") || has(p, head, "<mxGraphModel")) && (v->doc = nitrodio_load(data, len))) {
@@ -184,7 +222,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrodio_pages(v->doc);
         v->mode = NV_MODE_DRAWIO;
     }
-    static const char *const svg_exts[] = {"svg", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
+    static const char *const svg_exts[] = {"svg", "svgz", NULL}, *const dxf_exts[] = {"dxf", "dwg", NULL};   // (a DWG: nitrodxf reads it too, nitrodwg)
     // (SVG also by content: text starting with '<', after a byte order mark and white space)
     size_t i = len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3) ? 3 : 0;
     while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n')) i++;
@@ -205,7 +243,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrodxf_pages(v->doc);
         v->mode = NV_MODE_DXF;
     }
-    static const char *const meta_exts[] = {"wmf", "emf", NULL};
+    static const char *const meta_exts[] = {"wmf", "emf", "wmz", "emz", NULL};
     if (!v->doc && (nv_has_ext(name, meta_exts) || metafile(p, len)) && (v->doc = nitrometa_load(data, len))) {
         nitrometa_set_background(v->doc, v->background);
         v->render = meta_render;
@@ -244,6 +282,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->pages = nitrotype_pages(v->doc);
         v->mode = NV_MODE_FONT;
     }
+    free(plain);
 #endif
     (void)name, (void)data, (void)len;
     if (!v->doc) {

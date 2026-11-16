@@ -36,7 +36,8 @@ const char *nv_vector_mimes(void);
 typedef struct NvVector NvVector;
 
 // Loads a drawing: by the extension of name (a file name or path) or, whatever its name, by its
-// content (each format's text or magic numbers: a font file's too), over
+// content (each format's text or magic numbers: a font file's too); a gzip'd one (SVGZ, EMZ, WMZ)
+// by what is in it; over
 // the current background (nv_vector_background). NULL if it is not one, or it draws nothing.
 // One reference.
 NvVector *nv_vector_open(const char *name, const void *data, size_t len);

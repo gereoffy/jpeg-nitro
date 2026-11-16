@@ -438,7 +438,7 @@ endef
                     $(LIBREVENGE)/inc/*/*.h $(PDFP)/*.h) patches/freetype/ftoption.h build/.config-$(CONFIG)
 	@rm -rf $(@D) && mkdir -p $(@D)
 	@echo "compiling our readers into $(@D)/"
-	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
+	$(CC) $(TCPU) $(TPORT) -O2 $(WARN) $(if $(VEC),-DNV_VECTOR $(VEC_INC)) -Isrc -c src/nitro_vector.c -o $(@D)/nitro_vector.o
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -I$(LCMS)/include -Isrc -c src/nitro_cmyk.c -o $(@D)/nitro_cmyk.o)
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrojbig2.c -o $(@D)/nitrojbig2.o)
 	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
