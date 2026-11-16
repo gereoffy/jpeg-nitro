@@ -5,7 +5,9 @@
 // Raw codestreams and JP2 containers; 1..16 components, 1..16 bits, signed or unsigned,
 // tiles, tile-parts, precincts, layers, all five progression orders, 5/3 and 9/7 wavelets,
 // RCT/ICT, all Part 1 code-block styles and maxshift ROI. JP2 palette/channel mapping and
-// channel definitions are applied. Not supported: POC, packed packet headers (PPM/PPT),
+// channel definitions are applied. POC: up to 32 progression volumes per header,
+// including changes in later tile-parts; overlapping volumes never repeat packets.
+// Not supported: packed packet headers (PPM/PPT),
 // Part 2 extensions and HTJ2K. Unsupported/damaged images return an error.
 // Up to 28 decomposition levels and 30 coded magnitude bit-planes (including ROI).
 // ICC colour spaces are identified by their device space; ICC transforms are the caller's.

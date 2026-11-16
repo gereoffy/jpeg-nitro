@@ -17,6 +17,7 @@
 #define MEM_LIMIT ((size_t)512 << 20)
 #define SAMPLE_LIMIT ((size_t)64 << 20)
 #define ITEM_LIMIT 1000000
+#define POC_LIMIT 32
 
 static unsigned be16(const uint8_t *p) { return (unsigned)p[0] << 8 | p[1]; }
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
@@ -110,11 +111,13 @@ typedef struct { int orient, x0, y0, x1, y1, nx, ny, mb; double step; Block *cb;
 typedef struct { Band band[3]; } Precinct;
 typedef struct { int x0, y0, x1, y1, px0, py0, nx, ny; Precinct *prec; } Resolution;
 typedef struct { int x0, y0, x1, y1, stride; Resolution res[LEVELS]; void *plane; } Component;   // (plane: int32 if reversible, else float)
-typedef struct { uint64_t key[5]; int c, r, p, l; } Packet;
+typedef struct { int r0, c0, l1, r1, c1, order; } Progression;
+typedef struct { uint64_t key[5]; unsigned progression; int c, r, p, l; } Packet;
 typedef struct {
     int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags;
     Coding coding[NJPX_MAX_COMPS]; Component comp[NJPX_MAX_COMPS];
-    Packet *packets; size_t npackets, next;
+    Progression poc[POC_LIMIT]; int npoc;
+    Packet *packets; size_t npackets, available, next;
 } Tile;
 typedef struct {
     size_t memory, items, mem_limit, sample_limit, item_limit;
@@ -123,6 +126,7 @@ typedef struct {
     Coding coding[NJPX_MAX_COMPS]; Tile *tiles;
     int colorspace, alpha, premult, raw_colors, serial;
     int reduce, ox0, oy0, oxs, oys;   // (NJPX_REDUCE: the levels left out; the output grid, reduced)
+    Progression poc[POC_LIMIT]; int npoc;
     const uint8_t *palette, *cmap, *cdef, *icc; size_t plen, mlen, dlen, icc_len;
     uint16_t *output;
 } Jpx;
@@ -246,9 +250,19 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
     } else if (m == 0xff5e) {
         if (!j->siz || n != 3 || p[0] >= j->nc || p[1] || p[2] > 30) return -1;
         c[p[0]].roi = p[2];
+    } else if (m == 0xff5f) {
+        if (!j->siz || !n || n % 7) return -1;   // component indices: nc <= 16
+        Progression *poc = t ? t->poc : j->poc;
+        int *count = t ? &t->npoc : &j->npoc;
+        if (n / 7 > (size_t)(POC_LIMIT - *count)) return -1;
+        for (size_t i = 0; i < n; i += 7) {
+            Progression q = {p[i], p[i + 1], (int)be16(p + i + 2), p[i + 4], p[i + 5], p[i + 6]};
+            if (q.r0 >= q.r1 || q.r1 > 33 || q.c0 >= q.c1 || q.c1 > j->nc || !q.l1 || q.order > 4) return -1;
+            poc[(*count)++] = q;
+        }
     } else if (m != 0xff64 && m != 0xff55 && m != 0xff57 && m != 0xff58) {
         // COM, TLM, PLM, PLT have no effect on the decoded samples; do not silently ignore
-        // coding extensions, progression changes, or packet headers stored elsewhere.
+        // coding extensions or packet headers stored elsewhere.
         return -1;
     }
     return 0;
@@ -291,8 +305,37 @@ static int band_new(Jpx *j, Band *b, const Coding *c, const Component *tc, int r
 }
 static int packet_cmp(const void *aa, const void *bb) {
     const Packet *a = aa, *b = bb;
+    if (a->progression != b->progression) return a->progression < b->progression ? -1 : 1;
     for (int i = 0; i < 5; i++) if (a->key[i] != b->key[i]) return a->key[i] < b->key[i] ? -1 : 1;
     return 0;
+}
+static void packet_order(const Jpx *j, Tile *t) {
+    for (size_t i = t->next; i < t->npackets; i++) {
+        Packet *p = t->packets + i;
+        int order = t->order;
+        p->progression = t->npoc ? UINT_MAX : 0;
+        for (int k = 0; k < t->npoc; k++) {
+            const Progression *q = t->poc + k;
+            if (p->r >= q->r0 && p->r < q->r1 && p->c >= q->c0 && p->c < q->c1 && p->l < q->l1) {
+                p->progression = (unsigned)k; order = q->order; break;
+            }
+        }
+        Resolution *rs = &t->comp[p->c].res[p->r];
+        int pp = t->coding[p->c].pp[p->r], n = t->coding[p->c].nl - p->r;
+        int x = p->p % rs->nx, y = p->p / rs->nx;
+        uint64_t xx = (uint64_t)(x + rs->px0) * ((uint64_t)1 << ((pp & 15) + n)) * j->dx[p->c];
+        uint64_t yy = (uint64_t)(y + rs->py0) * ((uint64_t)1 << ((pp >> 4) + n)) * j->dy[p->c];
+        if (!x && xx < (unsigned)t->x0) xx = (unsigned)t->x0;
+        if (!y && yy < (unsigned)t->y0) yy = (unsigned)t->y0;
+        uint64_t l = (unsigned)p->l, r = (unsigned)p->r, c = (unsigned)p->c, pos = (unsigned)p->p;
+        uint64_t keys[5][5] = {{l,r,c,pos,0},{r,l,c,pos,0},{r,yy,xx,c,l},{yy,xx,c,r,l},{c,yy,xx,r,l}};
+        memcpy(p->key, keys[order], sizeof(p->key));
+    }
+    // The consumed prefix is the inclusion map: overlapping volumes never repeat a
+    // packet, including when a later tile-part supplies a new POC (B.12.2).
+    qsort(t->packets + t->next, t->npackets - t->next, sizeof(Packet), packet_cmp);
+    t->available = t->next;
+    while (t->available < t->npackets && t->packets[t->available].progression != UINT_MAX) t->available++;
 }
 static int tile_new(Jpx *j, Tile *t) {
     size_t count = 0;
@@ -330,19 +373,13 @@ static int tile_new(Jpx *j, Tile *t) {
     if (!t->packets) return -1;
     size_t at = 0;
     for (int c = 0; c < j->nc; c++) for (int r = 0; r <= t->coding[c].nl; r++) {
-        Resolution *rs = &t->comp[c].res[r]; int pp = t->coding[c].pp[r], n = t->coding[c].nl - r;
+        Resolution *rs = &t->comp[c].res[r];
         for (int y = 0; y < rs->ny; y++) for (int x = 0; x < rs->nx; x++) for (int l = 0; l < t->layers; l++) {
             Packet *p = &t->packets[at++];
-            uint64_t xx = (uint64_t)(x + rs->px0) * ((uint64_t)1 << ((pp & 15) + n)) * j->dx[c];
-            uint64_t yy = (uint64_t)(y + rs->py0) * ((uint64_t)1 << ((pp >> 4) + n)) * j->dy[c];
-            if (!x && xx < (unsigned)t->x0) xx = (unsigned)t->x0;
-            if (!y && yy < (unsigned)t->y0) yy = (unsigned)t->y0;
             p->c = c; p->r = r; p->p = y * rs->nx + x; p->l = l;
-            uint64_t keys[5][5] = {{l,r,c,p->p,0},{r,l,c,p->p,0},{r,yy,xx,c,l},{yy,xx,c,r,l},{c,yy,xx,r,l}};
-            memcpy(p->key, keys[t->order], sizeof(p->key));
         }
     }
-    qsort(t->packets, count, sizeof(Packet), packet_cmp);
+    packet_order(j, t);
     t->started = 1; return 0;
 }
 
@@ -1101,22 +1138,26 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             t->y0 = imax(j.y0, j.ty0 + (index / j.nx) * j.th); t->y1 = imin(j.ys, j.ty0 + (index / j.nx + 1) * j.th);
             t->layers = j.layers; t->order = j.order; t->mct = j.mct; t->flags = j.flags;
             memcpy(t->coding, j.coding, sizeof(j.coding));
+            t->npoc = j.npoc; memcpy(t->poc, j.poc, sizeof(j.poc));
         }
         const uint8_t *partend = psot ? start + psot : end - 2;
         if (partend < p) goto done;
+        int have_poc = 0;
         while ((size_t)(partend - p) >= 2 && be16(p) != 0xff93) {
             unsigned tm = be16(p); p += 2;
             if ((size_t)(partend - p) < 2) goto done;
             unsigned tn = be16(p); if (tn < 2 || tn > (size_t)(partend - p)) goto done;
-            if (t->started && tm != 0xff64 && tm != 0xff58) goto done;
+            if (t->started && tm != 0xff64 && tm != 0xff58 && tm != 0xff5f) goto done;
+            if (tm == 0xff5f && !have_poc) { t->npoc = 0; have_poc = 1; }
             if (marker(&j, t, tm, p + 2, tn - 2)) goto done;
             p += tn;
         }
         if ((size_t)(partend - p) < 2 || be16(p) != 0xff93) goto done;
         p += 2;
-        if (!t->started && tile_new(&j, t)) goto done;
+        if (!t->started) { if (tile_new(&j, t)) goto done; }
+        else if (have_poc) packet_order(&j, t);
         while (p < partend) {
-            if (t->next >= t->npackets || packet(&j, t, &t->packets[t->next++], &p, partend)) goto done;
+            if (t->next >= t->available || packet(&j, t, &t->packets[t->next++], &p, partend)) goto done;
         }
         t->parts++;
         if (t->next == t->npackets) t->done = 1;   // (decoded below, once all are read)

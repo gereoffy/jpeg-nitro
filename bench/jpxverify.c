@@ -15,6 +15,7 @@
 static int checked, failed, rejected, worst_diff;
 static unsigned rng = 7, decode_flags;
 static int reduction;
+static int poc_case = -1;
 static unsigned rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 static void loud(const char *message, void *ctx) { (void)ctx; fputs(message, stderr); }
 static void quiet(const char *message, void *ctx) { (void)message; (void)ctx; }
@@ -80,7 +81,7 @@ static int generate(const char *path, int style, int config, int large) {
     int precision = config < 0 ? 8 : (int[]){1, 8, 12, 16}[(config / 4) % 4];
     int sgnd = config >= 0 && (config / 16) % 2, lossy = config >= 0 && (config / 32) % 2;
     int subsample = config >= 0 && n >= 3 && config % 3 == 0;
-    int ox = config >= 0 ? 3 : 0, oy = config >= 0 ? 5 : 0;
+    int ox = config >= 0 && poc_case < 0 ? 3 : 0, oy = config >= 0 && poc_case < 0 ? 5 : 0;
     int width = large ? 257 : 79, height = large ? 257 : 77;
     opj_image_cmptparm_t cp[4] = {{0}};
     for (int c = 0; c < n; c++) {
@@ -94,7 +95,8 @@ static int generate(const char *path, int style, int config, int large) {
     if (!im) return -1;
     im->x0 = ox; im->y0 = oy; im->x1 = ox + width; im->y1 = oy + height;
     for (int c = 0; c < n; c++) for (unsigned i = 0; i < cp[c].w * cp[c].h; i++)
-        im->comps[c].data[i] = (int)(rnd() & ((1u << precision) - 1)) - (sgnd ? 1 << (precision - 1) : 0);
+        im->comps[c].data[i] = (int)((poc_case >= 0 ? i * 7 + i / cp[c].w * 9 + c * 19 : rnd()) &
+                                   ((1u << precision) - 1)) - (sgnd ? 1 << (precision - 1) : 0);
     params.numresolution = 4; params.tcp_numlayers = 3;
     params.tcp_rates[0] = 8; params.tcp_rates[1] = 2; params.tcp_rates[2] = 1;
     params.cp_disto_alloc = 1; params.mode = style; params.irreversible = lossy;
@@ -108,6 +110,20 @@ static int generate(const char *path, int style, int config, int large) {
             params.cblockw_init = params.cblockh_init = 8;
         }
         if (config % 7 == 0 && precision <= 12) { params.roi_compno = 0; params.roi_shift = 5; }
+    }
+    if (poc_case >= 0) {
+        // Change between every pair of progression orders, partitioning
+        // resolutions or components.
+        params.tcp_numlayers = 1; params.tcp_rates[0] = 0;
+        params.numpocs = 2;
+        for (int k = 0; k < 2; k++) {
+            opj_poc_t *p = params.POC + k;
+            p->tile = 1; p->resno0 = 0; p->compno0 = 0;
+            p->resno1 = 4; p->compno1 = (unsigned)n; p->layno1 = 1;
+            p->prg1 = (OPJ_PROG_ORDER)(k ? poc_case % 5 : (poc_case / 5) % 5);
+        }
+        if (poc_case < 25) { params.POC[0].resno1 = 2; params.POC[1].resno0 = 2; }
+        else if (poc_case < 50) { params.POC[0].compno1 = 1; params.POC[1].compno0 = 1; }
     }
     opj_codec_t *codec = opj_create_compress(OPJ_CODEC_J2K);
     opj_set_error_handler(codec, loud, NULL); opj_set_warning_handler(codec, quiet, NULL);
@@ -151,6 +167,22 @@ static void geometry_regressions(const char *dir) {
     reduction = 3; decode_flags = NJPX_REDUCE(3); verify(path, 0);
     reduction = saved_reduction; decode_flags = saved_flags;
 }
+static void poc_overlap_regressions(const char *dir) {
+    for (int k = 0; k < 25; k++) {
+        char path[4096]; snprintf(path, sizeof(path), "%s/poc-%d.j2k", dir, k);
+        size_t n = 0; uint8_t *d = load(path, &n); size_t at = 0;
+        // The reference encoder partitions resolutions into [0,2) and [2,4).
+        // Extend the second volume to [0,4) without adding duplicate packet data.
+        if (d) for (; at + 18 <= n; at++)
+            if (d[at] == 255 && d[at + 1] == 95 && d[at + 2] == 0 && d[at + 3] == 16) break;
+        if (!d || at + 18 > n) { free(d); failed++; continue; }
+        d[at + 11] = 0;
+        snprintf(path, sizeof(path), "%s/poc-overlap-%d.j2k", dir, k);
+        FILE *f = fopen(path, "wb");
+        if (!f) { free(d); failed++; continue; }
+        fwrite(d, 1, n, f); fclose(f); free(d); verify(path, 0);
+    }
+}
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: jpxverify [--image] [--reduce 0..7] [--selftest existing-directory] [files.jp2 files.j2k ...]\n"); return 2; }
     for (int a = 1; a < argc; a++) {
@@ -172,6 +204,11 @@ int main(int argc, char **argv) {
                 snprintf(path, sizeof(path), "%s/parallel-config-%d.j2k", dir, configs[i]); generate(path, 0, configs[i], 1);
             }
             geometry_regressions(dir);
+            for (poc_case = 0; poc_case < 50; poc_case++) {
+                snprintf(path, sizeof(path), "%s/poc-%d.j2k", dir, poc_case); generate(path, 0, 26, 1);
+            }
+            poc_case = -1;
+            poc_overlap_regressions(dir);
         } else verify(argv[a], -1);
     }
     printf("%d compared, %d failed, %d reference-rejected, max difference %d.\n", checked, failed, rejected, worst_diff);
