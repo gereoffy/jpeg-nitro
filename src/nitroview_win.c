@@ -879,7 +879,7 @@ static Decoded *decode_file(const wchar_t *wpath) {
 static NvLoader *L;
 static HWND g_notify;   // the window the decoder thread posts WM_APP_DECODED / WM_APP_RELOAD to
 
-static int stale_dng(const Decoded *d) { return d && d->mode == MODE_NITRODNG && d->ev3 != (int)g_dng_ev3; }
+static int stale_dng(const Decoded *d) { return d && nv_mode_has_ev(d->mode) && d->ev3 != (int)g_dng_ev3; }
 static int stale_vector(const Decoded *d) {   // a drawing over another background than the current one
 #ifdef NV_VECTOR
     return d && d->vec && d->background != nv_vector_background();
@@ -1095,7 +1095,7 @@ static void update_title(void) {
         swfmt(t + n, 1024 - n, L"%hs", nv_vector_title_suffix(d->vec, d->page, d->background, tail, sizeof tail));
     }
 #endif
-    if (d && d->mode == MODE_NITRODNG && d->ev3) {
+    if (d && nv_mode_has_ev(d->mode) && d->ev3) {
         size_t n = wcslen(t);
         swfmt(t + n, 1024 - n, L"  %+.1f EV", d->ev3 / 3.0);
     }
@@ -1697,7 +1697,7 @@ static void on_char(wchar_t ch) {   // zoom keys by character: any keyboard layo
             break;
         }
 #endif
-        if (cur && cur->mode == MODE_NITRODNG) {
+        if (cur && nv_mode_has_ev(cur->mode)) {
             int ev3 = MAX(-9, MIN(9, (int)g_dng_ev3 + (GetKeyState(VK_SHIFT) < 0 ? -1 : 1)));
             if (ev3 != (int)g_dng_ev3) {
                 InterlockedExchange(&g_dng_ev3, ev3);
@@ -2038,7 +2038,7 @@ static int create_window(const wchar_t *first) {
 // the extensions registered: the images', then the drawings' this build renders (nv_vector_exts)
 static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
                                               L".heif", L".avif", L".tif", L".tiff", L".webp", L".gif", L".bmp", L".cr2", L".nef", L".nrw", L".arw", L".raf", L".dng",
-                                              L".jp2", L".j2k", L".jpf", L".jpx",
+                                              L".jp2", L".j2k", L".jpf", L".jpx", L".dcm",
                                               NULL};
 static const wchar_t *assoc_ext(int i) {   // the i-th of them, NULL past the last (a static buffer: until the next call)
     static wchar_t w[16];

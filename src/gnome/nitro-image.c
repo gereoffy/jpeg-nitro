@@ -295,7 +295,7 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     image->height = swap ? width : height;
     image->source_width = width;
     image->source_height = height;
-    image->dng = rc == 0 && img.mode == NV_MODE_NITRODNG;
+    image->dng = rc == 0 && nv_mode_has_ev(img.mode);
     image->ev3 = image->dng ? img.ev3 : 0;
     image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;
     return image;

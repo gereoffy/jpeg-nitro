@@ -8,6 +8,7 @@
 #include "nitropng.h"
 #include "nitropsd.h"
 #include "nitrojpx.h"
+#include "nitrodicom.h"
 #include "nitrotiff.h"
 #include "nitrowebp.h"
 #ifdef NV_DAV1D
@@ -27,7 +28,7 @@
 // file names
 
 const char *const nv_image_exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "avif", "webp", "tif", "tiff",
-                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", NULL};
+                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", "dcm", "dicom", "dic", NULL};
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -272,6 +273,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_NITROWEBP: return "nitrowebp";
     case NV_MODE_NITROTIFF: return "nitrotiff";
     case NV_MODE_NITROJPX: return "nitrojpx";
+    case NV_MODE_NITRODICOM: return "nitrodicom";
     case NV_MODE_NITROAVIF: return "nitroavif";
     default: return NULL;
     }
@@ -583,6 +585,26 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
                 njpx_free(&ji);
             }
         }
+    } else {
+        ndcm_info ci;   // DICOM: nitrodicom (its first frame; grey shades by the exposure correction, as a DNG)
+        if (!ndcm_read_info(data, n, &ci)) {
+            if (ci.error) {
+                img->error = ci.error;
+            } else if (ci.width > mt || ci.height > mt) {
+                img->error = "Unsupported DICOM (too large)";
+            } else {
+                b = bgra_buffer(dec, img, ci.width, ci.height, cap);
+                img->ev3 = dec->dng_ev3;
+                ci.ev = img->ev3 / 3.0f;
+                if (b && !ndcm_decode(data, n, &ci, 0, b, img->pitch[0], dec->threads)) {
+                    img->mode = NV_MODE_NITRODICOM;
+                    *buf = b;
+                    return 0;
+                }
+                GIVE_BACK(b);
+                img->error = "DICOM decode failed";
+            }
+        }
     }
     return oom ? -1 : 1;
 }
@@ -650,6 +672,12 @@ int nv_image_size_from_file(const char *path, double *w, double *h) {
     }
     if (!ok && !np_read_info(b, n, &pi)) {   // (an eXIf after the first MB: not seen here)
         *w = pi.width; *h = pi.height; o = pi.orientation; ok = 1;
+    }
+    if (!ok) {   // DICOM (the header before its pixel data)
+        ndcm_info ci;
+        if (!ndcm_read_info(b, n, &ci) && ci.width > 0 && ci.height > 0) {
+            *w = ci.width; *h = ci.height; ok = 1;
+        }
     }
     if (!ok && n >= 26 && !memcmp(b, "8BPS", 4)) {   // (ps_read_info wants the whole file)
         *h = (double)((uint32_t)b[14] << 24 | (uint32_t)b[15] << 16 | (uint32_t)b[16] << 8 | b[17]);

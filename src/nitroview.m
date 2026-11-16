@@ -463,7 +463,7 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
         d.bands = img.bands;
         d.ev3 = img.ev3;
         switch (img.mode) {   // the colour space the pixel values are in (the display layer is tagged with it)
-        case MODE_NITRODNG: d.colorSpace = srgb_space(); break;
+        case MODE_NITRODNG: case NV_MODE_NITRODICOM: d.colorSpace = srgb_space(); break;
         case MODE_NITROTIFF: case MODE_NITROHEIC: case MODE_NITROAVIF: case MODE_NITROWEBP:
             d.colorSpace = icc_space(img.icc, img.icc_len);   // (scanners: Adobe RGB ...)
             break;
@@ -636,7 +636,7 @@ typedef struct {
     size_t _align;
 }
 static BOOL stale_setting(Decoded *d) {
-    return (d.mode == MODE_NITRODNG && d.ev3 != atomic_load(&g_dng_ev3)) ||
+    return (nv_mode_has_ev(d.mode) && d.ev3 != atomic_load(&g_dng_ev3)) ||
            (d.vector && d.background != nv_vector_background());
 }
 
@@ -998,7 +998,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
                                                  [_loader failed:_index] ? @"CANNOT DECODE (unsupported or damaged)" : @"loading..."];
     char tail[64];   // a drawing's page, background
     t = [t stringByAppendingFormat:@"%s", nv_vector_title_suffix(d.vector, d.page, d.background, tail, sizeof tail)];
-    if (d.mode == MODE_NITRODNG && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
+    if (nv_mode_has_ev(d.mode) && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"
                                                      : [NSString stringWithFormat:@"[slideshow %g ms]", _slideMs]];
@@ -1401,7 +1401,7 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
                 [_loader displaySettingChanged:cur.page];
                 return;
             }
-            if (!cur || cur.mode != MODE_NITRODNG) return;
+            if (!cur || !nv_mode_has_ev(cur.mode)) return;
             int ev3 = MAX(-9, MIN(9, atomic_load(&g_dng_ev3) + (back ? -1 : 1)));
             if (ev3 == atomic_load(&g_dng_ev3)) return;
             atomic_store(&g_dng_ev3, ev3);

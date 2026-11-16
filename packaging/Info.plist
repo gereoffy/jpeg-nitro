@@ -31,6 +31,7 @@
                 <string>public.tiff</string>
                 <string>org.webmproject.webp</string>
                 <string>public.jpeg-2000</string>
+                <string>org.nema.dicom</string>
                 <string>com.compuserve.gif</string>
                 <string>com.microsoft.bmp</string>
                 <string>com.canon.cr2-raw-image</string>

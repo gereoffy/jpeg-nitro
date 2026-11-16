@@ -2,7 +2,7 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitro_load: loading an image with the decoders of this library (nitrojpeg, nitropng, nitropsd,
-// nitroheic, nitrodng, nitrowebp, nitrotiff, nitrojpx; nitroavif when built with dav1d): which files are
+// nitroheic, nitrodng, nitrowebp, nitrotiff, nitrojpx, nitrodicom; nitroavif when built with dav1d): which files are
 // images, reading them (a PSD's merged image only, a camera raw's embedded JPEG only), trying
 // the decoders in turn, the size from a header. Plain C, no platform code: paths are UTF-8 (on
 // Windows they are converted for the file API). The viewers (nitroview.m, nitroview_sdl.c,
@@ -63,8 +63,12 @@ typedef enum { NV_YUV = 0, NV_BGRA = 1, NV_PNG = 2, NV_PLANAR = 3 } NvKind;   //
 // decoder otherwise; the viewers' own fallback decoders use -1 .. -3.
 enum { NV_MODE_NITROPNG = -4, NV_MODE_NITROPSD = -5, NV_MODE_SVG = -6, NV_MODE_CDR = -7, NV_MODE_NITROHEIC = -8,
        NV_MODE_NITRODNG = -9, NV_MODE_NITROWEBP = -10, NV_MODE_NITROTIFF = -11, NV_MODE_NITROAVIF = -12,
-       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16, NV_MODE_PDF = -17, NV_MODE_FONT = -18, NV_MODE_NITROJPX = -19, NV_MODE_DJVU = -20 };
+       NV_MODE_DXF = -13, NV_MODE_VISIO = -14, NV_MODE_META = -15, NV_MODE_DRAWIO = -16, NV_MODE_PDF = -17, NV_MODE_FONT = -18, NV_MODE_NITROJPX = -19, NV_MODE_DJVU = -20,
+       NV_MODE_NITRODICOM = -21 };
 const char *nv_mode_name(int mode);   // of the modes above; NULL for others
+// The images decoded with an exposure correction (NvDecoder.dng_ev3, NvImage.ev3: the viewers' keys E / Shift+E):
+// a DNG's development, a DICOM picture's shades.
+static inline int nv_mode_has_ev(int mode) { return mode == NV_MODE_NITRODNG || mode == NV_MODE_NITRODICOM; }
 
 // A decoded image in a host buffer (what the GPU shaders or a CPU conversion read).
 typedef struct {
@@ -81,7 +85,7 @@ typedef struct {
     size_t offset[3], pitch[3]; // the planes in the buffer; BGRA / PNG: pitch[0]
     size_t size;                // bytes of image data in the buffer
     int mode, bands;            // the decoder (see above), the parallel pieces it worked in
-    int ev3;                    // a DNG: the exposure correction it was developed with (1/3 EV)
+    int ev3;                    // a DNG, a DICOM picture: the exposure correction it was developed with (1/3 EV)
     const uint8_t *icc;         // the file's ICC profile when the decoder read one (TIFF: RGB images only;
     size_t icc_len;             //   HEIC, AVIF, WebP): into the file data, valid as long as that is
     const char *error;          // not decoded by us: why, when a decoder recognised the file (static text)
@@ -95,12 +99,12 @@ typedef struct {
     size_t align;      // plane pitches and offsets (and a BGRA pitch) rounded up to this (>= 1)
     int max_tex;       // images wider or taller than this are left to the platform's decoder
     int threads;       // decoder threads (0: all)
-    int dng_ev3;       // DNG exposure correction, 1/3 EV
+    int dng_ev3;       // DNG (and DICOM) exposure correction, 1/3 EV
 } NvDecoder;
 
 // Decodes data (as nv_read_image read it; a camera raw's or DNG's embedded JPEG is moved to its
 // start, *len shortened) with our decoders: DNG, JPEG, PNG, PSD, HEIC, AVIF (NV_DAV1D), WebP, TIFF,
-// JPEG 2000 (one beyond max_tex: at half, a quarter ... of its size).
+// JPEG 2000 (one beyond max_tex: at half, a quarter ... of its size), DICOM (its first frame).
 // Returns 0: decoded, *img describes the pixels in *buf (from dec->get, *cap its size); 1: not
 // one of ours, or a file they cannot decode (img->error says which; img->orientation may be known
 // already): the platform's decoder gets it; -1: out of memory.

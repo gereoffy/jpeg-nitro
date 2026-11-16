@@ -85,9 +85,9 @@ FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework Q
 # compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
 NITROHEVC  ?= 0
 LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/nitrodng.c src/nitrowebp.c \
-              src/nitrotiff.c src/nitrojpx.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
+              src/nitrotiff.c src/nitrojpx.c src/nitrodicom.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
 LIB_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitroheic.h src/nitrohevc.h src/nitrodng.h src/nitrowebp.h \
-              src/nitrotiff.h src/nitrojpx.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/heif.h src/tiff.h
+              src/nitrotiff.h src/nitrojpx.h src/nitrodicom.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/nitro_num.h src/heif.h src/tiff.h
 LIB_AVIF    = $(if $(filter 1,$(DAV1D)),src/nitroavif.c)
 LIB_DEFS    = $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
 HEVC_DEFS  := $(if $(filter 1,$(NITROHEVC)),-DNV_NITROHEVC)

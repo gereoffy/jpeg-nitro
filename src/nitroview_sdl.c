@@ -1069,7 +1069,7 @@ static void post(int ev, int code, void *data) {
 
 static NvLoader *L;
 
-static int stale_dng(const Decoded *d) { return d && d->mode == MODE_NITRODNG && d->ev3 != SDL_GetAtomicInt(&g_dng_ev3); }
+static int stale_dng(const Decoded *d) { return d && nv_mode_has_ev(d->mode) && d->ev3 != SDL_GetAtomicInt(&g_dng_ev3); }
 static int stale_vector(const Decoded *d) {   // a drawing over another background than the current one
 #ifdef NV_VECTOR
     return d && d->vec && d->background != nv_vector_background();
@@ -1309,7 +1309,7 @@ static void update_title(void) {
 #ifdef NV_VECTOR
     if (d) n += strlen(nv_vector_title_suffix(d->vec, d->page, d->background, t + n, sizeof t - n));   // a drawing's page, background
 #endif
-    if (d && d->mode == MODE_NITRODNG && d->ev3) n += (size_t)snprintf(t + n, sizeof t - n, "  %+.1f EV", d->ev3 / 3.0);
+    if (d && nv_mode_has_ev(d->mode) && d->ev3) n += (size_t)snprintf(t + n, sizeof t - n, "  %+.1f EV", d->ev3 / 3.0);
     if (V.slide_ms > 0) {
         if (V.paused) snprintf(t + n, sizeof t - n, "   [slideshow paused: P]");
         else snprintf(t + n, sizeof t - n, "   [slideshow %g ms]", V.slide_ms);
@@ -1995,7 +1995,7 @@ static void on_char(char ch) {   // zoom keys by character (key_char): any keybo
             break;
         }
 #endif
-        if (cur && cur->mode == MODE_NITRODNG) {
+        if (cur && nv_mode_has_ev(cur->mode)) {
             int ev3 = MAX(-9, MIN(9, SDL_GetAtomicInt(&g_dng_ev3) + (ch == 'E' ? -1 : 1)));
             if (ev3 != SDL_GetAtomicInt(&g_dng_ev3)) {
                 SDL_SetAtomicInt(&g_dng_ev3, ev3);
@@ -2412,7 +2412,7 @@ static int do_register(int on) {
             "Icon=" APP_ID "\n"
             "Terminal=false\n"
             "Categories=Graphics;Viewer;\n"
-            "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;image/jp2;image/jpx;image/x-jp2-codestream;"
+            "MimeType=image/jpeg;image/png;image/tiff;image/gif;image/bmp;image/webp;%simage/avif;image/x-tga;image/jp2;image/jpx;image/x-jp2-codestream;application/dicom;"
             "image/vnd.adobe.photoshop;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;%s\n"
             "StartupNotify=true\n", q, nh_decoder() ? "image/heic;image/heif;" : "", nv_vector_mimes());   // (the drawings this build renders)
         bad = !text || !SDL_CreateDirectory(apps) || !SDL_CreateDirectory(icons) || !SDL_SaveFile(desktop, text, strlen(text)) ||

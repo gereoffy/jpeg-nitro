@@ -23,6 +23,7 @@
 - `nitroai.cpp/.h`: Adobe Illustrator 1–8 documents (PostScript, also as EPS), read into a PDF page for nitropdf
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
 - `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder, written from ITU-T T.800: JP2 / J2K files (through nitro_load) and PDF's JPXDecode
+- `nitrodicom.c/.h`: DICOM pictures (medical images), written from the DICOM standard: the data set, uncompressed / RLE / JPEG / lossless JPEG / JPEG 2000 pixel data (with nitrojpeg, nitrodng's lossless JPEG decoder and nitrojpx), the grey window and the palettes
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
 - `nitrodjvu.c/.h`: DjVu documents (the IFF container, JB2 masks, BZZ for the directory, the layers put together), written from the DjVu Reference
 - `nitroiw44.c/.h`: DjVu's wavelet pictures (IW44: a page's background and foreground layers) into YCbCr planes
