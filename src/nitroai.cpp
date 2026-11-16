@@ -915,6 +915,7 @@ struct Run {
     void stopDef() {
         if (!gdef || !nums(0, 3) || gdef->stops.size() > 1000) return;
         Stop x{num(0), num(1), 0, {0, 0, 0, 0}};
+        if (!std::isfinite(x.pos) || !std::isfinite(x.mid)) return;   // ("0e999": the stops are sorted by their place)
         int style = inum(2);
         switch (style) {
         case 0:
