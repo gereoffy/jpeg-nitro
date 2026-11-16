@@ -692,6 +692,31 @@ static void ycc_rgb(uint32_t y, uint32_t cb, uint32_t cr, uint8_t *bgr) {
     bgr[2] = clamp8(Y + 1.402 * R);
 }
 
+// Does the file's window show anything of the frame? Not when every sample (of rows all over it, the padding
+// left out) lies above the window: the picture would be all white. There are files whose window was written
+// for other numbers than their samples are (X-rays whose samples start at 32768). All below it is left alone:
+// a slice of a CT series with nothing but air in it is rightly black.
+static int window_fits(const ndcm_info *in, const Frame *f, double slope, double intercept) {
+    int w = in->width, h = in->height, step = h > 64 ? h / 64 : 1;
+    double lo = in->center - 0.5 - (in->width_w - 1) / 2, hi = in->center - 0.5 + (in->width_w - 1) / 2;
+    uint32_t mask = field_mask(f->stored), pad = (uint32_t)in->padding & mask, *row = malloc((size_t)w * sizeof *row);
+    if (!row) return 1;
+    size_t below = 0, above = 0, inside = 0;
+    for (int y = step / 2; y < h && !inside; y += step) {
+        row_samples(f, w, h, y, row);
+        for (int x = 0; x < w; x++) {
+            uint32_t bits = row[x] >> f->shift & mask;
+            if (in->has_padding && bits == pad) continue;
+            double m = (double)value_of(bits, f->stored, f->is_signed) * slope + intercept;
+            if (m <= lo) below++;
+            else if (m > hi) above++;
+            else inside++;
+        }
+    }
+    free(row);
+    return inside || below || !above;
+}
+
 // The decoded frame shown: BGRX rows.
 static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *bgrx, size_t pitch, int nthreads) {
     int w = in->width, h = in->height, spp = f->spp, stored = f->stored, sgn = f->is_signed;
@@ -715,7 +740,8 @@ static int show(const uint8_t *d, const ndcm_info *in, const Frame *f, uint8_t *
             }
             S.voi_lo = lo;
             S.voi_scale = hi > lo ? 255.0 / (hi - lo) : 0;
-        } else if (in->has_window && isfinite(in->center) && isfinite(in->width_w) && in->width_w >= 1) {   // PS3.3 C.11.2.1.2
+        } else if (in->has_window && isfinite(in->center) && isfinite(in->width_w) && in->width_w >= 1 &&
+                   window_fits(in, f, S.slope, S.intercept)) {   // PS3.3 C.11.2.1.2
             double c = in->center - 0.5, ww = in->width_w - 1;
             if (ww > 0) S.a = 255.0 / ww, S.b = (0.5 - c / ww) * 255.0;
             else S.a = 1e30, S.b = -c * 1e30;   // (a width of 1: black up to the centre, white above)

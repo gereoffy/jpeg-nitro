@@ -10,8 +10,9 @@
 // The pixel data: uncompressed (1, 8, 16 or 32 bits a sample), RLE, JPEG baseline (nitrojpeg),
 // lossless JPEG (nitrodng's decoder), JPEG 2000 (nitrojpx).
 // The picture: grey (MONOCHROME1 / 2) through the rescale (slope, intercept) and the window the
-// file gives (its first window, or its VOI lookup table; neither: 8-bit pictures as they are, the
-// others from their smallest to their largest value), made lighter or darker by info.ev; palette
+// file gives (its first window, or its VOI lookup table; neither, or a window that would leave the
+// picture all white: 8-bit pictures as they are, the others from their smallest to their largest
+// value), made lighter or darker by info.ev; palette
 // colour, RGB and YBR_FULL (_422).
 // Of a file of several frames one frame at a time.
 // Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG, HTJ2K, JPEG XL, the video
