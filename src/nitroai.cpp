@@ -123,7 +123,13 @@ struct Pdf {
     std::vector<Obj> te;
     std::map<std::string, Reenc> tz;
     int resObj = 4, nSh = 0, nIm = 0;
+    size_t padded = 0;   // image bytes made up so far (see PAD_MAX)
 };
+
+// An image whose data is cut short is shown with what it has, the rest blank; all the images of a
+// document get this much of such filling together (a damaged file names sizes it has no data for:
+// megabytes for every few bytes of it, otherwise).
+const size_t PAD_MAX = 16u << 20;
 
 // --- the interpreter --------------------------------------------------------------------------------
 
@@ -623,7 +629,7 @@ struct Run {
         bool ok = w >= 1 && h >= 1 && w * h <= 1e8 && (bits == 1 || bits == 8) && (ch == 1 || ch == 3 || ch == 4) && alpha >= 0 && alpha < 4 && !comp;
         int comps = bits == 1 ? 1 : ch + alpha;
         size_t W = ok ? (size_t)w : 0, H = ok ? (size_t)h : 0, row = bits == 1 ? (W + 7) / 8 : W * comps, need = row * H;
-        if (need > (size_t)(e - p) + (1u << 20)) ok = false, need = 0;   // (more than the file has: not made up)
+        if (need > (size_t)(e - p) + (PAD_MAX - D.padded)) ok = false, need = 0;   // (far more than the file has)
         std::string data;
         if (enc == 1) {
             size_t n = std::min(need, (size_t)(e - p));
@@ -644,6 +650,10 @@ struct Run {
             }
         }
         if (!ok || !emit()) return;
+        if (need > data.size()) {
+            if (need - data.size() > PAD_MAX - D.padded) return;
+            D.padded += need - data.size();
+        }
         data.resize(need, bits == 1 ? '\xff' : '\0');
         if (alpha && bits == 8) {   // (the alpha channels left out)
             std::string d2;
