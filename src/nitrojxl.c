@@ -221,6 +221,17 @@ static void br_init(Br *br, const uint8_t *p, size_t len) {
     br->buf = 0; br->n = 0; br->zeros = 0;
 }
 static inline void br_refill(Br *br) {
+    if (br->end - br->p >= 8) {   // 7 or 8 bytes at once, without a loop (the buffer then holds 56..63 bits)
+        uint64_t v;
+        memcpy(&v, br->p, 8);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        v = __builtin_bswap64(v);
+#endif
+        br->buf |= v << br->n;
+        br->p += (63 - br->n) >> 3;
+        br->n |= 56;
+        return;
+    }
     while (br->n <= 56) {
         if (br->p < br->end) br->buf |= (uint64_t)*br->p++ << br->n;
         else br->zeros++;
@@ -233,11 +244,6 @@ static inline uint32_t br_u(Br *br, int n) {   // n <= 32
     uint32_t v = (uint32_t)(br->buf & ((((uint64_t)1) << n) - 1));
     br->buf >>= n; br->n -= n;
     return v;
-}
-static inline uint64_t br_u64n(Br *br, int n) {   // n <= 64
-    if (n <= 32) return br_u(br, n);
-    uint64_t lo = br_u(br, 32);
-    return lo | (uint64_t)br_u(br, n - 32) << 32;
 }
 static inline int br_overrun(const Br *br) { return br->zeros * 8 > (size_t)br->n; }
 static int br_skip_bits(Br *br, uint64_t nbits) {
@@ -503,24 +509,22 @@ static int read_hybrid_cfg(Br *br, int log_alpha, HybridCfg *c) {
     return 0;
 }
 
-// returns the value; *bad set on a token whose value does not fit 32 bits
+// returns the value; *bad set on a token past max_token (whose value would not fit 32 bits: up to
+// max_token the value has at most 32 bits, nbits at most 31)
 static inline uint32_t hybrid_value(Br *br, uint32_t token, const HybridCfg *c, int *bad) {
     uint32_t split = 1u << c->split_exp;
     if (token < split) return token;
-    if ((int32_t)token > c->max_token) { *bad = 1; return 0; }
+    if (__builtin_expect(token > (uint32_t)c->max_token, 0)) { *bad = 1; return 0; }
     int bits_in_token = c->msb + c->lsb;
     int nbits = c->split_exp - bits_in_token + (int)((token - split) >> bits_in_token);
-    if (nbits > 32) { *bad = 1; return 0; }
     uint32_t low = token & ((1u << c->lsb) - 1);
     token >>= c->lsb;
     uint32_t top = (token & ((1u << c->msb) - 1)) | (1u << c->msb);
-    uint64_t v = (((uint64_t)top << nbits | br_u64n(br, nbits)) << c->lsb) | low;
-    if (v > 0xffffffffu) { *bad = 1; return 0; }
-    return (uint32_t)v;
+    return (((top << nbits) | br_u(br, nbits)) << c->lsb) | low;
 }
 
 enum { DIST_BITS = 12, ANS_INIT_STATE = 0x130000 };
-typedef struct { int16_t cutoff, offset, symbol; } Alias;
+typedef struct { int16_t cutoff, offset, symbol; uint16_t freq_lo, freq_hi; } Alias;   // (freq: of the bucket's own symbol, of `symbol`)
 
 static int init_alias(const int16_t *D, int log_alpha, Alias **out) {
     int16_t log_bucket = (int16_t)(DIST_BITS - log_alpha), bucket_size = (int16_t)(1 << log_bucket);
@@ -672,6 +676,8 @@ typedef struct {
     int nclusters;
     uint8_t *map;
     Cluster *cl;
+    Alias *alias;     // ANS: the clusters' alias tables one after the other (cluster << log_alpha | bucket)
+    HybridCfg *cfg;   // the clusters' hybrid integer configurations
 } Code;
 
 typedef struct {
@@ -688,15 +694,17 @@ static void code_free(Code *c) {
         for (int i = 0; i < c->nclusters; i++) { free(c->cl[i].D); free(c->cl[i].alias); free(c->cl[i].table); }
         free(c->cl);
     }
-    free(c->map);
+    free(c->map); free(c->alias); free(c->cfg);
     memset(c, 0, sizeof(*c));
 }
 
 static int read_code(Br *br, int num_dist, int allow_lz77, Code *c);
-static void sym_init(Sym *s, const Code *c, int dist_mult) {
+// (ANS: the initial state is read here, as libjxl's ANSSymbolReader does)
+static void sym_init(Sym *s, const Code *c, int dist_mult, Br *br) {
     memset(s, 0, sizeof(*s)); s->code = c; s->dist_mult = dist_mult;
+    if (!c->use_prefix) { s->state = br_u(br, 16); s->state |= br_u(br, 16) << 16; }
 }
-static uint32_t sym_read(Br *br, Sym *s, int ctx);
+static inline uint32_t sym_read(Br *br, Sym *s, int ctx);
 static int sym_finish(Br *br, Sym *s);   // checks the ANS final state, frees the window
 
 static int cluster_map(Br *br, int num_dist, int max_allowed, int *nclusters, uint8_t **outmap) {
@@ -719,7 +727,7 @@ static int cluster_map(Br *br, int num_dist, int max_allowed, int *nclusters, ui
         Sym s;
         int e = read_code(br, 1, num_dist > 2, &sub);
         if (e) { free(map); return e; }
-        sym_init(&s, &sub, 0);
+        sym_init(&s, &sub, 0, br);
         for (i = 0; i < num_dist; ++i) {
             uint32_t v = sym_read(br, &s, 0);
             if (v >= (uint32_t)max_allowed || s.bad) { sym_finish(br, &s); code_free(&sub); goto bad; }
@@ -789,96 +797,140 @@ static int read_code(Br *br, int num_dist, int allow_lz77, Code *c) {
             Cluster *k = &c->cl[i];
             if ((e = ans_table(br, c->log_alpha, &k->D))) goto fail;
             if ((e = init_alias(k->D, c->log_alpha, &k->alias))) goto fail;
+            for (int j = 0; j < (1 << c->log_alpha); j++) {
+                Alias *a = &k->alias[j];
+                a->freq_lo = (uint16_t)k->D[j];
+                a->freq_hi = (uint16_t)(a->symbol >= 0 && a->symbol < (1 << c->log_alpha) ? k->D[a->symbol] : 0);
+            }
         }
     }
     c->num_dist = num_dist;
     if (br_overrun(br)) { e = ERR_INVALID; goto fail; }
+    if (!(c->cfg = xmalloc((size_t)c->nclusters, sizeof(HybridCfg)))) { e = ERR_NOMEM; goto fail; }
+    for (i = 0; i < c->nclusters; i++) c->cfg[i] = c->cl[i].cfg;
+    if (!c->use_prefix) {
+        size_t n = (size_t)1 << c->log_alpha;
+        if (!(c->alias = xmalloc((size_t)c->nclusters * n, sizeof(Alias)))) { e = ERR_NOMEM; goto fail; }
+        for (i = 0; i < c->nclusters; i++) memcpy(c->alias + (size_t)i * n, c->cl[i].alias, n * sizeof(Alias));
+    }
     return 0;
 fail:
     code_free(c);
     return e;
 }
 
-static inline uint32_t cluster_symbol(Br *br, const Code *c, const Cluster *k, uint32_t *state) {
-    if (c->use_prefix) return (uint32_t)prefix_symbol(br, k->fast_len, k->max_len, k->table);
-    if (*state == 0) { *state = br_u(br, 16); *state |= br_u(br, 16) << 16; }
-    int log_bucket = DIST_BITS - c->log_alpha;
-    uint32_t index = *state & 0xfff;
-    uint32_t i = index >> log_bucket, pos = index & ((1u << log_bucket) - 1);
-    const Alias *b = &k->alias[i];
-    uint32_t symbol = (int32_t)pos < b->cutoff ? i : (uint32_t)b->symbol;
-    uint32_t offset = (int32_t)pos < b->cutoff ? 0 : (uint32_t)b->offset;
-    *state = (uint32_t)k->D[symbol] * (*state >> 12) + offset + pos;
-    if (*state < (1u << 16)) *state = (*state << 16) | br_u(br, 16);
+// LZ77 (the rare paths, kept out of sym_read)
+static __attribute__((noinline)) uint32_t lz77_copy(Sym *s) {
+    enum { WMASK = 0xfffff };
+    s->to_copy--;
+    int32_t v = s->window[s->copy_pos++ & WMASK];
+    s->window[s->ndec++ & WMASK] = v;
+    return (uint32_t)v;
+}
+static inline uint32_t ans_token(Br *br, const Code *c, Sym *s, uint32_t cl);
+static __attribute__((noinline)) uint32_t lz77_start(Br *br, Sym *s, uint32_t token) {
+    enum { WMASK = 0xfffff };
+    const Code *c = s->code;
+    uint32_t lcl = c->map[c->num_dist - 1];
+    uint32_t n = hybrid_value(br, token - c->min_symbol, &c->lz_len, &s->bad) + c->min_length;
+    uint32_t dtoken = c->use_prefix ? (uint32_t)prefix_symbol(br, c->cl[lcl].fast_len, c->cl[lcl].max_len, c->cl[lcl].table)
+                                    : ans_token(br, c, s, lcl);
+    uint32_t distance = hybrid_value(br, dtoken, &c->cfg[lcl], &s->bad);
+    if (s->bad) return 0;
+    if (!s->dist_mult) {
+        distance++;
+    } else if (distance >= 120) {
+        distance -= 119;
+    } else {
+        static const uint8_t SPECIAL_DISTANCES[120] = {   // {a,b} encoded as (a+7)*16+b
+            0x71, 0x80, 0x81, 0x61, 0x72, 0x90, 0x82, 0x62, 0x91, 0x51, 0x92, 0x52,
+            0x73, 0xa0, 0x83, 0x63, 0xa1, 0x41, 0x93, 0x53, 0xa2, 0x42, 0x74, 0xb0,
+            0x84, 0x64, 0xb1, 0x31, 0xa3, 0x43, 0x94, 0x54, 0xb2, 0x32, 0x75, 0xa4,
+            0x44, 0xb3, 0x33, 0xc0, 0x85, 0x65, 0xc1, 0x21, 0x95, 0x55, 0xc2, 0x22,
+            0xb4, 0x34, 0xa5, 0x45, 0xc3, 0x23, 0x76, 0xd0, 0x86, 0x66, 0xd1, 0x11,
+            0x96, 0x56, 0xd2, 0x12, 0xb5, 0x35, 0xc4, 0x24, 0xa6, 0x46, 0xd3, 0x13,
+            0x77, 0xe0, 0x87, 0x67, 0xc5, 0x25, 0xe1, 0x01, 0xb6, 0x36, 0xd4, 0x14,
+            0x97, 0x57, 0xe2, 0x02, 0xa7, 0x47, 0xe3, 0x03, 0xc6, 0x26, 0xd5, 0x15,
+            0xf0, 0xb7, 0x37, 0xe4, 0x04, 0xf1, 0xf2, 0xd6, 0x16, 0xf3, 0xc7, 0x27,
+            0xe5, 0x05, 0xf4, 0xd7, 0x17, 0xe6, 0x06, 0xf5, 0xe7, 0x07, 0xf6, 0xf7,
+        };
+        int special = SPECIAL_DISTANCES[distance];
+        int64_t d = ((special >> 4) - 7) + (int64_t)s->dist_mult * (special & 7);
+        distance = d < 1 ? 1 : (uint32_t)d;
+    }
+    if (distance > s->ndec) distance = s->ndec;
+    if (distance > (1u << 20)) distance = 1u << 20;
+    if (!s->window && !(s->window = xcalloc((size_t)1 << 20, sizeof(int32_t)))) { s->bad = 1; return 0; }
+    s->copy_pos = s->ndec - distance;
+    s->to_copy = n - 1;
+    int32_t v = s->window[s->copy_pos++ & WMASK];   // (distance 0: the zeros of an empty window)
+    s->window[s->ndec++ & WMASK] = v;
+    return (uint32_t)v;
+}
+static __attribute__((noinline)) void lz77_store(Sym *s, uint32_t v) {
+    if (!s->window && !(s->window = xcalloc((size_t)1 << 20, sizeof(int32_t)))) { s->bad = 1; return; }
+    s->window[s->ndec++ & 0xfffff] = (int32_t)v;
+}
+
+// the state update of one ANS step, without branches (the alias choice and the renormalisation are
+// unpredictable): as libjxl's ANSSymbolReader
+static inline __attribute__((always_inline)) uint32_t ans_step(Br *br, const Alias *b, uint32_t i, uint32_t pos, uint32_t *state) {
+    uint32_t st = *state, m = 0u - (uint32_t)((int32_t)pos < b->cutoff);   // all ones: the bucket's own symbol
+    uint32_t symbol = (i & m) | ((uint32_t)b->symbol & ~m);
+    uint32_t freq = ((uint32_t)b->freq_lo & m) | ((uint32_t)b->freq_hi & ~m);
+    st = freq * (st >> 12) + ((uint32_t)(uint16_t)b->offset & ~m) + pos;
+    if (br->n < 16) br_refill(br);
+    uint32_t norm = 0u - (uint32_t)(st < (1u << 16)), k = norm & 16;
+    st = ((st << 16 | (uint32_t)(br->buf & 0xffff)) & norm) | (st & ~norm);
+    br->buf >>= k; br->n -= (int)k;
+    *state = st;
     return symbol;
 }
 
-static uint32_t sym_read(Br *br, Sym *s, int ctx) {
-    enum { WMASK = 0xfffff };
+// one ANS step with cluster cl's distribution
+static inline __attribute__((always_inline)) uint32_t ans_token(Br *br, const Code *c, Sym *s, uint32_t cl) {
+    uint32_t st = s->state, log_bucket = (uint32_t)(DIST_BITS - c->log_alpha);
+    uint32_t index = st & 0xfff, i = index >> log_bucket, pos = index & ((1u << log_bucket) - 1);
+    const Alias *b = &c->alias[(cl << c->log_alpha) | i];
+    uint32_t symbol = ans_step(br, b, i, pos, &st);
+    s->state = st;
+    return symbol;
+}
+
+// The same for ANS without LZ77, the state and the bit reader in the caller's locals: a decoding loop
+// that also stores through pointers (coefficients, pixels) can keep them in registers.
+static inline __attribute__((always_inline)) uint32_t ans_fast(Br *br, const uint8_t *map, const Alias *alias, int log_alpha,
+                                                                const HybridCfg *cfg, uint32_t *state, int *bad, int ctx) {
+    uint32_t cl = map[ctx], st = *state, log_bucket = (uint32_t)(DIST_BITS - log_alpha);
+    uint32_t index = st & 0xfff, i = index >> log_bucket, pos = index & ((1u << log_bucket) - 1);
+    const Alias *b = &alias[(cl << log_alpha) | i];
+    uint32_t token = ans_step(br, b, i, pos, &st);
+    *state = st;
+    const HybridCfg *h = &cfg[cl];
+    return token < (1u << h->split_exp) ? token : hybrid_value(br, token, h, bad);
+}
+
+// the next value with context ctx (DecodeHybridVarLenUint)
+static inline __attribute__((always_inline)) uint32_t sym_read(Br *br, Sym *s, int ctx) {
     const Code *c = s->code;
-    if (s->to_copy) {
-        s->to_copy--;
-        int32_t v = s->window[s->copy_pos++ & WMASK];
-        s->window[s->ndec++ & WMASK] = v;
-        return (uint32_t)v;
+    if (__builtin_expect(s->to_copy != 0, 0)) return lz77_copy(s);
+    uint32_t cl = c->map[ctx], token;
+    if (c->use_prefix) {
+        const Cluster *k = &c->cl[cl];
+        token = (uint32_t)prefix_symbol(br, k->fast_len, k->max_len, k->table);
+    } else {
+        token = ans_token(br, c, s, cl);
     }
-    const Cluster *k = &c->cl[c->map[ctx]];
-    uint32_t token = cluster_symbol(br, c, k, &s->state);
-    if (token >= c->min_symbol) {   // LZ77 copy (only when lz77 is on)
-        const Cluster *lk = &c->cl[c->map[c->num_dist - 1]];
-        uint32_t n = hybrid_value(br, token - c->min_symbol, &c->lz_len, &s->bad) + c->min_length;
-        uint32_t dtoken = cluster_symbol(br, c, lk, &s->state);
-        uint32_t distance = hybrid_value(br, dtoken, &lk->cfg, &s->bad);
-        if (s->bad) return 0;
-        if (!s->dist_mult) {
-            distance++;
-        } else if (distance >= 120) {
-            distance -= 119;
-        } else {
-            static const uint8_t SPECIAL_DISTANCES[120] = {   // {a,b} encoded as (a+7)*16+b
-                0x71, 0x80, 0x81, 0x61, 0x72, 0x90, 0x82, 0x62, 0x91, 0x51, 0x92, 0x52,
-                0x73, 0xa0, 0x83, 0x63, 0xa1, 0x41, 0x93, 0x53, 0xa2, 0x42, 0x74, 0xb0,
-                0x84, 0x64, 0xb1, 0x31, 0xa3, 0x43, 0x94, 0x54, 0xb2, 0x32, 0x75, 0xa4,
-                0x44, 0xb3, 0x33, 0xc0, 0x85, 0x65, 0xc1, 0x21, 0x95, 0x55, 0xc2, 0x22,
-                0xb4, 0x34, 0xa5, 0x45, 0xc3, 0x23, 0x76, 0xd0, 0x86, 0x66, 0xd1, 0x11,
-                0x96, 0x56, 0xd2, 0x12, 0xb5, 0x35, 0xc4, 0x24, 0xa6, 0x46, 0xd3, 0x13,
-                0x77, 0xe0, 0x87, 0x67, 0xc5, 0x25, 0xe1, 0x01, 0xb6, 0x36, 0xd4, 0x14,
-                0x97, 0x57, 0xe2, 0x02, 0xa7, 0x47, 0xe3, 0x03, 0xc6, 0x26, 0xd5, 0x15,
-                0xf0, 0xb7, 0x37, 0xe4, 0x04, 0xf1, 0xf2, 0xd6, 0x16, 0xf3, 0xc7, 0x27,
-                0xe5, 0x05, 0xf4, 0xd7, 0x17, 0xe6, 0x06, 0xf5, 0xe7, 0x07, 0xf6, 0xf7,
-            };
-            int special = SPECIAL_DISTANCES[distance];
-            int64_t d = ((special >> 4) - 7) + (int64_t)s->dist_mult * (special & 7);
-            distance = d < 1 ? 1 : (uint32_t)d;
-        }
-        if (distance > s->ndec) distance = s->ndec;
-        if (distance > (1u << 20)) distance = 1u << 20;
-        if (!s->window) {
-            if (!(s->window = xcalloc((size_t)1 << 20, sizeof(int32_t)))) { s->bad = 1; return 0; }
-        }
-        s->copy_pos = s->ndec - distance;
-        s->to_copy = n - 1;
-        int32_t v = s->window[s->copy_pos++ & WMASK];   // (distance 0: the zeros of an empty window)
-        s->window[s->ndec++ & WMASK] = v;
-        return (uint32_t)v;
-    }
-    uint32_t v = hybrid_value(br, token, &k->cfg, &s->bad);
-    if (c->lz77) {
-        if (!s->window && !(s->window = xcalloc((size_t)1 << 20, sizeof(int32_t)))) { s->bad = 1; return 0; }
-        s->window[s->ndec++ & WMASK] = (int32_t)v;
-    }
+    if (__builtin_expect(token >= c->min_symbol, 0)) return lz77_start(br, s, token);   // (only when lz77 is on)
+    const HybridCfg *h = &c->cfg[cl];
+    uint32_t v = token < (1u << h->split_exp) ? token : hybrid_value(br, token, h, &s->bad);
+    if (__builtin_expect(c->lz77, 0)) lz77_store(s, v);
     return v;
 }
 
 static int sym_finish(Br *br, Sym *s) {
     int e = s->bad ? ERR_INVALID : 0;
-    if (!e && !s->code->use_prefix) {
-        if (s->state) {
-            if (s->state != ANS_INIT_STATE) e = ERR_INVALID;
-        } else if (br_u(br, 16) != (ANS_INIT_STATE & 0xffff) || br_u(br, 16) != (ANS_INIT_STATE >> 16)) {
-            e = ERR_INVALID;
-        }
-    }
+    if (!e && !s->code->use_prefix && s->state != ANS_INIT_STATE) e = ERR_INVALID;
     if (!e && br_overrun(br)) e = ERR_INVALID;
     free(s->window);
     s->window = NULL;
@@ -1342,7 +1394,7 @@ static int read_icc(Br *br, Meta *m) {
     Bytes out = {0};
     int e = 0;
     if (!enc) { code_free(&code); return ERR_NOMEM; }
-    sym_init(&s, &code, 0);
+    sym_init(&s, &code, 0, br);
     for (uint64_t i = 0; i < enc_size; i++) {
         int ctx = 0;
         if (i > 128) {
@@ -1390,7 +1442,7 @@ static int read_tree(Br *br, int64_t max_size, Tree *t) {
     int cap = 64, n = 0, nodes_left = 1, ctx_id = 0, e = 0;
     memset(t, 0, sizeof(*t));
     TRY(read_code(br, 6, 1, &c));
-    sym_init(&s, &c, 0);
+    sym_init(&s, &c, 0, br);
     Node *nodes = xmalloc((size_t)cap, sizeof(Node));
     if (!nodes) { code_free(&c); return ERR_NOMEM; }
     // breadth first: the children of node i are appended in order, their index is n + nodes_left
@@ -1560,39 +1612,74 @@ static void modular_free(Modular *m) {
     memset(m, 0, sizeof(*m));
 }
 
-// decodes one channel with the MA tree
-static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int ci, uint32_t stream_id) {
+// The tree for one channel: the branches on properties fixed in it (0: the channel, 1: the stream,
+// those of previous channels it does not have: 0) decided, two levels in a node (libjxl's
+// FlatDecisionNode): the node's comparison picks one of its two children, whose comparisons were
+// made at the same time, and that one of the four grandchildren at child .. child + 3 (left first:
+// property > value). A child that is a leaf fills both its grandchildren. A leaf: prop0 -1, split0
+// the index of the original node.
+typedef struct { int32_t prop0, split0, prop1[2], split1[2], child; } FNode;
+
+static int tree_resolve(const Tree *t, int i, int ci, uint32_t stream_id, int nprops) {
+    for (int steps = 0; t->nodes[i].prop >= 0 && steps < t->n; steps++) {
+        const Node *n = &t->nodes[i];
+        int32_t pv;
+        if (n->prop == 0) pv = ci;
+        else if (n->prop == 1) pv = (int32_t)stream_id;
+        else if (n->prop >= nprops) pv = 0;
+        else break;
+        i = pv > n->val ? n->left : n->right;
+    }
+    return i;
+}
+
+static int tree_specialise(const Tree *t, int ci, uint32_t stream_id, int nprops, FNode *out, int cap, int *queue, int *count) {
+    int n = 1, head = 0, tail = 0;
+    queue[tail++] = tree_resolve(t, 0, ci, stream_id, nprops);   // (queue: the source node of out[head ...])
+    while (head < tail) {
+        int src = queue[head], d = head++;
+        const Node *nd = &t->nodes[src];
+        if (nd->prop < 0) { out[d] = (FNode){-1, src, {0, 0}, {0, 0}, 0}; continue; }
+        if (n + 4 > cap) return ERR_INVALID;
+        FNode f = {nd->prop, nd->val, {0, 0}, {0, 0}, n};
+        for (int k = 0; k < 2; k++) {
+            int c = tree_resolve(t, k ? nd->right : nd->left, ci, stream_id, nprops);
+            const Node *cn = &t->nodes[c];
+            if (cn->prop < 0) {
+                queue[tail++] = c; queue[tail++] = c;
+            } else {
+                f.prop1[k] = cn->prop; f.split1[k] = cn->val;
+                queue[tail++] = tree_resolve(t, cn->left, ci, stream_id, nprops);
+                queue[tail++] = tree_resolve(t, cn->right, ci, stream_id, nprops);
+            }
+        }
+        out[d] = f;
+        n += 4;
+    }
+    *count = n;
+    return 0;
+}
+
+// decodes one channel with the MA tree; fast: ANS without LZ77 (the reader's state in locals)
+static inline __attribute__((always_inline)) int channel_pixels(Br *brp, Sym *sp, int fast, const Tree *t, const FNode *tn,
+                                                                const Modular *m, int ci, int use_wp, int max_prop,
+                                                                const int *refs, int nref) {
     Chan *c = &m->ch[ci];
     int w = c->w, h = c->h;
     int32_t *p = c->p;
-    // the previous channels of the same size and shifts (properties 16 ...)
-    int refs[64], nref = 0;
-    for (int j = ci - 1; j >= 0 && nref < 64; j--) {
-        const Chan *r = &m->ch[j];
-        if (r->w == w && r->h == h && r->hshift == c->hshift && r->vshift == c->vshift) refs[nref++] = j;
-    }
-    int use_wp = 0, max_prop = 0;
-    for (int i = 0; i < t->n; i++) {
-        if (t->nodes[i].prop >= 0) {
-            if (t->nodes[i].prop == 15) use_wp = 1;
-            if (t->nodes[i].prop > max_prop) max_prop = t->nodes[i].prop;
-        } else if (t->nodes[i].pred == 6) {
-            use_wp = 1;
-        }
-    }
-    if (max_prop >= 16 && (max_prop - 16) / 4 >= nref) {
-        // a property of a channel that is not there: libjxl reads it as 0
-    }
-    // a single leaf: no properties needed
-    const Node *root = t->nodes;
+    const Code *code = sp->code;
+    const uint8_t *map = code->map;
+    const Alias *alias = code->alias;
+    const HybridCfg *cfg = code->cfg;
+    int la = code->log_alpha, bad = 0;
+    Br lbr = *brp, *br = fast ? &lbr : brp;
+    uint32_t st = sp->state;
     Wp wp;
     if (use_wp) TRY(wp_init(&wp, &m->wp, w));
     int32_t props[16 + 4 * 64];   // (int32 as libjxl's: they wrap)
     memset(props, 0, sizeof props);
-    props[0] = ci;
-    props[1] = stream_id;
-    int single = root->prop < 0;
-    for (int y = 0; y < h; y++) {
+    int single = tn[0].prop0 < 0, e = 0;
+    for (int y = 0; y < h && !e; y++) {
         int32_t *row = p + (size_t)y * w;
         const int32_t *prow = y ? row - w : NULL, *pprow = y > 1 ? row - 2 * w : NULL;
         int32_t prev_grad = 0;
@@ -1607,7 +1694,7 @@ static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int c
             int64_t toprightright = x + 2 < w && y ? prow[x + 2] : topright;
             int64_t wpred = 0, maxerr = 0;
             if (use_wp) wpred = wp_predict(&wp, x, y, top, left, topright, topleft, toptop, &maxerr);
-            const Node *n = root;
+            const FNode *n = tn;
             if (!single) {
                 props[3] = x;
                 props[4] = (int32_t)llabs(top); props[5] = (int32_t)llabs(left);
@@ -1630,22 +1717,56 @@ static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int c
                         props[18 + 4 * k] = (int32_t)llabs(v - pr); props[19 + 4 * k] = (int32_t)(v - pr);
                     }
                 }
-                while (n->prop >= 0) {
-                    int32_t pv = n->prop < 16 + 4 * nref ? props[n->prop] : 0;
-                    n = &t->nodes[pv > n->val ? n->left : n->right];
+                while (n->prop0 >= 0) {
+                    int k = props[n->prop0] <= n->split0;
+                    n = tn + n->child + 2 * k + (props[n->prop1[k]] <= n->split1[k]);
                 }
                 prev_grad = props[9];
             }
-            uint32_t tok = sym_read(br, s, n->val);
-            int64_t v = (int64_t)unpack_signed(tok) * n->mult + n->offset +
-                        predict_one(n->pred, left, top, toptop, topleft, topright, leftleft, toprightright, wpred);
+            const Node *leaf = &t->nodes[n->split0];
+            uint32_t tok = fast ? ans_fast(br, map, alias, la, cfg, &st, &bad, leaf->val) : sym_read(br, sp, leaf->val);
+            int64_t v = (int64_t)unpack_signed(tok) * leaf->mult + leaf->offset +
+                        predict_one(leaf->pred, left, top, toptop, topleft, topright, leftleft, toprightright, wpred);
             row[x] = (int32_t)v;
             if (use_wp) wp_update(&wp, row[x], x, y);
         }
-        if (s->bad || ((y & 15) == 15 && br_overrun(br))) { if (use_wp) wp_free(&wp); return ERR_INVALID; }
+        if (bad || sp->bad || ((y & 15) == 15 && br_overrun(br))) e = ERR_INVALID;
     }
     if (use_wp) wp_free(&wp);
-    return 0;
+    if (fast) { *brp = lbr; sp->state = st; sp->bad |= bad; }
+    return e;
+}
+
+static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int ci, uint32_t stream_id) {
+    const Chan *c = &m->ch[ci];
+    // the previous channels of the same size and shifts (properties 16 ...)
+    int refs[64], nref = 0;
+    for (int j = ci - 1; j >= 0 && nref < 64; j--) {
+        const Chan *r = &m->ch[j];
+        if (r->w == c->w && r->h == c->h && r->hshift == c->hshift && r->vshift == c->vshift) refs[nref++] = j;
+    }
+    int cap = 2 * t->n + 8, count = 0;   // (each node holds two levels; a leaf may fill two places)
+    FNode *tn = xmalloc((size_t)cap, sizeof(FNode));
+    int *queue = xmalloc((size_t)cap, sizeof(int));
+    int e = !tn || !queue ? ERR_NOMEM : tree_specialise(t, ci, stream_id, 16 + 4 * nref, tn, cap, queue, &count);
+    free(queue);
+    if (e) { free(tn); return e; }
+    int use_wp = 0, max_prop = 0;   // (in the channel's tree)
+    for (int i = 0; i < count; i++) {
+        if (tn[i].prop0 >= 0) {
+            int pr[3] = {tn[i].prop0, tn[i].prop1[0], tn[i].prop1[1]};
+            for (int k = 0; k < 3; k++) {
+                if (pr[k] == 15) use_wp = 1;
+                if (pr[k] > max_prop) max_prop = pr[k];
+            }
+        } else if (t->nodes[tn[i].split0].pred == 6) {
+            use_wp = 1;
+        }
+    }
+    e = !s->code->use_prefix && !s->code->lz77 ? channel_pixels(br, s, 1, t, tn, m, ci, use_wp, max_prop, refs, nref)
+                                               : channel_pixels(br, s, 0, t, tn, m, ci, use_wp, max_prop, refs, nref);
+    free(tn);
+    return e;
 }
 
 // the transforms' effect on the channel list (MetaApply)
@@ -1837,7 +1958,7 @@ static int modular_decode_channels(Br *br, Modular *m, const Tree *global, uint3
         TRY(read_tree(br, max_tree, &local));
     }
     Sym s;
-    sym_init(&s, &tree->code, (int)(dist_mult > (1 << 21) ? (1 << 21) : dist_mult));
+    sym_init(&s, &tree->code, (int)(dist_mult > (1 << 21) ? (1 << 21) : dist_mult), br);
     for (int i = 0; i < m->nchan && !e; i++) {
         Chan *c = &m->ch[i];
         if (!c->w || !c->h) continue;
@@ -2968,6 +3089,39 @@ static int frame_header(Br *br, const Meta *m, int pw, int ph, FrameHeader *f) {
 }
 
 // ---------------------------------------------------------------------------
+// working buffers kept for the next group / tile: a fresh large allocation is mapped, and its first
+// use page-faults (the kernel clearing pages, the threads queueing for it: much of a decode's time)
+
+enum { POOL_SLOTS = 64 };
+typedef struct { void *slot[POOL_SLOTS]; } Pool;   // each a buffer after its size (a size_t)
+
+static void *pool_get(Pool *p, size_t size) {
+    for (int i = 0; i < POOL_SLOTS; i++) {
+        size_t *b = __atomic_exchange_n((size_t **)&p->slot[i], NULL, __ATOMIC_ACQUIRE);
+        if (!b) continue;
+        if (b[0] >= size) return b + 2;   // (16 bytes: the size, padding)
+        free(b);
+        break;
+    }
+    size_t *b = size > SIZE_MAX - 16 ? NULL : malloc(size + 16);
+    if (!b) return NULL;
+    b[0] = size;
+    return b + 2;
+}
+static void pool_put(Pool *p, void *mem) {
+    if (!mem) return;
+    size_t *b = (size_t *)mem - 2;
+    for (int i = 0; i < POOL_SLOTS; i++) {
+        void *expect = NULL;
+        if (__atomic_compare_exchange_n(&p->slot[i], &expect, b, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return;
+    }
+    free(b);
+}
+static void pool_free(Pool *p) {
+    for (int i = 0; i < POOL_SLOTS; i++) { free(p->slot[i]); p->slot[i] = NULL; }
+}
+
+// ---------------------------------------------------------------------------
 // frame decoding
 
 typedef struct {
@@ -3000,11 +3154,13 @@ typedef struct {
     Code coef[MAX_PASSES];
     // output: the colour planes (VarDCT: padded to blocks), coded size
     float *px[3];
+    Pool *pool;              // (group buffers, render tiles)
     int pxw[3], pxh[3];      // (pxh: the rows kept: all, or a ring of them while the frame is rendered as it goes)
     int err;
 } Frame;
 
 static void frame_free(Frame *f) {
+    if (f->pool) { pool_free(f->pool); free(f->pool); }
     free(f->sec);
     free(f->bctx);
     tree_free(&f->gtree);
@@ -3032,7 +3188,7 @@ static int read_toc(Br *br, Frame *f) {
         Code c;
         Sym s;
         TRY(read_code(br, 8, 1, &c));
-        sym_init(&s, &c, 0);
+        sym_init(&s, &c, 0, br);
         if (!(perm = xmalloc((size_t)n, sizeof(int32_t)))) { code_free(&c); return ERR_NOMEM; }
         int e = read_permutation(br, &s, (int)n, 0, perm);
         int e2 = sym_finish(br, &s);
@@ -3392,7 +3548,7 @@ static int hf_global(Frame *f) {
         uint32_t used = br_u32(br, 0x5F, 0, 0x13, 0, 0, 0, 0, 13);
         Code c;
         Sym s;
-        if (used) { TRY(read_code(br, 8, 1, &c)); sym_init(&s, &c, 0); }
+        if (used) { TRY(read_code(br, 8, 1, &c)); sym_init(&s, &c, 0, br); }
         for (int o = 0; o < NUM_ORDERS && !e; o++) {
             int lr = LOG_ORDER_SIZE[o][0], lc = LOG_ORDER_SIZE[o][1], size = 1 << (lr + lc);
             int32_t *nat = xmalloc((size_t)size, sizeof(int32_t));
@@ -3417,6 +3573,10 @@ static int hf_global(Frame *f) {
         if (used) { int e2 = sym_finish(br, &s); code_free(&c); if (!e) e = e2; }
         if (e) return e;
         TRY(read_code(br, f->nhist * f->nbctx * 495, 1, &f->coef[p]));
+        uint8_t *m2 = realloc(f->coef[p].map, (size_t)f->coef[p].num_dist + 16);   // (contexts up to 15 past: cluster 0)
+        if (!m2) return ERR_NOMEM;
+        memset(m2 + f->coef[p].num_dist, 0, 16);
+        f->coef[p].map = m2;
     }
     return br_overrun(br) ? ERR_INVALID : 0;
 }
@@ -3435,10 +3595,11 @@ static const uint8_t COEFF_NUM_NONZERO_CTX[64] = {
     206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
 };
 
-typedef struct {
+typedef struct {   // (a VarDCT group is at most 32 x 32 blocks)
     int32_t *coef[3];        // per channel, the group's varblocks one after the other
     int32_t *nz[3];          // per channel: non-zero counts of the 8x8 blocks
     float scratch[3 * 65536];   // a block, the dequantised Y (for CfL), the transforms' scratch
+    int32_t coefmem[3][32 * 32 * 64], nzmem[3][32 * 32], offs[32 * 32];
 } GroupBuf;
 
 // the group's varblocks: coefficient offsets in raster order of their first blocks
@@ -3457,15 +3618,19 @@ static int group_blocks(const Frame *f, int gbx0, int gby0, int gbxs, int gbys, 
     return 0;
 }
 
-static int hf_pass(Frame *f, Br *br, int p, int gbx0, int gby0, int gbxs, int gbys, const int32_t *offs, GroupBuf *gb) {
+// the coefficients of a group's pass: fast = ANS without LZ77 (the bit reader and the state in locals)
+static inline __attribute__((always_inline)) int hf_coefficients(Frame *f, Br *brp, Sym *sp, int fast, int p, int ctxoff, int gbx0, int gby0,
+                                                                  int gbxs, int gbys, const int32_t *offs, GroupBuf *gb) {
     const FrameHeader *h = &f->h;
-    int ctxoff = (int)br_u(br, ceil_log2((uint64_t)f->nhist)) * f->nbctx * 495;
-    if (ctxoff >= f->nhist * f->nbctx * 495) return ERR_INVALID;
-    int nctx = f->nhist * f->nbctx * 495;
-    Sym s;
-    sym_init(&s, &f->coef[p], 0);
+    const Code *code = sp->code;
+    const uint8_t *map = code->map;
+    const Alias *alias = code->alias;
+    const HybridCfg *cfg = code->cfg;
+    int la = code->log_alpha, bad = 0;
+    Br lbr = *brp, *br = fast ? &lbr : brp;
+    uint32_t st = sp->state;
+#define HF_READ(ctx) (fast ? ans_fast(br, map, alias, la, cfg, &st, &bad, (ctx)) : sym_read(br, sp, (ctx)))
     int shift = h->pass_shift[p], e = 0;
-    for (int c = 0; c < 3; c++) memset(gb->nz[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys);
     for (int by = 0; by < gbys && !e; by++)
         for (int bx = 0; bx < gbxs && !e; bx++) {
             size_t bo = (size_t)(gby0 + by) * h->bw + gbx0 + bx;
@@ -3486,26 +3651,38 @@ static int hf_pass(Frame *f, Br *br, int p, int gbx0, int gby0, int gbxs, int gb
                 int pred = sbx ? (sby ? (nzr[sbx - stride] + nzr[sbx - 1] + 1) >> 1 : nzr[sbx - 1]) : (sby ? nzr[sbx - stride] : 32);
                 int bctx = f->bctx[(((c < 2 ? c ^ 1 : 2) * NUM_ORDERS + d->order) * (f->nqfthr + 1) + qfidx) * f->ndcctx + f->lfidx[bo]];
                 int nzctx = ctxoff + (pred < 8 ? pred : 4 + pred / 2) * f->nbctx + bctx;
-                uint32_t nz = sym_read(br, &s, nzctx);
+                uint32_t nz = HF_READ(nzctx);
                 if (nz > (uint32_t)(size - cb)) { e = ERR_INVALID; break; }
                 int32_t q = (int32_t)((nz + (uint32_t)cb - 1) >> log2cb);
                 for (int y = 0; y < cby; y++) for (int x = 0; x < cbx; x++) nzr[sbx + x + y * stride] = q;
-                int hoff = ctxoff + f->nbctx * 37 + 458 * bctx;
+                int hoff = ctxoff + f->nbctx * 37 + 458 * bctx;   // (the contexts reach 15 past the last: the map has 16 more)
                 int prev = nz > (uint32_t)size / 16 ? 0 : 1;
                 int32_t *coef = gb->coef[c] + offs[by * gbxs + bx];
                 const int32_t *order = f->orders[p][d->order][c];
                 for (int k = cb; k < size && nz; k++) {
                     int ctx = hoff + (COEFF_NUM_NONZERO_CTX[(nz + (uint32_t)cb - 1) >> log2cb] + COEFF_FREQ_CTX[k >> log2cb]) * 2 + prev;
-                    if (ctx >= nctx) { e = ERR_INVALID; break; }
-                    uint32_t u = sym_read(br, &s, ctx);
+                    uint32_t u = HF_READ(ctx);
                     coef[order[k]] += (int32_t)((uint32_t)unpack_signed(u) << shift);
                     prev = u != 0;
                     nz -= (uint32_t)prev;
                 }
                 if (nz) e = ERR_INVALID;
             }
-            if (!e && s.bad) e = ERR_INVALID;
+            if (!e && (bad || sp->bad)) e = ERR_INVALID;
         }
+#undef HF_READ
+    if (fast) { *brp = lbr; sp->state = st; }
+    return e;
+}
+
+static int hf_pass(Frame *f, Br *br, int p, int gbx0, int gby0, int gbxs, int gbys, const int32_t *offs, GroupBuf *gb) {
+    int ctxoff = (int)br_u(br, ceil_log2((uint64_t)f->nhist)) * f->nbctx * 495;
+    if (ctxoff >= f->nhist * f->nbctx * 495) return ERR_INVALID;
+    Sym s;
+    sym_init(&s, &f->coef[p], 0, br);
+    for (int c = 0; c < 3; c++) memset(gb->nz[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys);
+    int e = !s.code->use_prefix && !s.code->lz77 ? hf_coefficients(f, br, &s, 1, p, ctxoff, gbx0, gby0, gbxs, gbys, offs, gb)
+                                                  : hf_coefficients(f, br, &s, 0, p, ctxoff, gbx0, gby0, gbxs, gbys, offs, gb);
     int e2 = sym_finish(br, &s);
     return e ? e : e2;
 }
@@ -3902,15 +4079,15 @@ static int decode_group(Frame *f, int g) {
     GroupBuf *gb = NULL;
     int32_t *offs = NULL;
     if (!h->modular) {
-        gb = calloc(1, sizeof(GroupBuf));
-        offs = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
-        if (gb) for (int c = 0; c < 3; c++) {
-            gb->coef[c] = xcalloc((size_t)gbxs * gbys * 64, sizeof(int32_t));
-            gb->nz[c] = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
-            if (!gb->coef[c] || !gb->nz[c]) err = ERR_NOMEM;
+        if (gbxs > 32 || gbys > 32) return ERR_INVALID;
+        if (!(gb = pool_get(f->pool, sizeof(GroupBuf)))) return ERR_NOMEM;
+        offs = gb->offs;
+        for (int c = 0; c < 3; c++) {
+            gb->coef[c] = gb->coefmem[c];
+            gb->nz[c] = gb->nzmem[c];
+            memset(gb->coef[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys * 64);
         }
-        if (!gb || !offs) err = ERR_NOMEM;
-        if (!err) err = group_blocks(f, gbx0, gby0, gbxs, gbys, offs);
+        err = group_blocks(f, gbx0, gby0, gbxs, gbys, offs);
     }
     for (int p = 0; p < h->npasses && !err; p++) {
         Br *br = sec_pass(f, p, g);
@@ -3920,8 +4097,7 @@ static int decode_group(Frame *f, int g) {
         if (!err && br_overrun(br)) err = ERR_INVALID;
     }
     if (!err && !h->modular) hf_reconstruct(f, gbx0, gby0, gbxs, gbys, offs, gb);
-    if (gb) for (int c = 0; c < 3; c++) { free(gb->coef[c]); free(gb->nz[c]); }
-    free(gb); free(offs);
+    pool_put(f->pool, gb);
     return err;
 }
 
@@ -4104,7 +4280,7 @@ static int render_tile(const Frame *f, const Render *rd, const Output *o, int x0
     int ybase = imax(0, y0 - B), xbase = imax(0, x0 - B);
     int nrows = imin(H, y1 + B) - ybase, stride = imin(W, x1 + B) - xbase + 2 * PAD;
     size_t planes = (size_t)nrows * (size_t)stride;
-    float *mem = xmalloc(planes * 6, sizeof(float));
+    float *mem = planes > SIZE_MAX / 24 ? NULL : pool_get(f->pool, planes * 6 * sizeof(float));
     if (!mem) return ERR_NOMEM;
     Stripe s[2];
     for (int i = 0; i < 2; i++)
@@ -4121,7 +4297,7 @@ static int render_tile(const Frame *f, const Render *rd, const Output *o, int x0
         cur ^= 1;
     }
     for (int y = y0; y < y1; y++) emit_row(f, &rd->k, o, y, x0, x1, srow(&s[cur], 0, y), srow(&s[cur], 1, y), srow(&s[cur], 2, y));
-    free(mem);
+    pool_put(f->pool, mem);
     return 0;
 }
 
@@ -4213,6 +4389,7 @@ static int decode_wave(Frame *f, const Output *o, int threads) {
 // need no transform at the end is rendered as it goes (decode_wave), its colour planes a ring of rows.
 static int decode_frame(Frame *f, const Output *o) {
     FrameHeader *h = &f->h;
+    if (!(f->pool = xcalloc(1, sizeof(Pool)))) return ERR_NOMEM;
     TRY(lf_global(f));
     if (h->use_lf_frame) return ERR_UNSUP;
     size_t nb = (size_t)h->bw * h->bh;
