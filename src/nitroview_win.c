@@ -2091,7 +2091,7 @@ static int create_window(const wchar_t *first) {
 // the extensions registered: the images', then the drawings' this build renders (nv_vector_exts)
 static const wchar_t *const g_assoc_exts[] = {L".jpg", L".jpeg", L".jpe", L".jfif", L".png", L".psd", L".psb", L".heic",
                                               L".heif", L".avif", L".tif", L".tiff", L".webp", L".gif", L".bmp", L".cr2", L".nef", L".nrw", L".arw", L".raf", L".dng",
-                                              L".jp2", L".j2k", L".jpf", L".jpx", L".dcm",
+                                              L".jp2", L".j2k", L".jpf", L".jpx", L".jxl", L".dcm",
                                               NULL};
 static const wchar_t *assoc_ext(int i) {   // the i-th of them, NULL past the last (a static buffer: until the next call)
     static wchar_t w[16];

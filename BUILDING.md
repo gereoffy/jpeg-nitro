@@ -223,6 +223,19 @@ make bench/jpxbench
 bench/jpxbench -r 5 images/*.jp2           # median decode time, input read once; -1 for serial
 ```
 
+JPEG XL checks (libjxl is only the reference; nitrojxl needs no library):
+
+```bash
+make bench/jxldec bench/jxlrobust
+bench/jxldec image.jxl out.pam             # 16-bit RGBA PAM (premultiplied alpha) and the decode time
+bench/jxltest.sh djxl bench/jxldec /tmp/jxlref samples_jxl/*/*.jxl   # vs libjxl's djxl (float PFM)
+bench/jxlrobust small.jxl ...              # ASan + UBSan, damaged inputs
+```
+
+`jxltest.sh` prints the largest and the mean difference in 8-bit units; djxl writes the image's own
+colour encoding, so linear images are compared after sRGB encoding, and HDR (tone mapped here),
+noise (not drawn) and images in other encodings (converted to sRGB here) differ by design.
+
 `OPENJPEG_CFLAGS` and `OPENJPEG_LIBS` can specify a reference library outside pkg-config.
 The generated tests cover all 64 code-block styles, the five progression orders, tiles,
 precincts, layers, signed samples, 1/8/12/16-bit components, sub-sampling, ROI, and both

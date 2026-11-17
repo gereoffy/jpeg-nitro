@@ -23,6 +23,7 @@
 - `nitroai.cpp/.h`: Adobe Illustrator 1–8 documents (PostScript, also as EPS), read into a PDF page for nitropdf
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
 - `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder, written from ITU-T T.800: JP2 / J2K files (through nitro_load) and PDF's JPXDecode
+- `nitrojxl.c/.h`: dependency-free JPEG XL decoder (container, VarDCT, Modular, Gaborish / EPF, ICC), from the specification with parts of J40 and libjxl (see its header)
 - `nitrodicom.c/.h`: DICOM pictures (medical images), written from the DICOM standard: the data set, uncompressed / RLE / JPEG / lossless JPEG / JPEG 2000 pixel data (with nitrojpeg, nitrodng's lossless JPEG decoder and nitrojpx), the grey window and the palettes
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
 - `nitrodjvu.c/.h`: DjVu documents (the IFF container, JB2 masks, BZZ for the directory, the layers put together), written from the DjVu Reference
@@ -80,6 +81,10 @@
 - `jpxrobust.c`: damaged JPEG 2000 codestreams and JP2 containers under ASan / UBSan
 - `jpxverify.c`: optional OpenJPEG reference comparison and generated JPEG 2000 coding-style tests
 - `jpxbench.c`: JPEG 2000 decode timing and checksums, serial or parallel
+- `jxldec.c`: JPEG XL to a 16-bit RGBA PAM, with the decode time
+- `jxltest.sh`, `jxlcompare.py`: nitrojxl against libjxl's djxl over sample files (numpy)
+- `jxlrobust.c`: damaged JPEG XL files under ASan / UBSan
+- `jxlcontainer.c`: JPEG XL container (box) parsing tests
 - `jpxpdfverify.py`: rendered PDF regressions for JPX colour spaces, palettes, masks and alpha (Pillow)
 - `psdrobust.c`: damaged PSD files under ASan
 - `pngbench.m`: PNG decoder comparison

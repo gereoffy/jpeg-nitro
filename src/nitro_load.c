@@ -8,6 +8,7 @@
 #include "nitropng.h"
 #include "nitropsd.h"
 #include "nitrojpx.h"
+#include "nitrojxl.h"
 #include "nitrodicom.h"
 #include "nitrotiff.h"
 #include "nitrowebp.h"
@@ -28,7 +29,7 @@
 // file names
 
 const char *const nv_image_exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "avif", "webp", "tif", "tiff",
-                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", "dcm", "dicom", "dic", NULL};
+                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", "jxl", "dcm", "dicom", "dic", NULL};
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -274,6 +275,7 @@ const char *nv_mode_name(int mode) {
     case NV_MODE_NITROTIFF: return "nitrotiff";
     case NV_MODE_NITROJPX: return "nitrojpx";
     case NV_MODE_NITRODICOM: return "nitrodicom";
+    case NV_MODE_NITROJXL: return "nitrojxl";
     case NV_MODE_NITROAVIF: return "nitroavif";
     default: return NULL;
     }
@@ -587,6 +589,37 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
                 njpx_free(&ji);
             }
         }
+    } else if ((n >= 12 && !memcmp(data, "\0\0\0\x0cJXL \r\n\x87\n", 12)) || (n >= 2 && data[0] == 0xff && data[1] == 0x0a)) {
+        // JPEG XL: nitrojxl (groups in parallel). The ICC profile its pixels are in goes after them in the buffer.
+        njxl_info xi;
+        if (njxl_info_read(data, n, &xi)) {
+            img->error = "Unsupported JPEG XL";
+        } else if (xi.width > mt || xi.height > mt) {
+            img->error = "Unsupported JPEG XL (too large)";
+        } else {
+            size_t pitch = align_up((size_t)xi.width * 4, dec->align);
+            b = dec->get(pitch * (size_t)xi.height + xi.icc_len, cap, dec->ctx);
+            if (b && !njxl_decode(data, n, dec->threads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, b, pitch, NULL)) {
+                img->kind = NV_BGRA;
+                img->width = xi.width; img->height = xi.height;
+                img->pitch[0] = pitch;
+                img->size = pitch * (size_t)xi.height;
+                img->bands = 1;
+                img->orientation = xi.orientation;
+                if (xi.icc) {
+                    memcpy(b + img->size, xi.icc, xi.icc_len);
+                    img->icc = b + img->size;
+                    img->icc_len = xi.icc_len;
+                }
+                img->mode = NV_MODE_NITROJXL;
+                njxl_info_free(&xi);
+                *buf = b;
+                return 0;
+            }
+            GIVE_BACK(b);
+            img->error = "Unsupported JPEG XL (patches, splines, layers ...)";
+        }
+        njxl_info_free(&xi);
     } else {
         ndcm_info ci;   // DICOM: nitrodicom (the frame asked for; grey shades by the exposure correction, as a DNG)
         if (!ndcm_read_info(data, n, &ci)) {
@@ -672,6 +705,12 @@ int nv_image_size_from_file(const char *path, double *w, double *h) {
         int jw, jh;
         if (!njpx_size(b, n, &jw, &jh)) {
             *w = jw; *h = jh; ok = 1;
+        }
+    }
+    if (!ok) {   // JPEG XL
+        int jw, jh, jo;
+        if (!njxl_size(b, n, &jw, &jh, &jo)) {
+            *w = jw; *h = jh; o = jo; ok = 1;
         }
     }
     if (!ok && !np_read_info(b, n, &pi)) {   // (an eXIf after the first MB: not seen here)

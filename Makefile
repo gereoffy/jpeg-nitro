@@ -85,9 +85,9 @@ FRAMEWORKS := -framework Cocoa -framework Metal -framework MetalKit -framework Q
 # compiled with -DNV_DAV1D; libdav1d.a is linked beside it.
 NITROHEVC  ?= 0
 LIB_SRC    := src/nitrojpeg.c src/nitropng.c src/nitropsd.c src/nitroheic.c src/nitrodng.c src/nitrowebp.c \
-              src/nitrotiff.c src/nitrojpx.c src/nitrodicom.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
+              src/nitrotiff.c src/nitrojpx.c src/nitrojxl.c src/nitrodicom.c src/nitro_load.c src/nitro_convert.c $(if $(filter 1,$(NITROHEVC)),src/nitrohevc.c)
 LIB_HDR    := src/nitrojpeg.h src/nitropng.h src/nitropsd.h src/nitroheic.h src/nitrohevc.h src/nitrodng.h src/nitrowebp.h \
-              src/nitrotiff.h src/nitrojpx.h src/nitrodicom.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/nitro_num.h src/heif.h src/tiff.h
+              src/nitrotiff.h src/nitrojpx.h src/nitrojxl.h src/nitrodicom.h src/nitroavif.h src/nitro_load.h src/nitro_convert.h src/nitro_os.h src/nitro_num.h src/heif.h src/tiff.h
 LIB_AVIF    = $(if $(filter 1,$(DAV1D)),src/nitroavif.c)
 LIB_DEFS    = $(if $(filter 1,$(DAV1D)),$(DAV1D_DEFS))
 HEVC_DEFS  := $(if $(filter 1,$(NITROHEVC)),-DNV_NITROHEVC)
@@ -614,6 +614,21 @@ bench/pngverify: bench/pngverify.c build/libnitro.a
 bench/pngrobust: bench/pngrobust.c src/nitropng.c src/nitropng.h src/nitro_os.h
 	$(CC) $(ASAN) bench/pngrobust.c src/nitropng.c $(THREADLIBS) -o $@
 
+# JPEG XL: container tests; jxldec decodes to a 16-bit PAM (bench/jxltest.sh compares with libjxl's djxl)
+build/jxlcontainer-test: bench/jxlcontainer.c src/nitrojxl.c src/nitrojxl.h
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) bench/jxlcontainer.c src/nitrojxl.c $(THREADLIBS) -lm -o $@
+
+build/jxlcontainer-asan: bench/jxlcontainer.c src/nitrojxl.c src/nitrojxl.h
+	@mkdir -p $(@D)
+	$(CC) $(ASAN) bench/jxlcontainer.c src/nitrojxl.c $(THREADLIBS) -lm -o $@
+
+bench/jxldec: bench/jxldec.c src/nitrojxl.c src/nitrojxl.h src/nitro_os.h
+	$(CC) $(CFLAGS) bench/jxldec.c src/nitrojxl.c $(THREADLIBS) -lm -o $@
+
+bench/jxlrobust: bench/jxlrobust.c src/nitrojxl.c src/nitrojxl.h src/nitro_os.h
+	$(CC) $(ASAN) bench/jxlrobust.c src/nitrojxl.c $(THREADLIBS) -lm -o $@
+
 # JPEG 2000 / JPX robustness, including packet headers, tag trees and JP2 boxes
 bench/jpxrobust: bench/jpxrobust.c src/nitrojpx.c src/nitrojpx.h src/nitro_os.h
 	$(CC) $(ASAN) bench/jpxrobust.c src/nitrojpx.c $(THREADLIBS) -lm -o $@
@@ -660,7 +675,7 @@ linux: build/libnitro.a $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/jpxbench bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
+	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/jpxbench bench/jxldec bench/jxlrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
 	  examples/nitroconvert
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
