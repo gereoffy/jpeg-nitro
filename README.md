@@ -30,7 +30,7 @@ Ready-made builds are available on GitHub: [Releases](https://github.com/gereoff
 **macOS:** open the dmg and drag `nitroview.app` to Applications. The dmg is notarized, so it opens
 without a Gatekeeper warning. To make it the default viewer: in the Finder, Get Info on an image →
 Open with → nitroview → Change All. Images or folders can also be dropped on its Dock icon or its
-window, or opened with ⌘O; a running viewer takes the new files.
+window, or opened with O or ⌘O; a running viewer takes the new files.
 
 **Windows:** unzip `nitroview-windows-x64.zip` anywhere, there is nothing to install.
 `nitroview.exe --register` offers it for all image types in Explorer (current user, no admin rights)
@@ -82,7 +82,7 @@ SDL viewers open a file dialog when started without files.
 | E / Shift + E                 | DNG, DICOM: 1/3 EV brighter / darker (up to ±3 EV); vector drawings: change background color; DjVu: smooth the enlarged text's edges (off / smooth / smoother); kept while paging |
 | Del (Mac: also ⌘ + Backspace) | delete: the file is moved to the `.delete` folder next to it (hidden), the next image follows; nothing is lost |
 | U / Ctrl + Z (Mac: ⌘ Z)       | undo the last delete: the file goes back to its place                                                          |
-| F / Enter                     | toggle full screen                                                                                             |
+| F / F11                       | toggle full screen                                                                                             |
 | P                             | pause / resume the slideshow                                                                                   |
 | Esc / Q                       | quit (Esc in full screen: back to a window)                                                                    |
 
@@ -136,7 +136,7 @@ at 60 Hz).
 
 |                       | macOS                          | Windows                        | GNOME                                              | SDL (Linux)                                                    |
 | --------------------- | ------------------------------ | ------------------------------ | -------------------------------------------------- | -------------------------------------------------------------- |
-| open files / a folder | ⌘O, drop on the icon or window | O / Shift + O, drag & drop     | Open dialog, drag & drop                           | O / Shift + O                                                  |
+| open files / a folder | O or ⌘O, drop on icon / window | O / Shift + O, drag & drop     | Open dialog, drag & drop                           | O / Shift + O                                                  |
 | default viewer        | Finder: Change All             | `--register`                   | the Flatpak, or `make gnome-register`              | `--register`                                                   |
 | HEIC                  | yes (VideoToolbox)             | with the HEVC Video Extensions | with codecs-extra                                  | no                                                             |
 | color management     | ICC profiles honored          | sRGB                           | sRGB                                               | sRGB                                                             |

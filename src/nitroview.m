@@ -8,7 +8,7 @@
 //                                 (only in builds with the optional libjpeg-turbo fallback)
 //
 // Keys: PgDn/Space next, PgUp/Backspace previous, Home/End first/last,
-//       +/- zoom, 0 fit, 1 actual size, arrows pan, F or Enter toggle
+//       +/- zoom, 0 fit, 1 actual size, arrows pan, F or F11 toggle
 //       full screen, P pause slideshow,
 //       Esc/Q quit.
 //
@@ -1437,6 +1437,7 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             return;
         case 'w': case 'W': [self windowToImage]; return;
         case 'r': case 'R': [self turnImage:(e.modifierFlags & NSEventModifierFlagShift) ? -1 : 1]; return;
+        case 'o': case 'O': [NSApp sendAction:@selector(openDocument:) to:nil from:self]; return;   // (as the menu's Cmd+O)
         case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; SVG / DXF / CDR: the next (Shift: previous) background
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
             if (cur && cur.vector) {
@@ -1481,7 +1482,8 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
     case 116: [self page:-1]; break;                                               // PgUp
     case 115: [self pageFirst]; break;                                             // Home
     case 119: [self pageLast]; break;                                              // End
-    case 3: case 36: [self.window toggleFullScreen:nil]; break;                    // F Return
+    case 3: case 103: [self.window toggleFullScreen:nil]; break;                   // F F11
+    case 36: if (e.modifierFlags & NSEventModifierFlagCommand) [self.window toggleFullScreen:nil]; break;   // Cmd+Return (Return alone: nothing)
     case 53:                                                                       // Esc
         if (self.window.styleMask & NSWindowStyleMaskFullScreen) [self.window toggleFullScreen:nil];
         else [NSApp terminate:nil];

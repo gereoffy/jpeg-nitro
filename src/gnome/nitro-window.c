@@ -639,7 +639,9 @@ static gboolean key_pressed(GtkEventControllerKey *controller, guint keyval, gui
     case GDK_KEY_Page_Up: case GDK_KEY_BackSpace: page(self, -1); return TRUE;
     case GDK_KEY_Home: page_first(self); return TRUE;
     case GDK_KEY_End: page_last(self); return TRUE;
-    case GDK_KEY_f: case GDK_KEY_F: case GDK_KEY_Return: case GDK_KEY_KP_Enter:
+    case GDK_KEY_f: case GDK_KEY_F: case GDK_KEY_F11: toggle_fullscreen(self); return TRUE;
+    case GDK_KEY_Return: case GDK_KEY_KP_Enter:   // Alt+Enter (Enter alone: nothing)
+        if (!(state & GDK_ALT_MASK)) return FALSE;
         toggle_fullscreen(self); return TRUE;
     case GDK_KEY_Escape:
         if (gtk_window_is_fullscreen(GTK_WINDOW(self))) gtk_window_unfullscreen(GTK_WINDOW(self));

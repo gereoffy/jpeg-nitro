@@ -32,7 +32,7 @@ Kész buildek a GitHubon: [Releases](https://github.com/gereoffy/jpeg-nitro/rele
 **macOS:** nyisd meg a dmg-t, és húzd a `nitroview.app`-ot az Applications mappába. A dmg
 hitelesített (notarized), ezért Gatekeeper-figyelmeztetés nélkül nyílik. Hogy ez legyen az
 alapértelmezett képnéző: a Finderben egy képen Információ → Megnyitás ezzel → nitroview → Az
-összes módosítása. Képeket vagy mappát a Dock-ikonra vagy az ablakra is rá lehet húzni, vagy a ⌘O-val
+összes módosítása. Képeket vagy mappát a Dock-ikonra vagy az ablakra is rá lehet húzni, vagy az O-val, ⌘O-val
 megnyitni; a futó néző átveszi az új fájlokat.
 
 **Windows:** csomagold ki a `nitroview-windows-x64.zip`-et bárhová, telepíteni nem kell semmit. A
@@ -86,7 +86,7 @@ fájlválasztó ablakot nyit.
 | E / Shift + E | DNG, DICOM: 1/3 EV-vel világosabb / sötétebb (±3 EV-ig); vektoros rajzok: háttérszín váltása; DjVu: a felnagyított szöveg éleinek simítása (ki / sima / simább); lapozáskor megmarad |
 | Del (Macen ⌘ + Backspace is) | törlés: a fájl a mellette lévő (rejtett) `.delete` mappába kerül, jön a következő kép; semmi nem vész el |
 | U / Ctrl + Z (Macen ⌘ Z) | az utolsó törlés visszavonása: a fájl visszakerül a helyére |
-| F / Enter | teljes képernyő be/ki |
+| F / F11 | teljes képernyő be/ki |
 | P | diavetítés szüneteltetése / folytatása |
 | Esc / Q | kilépés (Esc teljes képernyőn: vissza ablakba) |
 
@@ -142,7 +142,7 @@ a lapozó gombok közben is működnek, és onnan folytatja. Az időzítés a mo
 
 | | macOS | Windows | GNOME | SDL (Linux) |
 |---|---|---|---|---|
-| fájlok / mappa megnyitása | ⌘O, ráhúzás az ikonra vagy az ablakra | O / Shift + O, ráhúzás | Megnyitás-ablak, ráhúzás | O / Shift + O |
+| fájlok / mappa megnyitása | O vagy ⌘O, ráhúzás az ikonra vagy az ablakra | O / Shift + O, ráhúzás | Megnyitás-ablak, ráhúzás | O / Shift + O |
 | alapértelmezett néző | Finder: Az összes módosítása | `--register` | a Flatpak, vagy `make gnome-register` | `--register` |
 | HEIC | igen (VideoToolbox) | a HEVC Video Extensions bővítménnyel | a codecs-extra kiterjesztéssel | nem |
 | színkezelés | az ICC-profilokat figyelembe veszi | sRGB | sRGB | sRGB |

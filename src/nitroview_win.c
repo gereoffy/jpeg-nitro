@@ -8,7 +8,7 @@
 //
 // Keys, mouse and window behaviour as on macOS (see README): PgDn/Space next,
 // PgUp/Backspace previous, Home/End, +/- zoom, 0 fit to screen, 1..8 zoom 100..800%,
-// W window to image, arrows pan, F/Enter full screen, P pause slideshow, Esc/Q quit,
+// W window to image, arrows pan, F/F11 full screen, P pause slideshow, Esc/Q quit,
 // [ / ] the pages of a multi-page CorelDRAW drawing, O / Shift+O open files / a folder,
 // Del / U delete (into .delete) / undo, E / Shift+E DNG exposure.
 //
@@ -1776,7 +1776,7 @@ static void on_key(WPARAM vk) {
     case VK_DELETE: delete_current(); break;
     case VK_HOME: page_first(); break;
     case VK_END: page_last(); break;
-    case 'F': case VK_RETURN: toggle_fullscreen(); break;
+    case 'F': case VK_F11: toggle_fullscreen(); break;
     case VK_ESCAPE:
         if (V.fullscreen) toggle_fullscreen();
         else DestroyWindow(V.hwnd);
@@ -1978,7 +1978,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_CHAR: on_char((wchar_t)wp); return 0;
     case WM_KEYDOWN: case WM_SYSKEYDOWN:
-        if (msg == WM_SYSKEYDOWN && wp != VK_RETURN) break;   // Alt+F4 & co. stay with Windows
+        if (msg == WM_SYSKEYDOWN) {   // Alt+Enter: full screen (Windows' own key for it); Alt+F4 & co. stay with Windows
+            if (wp != VK_RETURN) break;
+            toggle_fullscreen();
+            return 0;
+        }
         on_key(wp);
         return 0;
     case WM_LBUTTONDOWN:

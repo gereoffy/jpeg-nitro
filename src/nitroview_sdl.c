@@ -2077,7 +2077,8 @@ static void on_key(SDL_Keycode k, SDL_Keymod mod) {
     case SDLK_DELETE: delete_current(); break;
     case SDLK_HOME: page_first(); break;
     case SDLK_END: page_last(); break;
-    case SDLK_F: case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_F11: toggle_fullscreen(); break;
+    case SDLK_F: case SDLK_F11: toggle_fullscreen(); break;
+    case SDLK_RETURN: case SDLK_KP_ENTER: if (mod & SDL_KMOD_ALT) toggle_fullscreen(); break;   // Alt+Enter (Enter alone: nothing)
     case SDLK_O: open_dialog((mod & SDL_KMOD_SHIFT) != 0); break;   // Shift: a folder
     case SDLK_ESCAPE:
         if (V.fullscreen) toggle_fullscreen();
