@@ -940,11 +940,10 @@ static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, unsigned
     }
 }
 
-int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
-                     int (*cancelled)(void *ctx), void *ctx) {
-    if (!d || page < 0 || page >= d->npages || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+// A page for drawing (a user more of it, until page_release): decoded now, or still kept; the pages drawn
+// longest ago are let go, but for those being drawn.
+static Page *page_hold(nitrodjvu *d, int page) {
     Page *pg = &d->pages[page];
-    // decoded now, or still kept: the pages drawn longest ago are let go, but for those being drawn
     pthread_mutex_lock(&d->lock);
     if (!pg->decoded) {
         page_decode(d, pg);
@@ -965,6 +964,22 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
     pg->stamp = ++d->stamp;
     pg->users++;
     pthread_mutex_unlock(&d->lock);
+    return pg;
+}
+static void page_release(nitrodjvu *d, Page *pg) {
+    pthread_mutex_lock(&d->lock);
+    pg->users--;
+    pthread_mutex_unlock(&d->lock);
+}
+
+void nitrodjvu_prepare(nitrodjvu *d, int page) {
+    if (d && page >= 0 && page < d->npages) page_release(d, page_hold(d, page));
+}
+
+int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                     int (*cancelled)(void *ctx), void *ctx) {
+    if (!d || page < 0 || page >= d->npages || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
+    Page *pg = page_hold(d, page);
     int rc = 0;
     const Layer *bg = pg->bg.y ? &pg->bg : NULL, *fg = pg->fg.y ? &pg->fg : NULL;
     // per column: the mask's columns it covers (enlarged: the one at its middle), the layers' pixels
@@ -975,9 +990,7 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
         bx = malloc((size_t)w * 2 * sizeof *bx), fx = bx ? bx + w : NULL;
         if (!c0 || !bx) {
             free(c0), free(bx);
-            pthread_mutex_lock(&d->lock);
-            pg->users--;
-            pthread_mutex_unlock(&d->lock);
+            page_release(d, pg);
             return -1;
         }
         for (int i = 0; i < w; i++) {
@@ -1030,8 +1043,6 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
         }
     }
     free(c0), free(bx);
-    pthread_mutex_lock(&d->lock);
-    pg->users--;
-    pthread_mutex_unlock(&d->lock);
+    page_release(d, pg);
     return rc;
 }

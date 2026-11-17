@@ -3959,11 +3959,9 @@ void trimLists(nitropdf &P, int keep) {
     }
 }
 
-int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
-                    int (*cancelled)(void *ctx), void *ctx) {
-    if (!pdf || page < 0 || page >= (int)pdf->shown.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
-    const std::pair<nitropdf *, int> sp = pdf->shown[page];   // (its document's own page)
-    pdf = sp.first, page = sp.second;
+// The display list of a page of pdf (its own page: not a shown one), built if it is not: the page's content
+// read, once, under the lock. nullptr: cancelled meanwhile (not built: the next call reads it again).
+static std::shared_ptr<PageDL> pageList(nitropdf *pdf, int page, nd::Cancel &cancel) {
     std::shared_ptr<PageDL> list;
     {
         std::lock_guard<std::mutex> g(pdf->dlLock);
@@ -3971,16 +3969,34 @@ int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t
         list->lastUse = ++pdf->useClock;
     }
     PageDL &pg = *list;
-    nd::Cancel cancel{cancelled, ctx};
     if (!pg.built.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> g(pdf->lock);
         if (!pg.built.load(std::memory_order_relaxed)) {
-            if (!buildPage(*pdf, page, pg, cancel)) return 1;   // (not built: the next render reads it again)
+            if (!buildPage(*pdf, page, pg, cancel)) return nullptr;
             pg.bytes = listBytes(pg);
             pg.built.store(true, std::memory_order_release);
             trimLists(*pdf, page);
         }
     }
+    return list;
+}
+
+int nitropdf_prepare(nitropdf *pdf, int page) {
+    if (!pdf || page < 0 || page >= (int)pdf->shown.size()) return -1;
+    const std::pair<nitropdf *, int> sp = pdf->shown[page];
+    nd::Cancel cancel{nullptr, nullptr};
+    return pageList(sp.first, sp.second, cancel) ? 0 : 1;
+}
+
+int nitropdf_render(nitropdf *pdf, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                    int (*cancelled)(void *ctx), void *ctx) {
+    if (!pdf || page < 0 || page >= (int)pdf->shown.size() || !nd::renderArgs(w, h, pitch, scale)) return -1;
+    const std::pair<nitropdf *, int> sp = pdf->shown[page];   // (its document's own page)
+    pdf = sp.first, page = sp.second;
+    nd::Cancel cancel{cancelled, ctx};
+    std::shared_ptr<PageDL> list = pageList(pdf, page, cancel);
+    if (!list) return 1;
+    PageDL &pg = *list;
     // The page is an isolated group (11.4.7): what is drawn in a blend mode blends with what is drawn
     // before it, not with the paper (a light colour in Lighten over nothing is that colour, over white
     // white). Drawn on nothing then, the page composed onto its background at the end.

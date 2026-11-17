@@ -31,6 +31,10 @@ int nitrodjvu_pages(const nitrodjvu *doc);
 // A page's size in its own pixels (turned as its INFO says); render coordinates start at its top left.
 void nitrodjvu_size(const nitrodjvu *doc, int page, double *w, double *h);
 
+// Decodes a page if it is not decoded (or was let go of): what the first render of a page does before
+// it draws. For a caller that wants the two apart (the times of a viewer).
+void nitrodjvu_prepare(nitrodjvu *doc, int page);
+
 // Renders a page into a w x h BGRA buffer (opaque): pixel (i, j) shows the point
 // (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the page; smaller than its pixels, each is
 // the average of the pixels it covers; the pictures are interpolated up to the page. An empty page

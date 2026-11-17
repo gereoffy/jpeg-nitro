@@ -135,6 +135,7 @@ typedef struct {
     ID3D11Texture2D *tex;              // converted RGBA + mips (main thread)
     ID3D11ShaderResourceView *texsrv;
     double read_ms, decode_ms, upload_ms, conv_ms;
+    double load_ms;                    // a drawing's page: getting it ready to draw (in read_ms; not decode_ms: that is the render)
     int mode, bands;
 
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
@@ -785,7 +786,9 @@ static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *ca
     d->pitch[0] = p.pitch;
     d->size = p.pitch * p.h;
     d->mode = p.mode;
-    d->bands = 1;
+    d->bands = p.bands;
+    d->load_ms = p.load_ms;
+    d->read_ms += p.load_ms;
     d->orientation = 1;
     d->vec = nv_vector_ref(v);
     d->background = p.background;
@@ -820,6 +823,9 @@ static Decoded *decode_file(const wchar_t *wpath) {
     NvVector *vec = nv_vector_open(path, data, len);
     free(path);
     if (vec) {
+        double tl = now_ms();   // (a drawing: loading the document counts as reading it; "decode" is its page's render)
+        d->read_ms += tl - t1;
+        t1 = tl;
         buf = decode_vector_page(vec, 0, d, &cap);
         nv_vector_unref(vec);   // (d keeps its own reference)
     } else
@@ -865,7 +871,7 @@ static Decoded *decode_file(const wchar_t *wpath) {
     double t2 = now_ms();
     int up = gpu_upload(d, buf);
     buf_put(buf, cap);
-    d->decode_ms = t2 - t1;
+    d->decode_ms = t2 - t1 - d->load_ms;
     d->upload_ms = now_ms() - t2;
     if (up) {
 #ifdef NV_VECTOR
@@ -1563,7 +1569,7 @@ static Decoded *render_vector_page(NvVector *vec, int page) {   // (a decoder th
     double t2 = now_ms();
     int up = gpu_upload(d, buf);
     buf_put(buf, cap);
-    d->decode_ms = t2 - t1;
+    d->decode_ms = t2 - t1 - d->load_ms;
     d->upload_ms = now_ms() - t2;
     if (up) {
         nv_vector_unref(d->vec);

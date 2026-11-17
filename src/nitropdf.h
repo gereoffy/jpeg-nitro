@@ -35,6 +35,11 @@ void nitropdf_set_background(nitropdf *pdf, int background);
 // Render coordinates start at its top left, y down.
 void nitropdf_size(const nitropdf *pdf, int page, double *w, double *h);
 
+// Reads a page's content into its display list if that is not done (or was let go of): what the first
+// render of a page does before it draws. For a caller that wants the two apart (the times of a
+// viewer). 0: ready.
+int nitropdf_prepare(nitropdf *pdf, int page);
+
 // Renders a page into a w x h BGRA buffer (premultiplied): pixel (i, j) shows the point
 // (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the page, in points. Several renders of the
 // same document may run at once (the bands of one): the first one of a page reads its content.

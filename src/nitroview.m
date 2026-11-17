@@ -80,6 +80,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 - (size_t *)offset;                         // plane offsets in the buffer
 - (size_t *)pitch;
 @property(nonatomic) double read_ms, decode_ms;
+@property(nonatomic) double load_ms;         // a drawing's page: getting it ready to draw (in read_ms; not decode_ms: that is the render)
 @property(nonatomic) int mode, bands;
 @property(nonatomic) id<MTLTexture> texture; // converted RGBA + mips (main thread only)
 @property(nonatomic) NvVector *vector;       // a drawing: the document (a reference), for its pages and sharp zoomed-in views
@@ -395,7 +396,7 @@ static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *po
     d.width = p.w;
     d.height = p.h;
     d.pitch[0] = p.pitch;
-    d.bands = 1;
+    d.bands = p.bands;
     d.vector = nv_vector_ref(v);
     d.vectorScale = p.scale;
     d.pages = nv_vector_pages(v);
@@ -404,6 +405,9 @@ static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *po
     d.colorSpace = srgb_space();
     d.orientation = 1;
     bgra_done(d, [bufs take:px], p.mode, t1);
+    d.load_ms = p.load_ms;
+    d.read_ms += p.load_ms;
+    d.decode_ms -= p.load_ms;
     return d;
 }
 // Another page of the drawing d shows (a new Decoded, nil if it cannot be drawn): [ and ]
@@ -412,7 +416,7 @@ static Decoded *decode_drawing(NvVector *v, int page, Decoded *d, BufferPool *po
 static Decoded *drawing_page(Decoded *d, int page, BufferPool *pool, size_t align) {
     if (!d.vector || page < 0 || page >= d.pages) return nil;
     Decoded *n = decode_drawing(d.vector, page, [Decoded new], pool, align, now_ms());
-    n.read_ms = d.read_ms;
+    if (n) n.read_ms += d.read_ms - d.load_ms;   // (the document's reading, and this page's own)
     return n;
 }
 #endif
@@ -434,7 +438,9 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
     NvVector *v = nv_vector_open(path.fileSystemRepresentation, bytes, len);
     if (v) {
         free(bytes);
-        d = decode_drawing(v, 0, d, pool, align, t1);
+        double t2 = now_ms();   // (a drawing: loading the document counts as reading it; "decode" is its page's render)
+        d.read_ms += t2 - t1;
+        d = decode_drawing(v, 0, d, pool, align, t2);
         nv_vector_unref(v);   // (d keeps its own reference)
         return d;
     }

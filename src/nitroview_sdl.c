@@ -222,6 +222,7 @@ typedef struct {
     int stage;                         // the data is in staging buffer stage-1 (stage_image), not in buf
     double stage_ms;                   // ... copied there in this long (decoder thread)
     double read_ms, decode_ms, upload_ms, conv_ms;
+    double load_ms;                    // a drawing's page: getting it ready to draw (in read_ms; not decode_ms: that is the render)
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
     int frames, frame;                 // a file of several frames: how many, the one decoded
@@ -975,7 +976,9 @@ static uint8_t *decode_vector_page(NvVector *v, int page, Decoded *d, size_t *ca
     d->pitch[0] = p.pitch;
     d->size = p.pitch * p.h;
     d->mode = p.mode;
-    d->bands = 1;
+    d->bands = p.bands;
+    d->load_ms = p.load_ms;
+    d->read_ms += p.load_ms;
     d->orientation = 1;
     d->vec = nv_vector_ref(v);
     d->background = p.background;
@@ -1005,6 +1008,9 @@ static Decoded *decode_file(const char *path, char **error) {
 #ifdef NV_VECTOR
     NvVector *vec = nv_vector_open(path, data, len);
     if (vec) {
+        double t2 = now_ms();   // (a drawing: loading the document counts as reading it; "decode" is its page's render)
+        d->read_ms += t2 - t1;
+        t1 = t2;
         buf = decode_vector_page(vec, 0, d, &cap);
         nv_vector_unref(vec);   // (d keeps its own reference)
     } else
@@ -1048,7 +1054,7 @@ static Decoded *decode_file(const char *path, char **error) {
     }
     d->buf = buf;
     d->cap = cap;
-    d->decode_ms = now_ms() - t1;
+    d->decode_ms = now_ms() - t1 - d->load_ms;
     stage_image(d);
     return d;
 }
@@ -1849,7 +1855,7 @@ static Decoded *render_vector_page(NvVector *vec, int page) {   // (a decoder th
     }
     d->buf = buf;
     d->cap = cap;
-    d->decode_ms = now_ms() - t1;
+    d->decode_ms = now_ms() - t1 - d->load_ms;
     return d;
 }
 

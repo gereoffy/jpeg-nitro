@@ -56,6 +56,7 @@ struct NvVector {
                   int (*cancelled)(void *), void *ctx);
     void (*size)(void *doc, int page, double *w, double *h);
     void (*free)(void *doc);
+    void (*prepare)(void *doc, int page);   // optional: what a page's first render does before it draws (a PDF page's content read, a DjVu page decoded)
     int pages, mode, background;
     _Atomic int refs;
 };
@@ -104,6 +105,7 @@ static int pdf_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t p
     return nitropdf_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
 }
 static void pdf_size(void *doc, int page, double *w, double *h) { nitropdf_size(doc, page, w, h); }
+static void pdf_prepare(void *doc, int page) { nitropdf_prepare(doc, page); }
 static void pdf_free(void *doc) { nitropdf_free(doc); }
 static int type_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                        int (*cancelled)(void *), void *ctx) {
@@ -116,6 +118,7 @@ static int djvu_render(void *doc, int page, uint8_t *bgra, int w, int h, size_t 
     return nitrodjvu_render(doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
 }
 static void djvu_size(void *doc, int page, double *w, double *h) { nitrodjvu_size(doc, page, w, h); }
+static void djvu_prepare(void *doc, int page) { nitrodjvu_prepare(doc, page); }
 static void djvu_free(void *doc) { nitrodjvu_free(doc); }
 
 // The drawings by their content, whatever the name (a file opened or dropped on its own): text, magic numbers,
@@ -289,6 +292,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->render = pdf_render;
         v->size = pdf_size;
         v->free = pdf_free;
+        v->prepare = pdf_prepare;
         v->pages = nitropdf_pages(v->doc);
         v->mode = NV_MODE_PDF;
     }
@@ -306,6 +310,7 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->render = djvu_render;
         v->size = djvu_size;
         v->free = djvu_free;
+        v->prepare = djvu_prepare;
         v->pages = nitrodjvu_pages(v->doc);
         v->mode = NV_MODE_DJVU;
     }
@@ -355,14 +360,17 @@ void nv_vector_set_threads(int n) {
 #endif
 }
 
-int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
-                     int (*cancelled)(void *ctx), void *ctx) {
+// (*used, optional: the bands it was rendered in)
+static int render_bands(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                        int (*cancelled)(void *ctx), void *ctx, int *used) {
     int threads = atomic_load(&g_threads), idle = 0;
     int bands = v->mode == NV_MODE_SVG ? 1 : MIN(threads ? threads : nitro_ncpu(), h / 128);
+    if (used) *used = 1;
     if (bands < 2 || !atomic_compare_exchange_strong(&g_split, &idle, 1))
         return v->render(v->doc, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx);
     int rcs[256] = {0}, *rc = rcs;
     if (bands > 256) bands = 256;
+    if (used) *used = bands;
     nitro_parallel((size_t)bands, ^(size_t i) {
         int b0 = (int)((long)h * (long)i / bands), b1 = (int)((long)h * (long)(i + 1) / bands);
         rc[i] = v->render(v->doc, page, bgra + (size_t)b0 * pitch, w, b1 - b0, pitch, scale, x0, y0 + b0 / scale, cancelled, ctx);
@@ -371,6 +379,11 @@ int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t 
     for (int i = 0; i < bands; i++)
         if (rcs[i]) return rcs[i];
     return 0;
+}
+
+int nv_vector_render(NvVector *v, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
+                     int (*cancelled)(void *ctx), void *ctx) {
+    return render_bands(v, page, bgra, w, h, pitch, scale, x0, y0, cancelled, ctx, NULL);
 }
 
 double nv_vector_page_size(const NvVector *v, int page, int tw, int th, int max_tex, int *pw, int *ph) {
@@ -417,10 +430,15 @@ uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPa
     p->pitch = ((size_t)p->w * 4 + align - 1) / align * align;
     uint8_t *buf = dec->get(p->pitch * p->h, &p->cap, dec->ctx);
     if (!buf) return NULL;
-    if (nv_vector_render(v, page, buf, p->w, p->h, p->pitch, p->scale, 0, 0, NULL, NULL)) {
+    double t0 = nitro_now_ms();
+    if (v->prepare) v->prepare(v->doc, page);
+    double t1 = nitro_now_ms();
+    p->load_ms = t1 - t0;
+    if (render_bands(v, page, buf, p->w, p->h, p->pitch, p->scale, 0, 0, NULL, NULL, &p->bands)) {
         dec->put(buf, p->cap, dec->ctx);
         return NULL;
     }
+    p->render_ms = nitro_now_ms() - t1;
     p->mode = v->mode;
     p->background = v->background;
     return buf;

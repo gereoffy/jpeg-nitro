@@ -88,6 +88,9 @@ typedef struct {
     size_t pitch, cap;      // the rows' pitch; the buffer's size (from get)
     double scale;           // pixels per document unit
     int mode, background;   // nv_vector_mode, nv_vector_background_of
+    int bands;              // the parallel bands it was rendered in (1: in one piece, as an SVG always is)
+    double load_ms;         // what the page took before it could be drawn (a PDF page's content read, a DjVu page decoded: once, then kept) ...
+    double render_ms;       // ... and drawing it (what a zoomed-in view's detail costs again)
 } NvPage;
 uint8_t *nv_vector_render_page(NvVector *v, int page, const NvDecoder *dec, NvPage *p);
 
