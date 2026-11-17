@@ -194,6 +194,17 @@ static void *xmalloc(size_t n, size_t size) {
     return malloc(n * size ? n * size : 1);
 }
 
+// 8 floats: clang's vector extension (AVX2, two SSE or NEON registers, as the target has)
+typedef float vf __attribute__((ext_vector_type(8)));
+typedef int32_t vi __attribute__((ext_vector_type(8)));
+static inline vf vload(const float *p) { vf v; memcpy(&v, p, sizeof v); return v; }
+static inline void vstore(float *p, vf v) { memcpy(p, &v, sizeof v); }
+static inline vf vmin(vf a, vf b) { return a < b ? a : b; }
+static inline vf vmax(vf a, vf b) { return a > b ? a : b; }
+static inline vf vclamp01(vf a) { vf z = 0, o = 1; return vmin(vmax(a, z), o); }
+static inline vf vabs(vf a) { return a < 0 ? -a : a; }
+typedef float vfu __attribute__((ext_vector_type(8), aligned(4)));   // (in unaligned memory)
+
 // ---------------------------------------------------------------------------
 // bit reader: least significant bits first. Reading past the end gives zero bits and counts
 // them; br_overrun() tells whether any of those were actually consumed.
@@ -2233,9 +2244,35 @@ static void dct2(float *out, float *in, int t, int rep) {
 static void idct_rec(float *out, float *in, int t, int rep) { idct_core(out, in, t, rep, t == 2 ? dct2 : idct_rec); }
 static void fdct_rec(float *out, float *in, int t, int rep) { fdct_core(out, in, t, rep, t == 2 ? dct2 : fdct_rec); }
 
+// the same 8 columns at a time (rep = 8 * rv)
+typedef void (*DctHalfV)(vfu *out, vfu *in, int t, int rv);
+static void idct_core_v(vfu *out, vfu *in, int t, int rv, DctHalfV half) {
+    int N = 1 << t;
+    for (int i = 0; i < N / 2; ++i) for (int r = 0; r < rv; ++r) out[i * rv + r] = in[i * 2 * rv + r];
+    for (int r = 0; r < rv; ++r) out[N / 2 * rv + r] = SQRT2 * in[1 * rv + r];
+    for (int i = 1; i < N / 2; ++i)
+        for (int r = 0; r < rv; ++r) out[(N / 2 + i) * rv + r] = in[(i * 2 - 1) * rv + r] + in[(i * 2 + 1) * rv + r];
+    half(in, out, t - 1, rv);
+    half(in + N / 2 * rv, out + N / 2 * rv, t - 1, rv);
+    for (int i = 0; i < N / 2; ++i) {
+        float mult = HALF_SECANTS[N / 2 + i];
+        for (int r = 0; r < rv; ++r) {
+            vf x = in[i * rv + r], y = in[(N / 2 + i) * rv + r] * mult;
+            out[i * rv + r] = x + y;
+            out[(N - i - 1) * rv + r] = x - y;
+        }
+    }
+}
+static void dct2_v(vfu *out, vfu *in, int t, int rv) {
+    (void)t;
+    for (int r = 0; r < rv; ++r) { vf x = in[r], y = in[rv + r]; out[r] = x + y; out[rv + r] = x - y; }
+}
+static void idct_rec_v(vfu *out, vfu *in, int t, int rv) { idct_core_v(out, in, t, rv, t == 2 ? dct2_v : idct_rec_v); }
+
 // in is used as scratch
 static void idct1d(float *out, float *in, int t, int rep) {
     if (t <= 0) memcpy(out, in, sizeof(float) * (size_t)rep);
+    else if (!(rep & 7)) { if (t == 1) dct2_v((vfu *)out, (vfu *)in, 1, rep >> 3); else idct_rec_v((vfu *)out, (vfu *)in, t, rep >> 3); }
     else if (t == 1) dct2(out, in, 1, rep);
     else idct_rec(out, in, t, rep);
 }
@@ -2963,7 +3000,7 @@ typedef struct {
     Code coef[MAX_PASSES];
     // output: the colour planes (VarDCT: padded to blocks), coded size
     float *px[3];
-    int pxw[3], pxh[3];
+    int pxw[3], pxh[3];      // (pxh: the rows kept: all, or a ring of them while the frame is rendered as it goes)
     int err;
 } Frame;
 
@@ -2981,6 +3018,9 @@ static void frame_free(Frame *f) {
     }
     memset(f, 0, sizeof(*f));
 }
+
+// row y of the colour plane c (a ring of rows when the frame is rendered as its groups are decoded)
+static inline float *prow(const Frame *f, int c, int y) { return f->px[c] + (size_t)(y % f->pxh[c]) * f->pxw[c]; }
 
 // the TOC: sizes, an optional permutation; sec[] in logical order
 static int read_toc(Br *br, Frame *f) {
@@ -3504,17 +3544,16 @@ static void hf_reconstruct(Frame *f, int gbx0, int gby0, int gbxs, int gbys, con
                 float *out = c == 1 ? dqy : block;
                 float bias = m->quant_bias[c], bnum = m->quant_bias_num, mc = mul[c];
                 const float *dqc = dq + c * size;
-                for (int k = 0; k < size; k++) {
-                    float v;
-                    int32_t qk = q[k];
-                    if (qk == 0) v = 0;
-                    else if (qk == 1) v = bias;
-                    else if (qk == -1) v = -bias;
-                    else v = (float)qk - bnum / (float)qk;
-                    out[k] = v * dqc[k] * mc;
+                for (int k = 0; k < size; k += 8) {   // (size: a multiple of 64)
+                    vi qi;
+                    memcpy(&qi, q + k, sizeof qi);
+                    vf qf = __builtin_convertvector(qi, vf), aq = vabs(qf);
+                    vf v = aq < 1.5f ? qf * bias : qf - bnum / qf;   // (0, +-1: the biases; libjxl's AdjustQuantBias)
+                    vf r = v * vload(dqc + k) * mc;
+                    if (c == 0) r += kx * vload(dqy + k);
+                    else if (c == 2) r += kb * vload(dqy + k);
+                    memcpy(out + k, &r, sizeof r);
                 }
-                if (c == 0) for (int k = 0; k < size; k++) block[k] += kx * dqy[k];
-                if (c == 2) for (int k = 0; k < size; k++) block[k] += kb * dqy[k];
                 if (!aligned) continue;
                 float *buf = c == 1 ? dqy : block;
                 if (c == 1) { memcpy(block, dqy, sizeof(float) * (size_t)size); buf = block; }
@@ -3542,8 +3581,7 @@ static void hf_reconstruct(Frame *f, int gbx0, int gby0, int gbxs, int gbys, con
                 default: idct2d(buf, tmp, d->log_rows, d->log_cols); break;
                 }
                 int rows = 1 << d->log_rows, cols = 1 << d->log_cols;
-                float *dst = f->px[c] + (size_t)sby * 8 * f->pxw[c] + (size_t)sbx * 8;
-                for (int y = 0; y < rows; y++) memcpy(dst + (size_t)y * f->pxw[c], buf + y * cols, sizeof(float) * (size_t)cols);
+                for (int y = 0; y < rows; y++) memcpy(prow(f, c, sby * 8 + y) + (size_t)sbx * 8, buf + y * cols, sizeof(float) * (size_t)cols);
             }
         }
 }
@@ -3561,30 +3599,40 @@ static inline int mirror(int v, int size) {
     return v;
 }
 
-typedef struct {   // rows [y0, y1) of three planes, each row W + 2 * PAD wide (x from -PAD)
-    int y0, y1, w, h;   // h: the image height (for mirroring)
+typedef struct {   // a tile of three planes: the valid part [x0, x1) x [y0, y1); rows indexed by image x
+    int x0, x1, y0, y1;   // (what a stage has computed)
+    int w, h;             // the image (for mirroring at its edges)
+    int xbase, ybase, stride, nrows;   // the memory: rows ybase ..., columns xbase - PAD ...
     float *mem;
 } Stripe;
 
 static inline float *srow(const Stripe *s, int c, int y) {
     y = mirror(y, s->h);
-    return s->mem + ((size_t)c * (s->y1 - s->y0) + (size_t)(y - s->y0)) * (size_t)(s->w + 2 * PAD) + PAD;
+    return s->mem + ((size_t)c * s->nrows + (size_t)(y - s->ybase)) * (size_t)s->stride + PAD - s->xbase;
 }
-static inline void mirror_x(float *row, int w) {
-    for (int i = 1; i <= PAD; i++) { row[-i] = row[mirror(-i, w)]; row[w - 1 + i] = row[mirror(w - 1 + i, w)]; }
+// the columns past the image's edges, mirrored (for a row computed over [x0, x1))
+static inline void mirror_x(float *row, int x0, int x1, int w) {
+    if (x0 == 0) for (int i = 1; i <= PAD; i++) row[-i] = row[mirror(-i, w)];
+    if (x1 == w) for (int i = 1; i <= PAD; i++) row[w - 1 + i] = row[mirror(w - 1 + i, w)];
 }
 
 static void stage_gaborish(const Frame *f, const Stripe *in, Stripe *out) {
-    int w = out->w;
+    int x0 = out->x0, x1 = out->x1;
     for (int c = 0; c < 3; c++) {
         float w0 = 1.0f, w1 = f->h.gabw[c][0], w2 = f->h.gabw[c][1], sum = w0 + 4 * (w1 + w2);
         w0 /= sum; w1 /= sum; w2 /= sum;
         for (int y = out->y0; y < out->y1; y++) {
             const float *t = srow(in, c, y - 1), *r = srow(in, c, y), *b = srow(in, c, y + 1);
             float *o = srow(out, c, y);
-            for (int x = 0; x < w; x++)
+            int x = x0;
+            for (; x + 8 <= x1; x += 8) {
+                vf v = vload(r + x) * w0 + (vload(r + x - 1) + vload(r + x + 1) + vload(t + x) + vload(b + x)) * w1 +
+                       (vload(t + x - 1) + vload(t + x + 1) + vload(b + x - 1) + vload(b + x + 1)) * w2;
+                vstore(o + x, v);
+            }
+            for (; x < x1; x++)
                 o[x] = r[x] * w0 + (r[x - 1] + r[x + 1] + t[x] + b[x]) * w1 + (t[x - 1] + t[x + 1] + b[x - 1] + b[x + 1]) * w2;
-            mirror_x(o, w);
+            mirror_x(o, x0, x1, out->w);
         }
     }
 }
@@ -3598,12 +3646,49 @@ static inline float epf_inv_sigma(const Frame *f, int bx, int by) {
     return 1.0f / s;
 }
 
+// one pixel of an EPF step (the scalar path: a block's partial rows)
+static void epf_pixel(const Frame *f, const float *rows7[3][7], float *o[3], int x, int y, int step, int nk, const int (*off)[2],
+                      int yb, float sm, float bsm) {
+    static const int PLUS[5][2] = {{0, 0}, {-1, 0}, {0, -1}, {1, 0}, {0, 1}};
+    const FrameHeader *h = &f->h;
+    const float *const *rows[3] = {rows7[0] + 1, rows7[1] + 1, rows7[2] + 1};   // (rows -2 .. 2)
+    float is = epf_inv_sigma(f, x >> 3, y >> 3);
+    if (is < K_MIN_SIGMA) {
+        for (int c = 0; c < 3; c++) o[c][x] = rows[c][2][x];
+        return;
+    }
+    float inv = is * (yb || (x & 7) == 0 || (x & 7) == 7 ? bsm : sm);
+    float sw = 1.0f, sx = rows[0][2][x], sy = rows[1][2][x], sb = rows[2][2][x];
+    for (int k = 0; k < nk; k++) {
+        int dy = off[k][0], dx = off[k][1];
+        float sad = 0;
+        for (int c = 0; c < 3; c++) {
+            float sc = 0;
+            if (step == 2) {
+                sc = fabsf(rows[c][2][x] - rows[c][2 + dy][x + dx]);
+            } else {
+                for (int p = 0; p < 5; p++)
+                    sc += fabsf(rows7[c][3 + PLUS[p][0]][x + PLUS[p][1]] - rows7[c][3 + dy + PLUS[p][0]][x + dx + PLUS[p][1]]);
+            }
+            sad += sc * h->epf_cs[c];
+        }
+        float wt = 1.0f + sad * inv;
+        if (wt <= 0) continue;
+        sw += wt;
+        sx += wt * rows[0][2 + dy][x + dx];
+        sy += wt * rows[1][2 + dy][x + dx];
+        sb += wt * rows[2][2 + dy][x + dx];
+    }
+    float iw = 1.0f / sw;
+    o[0][x] = sx * iw; o[1][x] = sy * iw; o[2][x] = sb * iw;
+}
+
 static void stage_epf(const Frame *f, const Stripe *in, Stripe *out, int step) {
     static const int OFF12[12][2] = {{-2, 0}, {-1, -1}, {-1, 0}, {-1, 1}, {0, -2}, {0, -1}, {0, 1}, {0, 2}, {1, -1}, {1, 0}, {1, 1}, {2, 0}};
     static const int OFF4[4][2] = {{-1, 0}, {0, -1}, {0, 1}, {1, 0}};
     static const int PLUS[5][2] = {{0, 0}, {-1, 0}, {0, -1}, {1, 0}, {0, 1}};
     const FrameHeader *h = &f->h;
-    int w = out->w, nk = step == 0 ? 12 : 4;
+    int x0 = out->x0, x1 = out->x1, nk = step == 0 ? 12 : 4;
     const int (*off)[2] = step == 0 ? OFF12 : OFF4;
     float sm = (step == 0 ? h->epf_s0 : step == 2 ? h->epf_s2 : 1.0f) * 1.65f, bsm = sm * h->epf_bmul;
     for (int y = out->y0; y < out->y1; y++) {
@@ -3613,38 +3698,41 @@ static void stage_epf(const Frame *f, const Stripe *in, Stripe *out, int step) {
         for (int c = 0; c < 3; c++) for (int d = 0; d < 5; d++) rows[c][d] = rows7[c][d + 1];
         float *o[3] = {srow(out, 0, y), srow(out, 1, y), srow(out, 2, y)};
         int yb = (y & 7) == 0 || (y & 7) == 7;
-        for (int x = 0; x < w; x++) {
+        vf smv = yb ? (vf)bsm : (vf){bsm, sm, sm, sm, sm, sm, sm, bsm};   // (block edges: the border multiplier)
+        int x = x0, xa = imin(x1, (x0 + 7) & ~7);
+        for (; x < xa; x++) epf_pixel(f, rows7, o, x, y, step, nk, off, yb, sm, bsm);   // (to the first block's start)
+        for (; x + 8 <= x1; x += 8) {   // one block row at a time: one sigma
             float is = epf_inv_sigma(f, x >> 3, y >> 3);
             if (is < K_MIN_SIGMA) {
-                for (int c = 0; c < 3; c++) o[c][x] = rows[c][2][x];
+                for (int c = 0; c < 3; c++) vstore(o[c] + x, vload(rows[c][2] + x));
                 continue;
             }
-            float inv = is * (yb || (x & 7) == 0 || (x & 7) == 7 ? bsm : sm);
-            float sw = 1.0f, sx = rows[0][2][x], sy = rows[1][2][x], sb = rows[2][2][x];
+            vf inv = is * smv, sw = 1.0f, sx = vload(rows[0][2] + x), sy = vload(rows[1][2] + x), sb = vload(rows[2][2] + x);
             for (int k = 0; k < nk; k++) {
                 int dy = off[k][0], dx = off[k][1];
-                float sad = 0;
+                vf sad = 0;
                 for (int c = 0; c < 3; c++) {
-                    float sc = 0;
+                    vf sc;
                     if (step == 2) {
-                        sc = fabsf(rows[c][2][x] - rows[c][2 + dy][x + dx]);
+                        sc = vabs(vload(rows[c][2] + x) - vload(rows[c][2 + dy] + x + dx));
                     } else {
+                        sc = 0;
                         for (int p = 0; p < 5; p++)
-                            sc += fabsf(rows7[c][3 + PLUS[p][0]][x + PLUS[p][1]] - rows7[c][3 + dy + PLUS[p][0]][x + dx + PLUS[p][1]]);
+                            sc += vabs(vload(rows7[c][3 + PLUS[p][0]] + x + PLUS[p][1]) - vload(rows7[c][3 + dy + PLUS[p][0]] + x + dx + PLUS[p][1]));
                     }
                     sad += sc * h->epf_cs[c];
                 }
-                float wt = 1.0f + sad * inv;
-                if (wt <= 0) continue;
+                vf wt = vmax(1.0f + sad * inv, (vf)0);
                 sw += wt;
-                sx += wt * rows[0][2 + dy][x + dx];
-                sy += wt * rows[1][2 + dy][x + dx];
-                sb += wt * rows[2][2 + dy][x + dx];
+                sx += wt * vload(rows[0][2 + dy] + x + dx);
+                sy += wt * vload(rows[1][2 + dy] + x + dx);
+                sb += wt * vload(rows[2][2 + dy] + x + dx);
             }
-            float iw = 1.0f / sw;
-            o[0][x] = sx * iw; o[1][x] = sy * iw; o[2][x] = sb * iw;
+            vf iw = 1.0f / sw;
+            vstore(o[0] + x, sx * iw); vstore(o[1] + x, sy * iw); vstore(o[2] + x, sb * iw);
         }
-        for (int c = 0; c < 3; c++) mirror_x(o[c], w);
+        for (; x < x1; x++) epf_pixel(f, rows7, o, x, y, step, nk, off, yb, sm, bsm);
+        for (int c = 0; c < 3; c++) mirror_x(o[c], x0, x1, out->w);
     }
 }
 
@@ -3660,9 +3748,20 @@ typedef struct {
     int grey;
 } Colour;
 
+// the sRGB transfer function, libjxl's rational approximation (error ~5e-7); for x in [0, 1]
+static inline vf srgb_v(vf x) {
+    vf r;
+    for (int i = 0; i < 8; i++) r[i] = sqrtf(x[i]);
+    vf p = (((7.352629620e-01f * r + 1.474205315e+00f) * r + 3.903842876e-01f) * r + 5.287254571e-03f) * r - 5.135152395e-04f;
+    vf q = (((2.424867759e-02f * r + 9.258482155e-01f) * r + 1.340816930e+00f) * r + 3.036675394e-01f) * r + 1.004519624e-02f;
+    return x > 0.0031308f ? p / q : x * 12.92f;
+}
 static float srgb_oetf(float v) {
     if (v <= 0.0031308f) return v <= 0 ? 0 : 12.92f * v;
-    return v >= 1 ? 1 : 1.055f * powf(v, 1 / 2.4f) - 0.055f;
+    if (v >= 1) return 1;
+    float r = sqrtf(v);
+    return ((((7.352629620e-01f * r + 1.474205315e+00f) * r + 3.903842876e-01f) * r + 5.287254571e-03f) * r - 5.135152395e-04f) /
+           ((((2.424867759e-02f * r + 9.258482155e-01f) * r + 1.340816930e+00f) * r + 3.036675394e-01f) * r + 1.004519624e-02f);
 }
 static float tf_decode(const Colour *k, float v) {   // to linear (PQ: in units of 10000 nits)
     if (k->gamma_set) return v <= 0 ? 0 : powf(v, k->gamma);
@@ -3790,68 +3889,40 @@ static inline void colour_px(const Colour *k, float *r, float *g, float *b) {
 // ---------------------------------------------------------------------------
 // decoding a frame
 
-static int decode_frame(Frame *f) {
-    FrameHeader *h = &f->h;
-    TRY(lf_global(f));
-    if (h->use_lf_frame) return ERR_UNSUP;
-    size_t nb = (size_t)h->bw * h->bh;
+typedef struct Output Output;
+typedef struct Render Render;
+static int render_rows(const Frame *f, const Output *o, int ry0, int ry1);
+
+// one group: its passes, then (VarDCT) its pixels
+static int decode_group(Frame *f, int g) {
+    const FrameHeader *h = &f->h;
+    int gx = g % h->gx, gy = g / h->gx, err = 0;
+    int gbx0 = gx * (h->gdim >> 3), gby0 = gy * (h->gdim >> 3);
+    int gbxs = imin(h->gdim >> 3, h->bw - gbx0), gbys = imin(h->gdim >> 3, h->bh - gby0);
+    GroupBuf *gb = NULL;
+    int32_t *offs = NULL;
     if (!h->modular) {
-        if ((int64_t)h->bw * h->bh > ((int64_t)1 << 26)) return ERR_LIMIT;
-        for (int c = 0; c < 3; c++) {
-            if (!(f->lf[c] = xcalloc(nb, sizeof(float)))) return ERR_NOMEM;
-            f->pxw[c] = (h->bw >> h->hs[c]) * 8; f->pxh[c] = (h->bh >> h->vs[c]) * 8;
-            if (!(f->px[c] = xmalloc((size_t)f->pxw[c] * f->pxh[c], sizeof(float)))) return ERR_NOMEM;
+        gb = calloc(1, sizeof(GroupBuf));
+        offs = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
+        if (gb) for (int c = 0; c < 3; c++) {
+            gb->coef[c] = xcalloc((size_t)gbxs * gbys * 64, sizeof(int32_t));
+            gb->nz[c] = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
+            if (!gb->coef[c] || !gb->nz[c]) err = ERR_NOMEM;
         }
-        if (!(f->lfidx = xcalloc(nb, 1)) || !(f->acs = xmalloc(nb, 1)) || !(f->qf = xcalloc(nb, sizeof(int32_t))) ||
-            !(f->sharp = xcalloc(nb, 1)) || !(f->ytox = xcalloc((size_t)cdiv(h->bw, 8) * cdiv(h->bh, 8), 1)) ||
-            !(f->ytob = xcalloc((size_t)cdiv(h->bw, 8) * cdiv(h->bh, 8), 1))) return ERR_NOMEM;
-        memset(f->acs, 0xff, nb);
+        if (!gb || !offs) err = ERR_NOMEM;
+        if (!err) err = group_blocks(f, gbx0, gby0, gbxs, gbys, offs);
     }
-    int nlf = h->nlfgroups, *errs = xcalloc((size_t)imax(nlf, h->ngroups), sizeof(int));
-    if (!errs) return ERR_NOMEM;
-    int threads = f->single ? 1 : f->threads;
-    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = lf_group(f, (int)i); });
-    int e = 0;
-    for (int i = 0; i < nlf && !e; i++) e = errs[i];
-    if (!e && !h->modular && !h->skip_smooth) e = smooth_lf(f);
-    if (!e && !h->modular) e = hf_global(f);
-    if (!e) {
-        memset(errs, 0, sizeof(int) * (size_t)h->ngroups);
-        nitro_parallel_n((size_t)h->ngroups, threads, ^(size_t i) {
-            int g = (int)i, gx = g % h->gx, gy = g / h->gx, err = 0;
-            int gbx0 = gx * (h->gdim >> 3), gby0 = gy * (h->gdim >> 3);
-            int gbxs = imin(h->gdim >> 3, h->bw - gbx0), gbys = imin(h->gdim >> 3, h->bh - gby0);
-            GroupBuf *gb = NULL;
-            int32_t *offs = NULL;
-            if (!h->modular) {
-                gb = calloc(1, sizeof(GroupBuf));
-                offs = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
-                if (gb) for (int c = 0; c < 3; c++) {
-                    gb->coef[c] = xcalloc((size_t)gbxs * gbys * 64, sizeof(int32_t));
-                    gb->nz[c] = xmalloc((size_t)gbxs * gbys, sizeof(int32_t));
-                    if (!gb->coef[c] || !gb->nz[c]) err = ERR_NOMEM;
-                }
-                if (!gb || !offs) err = ERR_NOMEM;
-                if (!err) err = group_blocks(f, gbx0, gby0, gbxs, gbys, offs);
-            }
-            for (int p = 0; p < h->npasses && !err; p++) {
-                Br *br = sec_pass(f, p, g);
-                if (!h->modular) err = hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
-                if (!err) err = modular_group(f, br, gx * h->gdim, gy * h->gdim, h->gdim, h->gdim, h->minshift[p], h->maxshift[p],
-                                              1 + 3 * (uint32_t)nlf + NUM_DQ + (uint32_t)(p * h->ngroups + g));
-                if (!err && br_overrun(br)) err = ERR_INVALID;
-            }
-            if (!err && !h->modular) hf_reconstruct(f, gbx0, gby0, gbxs, gbys, offs, gb);
-            if (gb) for (int c = 0; c < 3; c++) { free(gb->coef[c]); free(gb->nz[c]); }
-            free(gb); free(offs);
-            errs[i] = err;
-        });
-        for (int i = 0; i < h->ngroups && !e; i++) e = errs[i];
+    for (int p = 0; p < h->npasses && !err; p++) {
+        Br *br = sec_pass(f, p, g);
+        if (!h->modular) err = hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
+        if (!err) err = modular_group(f, br, gx * h->gdim, gy * h->gdim, h->gdim, h->gdim, h->minshift[p], h->maxshift[p],
+                                      1 + 3 * (uint32_t)h->nlfgroups + NUM_DQ + (uint32_t)(p * h->ngroups + g));
+        if (!err && br_overrun(br)) err = ERR_INVALID;
     }
-    free(errs);
-    if (!e && f->gm.nchan) e = modular_inverse(&f->gm);
-    if (!e && f->gm.nchan != f->nb_color + f->m->num_ec) e = ERR_INVALID;
-    return e;
+    if (!err && !h->modular) hf_reconstruct(f, gbx0, gby0, gbxs, gbys, offs, gb);
+    if (gb) for (int c = 0; c < 3; c++) { free(gb->coef[c]); free(gb->nz[c]); }
+    free(gb); free(offs);
+    return err;
 }
 
 // a custom float (bits, exp_bits) stored in an int to a float (libjxl's int_to_float)
@@ -3881,23 +3952,23 @@ static float int_to_float(int32_t v, int bits, int exp_bits) {
 }
 
 // the colour channel c's row y (coded frame size) as float, before the filters
-static void load_row(const Frame *f, int c, int y, float *dst) {
+static void load_row(const Frame *f, int c, int y, int x0, int x1, float *dst) {   // dst[x0 .. x1)
     const FrameHeader *h = &f->h;
     const Meta *m = f->m;
     int w = h->cw;
     if (!h->modular) {
-        if (!h->hs[c] && !h->vs[c]) { memcpy(dst, f->px[c] + (size_t)y * f->pxw[c], sizeof(float) * (size_t)w); return; }
+        if (!h->hs[c] && !h->vs[c]) { memcpy(dst + x0, prow(f, c, y) + x0, sizeof(float) * (size_t)(x1 - x0)); return; }
         // chroma upsampling (libjxl's fancy upsampling: 3/4, 1/4)
         int cw = cdiv(w, 1 << h->hs[c]), chh = cdiv(h->ch, 1 << h->vs[c]);
         const float *r0, *r1;
         float a = 1.0f, b = 0.0f;
         if (h->vs[c]) {
             int ys = y >> 1, yn = mirror(ys + (y & 1 ? 1 : -1), chh);
-            r0 = f->px[c] + (size_t)ys * f->pxw[c]; r1 = f->px[c] + (size_t)yn * f->pxw[c]; a = 0.75f; b = 0.25f;
+            r0 = prow(f, c, ys); r1 = prow(f, c, yn); a = 0.75f; b = 0.25f;
         } else {
-            r0 = r1 = f->px[c] + (size_t)y * f->pxw[c];
+            r0 = r1 = prow(f, c, y);
         }
-        for (int x = 0; x < w; x++) {
+        for (int x = x0; x < x1; x++) {
             if (h->hs[c]) {
                 int xs = x >> 1, xn = mirror(xs + (x & 1 ? 1 : -1), cw);
                 float v0 = a * r0[xs] + b * r1[xs], v1 = a * r0[xn] + b * r1[xn];
@@ -3913,27 +3984,26 @@ static void load_row(const Frame *f, int c, int y, float *dst) {
     const int32_t *in = ch->p + (size_t)y * ch->w;
     if (m->xyb) {
         float factor = f->mlf[c];
-        if (c == 2) { const int32_t *iy = f->gm.ch[0].p + (size_t)y * ch->w; for (int x = 0; x < w; x++) dst[x] = (float)(in[x] + iy[x]) * factor; }
-        else for (int x = 0; x < w; x++) dst[x] = (float)in[x] * factor;
+        if (c == 2) { const int32_t *iy = f->gm.ch[0].p + (size_t)y * ch->w; for (int x = x0; x < x1; x++) dst[x] = (float)(in[x] + iy[x]) * factor; }
+        else for (int x = x0; x < x1; x++) dst[x] = (float)in[x] * factor;
     } else if (m->exp_bits) {
-        for (int x = 0; x < w; x++) dst[x] = int_to_float(in[x], m->bits, m->exp_bits);
+        for (int x = x0; x < x1; x++) dst[x] = int_to_float(in[x], m->bits, m->exp_bits);
     } else {
         float factor = 1.0f / (float)((1u << m->bits) - 1);
-        for (int x = 0; x < w; x++) dst[x] = (float)in[x] * factor;
+        for (int x = x0; x < x1; x++) dst[x] = (float)in[x] * factor;
     }
 }
 
-typedef struct {
+struct Output {
     int format;   // NJXL_BGRA8, NJXL_RGBA16
     uint8_t *pixels;
     size_t pitch;
     int alpha_ec;   // -1: none
     int premul_in;  // the alpha is associated (premultiplied) already
-} Output;
+};
 
-static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, const float *r, const float *g, const float *b) {
+static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, int x0, int w, const float *r, const float *g, const float *b) {
     const Meta *m = f->m;
-    int w = f->h.cw;
     const int32_t *ain = NULL;
     float afac = 0;
     int abits = 0, aexp = 0;
@@ -3943,7 +4013,52 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, co
         abits = m->ec[o->alpha_ec].bits; aexp = m->ec[o->alpha_ec].exp_bits;
         afac = 1.0f / (float)(((uint64_t)1 << abits) - 1);
     }
-    for (int x = 0; x < w; x++) {
+    int x = x0;   // (columns x0 .. w; x0 is a multiple of 8)
+    if (k->mode != 2) for (; x + 8 <= w; x += 8) {   // 8 pixels at once (the enumerated colour spaces: below)
+        vf R = vload(r + x), G = vload(g + x), B = vload(b + x), A = 1;
+        if (f->h.ycbcr) {
+            vf Yv = G + 128.0f / 255, cb = R, cr = B;
+            R = Yv + 1.402f * cr;
+            G = Yv + (-0.114f * 1.772f / 0.587f) * cb + (-0.299f * 1.402f / 0.587f) * cr;
+            B = Yv + 1.772f * cb;
+        }
+        if (k->mode == 0) {   // XYB to linear sRGB
+            vf gr = G + R - k->cbrt_bias[0], gg = G - R - k->cbrt_bias[1], gb = B - k->cbrt_bias[2];
+            vf mr = gr * gr * gr + k->bias[0], mg = gg * gg * gg + k->bias[1], mb = gb * gb * gb + k->bias[2];
+            R = k->opsin[0][0] * mr + k->opsin[0][1] * mg + k->opsin[0][2] * mb;
+            G = k->opsin[1][0] * mr + k->opsin[1][1] * mg + k->opsin[1][2] * mb;
+            B = k->opsin[2][0] * mr + k->opsin[2][1] * mg + k->opsin[2][2] * mb;
+            if (k->hdr) {
+                R *= k->peak; G *= k->peak; B *= k->peak;
+                vf mx = vmax(vmax(R, G), B), lw2 = k->peak * k->peak;
+                vf sc = mx > 0 ? (1 + mx / lw2) / (1 + mx) : 1;
+                R *= sc; G *= sc; B *= sc;
+            }
+            R = srgb_v(vclamp01(R)); G = srgb_v(vclamp01(G)); B = srgb_v(vclamp01(B));
+        }
+        R = vclamp01(R); G = vclamp01(G); B = vclamp01(B);
+        if (ain) {
+            if (aexp) for (int i = 0; i < 8; i++) A[i] = int_to_float(ain[x + i], abits, aexp);
+            else { vi ai; memcpy(&ai, ain + x, sizeof ai); A = __builtin_convertvector(ai, vf) * afac; }
+            A = vclamp01(A);
+            if (!o->premul_in) { R *= A; G *= A; B *= A; }
+            else { R = vmin(R, A); G = vmin(G, A); B = vmin(B, A); }
+        }
+        if (o->format == NJXL_BGRA8) {
+            vi bi = __builtin_convertvector(B * 255 + 0.5f, vi), gi = __builtin_convertvector(G * 255 + 0.5f, vi);
+            vi ri = __builtin_convertvector(R * 255 + 0.5f, vi), ai = __builtin_convertvector(A * 255 + 0.5f, vi);
+            uint32_t px[8];
+            for (int i = 0; i < 8; i++) px[i] = (uint32_t)bi[i] | (uint32_t)gi[i] << 8 | (uint32_t)ri[i] << 16 | (uint32_t)ai[i] << 24;
+            memcpy(o->pixels + (size_t)y * o->pitch + (size_t)x * 4, px, sizeof px);
+        } else {
+            vi ri = __builtin_convertvector(R * 65535 + 0.5f, vi), gi = __builtin_convertvector(G * 65535 + 0.5f, vi);
+            vi bi = __builtin_convertvector(B * 65535 + 0.5f, vi), ai = __builtin_convertvector(A * 65535 + 0.5f, vi);
+            uint16_t px[32];
+            for (int i = 0; i < 8; i++) { px[4 * i] = (uint16_t)ri[i]; px[4 * i + 1] = (uint16_t)gi[i]; px[4 * i + 2] = (uint16_t)bi[i]; px[4 * i + 3] = (uint16_t)ai[i]; }
+            memcpy((uint16_t *)(o->pixels + (size_t)y * o->pitch) + (size_t)x * 4, px, sizeof px);
+        }
+    }
+    for (; x < w; x++) {
         float R = r[x], G = g[x], B = b[x], A = 1;
         if (f->h.ycbcr) {
             float Yv = G + 128.0f / 255, cb = R, cr = B;
@@ -3969,47 +4084,170 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, co
     }
 }
 
-// filters, colour conversion and output, stripe by stripe
-static int render_frame(const Frame *f, const Output *o) {
+// the restoration filters' stages, the colour conversion
+struct Render { Colour k; int nst, radii[4], kind[4], border; };
+
+static void render_init(const Frame *f, Render *rd) {
     const FrameHeader *h = &f->h;
-    int W = h->cw, H = h->ch;
-    int radii[4], nst = 0, kind[4];
-    if (h->gab) { kind[nst] = -1; radii[nst++] = 1; }
-    if (h->epf_iters >= 3) { kind[nst] = 0; radii[nst++] = 3; }
-    if (h->epf_iters >= 1) { kind[nst] = 1; radii[nst++] = 2; }
-    if (h->epf_iters >= 2) { kind[nst] = 2; radii[nst++] = 1; }
-    int B = 0;
-    for (int i = 0; i < nst; i++) B += radii[i];
-    Colour k;
-    colour_init(f->m, &k);
-    enum { SH = 64 };
-    int nstripes = cdiv(H, SH), *errs = xcalloc((size_t)nstripes, sizeof(int));
+    memset(rd, 0, sizeof(*rd));
+    if (h->gab) { rd->kind[rd->nst] = -1; rd->radii[rd->nst++] = 1; }
+    if (h->epf_iters >= 3) { rd->kind[rd->nst] = 0; rd->radii[rd->nst++] = 3; }
+    if (h->epf_iters >= 1) { rd->kind[rd->nst] = 1; rd->radii[rd->nst++] = 2; }
+    if (h->epf_iters >= 2) { rd->kind[rd->nst] = 2; rd->radii[rd->nst++] = 1; }
+    for (int i = 0; i < rd->nst; i++) rd->border += rd->radii[i];
+    colour_init(f->m, &rd->k);
+}
+
+// filters, colour conversion and output of the tile [x0, x1) x [y0, y1)
+static int render_tile(const Frame *f, const Render *rd, const Output *o, int x0, int x1, int y0, int y1) {
+    int W = f->h.cw, H = f->h.ch, B = rd->border;
+    int ybase = imax(0, y0 - B), xbase = imax(0, x0 - B);
+    int nrows = imin(H, y1 + B) - ybase, stride = imin(W, x1 + B) - xbase + 2 * PAD;
+    size_t planes = (size_t)nrows * (size_t)stride;
+    float *mem = xmalloc(planes * 6, sizeof(float));
+    if (!mem) return ERR_NOMEM;
+    Stripe s[2];
+    for (int i = 0; i < 2; i++)
+        s[i] = (Stripe){xbase, imin(W, x1 + B), ybase, imin(H, y1 + B), W, H, xbase, ybase, stride, nrows, mem + planes * 3 * i};
+    for (int c = 0; c < 3; c++)
+        for (int y = s[0].y0; y < s[0].y1; y++) { float *r = srow(&s[0], c, y); load_row(f, c, y, s[0].x0, s[0].x1, r); mirror_x(r, s[0].x0, s[0].x1, W); }
+    int cur = 0, rem = B;
+    for (int i = 0; i < rd->nst; i++) {
+        rem -= rd->radii[i];
+        Stripe *in = &s[cur], *out = &s[cur ^ 1];
+        out->y0 = imax(0, y0 - rem); out->y1 = imin(H, y1 + rem);
+        out->x0 = imax(0, x0 - rem); out->x1 = imin(W, x1 + rem);
+        if (rd->kind[i] < 0) stage_gaborish(f, in, out); else stage_epf(f, in, out, rd->kind[i]);
+        cur ^= 1;
+    }
+    for (int y = y0; y < y1; y++) emit_row(f, &rd->k, o, y, x0, x1, srow(&s[cur], 0, y), srow(&s[cur], 1, y), srow(&s[cur], 2, y));
+    free(mem);
+    return 0;
+}
+
+enum { TW = 512, TH = 64 };   // render tiles (the last ones take the remainder: at least TW x TH unless the image is smaller)
+static int tiles_x(int w) { return imax(1, w / TW); }
+static int tiles_y(int h) { return imax(1, h / TH); }
+static void tile_rect(int w, int h, int ntx, int nty, int i, int *x0, int *x1, int *y0, int *y1) {   // (rows relative)
+    int tx = i % ntx, ty = i / ntx;
+    *x0 = tx * TW; *x1 = tx == ntx - 1 ? w : *x0 + TW;
+    *y0 = ty * TH; *y1 = ty == nty - 1 ? h : *y0 + TH;
+}
+
+// rows [ry0, ry1), tile by tile in parallel
+static int render_rows(const Frame *f, const Output *o, int ry0, int ry1) {
+    Render rd;
+    render_init(f, &rd);
+    const Render *rdp = &rd;
+    int ntx = tiles_x(f->h.cw), nty = tiles_y(ry1 - ry0), n = ntx * nty, *errs = xcalloc((size_t)n, sizeof(int));
     if (!errs) return ERR_NOMEM;
-    const int *radiip = radii, *kindp = kind;
-    nitro_parallel_n((size_t)nstripes, f->threads, ^(size_t si) {
-        const int *radii = radiip, *kind = kindp;
-        int y0 = (int)si * SH, y1 = imin(H, y0 + SH);
-        int rows = imin(H, y1 + B) - imax(0, y0 - B);
-        size_t rowlen = (size_t)W + 2 * PAD, planes = (size_t)rows * rowlen;
-        float *mem = xmalloc(planes * 6, sizeof(float));
-        if (!mem) { errs[si] = ERR_NOMEM; return; }
-        Stripe s[2] = {{imax(0, y0 - B), imin(H, y1 + B), W, H, mem}, {0, 0, W, H, mem + planes * 3}};
-        for (int c = 0; c < 3; c++)
-            for (int y = s[0].y0; y < s[0].y1; y++) { float *r = srow(&s[0], c, y); load_row(f, c, y, r); mirror_x(r, W); }
-        int cur = 0, rem = B;
-        for (int i = 0; i < nst; i++) {
-            rem -= radii[i];
-            Stripe *in = &s[cur], *out = &s[cur ^ 1];
-            out->y0 = imax(0, y0 - rem); out->y1 = imin(H, y1 + rem);
-            if (kind[i] < 0) stage_gaborish(f, in, out); else stage_epf(f, in, out, kind[i]);
-            cur ^= 1;
-        }
-        for (int y = y0; y < y1; y++) emit_row(f, &k, o, y, srow(&s[cur], 0, y), srow(&s[cur], 1, y), srow(&s[cur], 2, y));
-        free(mem);
+    nitro_parallel_n((size_t)n, f->threads, ^(size_t i) {
+        int x0, x1, y0, y1;
+        tile_rect(f->h.cw, ry1 - ry0, ntx, nty, (int)i, &x0, &x1, &y0, &y1);
+        errs[i] = render_tile(f, rdp, o, x0, x1, ry0 + y0, ry0 + y1);
     });
     int e = 0;
-    for (int i = 0; i < nstripes && !e; i++) e = errs[i];
+    for (int i = 0; i < n && !e; i++) e = errs[i];
     free(errs);
+    return e;
+}
+
+enum { RING = 5, LAG = 2 };   // group rows of colour planes kept while a VarDCT frame is rendered as it goes
+
+// The groups and the rendering as one loop ("waterfront"): group row r, then the band of rows that
+// row r - LAG + 1 completed (band b: rows b * gdim - border ...: the filters reach border rows down). A
+// band's tiles wait for the group rows around it, a group for the bands that read the ring rows it
+// overwrites; each waits only for items before it, which the pool has already started.
+static int decode_wave(Frame *f, const Output *o, int threads) {
+    const FrameHeader *h = &f->h;
+    int gy = h->gy, gx = h->gx, G = h->gdim;
+    Render rd;
+    render_init(f, &rd);
+    int border = rd.border + 2;   // (+2: the chroma upsampling's row)
+    int *band_y0 = xmalloc((size_t)gy + 1, sizeof(int)), *band_tiles = xmalloc((size_t)gy, sizeof(int));
+    int *task = xmalloc((size_t)gy * gx + (size_t)gy * 64 * 64 + 1, sizeof(int)), ntask = 0;
+    int *rowdone = xcalloc((size_t)gy, sizeof(int)), *banddone = xcalloc((size_t)gy, sizeof(int));
+    int *failed = xcalloc(1, sizeof(int)), *err = xcalloc(1, sizeof(int));
+    int e = 0;
+    if (!band_y0 || !band_tiles || !task || !rowdone || !banddone || !failed || !err) e = ERR_NOMEM;
+    for (int b = 0; b <= gy && !e; b++) band_y0[b] = b == gy ? h->ch : imax(0, b * G - border);
+    int ntx = tiles_x(h->cw);
+    for (int b = 0; b < gy && !e; b++) band_tiles[b] = o ? ntx * tiles_y(band_y0[b + 1] - band_y0[b]) : 0;
+    // the order: groups of row r, then band r - LAG's tiles (when they come, the rows they wait for have
+    // long been started); the last bands at the end. (task: group g, or -1 - (band << 16 | tile))
+    for (int r = 0; r < gy + LAG && !e; r++) {
+        if (r < gy) for (int c = 0; c < gx; c++) task[ntask++] = r * gx + c;
+        if (r >= LAG) for (int t = 0; t < band_tiles[r - LAG]; t++) task[ntask++] = -1 - ((r - LAG) << 16 | t);
+    }
+    if (!e) {
+        const Render *rdp = &rd;
+        nitro_parallel_n((size_t)ntask, threads, ^(size_t i) {
+            int t = task[i];
+            if (t >= 0) {   // a group: the ring rows it overwrites must have been rendered
+                int r = t / gx;
+                for (int k = r - RING; k <= r - RING + 1; k++)
+                    if (k >= 0) while (__atomic_load_n(&banddone[k], __ATOMIC_ACQUIRE) < band_tiles[k] && !__atomic_load_n(failed, __ATOMIC_RELAXED)) nitro_yield();
+                int ge = __atomic_load_n(failed, __ATOMIC_RELAXED) ? ERR_INVALID : decode_group(f, t);
+                if (ge) { __atomic_store_n(err, ge, __ATOMIC_RELAXED); __atomic_store_n(failed, 1, __ATOMIC_RELEASE); }
+                __atomic_add_fetch(&rowdone[r], 1, __ATOMIC_RELEASE);
+            } else {   // a band's tile: the group rows its rows and their border lie in
+                int b = (-1 - t) >> 16, ti = (-1 - t) & 0xffff;
+                for (int k = imax(0, b - 1); k <= imin(gy - 1, b + 1); k++)
+                    while (__atomic_load_n(&rowdone[k], __ATOMIC_ACQUIRE) < gx && !__atomic_load_n(failed, __ATOMIC_RELAXED)) nitro_yield();
+                if (!__atomic_load_n(failed, __ATOMIC_RELAXED)) {
+                    int x0, x1, y0, y1;
+                    tile_rect(h->cw, band_y0[b + 1] - band_y0[b], ntx, tiles_y(band_y0[b + 1] - band_y0[b]), ti, &x0, &x1, &y0, &y1);
+                    int re = render_tile(f, rdp, o, x0, x1, band_y0[b] + y0, band_y0[b] + y1);
+                    if (re) { __atomic_store_n(err, re, __ATOMIC_RELAXED); __atomic_store_n(failed, 1, __ATOMIC_RELEASE); }
+                }
+                __atomic_add_fetch(&banddone[b], 1, __ATOMIC_RELEASE);
+            }
+        });
+        e = *err;
+    }
+    free(band_y0); free(band_tiles); free(task); free(rowdone); free(banddone); free(failed); free(err);
+    return e;
+}
+
+// Decodes the frame and, with o, renders it into the output. A VarDCT frame whose extra channels
+// need no transform at the end is rendered as it goes (decode_wave), its colour planes a ring of rows.
+static int decode_frame(Frame *f, const Output *o) {
+    FrameHeader *h = &f->h;
+    TRY(lf_global(f));
+    if (h->use_lf_frame) return ERR_UNSUP;
+    size_t nb = (size_t)h->bw * h->bh;
+    int threads = f->single ? 1 : f->threads;
+    int wave = !h->modular && !f->gm.ntr && RING * h->gdim < h->ch && h->gy < (1 << 15) && tiles_x(h->cw) * tiles_y(h->gdim + 64) < (1 << 16);
+    if (!h->modular) {
+        if ((int64_t)h->bw * h->bh > ((int64_t)1 << 26)) return ERR_LIMIT;
+        for (int c = 0; c < 3; c++) {
+            if (!(f->lf[c] = xcalloc(nb, sizeof(float)))) return ERR_NOMEM;
+            f->pxw[c] = (h->bw >> h->hs[c]) * 8; f->pxh[c] = (h->bh >> h->vs[c]) * 8;
+            if (wave) f->pxh[c] = (RING * h->gdim) >> h->vs[c];   // (a multiple of the rows a group row has)
+            if (!(f->px[c] = xmalloc((size_t)f->pxw[c] * f->pxh[c], sizeof(float)))) return ERR_NOMEM;
+        }
+        if (!(f->lfidx = xcalloc(nb, 1)) || !(f->acs = xmalloc(nb, 1)) || !(f->qf = xcalloc(nb, sizeof(int32_t))) ||
+            !(f->sharp = xcalloc(nb, 1)) || !(f->ytox = xcalloc((size_t)cdiv(h->bw, 8) * cdiv(h->bh, 8), 1)) ||
+            !(f->ytob = xcalloc((size_t)cdiv(h->bw, 8) * cdiv(h->bh, 8), 1))) return ERR_NOMEM;
+        memset(f->acs, 0xff, nb);
+    }
+    int nlf = h->nlfgroups, *errs = xcalloc((size_t)imax(nlf, h->ngroups), sizeof(int));
+    if (!errs) return ERR_NOMEM;
+    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = lf_group(f, (int)i); });
+    int e = 0;
+    for (int i = 0; i < nlf && !e; i++) e = errs[i];
+    if (!e && !h->modular && !h->skip_smooth) e = smooth_lf(f);
+    if (!e && !h->modular) e = hf_global(f);
+    if (!e && wave) {
+        e = decode_wave(f, o, threads);
+    } else if (!e) {
+        nitro_parallel_n((size_t)h->ngroups, threads, ^(size_t i) { errs[i] = decode_group(f, (int)i); });
+        for (int i = 0; i < h->ngroups && !e; i++) e = errs[i];
+    }
+    free(errs);
+    if (!e && f->gm.nchan) e = modular_inverse(&f->gm);
+    if (!e && f->gm.nchan != f->nb_color + f->m->num_ec) e = ERR_INVALID;
+    if (!e && o && !wave) e = render_rows(f, o, 0, h->ch);
     return e;
 }
 
@@ -4113,14 +4351,11 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
             FrameHeader *h = &f.h;
             int full = h->x0 == 0 && h->y0 == 0 && h->w == m->width && h->h == m->height && h->blend.mode == BLEND_REPLACE;
             if (!full) e = ERR_UNSUP;   // layers, cropped animation frames
-            if (!e) e = decode_frame(&f);
-            if (!e && (h->is_last || h->duration)) {
-                Output o = {format, pixels, pitch, -1, 0};
-                for (int i = 0; i < m->num_ec; i++)
-                    if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
-                e = render_frame(&f, &o);
-                done = 1;
-            }
+            done = h->is_last || h->duration;   // (shown: the frame rendered; the others decoded only)
+            Output o = {format, pixels, pitch, -1, 0};
+            for (int i = 0; i < m->num_ec; i++)
+                if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
+            if (!e) e = decode_frame(&f, done ? &o : NULL);
         } else if (!e && f.h.is_last) {
             e = ERR_INVALID;
         }
