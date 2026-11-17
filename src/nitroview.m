@@ -477,6 +477,7 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
         switch (img.mode) {   // the colour space the pixel values are in (the display layer is tagged with it)
         case MODE_NITRODNG: case NV_MODE_NITRODICOM: d.colorSpace = srgb_space(); break;
         case MODE_NITROTIFF: case MODE_NITROHEIC: case MODE_NITROAVIF: case MODE_NITROWEBP:
+        case NV_MODE_NITROJXL:   // (JPEG XL: the profile its pixels were left in, else sRGB; not ImageIO's own space)
             d.colorSpace = icc_space(img.icc, img.icc_len);   // (scanners: Adobe RGB ...)
             break;
         default: d.colorSpace = image_colorspace(data);   // PNG, PSD, JPEG: ImageIO reads the profile
