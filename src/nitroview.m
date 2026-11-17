@@ -1621,10 +1621,6 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
 #endif
 
 - (void)drawInMTKView:(MTKView *)view {
-    MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
-    if (!rpd) return;
-    rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-    rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
     id<MTLCommandBuffer> cb = [_gpu.queue commandBuffer];
     Decoded *d = [_loader get:_index];
     id<MTLTexture> tex = d ? [_gpu textureFor:d commandBuffer:cb] : nil;
@@ -1638,6 +1634,21 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
             previous = YES;
         }
     }
+    // colour management: the compositor converts from the image's space to the display. Set before the
+    // drawable is taken: it keeps the space the layer had then (a new image's first frame in the last one's)
+    if (tex) {
+        CGColorSpaceRef ics = (__bridge CGColorSpaceRef)(d.colorSpace ?: srgb_space());
+        if (!view.colorspace || !CFEqual(view.colorspace, ics)) {
+            view.colorspace = ics;
+            // (the layer takes the new space when Core Animation commits it: this frame may still go out in
+            // the old one, so once more after that)
+            dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+        }
+    }
+    MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
+    if (!rpd) { [cb commit]; return; }   // (the textures' uploads)
+    rpd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
     id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rpd];
     if (tex) {
         if (!previous && _shownIndex != _index) {
@@ -1646,9 +1657,6 @@ static int detail_cancelled(void *flag) { return atomic_load((_Atomic int *)flag
             [self scheduleSlide];
         }
         DrawParams p = [self drawParams:d view:view.drawableSize];
-        // colour management: the compositor converts from the image's space to the display
-        CGColorSpaceRef ics = (__bridge CGColorSpaceRef)(d.colorSpace ?: srgb_space());
-        if (!view.colorspace || !CFEqual(view.colorspace, ics)) view.colorspace = ics;
         [re setRenderPipelineState:_gpu.draw];
         [re setVertexBytes:&p length:sizeof p atIndex:0];
         [re setFragmentBytes:&p length:sizeof p atIndex:0];
