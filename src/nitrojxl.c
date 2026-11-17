@@ -4354,6 +4354,7 @@ struct Output {
     size_t pitch;
     int alpha_ec;   // -1: none
     int premul_in;  // the alpha is associated (premultiplied) already
+    int ox, oy, cw, ch;   // the frame's place on the canvas, the canvas's size (the rest is clipped)
 };
 
 static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, int x0, int w, const float *r, const float *g, const float *b) {
@@ -4367,7 +4368,7 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
         abits = m->ec[o->alpha_ec].bits; aexp = m->ec[o->alpha_ec].exp_bits;
         afac = 1.0f / (float)(((uint64_t)1 << abits) - 1);
     }
-    int x = x0;   // (columns x0 .. w; x0 is a multiple of 8)
+    int x = x0;   // (columns x0 .. w)
     if (k->mode != 2) for (; x + 8 <= w; x += 8) {   // 8 pixels at once (the enumerated colour spaces: below)
         vf R = vload(r + x), G = vload(g + x), B = vload(b + x), A = 1;
         if (f->h.ycbcr) {
@@ -4402,13 +4403,13 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
             vi bi = __builtin_convertvector(B * 255 + 0.5f, vi), gi = __builtin_convertvector(G * 255 + 0.5f, vi);
             vi ri = __builtin_convertvector(R * 255 + 0.5f, vi), ai = __builtin_convertvector(A * 255 + 0.5f, vi);
             vi px = bi | gi << 8 | ri << 16 | ai << 24;   // (each 0 .. 255)
-            memcpy(o->pixels + (size_t)y * o->pitch + (size_t)x * 4, &px, sizeof px);
+            memcpy(o->pixels + (size_t)(y + o->oy) * o->pitch + (size_t)(x + o->ox) * 4, &px, sizeof px);
         } else {
             vi ri = __builtin_convertvector(R * 65535 + 0.5f, vi), gi = __builtin_convertvector(G * 65535 + 0.5f, vi);
             vi bi = __builtin_convertvector(B * 65535 + 0.5f, vi), ai = __builtin_convertvector(A * 65535 + 0.5f, vi);
             uint16_t px[32];
             for (int i = 0; i < 8; i++) { px[4 * i] = (uint16_t)ri[i]; px[4 * i + 1] = (uint16_t)gi[i]; px[4 * i + 2] = (uint16_t)bi[i]; px[4 * i + 3] = (uint16_t)ai[i]; }
-            memcpy((uint16_t *)(o->pixels + (size_t)y * o->pitch) + (size_t)x * 4, px, sizeof px);
+            memcpy((uint16_t *)(o->pixels + (size_t)(y + o->oy) * o->pitch) + (size_t)(x + o->ox) * 4, px, sizeof px);
         }
     }
     for (; x < w; x++) {
@@ -4428,10 +4429,10 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
             else { R = R < A ? R : A; G = G < A ? G : A; B = B < A ? B : A; }
         }
         if (o->format == NJXL_BGRA8) {
-            uint8_t *p = o->pixels + (size_t)y * o->pitch + (size_t)x * 4;
+            uint8_t *p = o->pixels + (size_t)(y + o->oy) * o->pitch + (size_t)(x + o->ox) * 4;
             p[0] = (uint8_t)(B * 255 + 0.5f); p[1] = (uint8_t)(G * 255 + 0.5f); p[2] = (uint8_t)(R * 255 + 0.5f); p[3] = (uint8_t)(A * 255 + 0.5f);
         } else {
-            uint16_t *p = (uint16_t *)(o->pixels + (size_t)y * o->pitch) + (size_t)x * 4;
+            uint16_t *p = (uint16_t *)(o->pixels + (size_t)(y + o->oy) * o->pitch) + (size_t)(x + o->ox) * 4;
             p[0] = (uint16_t)(R * 65535 + 0.5f); p[1] = (uint16_t)(G * 65535 + 0.5f); p[2] = (uint16_t)(B * 65535 + 0.5f); p[3] = (uint16_t)(A * 65535 + 0.5f);
         }
     }
@@ -4454,6 +4455,8 @@ static void render_init(const Frame *f, Render *rd) {
 // filters, colour conversion and output of the tile [x0, x1) x [y0, y1)
 static int render_tile(const Frame *f, const Render *rd, const Output *o, int x0, int x1, int y0, int y1) {
     int W = f->h.cw, H = f->h.ch, B = rd->border;
+    int ex0 = imax(x0, -o->ox), ex1 = imin(x1, o->cw - o->ox), ey0 = imax(y0, -o->oy), ey1 = imin(y1, o->ch - o->oy);   // (on the canvas)
+    if (ex0 >= ex1 || ey0 >= ey1) return 0;
     int ybase = imax(0, y0 - B), xbase = imax(0, x0 - B);
     int nrows = imin(H, y1 + B) - ybase, stride = imin(W, x1 + B) - xbase + 2 * PAD;
     size_t planes = (size_t)nrows * (size_t)stride;
@@ -4473,7 +4476,7 @@ static int render_tile(const Frame *f, const Render *rd, const Output *o, int x0
         if (rd->kind[i] < 0) stage_gaborish(f, in, out); else stage_epf(f, in, out, rd->kind[i]);
         cur ^= 1;
     }
-    for (int y = y0; y < y1; y++) emit_row(f, &rd->k, o, y, x0, x1, srow(&s[cur], 0, y), srow(&s[cur], 1, y), srow(&s[cur], 2, y));
+    for (int y = ey0; y < ey1; y++) emit_row(f, &rd->k, o, y, ex0, ex1, srow(&s[cur], 0, y), srow(&s[cur], 1, y), srow(&s[cur], 2, y));
     pool_put(f->pool, mem);
     return 0;
 }
@@ -4666,6 +4669,15 @@ void njxl_info_free(njxl_info *info) {
     if (info) { free(info->icc); memset(info, 0, sizeof(*info)); }
 }
 
+// frames drawn on the canvas side by side (their rectangles do not overlap); freed
+static int decode_batch(Frame *fr, Output *out, int *ferr, int n, int threads) {
+    if (n == 1) ferr[0] = decode_frame(&fr[0], &out[0]);
+    else nitro_parallel_n((size_t)n, threads, ^(size_t i) { fr[i].threads = 1; ferr[i] = decode_frame(&fr[i], &out[i]); });
+    int e = 0;
+    for (int i = 0; i < n; i++) { if (!e) e = ferr[i]; frame_free(&fr[i]); }
+    return e;
+}
+
 int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, void *pixels, size_t pitch, njxl_info *info) {
     Image im;
     njxl_info tmp;
@@ -4693,28 +4705,64 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
         if (!e) e = read_toc(br, &f);
         frame_free(&f);
     }
-    int done = 0, nframes = 0;
+    // Frames before the shown one (layers, tiles: zero duration) are drawn on the canvas in turn. Supported:
+    // replacing their rectangle, the rest being the canvas as it is (the reference slot the frame takes it
+    // from holds the canvas, or is still empty and so is the canvas). Small frames (one group: tiles) that
+    // do not overlap are decoded side by side, a batch on the worker pool.
+    enum { BATCH = 64 };
+    Frame *fr = xcalloc(BATCH, sizeof(Frame));
+    Output *out = xcalloc(BATCH, sizeof(Output));
+    int *ferr = xcalloc(BATCH, sizeof(int));
+    if (!fr || !out || !ferr) e = ERR_NOMEM;
+    int done = 0, nframes = 0, drawn = 0, nb = 0;
+    int slot[4] = {0, 0, 0, 0};   // 0: empty, 1: the canvas, 2: something else
     while (!e && !done) {
-        Frame f;
-        memset(&f, 0, sizeof f);
-        f.m = m; f.threads = threads;
-        e = frame_header(br, m, m->width, m->height, &f.h);
-        if (!e) e = read_toc(br, &f);
+        Frame *f = &fr[nb];
+        memset(f, 0, sizeof *f);
+        f->m = m; f->threads = threads;
+        e = frame_header(br, m, m->width, m->height, &f->h);
+        if (!e) e = read_toc(br, f);
         if (!e && ++nframes > 100000) e = ERR_LIMIT;
-        if (!e && (f.h.type == FT_REGULAR || f.h.type == FT_SKIPPROG)) {
-            FrameHeader *h = &f.h;
-            int full = h->x0 == 0 && h->y0 == 0 && h->w == m->width && h->h == m->height && h->blend.mode == BLEND_REPLACE;
-            if (!full) e = ERR_UNSUP;   // layers, cropped animation frames
-            done = h->is_last || h->duration;   // (shown: the frame rendered; the others decoded only)
-            Output o = {format, pixels, pitch, -1, 0};
+        const FrameHeader *h = &f->h;
+        int keep = 0;
+        if (!e && (h->type == FT_REGULAR || h->type == FT_SKIPPROG)) {
+            int full = h->x0 <= 0 && h->y0 <= 0 && (int64_t)h->x0 + h->w >= m->width && (int64_t)h->y0 + h->h >= m->height;
+            int replace = h->blend.mode == BLEND_REPLACE;
+            for (int i = 0; i < m->num_ec; i++)
+                replace &= h->ec_blend[i].mode == BLEND_REPLACE && h->ec_blend[i].src == h->blend.src;
+            int src = h->blend.src & 3;
+            if (!replace || (!full && !(slot[src] == 1 || (slot[src] == 0 && !drawn)))) e = ERR_UNSUP;   // blended layers
+            done = h->is_last || h->duration;
+            Output o = {format, pixels, pitch, -1, 0, h->x0, h->y0, m->width, m->height};
             for (int i = 0; i < m->num_ec; i++)
                 if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
-            if (!e) e = decode_frame(&f, done ? &o : NULL);
-        } else if (!e && f.h.is_last) {
+            if (!e && !full && !drawn)   // (the canvas outside the first frames: transparent black)
+                for (int y = 0; y < m->height; y++) memset((uint8_t *)pixels + (size_t)y * pitch, 0, (size_t)m->width * (format == NJXL_RGBA16 ? 8 : 4));
+            drawn = 1;
+            for (int i = 0; i < 4; i++) if (slot[i] == 1) slot[i] = 2;
+            if (!h->is_last && (h->duration == 0 || h->save_as_ref)) slot[h->save_as_ref & 3] = 1;
+            out[nb] = o;
+            keep = !e;
+        } else if (!e && h->is_last) {
             e = ERR_INVALID;
         }
-        frame_free(&f);
+        if (!keep) { frame_free(f); continue; }
+        // the batch first when the frame overlaps one of them (or it is no tile)
+        int lone = !f->single, flush = lone && nb;
+        for (int i = 0; i < nb && !flush; i++) {
+            const FrameHeader *g = &fr[i].h;
+            flush = h->x0 < (int64_t)g->x0 + g->w && g->x0 < (int64_t)h->x0 + h->w &&
+                    h->y0 < (int64_t)g->y0 + g->h && g->y0 < (int64_t)h->y0 + h->h;
+        }
+        if (flush) {
+            e = decode_batch(fr, out, ferr, nb, threads);
+            fr[0] = fr[nb]; out[0] = out[nb]; nb = 0;
+        }
+        nb++;
+        if (!e && (done || lone || nb == BATCH)) { e = decode_batch(fr, out, ferr, nb, threads); nb = 0; }
     }
+    for (int i = 0; i < nb; i++) frame_free(&fr[i]);
+    free(fr); free(out); free(ferr);
     image_free(&im);
     if (e) njxl_info_free(info);
     return e;

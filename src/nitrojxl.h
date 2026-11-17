@@ -7,8 +7,9 @@
 // EPF; alpha; 8..16 bit integer and float samples; the embedded ICC profile.
 // XYB images are given in sRGB (HDR ones tone mapped), images in an enumerated colour space
 // converted to sRGB; with an ICC profile the pixels stay in its space (njxl_info.icc).
-// Not supported (NJXL_UNSUPPORTED): patches, splines, upsampling, LF frames, layers and
-// cropped / blended animation frames (an animation gives its first frame), noise is left out.
+// Layers and tiles (frames that replace a rectangle of the image) are put together.
+// Not supported (NJXL_UNSUPPORTED): patches, splines, upsampling, LF frames, blended layers
+// (an animation gives its first frame), noise is left out.
 #ifndef NITROJXL_H
 #define NITROJXL_H
 

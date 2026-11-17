@@ -18,7 +18,7 @@ a külön fájlokból álló (indirect) dokumentumok.
 
 Kész: JPEG XL (2026-11-17, nitrojxl): VarDCT és Modular, alfa, 8–32 bites egész és lebegőpontos minták, átkódolt JPEG-ek
 (YCbCr), ICC; a Lightroom-exportok pixelpontosak a libjxl-hez képest (a HDR tónusleképezve). Kimaradt: patch-ek, spline-ok,
-felskálázás, rétegek / vágott vagy keverő animációs képkockák, LF-képkockák (progresszív DC), a zaj kirajzolása; a DICOM-ba
+felskálázás, keverő rétegek / animációs képkockák (a csempézett, egymás mellé tett képkockák mennek), LF-képkockák (progresszív DC), a zaj kirajzolása; a DICOM-ba
 ágyazott JPEG XL. Sebesség (16 szál, a libjxl-hez képest): a nagy veszteséges Lightroom-export 1,0–1,1×, a kisebb
 XYB-s VarDCT és az átkódolt JPEG 1,6–1,9×, a veszteségmentes 1,1–1,7× lassabb; az ImageIO-nál mindenhol gyorsabb.
 Vektoros IDCT (kifejtett 8/16/32 pontos, 8×8-as blokkos transzponálás) / szűrők / színkonverzió / króma-felskálázás,
