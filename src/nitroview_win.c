@@ -2182,6 +2182,9 @@ static int send_to_running(wchar_t **args, int n) {
 static int run_bench(FileList *fl) {
     double tr = 0, td = 0, tu = 0, tg = 0, tc = 0, t0 = now_ms();
     g_bench_split = 1;
+#ifdef NV_VECTOR
+    nv_vector_set_target(4096, 4096);   // the drawings as large as a page is rendered in full, like on a 4K screen (a small page is 1024 pixels else: little to time)
+#endif
     for (int i = 0; i < fl->n; i++) {
         Decoded *d = decode_file(fl->v[i]);
         if (!d) { printf("FAILED %s\n", utf8(fl->v[i])); continue; }
@@ -2189,9 +2192,9 @@ static int run_bench(FileList *fl) {
         texture_for(d);
         gpu_finish();
         double g = now_ms() - g0;
-        printf("%-36.36s %5dx%-5d read %5.1f  decode %6.1f  upload %5.1f  convert %5.1f  mips %5.1f ms  (%s)\n",
+        printf("%-36.36s %5dx%-5d read %5.1f  decode %6.1f  upload %5.1f  convert %5.1f  mips %5.1f ms  (%s %d bands)\n",
                utf8(base_name(fl->v[i])), d->width, d->height, d->read_ms, d->decode_ms, d->upload_ms, d->conv_ms,
-               g - d->conv_ms, mode_name(d->mode));
+               g - d->conv_ms, mode_name(d->mode), d->bands);
         tc += d->conv_ms;
         tr += d->read_ms;
         td += d->decode_ms;
@@ -2281,6 +2284,7 @@ static void usage(void) {
         "                        (waits for slow images, stops at the last one; P pauses)\n"
         "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
         "  --bench               load all files without a window, print timings\n"
+        "                        (drawings 4096 pixels on their long side)\n"
         "  --selftest            compare the GPU output with Windows' own decoding (WIC)\n"
         "  -n, --new-window      don't pass the files to a running nitroview\n"
         "  --register            offer nitroview for JPEG, PNG, PSD ... in Explorer (current user)\n"

@@ -1778,6 +1778,9 @@ static NSArray<NSString *> *collect_files(NSArray<NSString *> *args) {
 }
 
 static int run_bench(NSArray<NSString *> *files, GPU *gpu) {
+#ifdef NV_VECTOR
+    nv_vector_set_target(4096, 4096);   // the drawings as large as a page is rendered in full, like on a 4K screen (a small page is 1024 pixels else: little to time)
+#endif
     BufferPool *pool = gpu.pool;
     double tr = 0, td = 0, tg = 0, t0 = now_ms();
     for (NSString *f in files) {
@@ -1790,8 +1793,8 @@ static int run_bench(NSArray<NSString *> *files, GPU *gpu) {
             [cb commit];
             [cb waitUntilCompleted];
             double g = now_ms() - g0;
-            printf("%-45s %5dx%-5d read %5.1f  decode %6.1f  gpu %5.1f ms  (%s)\n", f.lastPathComponent.UTF8String, d.width,
-                   d.height, d.read_ms, d.decode_ms, g, mode_name(d.mode));
+            printf("%-45s %5dx%-5d read %5.1f  decode %6.1f  gpu %5.1f ms  (%s %d bands)\n", f.lastPathComponent.UTF8String,
+                   d.width, d.height, d.read_ms, d.decode_ms, g, mode_name(d.mode), d.bands);
             tr += d.read_ms; td += d.decode_ms; tg += g;
             [pool putTexture:d.texture];
             d.texture = nil;
@@ -2250,6 +2253,7 @@ int main(int argc, const char **argv) {
                 "                        (waits for slow images, stops at the last one; P pauses)\n"
                 "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
                 "  --bench               load all files without a window, print timings\n"
+                "                        (drawings 4096 pixels on their long side)\n"
                 "  --selftest            compare GPU colour conversion with libjpeg-turbo%s\n"
                 "  -h, --help            this help\n"
                 "\n"
