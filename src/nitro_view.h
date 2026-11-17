@@ -8,6 +8,23 @@
 #pragma once
 #include <math.h>
 
+// An EXIF orientation (1..8) with the image turned by quarter turns clockwise after it (negative: counter-
+// clockwise): the orientation that shows it so. The viewers' keys R / Shift+R turn the image on screen (a
+// photo whose orientation is missing or wrong); nothing is written into the file.
+static inline int nv_orientation_turn(int orientation, int quarter_turns) {
+    static const unsigned char clockwise[9] = {6, 6, 7, 8, 5, 2, 3, 4, 1};   // (index 0: as 1)
+    int o = orientation >= 1 && orientation <= 8 ? orientation : 1;
+    for (int n = quarter_turns & 3; n; n--) o = clockwise[o];
+    return o;
+}
+// The point (cx, cy) of an image shown iw x ih, after the image is turned a quarter clockwise (delta 1) or
+// counter-clockwise (-1): the centre of a zoomed-in view stays on the same detail.
+static inline void nv_turn_point(double iw, double ih, int delta, double *cx, double *cy) {
+    double x = *cx, y = *cy;
+    if (delta > 0) *cx = ih - y, *cy = x;
+    else *cx = y, *cy = iw - x;
+}
+
 // The image's size as displayed: EXIF orientations 5..8 turn it by 90 degrees.
 static inline void nv_display_size(int w, int h, int orientation, double *iw, double *ih) {
     int swap = orientation >= 5;

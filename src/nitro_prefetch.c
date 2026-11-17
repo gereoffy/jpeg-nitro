@@ -303,6 +303,7 @@ int nv_loader_replace_image(NvLoader *L, unsigned serial, void *image) {
     int stale = L->ops.stale && L->ops.stale(image, L->ops.ctx);   // (outdated by a later key press)
     for (int c = 0; c < L->ncache && !stale; c++)
         if (L->cache[c].serial == serial) {
+            if (L->ops.inherit) L->ops.inherit(L->cache[c].image, image, L->ops.ctx);
             bury_locked(L, L->cache[c].image);
             L->cache[c].image = image;
             L->cache[c].serial = ++L->nserial;

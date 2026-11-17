@@ -225,6 +225,7 @@ typedef struct {
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
     int frames, frame;                 // a file of several frames: how many, the one decoded
+    int turn;                          // quarter turns clockwise the user gave it on screen (keys R / Shift+R)
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
     NvVector *vec;                     // a drawing: the document (this is its page `page`) ...
@@ -1089,6 +1090,8 @@ static int stale_vector(const Decoded *d) {   // a drawing over another backgrou
 static void *ld_decode(void *path, char **error, void *ctx) { return decode_file(path, error); }
 static void ld_free(void *image, void *ctx) { decoded_free(image); }
 static int ld_stale(const void *image, void *ctx) { return stale_dng(image) || stale_vector(image); }
+// (the same file decoded again, another exposure or frame: the turn the user gave it on screen stays)
+static void ld_inherit(const void *old, void *image, void *ctx) { ((Decoded *)image)->turn = ((const Decoded *)old)->turn; }
 static void *ld_path_dup(void *path, void *ctx) { return SDL_strdup(path); }
 static void ld_path_free(void *path, void *ctx) { SDL_free(path); }
 static const char *ld_path_name(void *path, void *ctx) { return path; }
@@ -1097,7 +1100,7 @@ static void ld_notify(int index, void *ctx) { post(EV_DECODED, index, NULL); }
 static int loader_start(char **files, int n) {   // (the loader owns the list from now on)
     // (the decoder thread at normal priority: raised, its workers would push the main thread's
     // upload and drawing behind the images decoded ahead; on Linux SDL's "high" is nice -10)
-    static const NvLoaderOps ops = {ld_decode, ld_free, ld_stale, ld_path_dup, ld_path_free, ld_path_name, ld_notify, NULL, NULL};
+    static const NvLoaderOps ops = {ld_decode, ld_free, ld_stale, ld_path_dup, ld_path_free, ld_path_name, ld_notify, NULL, NULL, ld_inherit};
     L = nv_loader_new(&ops, (void **)files, n);
     return L ? 0 : -1;
 }
@@ -1216,8 +1219,9 @@ static float density(void) {
     return k > 0 ? k : 1;
 }
 
-static void display_size(const Decoded *d, double *iw, double *ih) {   // after EXIF rotation
-    nv_display_size(d->width, d->height, d->orientation, iw, ih);
+static int shown_orientation(const Decoded *d) { return nv_orientation_turn(d->orientation, d->turn); }   // EXIF's, and the user's turns
+static void display_size(const Decoded *d, double *iw, double *ih) {   // after the rotation
+    nv_display_size(d->width, d->height, shown_orientation(d), iw, ih);
 }
 
 static void redraw(void) { V.dirty = 1; }
@@ -1389,6 +1393,24 @@ static void fit_to_screen(void) {
     V.fit_screen = 1;
     update_vector_target();
     zoom_fit();
+}
+
+// R / Shift+R: the image on screen turned a quarter clockwise / counter-clockwise (one whose EXIF orientation is
+// missing or wrong: a document photographed on a table). Only the view: nothing is written, and the turn lasts
+// while the decoded image is kept. (Not a drawing's page: its sharp detail is rendered unturned.)
+static void turn_image(int delta) {
+    Decoded *d = loader_get(V.index);
+    if (!d) return;
+#ifdef NV_VECTOR
+    if (d->vec) return;
+#endif
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    d->turn = (d->turn + delta) & 3;
+    nv_turn_point(iw, ih, delta, &V.cx, &V.cy);
+    fit_window_to(d);
+    update_title();
+    redraw();
 }
 
 static void window_to_image(void) {
@@ -1691,7 +1713,7 @@ static DrawParams draw_params(const Decoded *d, double s) {
     double x0 = round(V.vw / 2.0 - cx * s), y0 = round(V.vh / 2.0 - cy * s);
     DrawParams p = {{(float)(x0 / V.vw * 2 - 1), (float)(1 - y0 / V.vh * 2)},
                     {(float)(2 * iw * s / V.vw), (float)(2 * ih * s / V.vh)},
-                    d->orientation, s >= 2 && s == floor(s)};
+                    shown_orientation(d), s >= 2 && s == floor(s)};
     return p;
 }
 
@@ -1994,6 +2016,8 @@ static void on_char(char ch) {   // zoom keys by character (key_char): any keybo
         if (cur) set_scale(ch - '0', cur, 0, 0);
         break;
     case 'w': case 'W': window_to_image(); break;
+    case 'r': turn_image(1); break;
+    case 'R': turn_image(-1); break;
     case 'u': case 'U': undo_delete(); break;
     case 'e': case 'E':   // DNG: brighter / (E) darker, 1/3 EV; a drawing: the next / (E) previous background
 #ifdef NV_VECTOR

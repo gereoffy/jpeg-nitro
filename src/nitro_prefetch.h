@@ -41,6 +41,9 @@ typedef struct {
     // Called on the decoder thread when it starts (its priority); may be NULL.
     void (*thread_started)(void *ctx);
     void *ctx;
+    // Main thread, in nv_loader_replace_image: new_image takes the place of old_image (the same file decoded
+    // again): what the user set on the old one in the view (its turn) is taken over. May be NULL.
+    void (*inherit)(const void *old_image, void *new_image, void *ctx);
 } NvLoaderOps;
 
 // Starts the decoder thread with the file list (takes it: the array from malloc, the paths freed

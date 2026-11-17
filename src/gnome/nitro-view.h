@@ -24,6 +24,9 @@ void nitro_view_zoom_by(NitroView *self, double factor, double x, double y, gboo
 void nitro_view_toggle_actual_size(NitroView *self, double x, double y);
 void nitro_view_pan_pixels(NitroView *self, double dx, double dy);
 void nitro_view_pan_fraction(NitroView *self, double fx, double fy);
+// The image is about to be set again turned a quarter (delta 1: clockwise, -1: back): the centre of a
+// zoomed-in view goes with it.
+void nitro_view_turn(NitroView *self, int delta);
 
 gboolean nitro_view_is_zoomed(NitroView *self);
 gboolean nitro_view_get_fit_screen(NitroView *self);

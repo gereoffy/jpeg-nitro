@@ -87,6 +87,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 @property(nonatomic) int pages, page;        // a multi-page document: page count, the page shown (from 0)
 @property(nonatomic) int ev3;                // a DNG: the exposure correction it was developed with (1/3 EV)
 @property(nonatomic) int frames, frame;      // a file of several frames: how many, the one decoded
+@property(nonatomic) int turn;               // quarter turns clockwise the user gave it on screen (keys R / Shift+R)
 @property(nonatomic) int background;         // a drawing: the background it was drawn over (nv_vector_background)
 @property(nonatomic) int limited;            // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 @end
@@ -661,6 +662,8 @@ static void ld_free(void *image, void *ctx) {   // main thread: buffers and text
     d.buffer = nil;
 }
 static int ld_stale(const void *image, void *ctx) { return stale_setting((__bridge Decoded *)image); }
+// (the same file decoded again, another exposure or frame: the turn the user gave it on screen stays)
+static void ld_inherit(const void *old, void *image, void *ctx) { ((__bridge Decoded *)image).turn = ((__bridge Decoded *)old).turn; }
 static void *ld_path_dup(void *path, void *ctx) { return (__bridge_retained void *)(__bridge NSString *)path; }
 static void ld_path_free(void *path, void *ctx) { CFRelease(path); }
 static const char *ld_path_name(void *path, void *ctx) { return ((__bridge NSString *)path).fileSystemRepresentation; }
@@ -686,7 +689,7 @@ static void **retained_paths(NSArray<NSString *> *files) {   // the list as the 
     _pool = pool;
     _align = align;
     NvLoaderOps ops = {ld_decode, ld_free, ld_stale, ld_path_dup, ld_path_free, ld_path_name, ld_notify, ld_thread_started,
-                       (__bridge void *)self};
+                       (__bridge void *)self, ld_inherit};
     void **p = retained_paths(files);
     _L = p ? nv_loader_new(&ops, p, (int)files.count) : NULL;
     if (!_L) {
@@ -1122,6 +1125,21 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
 #endif
 }
 
+// R / Shift+R: the image on screen turned a quarter clockwise / counter-clockwise (one whose EXIF orientation is
+// missing or wrong: a document photographed on a table). Only the view: nothing is written, and the turn lasts
+// while the decoded image is kept. (Not a drawing's page: its sharp detail is rendered unturned.)
+- (void)turnImage:(int)delta {
+    Decoded *d = [_loader get:_index];
+    if (!d || d.vector) return;
+    double iw, ih;
+    display_size(d, &iw, &ih);
+    d.turn = (d.turn + delta) & 3;
+    nv_turn_point(iw, ih, delta, &_cx, &_cy);
+    [self fitWindowTo:d];
+    [self updateTitle];
+    self.needsDisplay = YES;
+}
+
 - (void)windowToImage {
     _userSized = NO;
     _fitScreen = NO;
@@ -1158,8 +1176,9 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
 
 // --- zoom / pan --- (view size is a parameter so --zoomtest can drive it offscreen)
 
-static void display_size(Decoded *d, double *iw, double *ih) {   // after EXIF rotation
-    nv_display_size(d.width, d.height, d.orientation, iw, ih);
+static int shown_orientation(Decoded *d) { return nv_orientation_turn(d.orientation, d.turn); }   // EXIF's, and the user's turns
+static void display_size(Decoded *d, double *iw, double *ih) {   // after the rotation
+    nv_display_size(d.width, d.height, shown_orientation(d), iw, ih);
 }
 
 - (BOOL)isFullScreen { return (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0; }
@@ -1365,7 +1384,7 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
     double s = [self placement:d view:ds x0:&x0 y0:&y0];
     DrawParams p = {{(float)(x0 / ds.width * 2 - 1), (float)(1 - y0 / ds.height * 2)},
                     {(float)(2 * iw * s / ds.width), (float)(2 * ih * s / ds.height)},
-                    (uint32_t)d.orientation, (uint32_t)(s >= 2 && s == floor(s) && !d.vector)};
+                    (uint32_t)shown_orientation(d), (uint32_t)(s >= 2 && s == floor(s) && !d.vector)};
     return p;
 }
 
@@ -1411,6 +1430,7 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             if (cur) [self zoomTo:[ch characterAtIndex:0] - '0' image:cur view:self.drawableSize];
             return;
         case 'w': case 'W': [self windowToImage]; return;
+        case 'r': case 'R': [self turnImage:(e.modifierFlags & NSEventModifierFlagShift) ? -1 : 1]; return;
         case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; SVG / DXF / CDR: the next (Shift: previous) background
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
             if (cur && cur.vector) {

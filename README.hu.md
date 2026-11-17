@@ -82,6 +82,7 @@ fájlválasztó ablakot nyit.
 | 2 … 8 | 200% … 800%, pixelpontosan: egy képpixel = N×N képernyőpixel |
 | ← → ↑ ↓ | a nagyított kép mozgatása (Shifttel fél képernyőnyi lépés) |
 | W | vissza a kép saját méretére (kis képek 100%-on), az ablak újra követi a képek méretét |
+| R / Shift + R | a kép elforgatása a képernyőn 90°-kal jobbra / balra (ha a fotó tájolása hiányzik vagy hibás); a fájl nem változik |
 | E / Shift + E | DNG, DICOM: 1/3 EV-vel világosabb / sötétebb (±3 EV-ig); vektoros rajzok: háttérszín váltása; lapozáskor megmarad |
 | Del (Macen ⌘ + Backspace is) | törlés: a fájl a mellette lévő (rejtett) `.delete` mappába kerül, jön a következő kép; semmi nem vész el |
 | U / Ctrl + Z (Macen ⌘ Z) | az utolsó törlés visszavonása: a fájl visszakerül a helyére |

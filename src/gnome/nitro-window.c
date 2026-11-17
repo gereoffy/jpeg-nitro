@@ -4,6 +4,7 @@
 #include "nitro-loader.h"
 #include "nitro-view.h"
 #include "../nitro_load.h"   // the image extensions (shared by the viewers)
+#include "../nitro_view.h"   // nv_orientation_turn
 
 #include <math.h>
 #include <string.h>
@@ -42,6 +43,8 @@ struct _NitroWindow {
 
     GPtrArray *deleted;            // Del: for undo (DeletedFile)
     gboolean sized;                // the window was sized to the first image
+    gpointer turned;               // R / Shift+R: the file (of the list) the user turned on screen ...
+    int turn;                      // ... by this many quarter turns clockwise
     guint present_source;          // shows the window if the first image takes long
 };
 
@@ -296,7 +299,15 @@ static void show_current(NitroWindow *self) {
         return;
     }
 
-    nitro_view_set_image(self->view, image->texture, image->vector, image->page, image->vector_scale, image->orientation);
+    // (the turn the user gave this file on screen, R / Shift+R: on top of its EXIF orientation)
+    int turn = !image->vector && self->turned == g_ptr_array_index(self->files, self->index) ? self->turn : 0;
+    if (turn & 1) {
+        int t = image->width;
+        image->width = image->height;
+        image->height = t;
+    }
+    nitro_view_set_image(self->view, image->texture, image->vector, image->page, image->vector_scale,
+                         nv_orientation_turn(image->orientation, turn));
     if (!self->sized) {   // the first image: the window to its size, then shown
         self->sized = TRUE;
         size_window(self, FALSE);
@@ -465,6 +476,19 @@ static void show_page(NitroWindow *self, int delta) {
     g_task_set_task_data(task, j, page_job_free);
     g_task_run_in_thread(task, page_thread);
     g_object_unref(task);
+}
+
+// R / Shift+R: the image on screen turned a quarter clockwise / counter-clockwise (one whose EXIF orientation is
+// missing or wrong: a document photographed on a table). Only the view: nothing is written, and the turn is
+// forgotten when another image is turned. (Not a drawing's page: its sharp detail is rendered unturned.)
+static void turn_image(NitroWindow *self, int delta) {
+    if (!self->image || self->image->vector || !self->files || self->index < 0 || self->index >= (int)self->files->len) return;
+    gpointer file = g_ptr_array_index(self->files, self->index);
+    if (self->turned != file) self->turn = 0;
+    self->turned = file;
+    self->turn = (self->turn + delta) & 3;
+    nitro_view_turn(self->view, delta);
+    show_current(self);
 }
 
 // E / Shift+E: a DNG brighter / darker by 1/3 EV (up to 3 EV), a drawing over the next / previous
@@ -636,6 +660,9 @@ static gboolean key_pressed(GtkEventControllerKey *controller, guint keyval, gui
         undo_delete(self); return TRUE;
     case GDK_KEY_e: case GDK_KEY_E:
         display_setting(self, shift ? -1 : 1); return TRUE;
+    case GDK_KEY_r: case GDK_KEY_R:
+        if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK)) return FALSE;
+        turn_image(self, shift ? -1 : 1); return TRUE;
     case GDK_KEY_bracketleft:
         show_page(self, -1); return TRUE;
     case GDK_KEY_bracketright:

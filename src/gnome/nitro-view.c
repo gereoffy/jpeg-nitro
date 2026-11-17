@@ -355,6 +355,11 @@ void nitro_view_set_image(NitroView *self, GdkTexture *texture, NitroVector *vec
     emit_view_changed(self);
 }
 
+void nitro_view_turn(NitroView *self, int delta) {
+    g_return_if_fail(NITRO_IS_VIEW(self));
+    if (has_image(self)) nv_turn_point(image_w(self), image_h(self), delta, &self->center_x, &self->center_y);
+}
+
 void nitro_view_clear(NitroView *self) {
     g_return_if_fail(NITRO_IS_VIEW(self));
     g_clear_object(&self->texture);
