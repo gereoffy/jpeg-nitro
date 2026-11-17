@@ -213,6 +213,7 @@ typedef struct {
     uint8_t cdc[NJ_MAXC], cac[NJ_MAXC];   // table selectors per frame component
     size_t scan_start;            // first entropy-coded byte
     int progressive;              // SOF2: decoded by nj_decode_prog
+    int seq12;                    // a 12-bit sequential JPEG nj_decode_planes16 can decode
     size_t sos_pos;               // the first SOS marker
     uint8_t comp_id[NJ_MAXC];
 #ifdef NJ_REFERENCE
@@ -273,7 +274,8 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
         case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC5: case 0xC6: case 0xC7:
         case 0xC9: case 0xCA: case 0xCB: case 0xCD: case 0xCE: case 0xCF:
             if (sl < 6) return -1;
-            baseline = (m == 0xC0 || m == 0xC1) && seg[0] == 8;
+            baseline = (m == 0xC0 || m == 0xC1) && (seg[0] == 8 || seg[0] == 12);
+            fi->bits = seg[0];
             progressive = m == 0xC2 && seg[0] == 8;
             fi->height = (int)be16(seg + 1);
             fi->width = (int)be16(seg + 3);
@@ -343,7 +345,8 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
             // scans are checked by nj_decode_prog, which fails on anything it can't do)
             int ok = baseline && ns == fi->ncomp;
             int ss = seg[1 + 2 * ns], se = seg[2 + 2 * ns], a = seg[3 + 2 * ns];
-            if (ss != 0 || se != 63 || a != 0) ok = 0;
+            if (ss != 0 || (se != 63 && se != 0) || a != 0) ok = 0;   // (Se 0: old encoders' sequential scans, as libjpeg
+                                                                      // takes them: all 64 coefficients)
             if (progressive) ok = j->progressive = 1;
             // colour space: only YCbCr (or gray) is "supported" (the viewers' planar path); an RGB one
             // is decoded all the same for a caller that takes its planes as R, G, B (info.rgb)
@@ -400,8 +403,9 @@ static int parse(const uint8_t *d, size_t len, Jpeg *j) {
 #endif
             if (hdr_append(j, sof, sof_len)) return -1;
             if (hdr_append(j, d + pos - 2, L + 2)) return -1;
-            fi->supported = ok && !rgb;
-            fi->rgb = ok && rgb;
+            fi->supported = ok && !rgb && fi->bits == 8;
+            fi->rgb = ok && rgb && fi->bits == 8;
+            j->seq12 = ok && fi->bits == 12;
             return 0;
         }
         default:
@@ -580,6 +584,7 @@ typedef struct {
     const size_t *pitch;
     uint8_t *bgrx;            // bgrx mode
     size_t bgrx_pitch;
+    int bits12;               // planes of 16-bit samples (a 12-bit JPEG)
 } Output;
 
 #ifdef NJ_REFERENCE
@@ -1212,6 +1217,7 @@ void nj_set_scalar_idct(int on) { g_scalar_idct = on; }
 #define FIX_3_072711026 25172
 
 static inline uint8_t clamp_u8(int64_t v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
+static inline uint16_t clamp_u12(int64_t v) { return v < 0 ? 0 : v > 4095 ? 4095 : (uint16_t)v; }
 
 // Reference implementation (port of jpeg_idct_islow). 'dc' replaces in[0].
 static void idct_islow_scalar(const int16_t *in, const uint16_t *q, int dc, uint8_t *out, size_t pitch) {
@@ -1519,6 +1525,63 @@ static inline void idct_block_zz(const int16_t *zz, const uint16_t *q, uint8_t *
     idct_islow_scalar(tmp, q, tmp[0], out, pitch);
 }
 
+// The same for 12-bit samples (jidctint.c with BITS_IN_JSAMPLE 12: PASS1_BITS 1, centre 2048), out:
+// 16-bit samples, pitch in samples.
+static void idct_islow12(const int16_t *in, const uint16_t *q, int dc, uint16_t *out, size_t pitch) {
+    int32_t ws[64];
+    for (int col = 0; col < 8; col++) {
+        const int16_t *ip = in + col;
+        const uint16_t *qp = q + col;
+        int32_t *wp = ws + col;
+        int64_t d0 = (int64_t)(col ? ip[0] : dc) * qp[0];
+        if (!ip[8] && !ip[16] && !ip[24] && !ip[32] && !ip[40] && !ip[48] && !ip[56]) {
+            for (int r = 0; r < 8; r++) wp[8 * r] = (int32_t)(d0 * 2);
+            continue;
+        }
+        int64_t z2 = (int64_t)ip[16] * qp[16], z3 = (int64_t)ip[48] * qp[48];
+        int64_t z1 = (z2 + z3) * FIX_0_541196100;
+        int64_t tmp2 = z1 + z3 * -FIX_1_847759065, tmp3 = z1 + z2 * FIX_0_765366865;
+        z2 = d0;
+        z3 = (int64_t)ip[32] * qp[32];
+        int64_t tmp0 = (z2 + z3) * 8192, tmp1 = (z2 - z3) * 8192;
+        int64_t tmp10 = tmp0 + tmp3, tmp13 = tmp0 - tmp3, tmp11 = tmp1 + tmp2, tmp12 = tmp1 - tmp2;
+        tmp0 = (int64_t)ip[56] * qp[56]; tmp1 = (int64_t)ip[40] * qp[40];
+        tmp2 = (int64_t)ip[24] * qp[24]; tmp3 = (int64_t)ip[8] * qp[8];
+        z1 = tmp0 + tmp3; z2 = tmp1 + tmp2; z3 = tmp0 + tmp2;
+        int64_t z4 = tmp1 + tmp3, z5 = (z3 + z4) * FIX_1_175875602;
+        tmp0 *= FIX_0_298631336; tmp1 *= FIX_2_053119869; tmp2 *= FIX_3_072711026; tmp3 *= FIX_1_501321110;
+        z1 *= -FIX_0_899976223; z2 *= -FIX_2_562915447; z3 *= -FIX_1_961570560; z4 *= -FIX_0_390180644;
+        z3 += z5; z4 += z5;
+        tmp0 += z1 + z3; tmp1 += z2 + z4; tmp2 += z2 + z3; tmp3 += z1 + z4;
+        wp[0] = (int32_t)((tmp10 + tmp3 + 2048) >> 12);  wp[56] = (int32_t)((tmp10 - tmp3 + 2048) >> 12);
+        wp[8] = (int32_t)((tmp11 + tmp2 + 2048) >> 12);  wp[48] = (int32_t)((tmp11 - tmp2 + 2048) >> 12);
+        wp[16] = (int32_t)((tmp12 + tmp1 + 2048) >> 12); wp[40] = (int32_t)((tmp12 - tmp1 + 2048) >> 12);
+        wp[24] = (int32_t)((tmp13 + tmp0 + 2048) >> 12); wp[32] = (int32_t)((tmp13 - tmp0 + 2048) >> 12);
+    }
+    for (int row = 0; row < 8; row++) {
+        const int32_t *wp = ws + row * 8;
+        uint16_t *op = out + row * pitch;
+        int64_t z2 = wp[2], z3 = wp[6];
+        int64_t z1 = (z2 + z3) * FIX_0_541196100;
+        int64_t tmp2 = z1 + z3 * -FIX_1_847759065, tmp3 = z1 + z2 * FIX_0_765366865;
+        int64_t tmp0 = ((int64_t)wp[0] + wp[4]) * 8192, tmp1 = ((int64_t)wp[0] - wp[4]) * 8192;
+        int64_t tmp10 = tmp0 + tmp3, tmp13 = tmp0 - tmp3, tmp11 = tmp1 + tmp2, tmp12 = tmp1 - tmp2;
+        tmp0 = wp[7]; tmp1 = wp[5]; tmp2 = wp[3]; tmp3 = wp[1];
+        z1 = tmp0 + tmp3; z2 = tmp1 + tmp2; z3 = tmp0 + tmp2;
+        int64_t z4 = tmp1 + tmp3, z5 = (z3 + z4) * FIX_1_175875602;
+        tmp0 *= FIX_0_298631336; tmp1 *= FIX_2_053119869; tmp2 *= FIX_3_072711026; tmp3 *= FIX_1_501321110;
+        z1 *= -FIX_0_899976223; z2 *= -FIX_2_562915447; z3 *= -FIX_1_961570560; z4 *= -FIX_0_390180644;
+        z3 += z5; z4 += z5;
+        tmp0 += z1 + z3; tmp1 += z2 + z4; tmp2 += z2 + z3; tmp3 += z1 + z4;
+#define IDCT_OUT(x) clamp_u12((((x) + (1 << 16)) >> 17) + 2048)
+        op[0] = IDCT_OUT(tmp10 + tmp3); op[7] = IDCT_OUT(tmp10 - tmp3);
+        op[1] = IDCT_OUT(tmp11 + tmp2); op[6] = IDCT_OUT(tmp11 - tmp2);
+        op[2] = IDCT_OUT(tmp12 + tmp1); op[5] = IDCT_OUT(tmp12 - tmp1);
+        op[3] = IDCT_OUT(tmp13 + tmp0); op[4] = IDCT_OUT(tmp13 - tmp0);
+#undef IDCT_OUT
+    }
+}
+
 // IDCT all blocks of MCU 'idx'. dcoff: DC correction per component (modulo 2^16).
 static inline void idct_mcu(const Jpeg *j, const Output *o, size_t idx, const int16_t *coef, const int32_t *dcoff) {
     const nj_info *fi = &j->info;
@@ -1528,7 +1591,8 @@ static inline void idct_mcu(const Jpeg *j, const Output *o, size_t idx, const in
         const int16_t *blk = coef + 64 * b;
         int dc = (int16_t)(uint16_t)((uint16_t)blk[0] + (uint16_t)dcoff[c]);
         size_t px = (mx * fi->h[c] + j->bx[b]) * 8, py = (my * fi->v[c] + j->by[b]) * 8;
-        idct_block(blk, j->qt[j->cq[c]], dc, o->planes[c] + py * o->pitch[c] + px, o->pitch[c]);
+        if (o->bits12) idct_islow12(blk, j->qt[j->cq[c]], dc, (uint16_t *)(void *)(o->planes[c] + py * o->pitch[c]) + px, o->pitch[c] / 2);
+        else idct_block(blk, j->qt[j->cq[c]], dc, o->planes[c] + py * o->pitch[c] + px, o->pitch[c]);
     }
 }
 
@@ -1802,7 +1866,7 @@ static int nj_decode_prog(const Jpeg *j, const uint8_t *data, size_t len, const 
 
 static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int nthreads, nj_stats *st) {
     Jpeg *j = malloc(sizeof *j);
-    if (!j || parse(data, len, j) || !(j->info.supported || j->info.rgb)) { free(j); return -1; }
+    if (!j || parse(data, len, j) || !(o->bits12 ? j->seq12 : j->info.supported || j->info.rgb)) { free(j); return -1; }
     if (j->progressive) {
         int r = nj_decode_prog(j, data, len, o, st);
         free(j);
@@ -2582,7 +2646,7 @@ out:
 
 int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info, uint8_t *const planes[4],
                      const size_t pitch[4], int nthreads, nj_stats *stats) {
-    Output o = {planes, pitch, NULL, 0};
+    Output o = {planes, pitch, NULL, 0, 0};
 #ifdef NJ_REFERENCE
     if (g_engine == 1) return nj_decode(data, len, &o, nthreads, stats);
 #endif
@@ -2595,10 +2659,24 @@ int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info, uint8
     return rc;
 }
 
+int nj_decode_planes16(const uint8_t *data, size_t len, const nj_info *info, uint16_t *const planes[4],
+                       const size_t pitch[4], int nthreads, nj_stats *stats) {
+    (void)info;
+    uint8_t *p8[4] = {(uint8_t *)planes[0], (uint8_t *)planes[1], (uint8_t *)planes[2], (uint8_t *)planes[3]};
+    Output o = {p8, pitch, NULL, 0, 1};
+    nj_stats dummy;
+    if (!stats) stats = &dummy;
+    memset(stats, 0, sizeof *stats);
+    t_workers = nthreads == 1 ? 1 : 0;
+    int rc = nj_decode_own(data, len, &o, nthreads, stats);
+    t_workers = 0;
+    return rc;
+}
+
 #ifdef NJ_REFERENCE
 int nj_decode_bgrx(const uint8_t *data, size_t len, const nj_info *info, uint8_t *dst, size_t pitch,
                    int nthreads, nj_stats *stats) {
-    Output o = {NULL, NULL, dst, pitch};
+    Output o = {NULL, NULL, dst, pitch, 0};
     return nj_decode(data, len, &o, nthreads, stats);
 }
 #endif

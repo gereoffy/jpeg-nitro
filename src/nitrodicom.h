@@ -18,7 +18,7 @@
 // colour, RGB and YBR_FULL (_422); a grey picture with a supplemental palette (perfusion maps: the
 // values the palette is for in its colours, the others grey).
 // Of a file of several frames one frame at a time (all of the same size: the viewers step through them).
-// Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG, HTJ2K, JPEG XL, the video
+// Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG in colour, HTJ2K, JPEG XL, the video
 // codecs, the deflated transfer syntaxes, floating point pixel data, segmented palettes; overlays,
 // a modality lookup table and the pixels' aspect ratio are ignored.
 #ifndef NITRODICOM_H

@@ -16,7 +16,8 @@
 //     the scans it depends on, the IDCT behind the last ones.
 // The IDCT is libjpeg's ISLOW algorithm, so the output is bit-identical to it.
 //
-// Not handled (returns an error, use another decoder): arithmetic, 12-bit,
+// 12-bit sequential JPEGs (DICOM's lossy ones): nj_decode_planes16, the same engine with a 12-bit IDCT.
+// Not handled (returns an error, use another decoder): arithmetic, 12-bit progressive,
 // lossless, CMYK/RGB, multi-scan baseline, damaged or cut-off streams.
 // Progressive files without their last scans (previews) are decoded as they
 // are, without libjpeg's block smoothing.
@@ -43,6 +44,7 @@ typedef struct {
     int supported;              // 1: nj_decode_* can handle it (else use a fallback)
     int rgb;                    // 1: not "supported" only because its 3 components are R G B, not Y Cb Cr (Adobe's
                                 // transform 0, or the component ids 'R' 'G' 'B'): nj_decode_planes decodes it too
+    int bits;                   // sample precision: 8, or 12 (then supported and rgb are 0: nj_decode_planes16)
 } nj_info;
 
 typedef struct {
@@ -79,6 +81,12 @@ int nj_find_embedded(const uint8_t *data, size_t len, size_t *offset, size_t *si
 int nj_decode_planes(const uint8_t *data, size_t len, const nj_info *info,
                      uint8_t *const planes[4], const size_t pitch[4],
                      int nthreads, nj_stats *stats);
+// A 12-bit sequential (baseline / extended) JPEG (info->bits 12) the same way into planes of 16-bit
+// samples 0 .. 4095: planes[c] holds plane_h[c] rows of pitch[c] bytes, pitch[c] >= 2 * plane_w[c].
+// Its components as stored (Y Cb Cr, R G B or grey: the caller knows which). Returns 0 on success.
+int nj_decode_planes16(const uint8_t *data, size_t len, const nj_info *info,
+                       uint16_t *const planes[4], const size_t pitch[4],
+                       int nthreads, nj_stats *stats);
 
 
 // Limits the number of worker threads (0 = all logical CPUs; progressive files:

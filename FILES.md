@@ -1,7 +1,7 @@
 # Files
 
 **Decoders** (`src/`)
-- `nitrojpeg.c/.h`: parallel JPEG decoder (own Huffman decoding, AVX2 / NEON IDCT); with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
+- `nitrojpeg.c/.h`: parallel JPEG decoder (own Huffman decoding, AVX2 / NEON IDCT; 12-bit sequential ones into 16-bit planes for DICOM); with `NJ_REFERENCE` also the libjpeg-turbo based comparison code
 - `nitropng.c/.h`: parallel PNG decoder
 - `png_wuffs.c/.h`: the optional Wuffs path for interlaced PNGs
 - `nitropsd.c/.h`: parallel PSD / PSB merged-image decoder
@@ -24,7 +24,7 @@
 - `nitrojbig2.c/.h`: JBIG2 decoder for nitropdf's scanned pages, written from the ITU-T T.88 standard
 - `nitrojpx.c/.h`: dependency-free JPEG 2000 Part 1 decoder, written from ITU-T T.800: JP2 / J2K files (through nitro_load) and PDF's JPXDecode
 - `nitrojxl.c/.h`: dependency-free JPEG XL decoder (container, VarDCT, Modular, Gaborish / EPF, ICC), from the specification with parts of J40 and libjxl (see its header)
-- `nitrodicom.c/.h`: DICOM pictures (medical images), written from the DICOM standard: the data set, uncompressed / RLE / JPEG / lossless JPEG / JPEG 2000 pixel data (with nitrojpeg, nitrodng's lossless JPEG decoder and nitrojpx), the grey window and the palettes
+- `nitrodicom.c/.h`: DICOM pictures (medical images), written from the DICOM standard: the data set, uncompressed / RLE / JPEG (8 and 12-bit) / lossless JPEG / JPEG 2000 pixel data (with nitrojpeg, nitrodng's lossless JPEG decoder and nitrojpx), the grey window and the palettes
 - `nitro_cmyk.c/.h`: CMYK → RGB through an ICC profile (lcms2, libcdr's CMYK profile), for nitropdf's colors and CMYK JPEGs
 - `nitrodjvu.c/.h`: DjVu documents (the IFF container, JB2 masks, BZZ for the directory, the layers put together), written from the DjVu Reference
 - `nitroiw44.c/.h`: DjVu's wavelet pictures (IW44: a page's background and foreground layers) into YCbCr planes

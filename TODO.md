@@ -27,8 +27,8 @@ MA-fa, a gradiens-fás LF-kép táblából (libjxl is_gradient_only). Hátravan:
 tulajdonságok számítása a veszteségmentesnél; az LF-csoportok (6 db egy 24 MP-es képen) átfedése a HF-dekódolással.
 
 Kész: DICOM (2026-11-16, nitrodicom): tömörítetlen, RLE, JPEG, veszteségmentes JPEG, JPEG 2000; szürke az ablakkal,
-paletta, RGB / YBR; E / Shift+E világosít. Kimaradt: JPEG-LS (külön dekóder, ~700 sor), 12 bites veszteséges JPEG (a
-nitrojpeg bővítése), HTJ2K, JPEG XL (a nitrojxl már megvan), a deflate-tel tömörített fájl, a szakaszos (segmented) paletta, a modality
+paletta, RGB / YBR; E / Shift+E világosít. Kimaradt: JPEG-LS (külön dekóder, ~700 sor), a színes 12 bites veszteséges JPEG
+(a szürkét 2026-11-17 óta a nitrojpeg 12 bites IDCT-je viszi: nj_decode_planes16), HTJ2K, JPEG XL (a nitrojxl már megvan), a deflate-tel tömörített fájl, a szakaszos (segmented) paletta, a modality
 lookup table, az overlay-ek. A többképes fájl képei között a [ / ] lép: egy közös beállítás (mint az E-nél az
 expozíció), a kép újradekódolódik, gyorsítótár nélkül (NvDecoder.frame, NvImage.frames). Ugyanez az út jó lesz az
 animált GIF-hez és APNG-hez is.

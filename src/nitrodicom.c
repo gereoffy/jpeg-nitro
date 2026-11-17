@@ -308,7 +308,7 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
                 if (!jpeg_frame(d + p + 8, sl, &sof, &prec, &ycc)) {
                     if (sof == 0xC3) in->syntax = S_LJPEG;
                     else if (sof > 0xC2) in->error = "DICOM: this JPEG process is not supported (arithmetic, hierarchical)";
-                    else if (prec != 8) in->error = "DICOM: 12-bit lossy JPEG is not supported";
+                    else if (prec != 8 && prec != 12) in->error = "DICOM: this JPEG precision is not supported";
                     else in->syntax = S_JPEG;
                 }
             }
@@ -612,7 +612,23 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
         }
     } else if (in->syntax == S_JPEG) {
         nj_info fi;
-        if (!nj_read_info(s, sl, &fi) && (fi.supported || fi.rgb) && fi.width == in->width && fi.height == in->height &&
+        if (!nj_read_info(s, sl, &fi) && fi.bits == 12 && fi.ncomp == 1 && in->spp == 1 && fi.width == in->width && fi.height == in->height) {
+            // 12 bits (grey: the extended process of CT, MR, X-ray pictures): 16-bit samples, the rows moved together
+            size_t pw = (size_t)fi.plane_w[0], pitches[4] = {pw * 2, 0, 0, 0};
+            uint16_t *buf = malloc(pw * (size_t)fi.plane_h[0] * 2 + 64), *planes[4] = {buf, NULL, NULL, NULL};
+            if (buf && !nj_decode_planes16(s, sl, &fi, planes, pitches, nthreads == 1 ? 1 : 0, NULL)) {
+                for (int y = 1; y < in->height; y++) memmove(buf + (size_t)y * in->width, buf + (size_t)y * pw, (size_t)in->width * 2);
+                f->p = f->own = (uint8_t *)buf;
+                f->len = px * 2;
+                f->bytes = 2;
+                f->be = host_be();
+                f->planar = 0;
+                if (12 < f->stored + f->shift) f->stored = 12, f->shift = 0;   // (fewer bits than the data set says)
+                buf = NULL;
+                rc = 0;
+            }
+            free(buf);
+        } else if (!nj_read_info(s, sl, &fi) && (fi.supported || fi.rgb) && fi.width == in->width && fi.height == in->height &&
             (fi.ncomp == 1 || fi.ncomp == 3) && fi.ncomp == in->spp) {
             size_t size[3] = {0}, total = 0, pitches[4] = {0};
             for (int c = 0; c < fi.ncomp; c++) size[c] = (size_t)fi.plane_w[c] * fi.plane_h[c], total += size[c], pitches[c] = (size_t)fi.plane_w[c];
