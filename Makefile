@@ -101,7 +101,7 @@ endef
 # what the four viewers share beside the library (compiled into each): the prefetching loader; the
 # vector drawings come as libnitrovec.a (nitro_vector.h; the viewer's NV_VECTOR when it holds any reader)
 VIEWER_SRC := src/nitro_prefetch.c
-VIEWER_HDR := src/nitro_prefetch.h src/nitro_view.h src/nitro_vector.h
+VIEWER_HDR := src/nitro_prefetch.h src/nitro_view.h src/nitro_help.h src/nitro_vector.h
 
 # GNOME frontend: GtkBuilder template + libadwaita, with the decoders from the static library
 # (one self-contained binary: nothing to find at run time).

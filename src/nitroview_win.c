@@ -51,6 +51,7 @@
 #include "nitro_load.h"       // reading and decoding image files (shared by the viewers)
 #include "nitro_prefetch.h"   // the image cache and background decoder (shared too)
 #include "nitro_view.h"       // the zoom / fit / pan arithmetic (shared too)
+#include "nitro_help.h"       // the help text (shared too)
 #ifdef NV_DAV1D
 #include "nitroavif.h"   // AVIF: AV1 through dav1d
 #endif
@@ -2278,45 +2279,6 @@ static int run_selftest(FileList *fl) {
 
 // ---------------------------------------------------------------------------
 
-static void usage(void) {
-    fprintf(stderr,
-        "usage: nitroview [options] file.jpg|directory|*.png ...\n"
-        "\n"
-        "options:\n"
-        "  -f, --fullscreen      start in full screen\n"
-        "  -s, --slideshow MS    slideshow: next image after MS milliseconds on screen\n"
-        "                        (waits for slow images, stops at the last one; P pauses)\n"
-        "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
-        "  --bench               load all files without a window, print timings\n"
-        "                        (drawings 4096 pixels on their long side)\n"
-        "  --selftest            compare the GPU output with Windows' own decoding (WIC)\n"
-        "  -n, --new-window      don't pass the files to a running nitroview\n"
-        "  --register            offer nitroview for JPEG, PNG, PSD ... in Explorer (current user)\n"
-        "  --unregister          remove that again\n"
-        "  -h, --help            this help\n"
-        "\n"
-        "keys:\n"
-        "  PgDn Space              next image         PgUp Backspace           previous\n"
-        "  Home / End              first / last       F / Enter                full screen\n"
-        "  + / -                   zoom in / out      0 fit to screen          1 actual size (1:1)\n"
-        "  2 .. 8                  200%% .. 800%%, pixel-exact (1 image pixel = NxN screen pixels)\n"
-        "  arrows                  move a zoomed image (Shift: bigger steps)\n"
-        "  W                       back to the image's own size (small images 100%%, window follows)\n"
-        "  E / Shift+E             DNG raw image: brighter / darker (1/3 EV steps, kept while paging)\n"
-        "                          SVG / DXF / CorelDRAW drawing: the next / previous background (white, dark grey, black)\n"
-        "  Del                     move the file to the .delete folder next to it   U / Ctrl+Z  undo\n"
-        "  O / Shift+O             open images / a folder\n"
-        "mouse:\n"
-        "  drag                    move a zoomed image\n"
-        "  wheel                   zoom around the cursor (touchpad: smooth, pinch too)\n"
-        "  double click            fit <-> 100%% at the clicked point\n"
-        "  right click             next image (Shift: previous)\n"
-        "  Ctrl + wheel            previous / next image\n"
-        "  side buttons            previous / next image\n"
-        "  P                       pause/resume slideshow\n"
-        "  Esc                     leave full screen / quit                Q   quit\n");
-}
-
 #ifdef __AVX2__
 // Built for AVX2 (WINARCH x86-64-v3, the default): on an older CPU (AMD FX, Intel before Haswell) the
 // first AVX2 instruction would end the program silently. This runs before wmain, built for plain
@@ -2350,11 +2312,11 @@ int wmain(int argc, wchar_t **argv) {
         else args[nargs++] = argv[i];
     }
     SetConsoleOutputCP(CP_UTF8);
-    if (help) { usage(); return 1; }
+    if (help) { nv_help(NV_HELP_WIN, utf8(argv[0])); return 1; }
     if (nargs && !newwin && !bench && !selftest && !full && slide_ms <= 0 && send_to_running(args, nargs)) return 0;
     FileList fl = {0};
     collect_files(&fl, args, nargs);
-    if ((bench || selftest) && !fl.n) { usage(); return 1; }
+    if ((bench || selftest) && !fl.n) { nv_help(NV_HELP_WIN, utf8(argv[0])); return 1; }
     // started from Explorer (a console of its own): no console window
     DWORD pids[2];
     if (!bench && !selftest && GetConsoleProcessList(pids, 2) == 1) FreeConsole();

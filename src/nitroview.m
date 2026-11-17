@@ -38,6 +38,7 @@
 #include "nitro_load.h"       // reading and decoding image files (shared by the viewers)
 #include "nitro_prefetch.h"   // the image cache and background decoder (shared too)
 #include "nitro_view.h"       // the zoom / fit / pan arithmetic (shared too)
+#include "nitro_help.h"       // the help text (shared too)
 #include <pthread/qos.h>
 #ifdef NV_DAV1D
 #include "nitroavif.h"    // optional AVIF decoding (dav1d)
@@ -1436,8 +1437,8 @@ static int debug_zoom(void) {   // NV_DEBUG_ZOOM=1: log wheel / pinch events and
             if (cur) [self zoomTo:[ch characterAtIndex:0] - '0' image:cur view:self.drawableSize];
             return;
         case 'w': case 'W': [self windowToImage]; return;
-        case 'r': case 'R': [self turnImage:(e.modifierFlags & NSEventModifierFlagShift) ? -1 : 1]; return;
         case 'o': case 'O': [NSApp sendAction:@selector(openDocument:) to:nil from:self]; return;   // (as the menu's Cmd+O)
+        case 'r': case 'R': [self turnImage:(e.modifierFlags & NSEventModifierFlagShift) ? -1 : 1]; return;
         case 'e': case 'E': {   // DNG: brighter / (Shift) darker, 1/3 EV; SVG / DXF / CDR: the next (Shift: previous) background
             BOOL back = (e.modifierFlags & NSEventModifierFlagShift) != 0;
             if (cur && cur.vector) {
@@ -2246,44 +2247,7 @@ int main(int argc, const char **argv) {
         NSArray *files = args ? collect_files(args) : @[];
         BOOL bundle = [NSBundle.mainBundle.bundlePath.pathExtension isEqualToString:@"app"];
         if (!files.count && !(bundle && args && !args.count)) {
-            fprintf(stderr,
-                "usage: nitroview [options] file.jpg|directory ...\n"
-                "\n"
-                "options:\n"
-                "  -f, --fullscreen      start in full screen\n"
-                "  -s, --slideshow MS    slideshow: next image after MS milliseconds on screen\n"
-                "                        (waits for slow images, stops at the last one; P pauses)\n"
-                "  -j N                  use N threads to decode and draw (default: all logical CPUs)\n"
-                "  --bench               load all files without a window, print timings\n"
-                "                        (drawings 4096 pixels on their long side)\n"
-                "  --selftest            compare GPU colour conversion with libjpeg-turbo%s\n"
-                "  -h, --help            this help\n"
-                "\n"
-                "keys:\n"
-                "  PgDn Space              next image         PgUp Backspace           previous\n"
-                "  Home / End              first / last       F / Enter                full screen\n"
-                "  + / -                   zoom in / out      0 fit to screen          1 actual size (1:1)\n"
-                "  2 .. 8                  200%% .. 800%%, pixel-exact (1 image pixel = NxN screen pixels)\n"
-                "  arrows                  move a zoomed image (Shift: bigger steps)\n"
-                "  W                       back to the image's own size (small images 100%%, window follows)\n"
-                "  E / Shift+E             DNG raw image: brighter / darker (1/3 EV steps, kept while paging)\n"
-                "                          SVG / DXF / CorelDRAW drawing: the next / previous background (white, dark grey, black)\n"
-                "  Del, Cmd+Backspace      move the file to the .delete folder next to it   U / Cmd+Z  undo\n"
-                "mouse:\n"
-                "  drag                    move a zoomed image\n"
-                "  scroll wheel            zoom around the cursor (trackpad: smooth, pinch too)\n"
-                "  double click            fit <-> 100%% at the clicked point\n"
-                "  right click             next image (Shift: previous)\n"
-                "  Ctrl + scroll wheel     previous / next image\n"
-                "  side buttons            previous / next image\n"
-                "  P                       pause/resume slideshow\n"
-                "  Esc                     leave full screen / quit                Q   quit\n",
-#ifdef NV_TURBOJPEG
-                ""
-#else
-                " (not in this build)"
-#endif
-            );
+            nv_help(NV_HELP_MAC, argv[0]);
             return 1;
         }
         const char *stg = getenv("NV_STORAGE");
