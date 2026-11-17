@@ -79,7 +79,7 @@ SDL viewers open a file dialog when started without files.
 | ← → ↑ ↓                       | move a zoomed image (Shift: half a screen per step)                                                            |
 | W                             | back to the image's own size (small images at 100%), the window follows image sizes again                      |
 | R / Shift + R                 | turn the image on screen by 90° clockwise / counter-clockwise (a photo whose orientation is missing or wrong); the file is not changed |
-| E / Shift + E                 | DNG, DICOM: 1/3 EV brighter / darker (up to ±3 EV); vector drawings: change background color; kept while paging       |
+| E / Shift + E                 | DNG, DICOM: 1/3 EV brighter / darker (up to ±3 EV); vector drawings: change background color; DjVu: smooth the enlarged text's edges (off / smooth / smoother); kept while paging |
 | Del (Mac: also ⌘ + Backspace) | delete: the file is moved to the `.delete` folder next to it (hidden), the next image follows; nothing is lost |
 | U / Ctrl + Z (Mac: ⌘ Z)       | undo the last delete: the file goes back to its place                                                          |
 | F / Enter                     | toggle full screen                                                                                             |

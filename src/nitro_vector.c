@@ -313,6 +313,8 @@ NvVector *nv_vector_open(const char *name, const void *data, size_t len) {
         v->prepare = djvu_prepare;
         v->pages = nitrodjvu_pages(v->doc);
         v->mode = NV_MODE_DJVU;
+        // (a scanned page has its own paper: the three settings pick how its mask is enlarged instead)
+        nitrodjvu_set_smooth(v->doc, v->background);
     }
     free(plain);
 #endif
@@ -491,6 +493,7 @@ const char *nv_vector_title_suffix(const NvVector *v, int page, int background, 
     size_t k = 0;
     if (n) buf[0] = 0;
     if (v && v->pages > 1) k = (size_t)snprintf(buf, n, "  [page %d/%d]", page + 1, v->pages);
-    if (v && background && k < n) snprintf(buf + k, n - k, "  %s", nv_vector_background_name(background));
+    if (v && background && k < n)
+        snprintf(buf + k, n - k, "  %s", v->mode != NV_MODE_DJVU ? nv_vector_background_name(background) : background == 1 ? "smooth" : "smoother");
     return buf;
 }

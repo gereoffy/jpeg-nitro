@@ -522,6 +522,7 @@ struct nitrodjvu {
     int ncomps;
     Page *pages;
     int npages, stamp;
+    int smooth;   // nitrodjvu_set_smooth
     pthread_mutex_t lock;
 };
 
@@ -972,6 +973,116 @@ static void page_release(nitrodjvu *d, Page *pg) {
     pthread_mutex_unlock(&d->lock);
 }
 
+void nitrodjvu_set_smooth(nitrodjvu *d, int mode) {
+    if (d) d->smooth = mode == 1 || mode == 2 ? mode : 0;
+}
+
+// The mask enlarged smoothly (nitrodjvu_set_smooth). Its pixels are taken as the samples, 0 or 1, of
+// a picture; that picture is interpolated to the output's pixels and cut at a level, with one output
+// pixel of transition: the steps of an outline become a slanted line, and the edge is as sharp at any
+// enlargement (the interpolated picture itself would be a blur). Mode 1 interpolates linearly and
+// cuts at the half: every pixel of the mask keeps its colour, a step loses its corners. Mode 2 uses a
+// cubic B-spline (four pixels across: slanted lines come out straight, curves round) and cuts a
+// little under the half, so that a line one pixel thin stays in one piece - the strokes are a touch
+// bolder for it, and a lone pixel is a small dot.
+// Separable: a row of the mask is filtered along x once (for every output column, of 256) and kept
+// while output rows need it; an output pixel then weighs its 2 or 4 rows.
+typedef struct {
+    int taps;            // the mask's pixels a sample takes along an axis: 2 or 4
+    int level, gain;     // the cut (of 65536); 256 * the output's pixels the picture rises by 1 over
+    int w, lo, n;        // output columns; the mask's columns lo .. lo + n - 1 are what they take
+    int *col;            // an output column's first one of those, from lo
+    uint16_t *wx;        // and its weights (taps of them, 256 in all)
+    uint8_t *px;         // a row of the mask, those columns, a byte each
+    uint16_t *row[4];    // filtered rows of the mask, by the row's number & 3
+    int have[4];         // the row each is (valid[]: whether any)
+    int valid[4];
+    uint16_t *none;      // a row outside the mask: nothing
+} Smooth;
+
+// a sample at u (pixel centres at whole numbers): its first pixel, the pixels' weights
+static int smooth_taps(const Smooth *s, double u, uint16_t *wt) {
+    double fl = floor(u), t = u - fl;
+    if (s->taps == 2) {
+        wt[0] = (uint16_t)((1 - t) * 256 + 0.5), wt[1] = (uint16_t)(256 - wt[0]);
+        return whole(fl);
+    }
+    int a = (int)((1 - t) * (1 - t) * (1 - t) / 6 * 256 + 0.5), b = (int)((3 * t * t * t - 6 * t * t + 4) / 6 * 256 + 0.5);
+    int e = (int)(t * t * t / 6 * 256 + 0.5);
+    wt[0] = (uint16_t)a, wt[1] = (uint16_t)b, wt[2] = (uint16_t)(256 - a - b - e), wt[3] = (uint16_t)e;
+    return whole(fl) - 1;
+}
+
+static void smooth_free(Smooth *s) {
+    free(s->col), free(s->wx), free(s->px), free(s->row[0]);
+}
+
+// for a render of w columns from x0 at scale; 0: no memory
+static int smooth_init(Smooth *s, int mode, int w, double scale, double x0) {
+    memset(s, 0, sizeof *s);
+    s->taps = mode == 2 ? 4 : 2;
+    // (the picture rises across a straight edge by 1 a pixel interpolated linearly, by 3/4 as a B-spline)
+    double g = 256 * scale * (mode == 2 ? 4.0 / 3 : 1);
+    s->level = mode == 2 ? 28836 : 32768;   // 0.44, 0.5
+    s->gain = g < (1 << 24) ? (int)g : 1 << 24;
+    s->w = w;
+    s->col = malloc((size_t)w * sizeof *s->col);
+    s->wx = malloc((size_t)w * 4 * sizeof *s->wx);
+    if (!s->col || !s->wx) return 0;
+    for (int i = 0; i < w; i++) s->col[i] = smooth_taps(s, x0 + (i + 0.5) / scale - 0.5, s->wx + 4 * (size_t)i);
+    s->lo = s->col[0];
+    s->n = s->col[w - 1] - s->lo + s->taps;   // (enlarged: no more columns than the output's, and the taps)
+    for (int i = 0; i < w; i++) s->col[i] -= s->lo;
+    s->px = malloc((size_t)s->n);
+    s->row[0] = calloc((size_t)w * 5, sizeof **s->row);
+    if (!s->px || !s->row[0]) return 0;
+    for (int k = 1; k < 4; k++) s->row[k] = s->row[0] + (size_t)w * k;
+    s->none = s->row[0] + (size_t)w * 4;
+    return 1;
+}
+
+// the mask's row r filtered along x, for every output column
+static const uint16_t *smooth_row(Smooth *s, const Page *pg, int r) {
+    if (r < 0 || r >= pg->bh) return s->none;
+    int k = r & 3;
+    if (s->valid[k] && s->have[k] == r) return s->row[k];
+    const uint8_t *bits = pg->bits + (size_t)r * pg->rowbytes;
+    int a = s->lo < 0 ? -s->lo : 0, b = pg->bw - s->lo < s->n ? pg->bw - s->lo : s->n;   // (the columns of them the mask has)
+    memset(s->px, 0, (size_t)s->n);
+    for (int x = a; x < b; x++) {
+        int c = s->lo + x;
+        s->px[x] = bits[c >> 3] >> (7 - (c & 7)) & 1;
+    }
+    uint16_t *o = s->row[k];
+    const uint16_t *wt = s->wx;
+    if (s->taps == 2)
+        for (int i = 0; i < s->w; i++, wt += 4) {
+            const uint8_t *p = s->px + s->col[i];
+            o[i] = (uint16_t)(p[0] * wt[0] + p[1] * wt[1]);
+        }
+    else
+        for (int i = 0; i < s->w; i++, wt += 4) {
+            const uint8_t *p = s->px + s->col[i];
+            o[i] = (uint16_t)(p[0] * wt[0] + p[1] * wt[1] + p[2] * wt[2] + p[3] * wt[3]);
+        }
+    s->have[k] = r, s->valid[k] = 1;
+    return o;
+}
+
+// the palette colours of the mask's pixels around the row r, column c added up (those next to it; none
+// there: one further), and how many: the colour of an output pixel the smooth outline covers
+static unsigned palette_near(const Page *pg, int r, int c, unsigned *sum) {
+    unsigned n = 0;
+    for (int far = 1; far <= 2 && !n; far++) {
+        int r0 = r - far < 0 ? 0 : r - far, r1 = r + far + 1 > pg->bh ? pg->bh : r + far + 1;
+        int c0 = c - far < 0 ? 0 : c - far, c1 = c + far + 1 > pg->bw ? pg->bw : c + far + 1;
+        if (r1 <= r0 || c1 <= c0) continue;
+        for (int y = r0; y < r1; y++) n += black(pg->bits + (size_t)y * pg->rowbytes, c0, c1);
+        if (n) palette_sum(pg, r0, r1, c0, c1, sum);
+    }
+    return n;
+}
+
 void nitrodjvu_prepare(nitrodjvu *d, int page) {
     if (d && page >= 0 && page < d->npages) page_release(d, page_hold(d, page));
 }
@@ -1003,6 +1114,13 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             if (fg) span(&fx[i], xa, xb, fg->ox, fg->r, fg->w);
         }
     }
+    Smooth sm;
+    int smooth = pg->bits && d->smooth && scale > 1;   // (enlarged; reduced, a pixel is the average of what it covers)
+    if (smooth && !smooth_init(&sm, d->smooth, w, scale, x0)) {
+        smooth_free(&sm), free(c0), free(bx);
+        page_release(d, pg);
+        return -1;
+    }
     for (int j = 0; j < h; j++) {
         if ((j & 63) == 0 && cancelled && cancelled(ctx)) {
             rc = 1;
@@ -1020,19 +1138,31 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
         Span by, fy;
         if (bg) span(&by, ya, yb, bg->oy, bg->r, bg->h);
         if (fg) span(&fy, ya, yb, fg->oy, fg->r, fg->h);
+        const uint16_t *sr[4] = {NULL, NULL, NULL, NULL};
+        uint16_t sy[4] = {0, 0, 0, 0};
+        if (smooth) {
+            int first = smooth_taps(&sm, y0 + (j + 0.5) / scale - 0.5, sy);
+            for (int k = 0; k < sm.taps; k++) sr[k] = smooth_row(&sm, pg, first + k);
+        }
         for (int i = 0; i < w; i++) {
             // the mask's share of the pixel: the foreground's colour over the background's
             unsigned n = 0, area = pg->bits && r1 > r0 && c1[i] > c0[i] ? (unsigned)(r1 - r0) * (unsigned)(c1[i] - c0[i]) : 0;
-            if (area == 1) n = pg->bits[(size_t)r0 * pg->rowbytes + (size_t)(c0[i] >> 3)] >> (7 - (c0[i] & 7)) & 1;
+            if (smooth) {   // (of 256: the interpolated picture's height over the cut)
+                int v = sr[0][i] * sy[0] + sr[1][i] * sy[1];
+                if (sm.taps == 4) v += sr[2][i] * sy[2] + sr[3][i] * sy[3];
+                int64_t c = 128 + (((int64_t)(v - sm.level) * sm.gain) >> 16);
+                n = c <= 0 ? 0 : c >= 256 ? 256 : (unsigned)c, area = 256;
+            } else if (area == 1) n = pg->bits[(size_t)r0 * pg->rowbytes + (size_t)(c0[i] >> 3)] >> (7 - (c0[i] & 7)) & 1;
             else
                 for (int r = r0; area && r < r1; r++) n += black(pg->bits + (size_t)r * pg->rowbytes, c0[i], c1[i]);
             uint8_t b[3] = {255, 255, 255}, f[3] = {0, 0, 0};
             if (bg && n < area + !area) layer_rgb(bg, &bx[i], &by, b);
             if (n) {
                 if (pg->entry) {
-                    unsigned sum[3] = {0, 0, 0};
-                    palette_sum(pg, r0, r1, c0[i], c1[i], sum);
-                    for (int k = 0; k < 3; k++) f[k] = (uint8_t)((sum[k] + n / 2) / n);
+                    unsigned sum[3] = {0, 0, 0}, of = n;
+                    if (smooth) of = palette_near(pg, r0, c0[i], sum);
+                    else palette_sum(pg, r0, r1, c0[i], c1[i], sum);
+                    for (int k = 0; k < 3; k++) f[k] = of ? (uint8_t)((sum[k] + of / 2) / of) : 0;
                 } else if (pg->pal)
                     memcpy(f, pg->pal, 3);
                 else if (fg)
@@ -1042,6 +1172,7 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             o[i] = 0xff000000u | (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
         }
     }
+    if (smooth) smooth_free(&sm);
     free(c0), free(bx);
     page_release(d, pg);
     return rc;

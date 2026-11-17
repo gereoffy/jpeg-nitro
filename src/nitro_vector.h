@@ -113,7 +113,8 @@ uint8_t *nv_vector_detail_render(NvVector *v, int page, double vscale, const NvD
                                  void *ctx);
 
 // The background the drawings loaded from now on are drawn over: 0 white, 1 dark grey (AutoCAD's
-// model space), 2 black. Any thread.
+// model space), 2 black. Any thread. A DjVu page has its own paper: for it the setting is how its
+// mask is enlarged (nitrodjvu_set_smooth: 0 as it is, 1 smooth, 2 smoother).
 int nv_vector_background(void);
 // The next (delta > 0) or previous one, cyclically; returns the new setting.
 int nv_vector_cycle_background(int delta);
@@ -121,7 +122,8 @@ int nv_vector_cycle_background(int delta);
 const char *nv_vector_background_name(int background);
 // The window title's tail for a drawing, after the image's name and size: "  [page i/n]" for a
 // page of a multi-page one, then "  dark background" / "  black background" (nv_vector_background_name)
-// for one over a background other than white; "" when neither (v NULL: not a drawing). Into
+// for one over a background other than white ("  smooth" / "  smoother" for a DjVu); "" when neither
+// (v NULL: not a drawing). Into
 // buf (n bytes), returned.
 const char *nv_vector_title_suffix(const NvVector *v, int page, int background, char *buf, size_t n);
 

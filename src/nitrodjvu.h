@@ -35,6 +35,13 @@ void nitrodjvu_size(const nitrodjvu *doc, int page, double *w, double *h);
 // it draws. For a caller that wants the two apart (the times of a viewer).
 void nitrodjvu_prepare(nitrodjvu *doc, int page);
 
+// How the mask is enlarged (a page drawn larger than its pixels): 0 as it is, each pixel a square
+// (the default); 1 and 2 with its outline smoothed - the steps of a slanted line or a curve drawn
+// as a slanted edge, sharp at any enlargement. 1 keeps every pixel of the mask and takes the steps'
+// corners off; 2 is stronger (slanted lines straight, curves round, the strokes a touch bolder).
+// Set before the document is drawn.
+void nitrodjvu_set_smooth(nitrodjvu *doc, int mode);
+
 // Renders a page into a w x h BGRA buffer (opaque): pixel (i, j) shows the point
 // (x0 + (i + 0.5) / scale, y0 + (j + 0.5) / scale) of the page; smaller than its pixels, each is
 // the average of the pixels it covers; the pictures are interpolated up to the page. An empty page
