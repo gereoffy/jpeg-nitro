@@ -8,13 +8,14 @@
 #include "nitrodng.h"        // the lossless JPEG decoder
 #include "nitrojpeg.h"
 #include "nitrojpx.h"
+#include "nitrojxl.h"
 
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { S_RAW, S_RLE, S_JPEG, S_LJPEG, S_J2K };                      // info.syntax
+enum { S_RAW, S_RLE, S_JPEG, S_LJPEG, S_J2K, S_JXL };                      // info.syntax
 enum { P_MONO1, P_MONO2, P_PALETTE, P_RGB, P_YBR, P_YBR422 };       // info.photometric
 #define MAX_DEPTH 24      // sequences in sequences
 #define MAX_SIDE 65535    // Rows and Columns are 16-bit numbers
@@ -279,7 +280,7 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
         else if (!strcmp(t, "4.90") || !strcmp(t, "4.91") || !strcmp(t, "4.92") || !strcmp(t, "4.93")) in->syntax = S_J2K;
         else if (!strcmp(t, "4.80") || !strcmp(t, "4.81")) in->error = "DICOM: JPEG-LS is not supported";
         else if (!strncmp(t, "4.20", 4)) in->error = "DICOM: HTJ2K is not supported";
-        else if (!strncmp(t, "4.11", 4)) in->error = "DICOM: JPEG XL is not supported";
+        else if (!strcmp(t, "4.110") || !strcmp(t, "4.111") || !strcmp(t, "4.112")) in->syntax = S_JXL;
         else if (!strcmp(t, "1.99") || !strncmp(t, "8.", 2)) in->error = "DICOM: deflated data is not supported";
         else if (!strncmp(t, "4.", 2)) in->error = "DICOM: this compression is not supported (video, JPEG process ...)";
     }
@@ -289,7 +290,7 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
     if (in->photometric < 0) in->photometric = in->spp == 3 ? P_RGB : P_MONO2;
     if (in->spp == 1 && in->photometric > P_PALETTE) in->photometric = P_MONO2;
     if (in->spp == 3 && in->photometric <= P_PALETTE) in->photometric = P_RGB;
-    if (in->syntax == S_J2K || in->syntax == S_LJPEG || in->syntax == S_JPEG) {   // (the codestream has the precision)
+    if (in->syntax == S_J2K || in->syntax == S_LJPEG || in->syntax == S_JPEG || in->syntax == S_JXL) {   // (the codestream has the precision)
         if (in->alloc != 8 && in->alloc != 16) in->alloc = 16;
     }
     if (in->stored < 1 || in->stored > in->alloc) in->stored = in->alloc;
@@ -585,6 +586,24 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
                 rc = 0;
             } else free(out);
         }
+    } else if (in->syntax == S_JXL) {
+        // JPEG XL: the samples as coded (lossless: the values exactly; signed ones as their bit pattern; a recompressed
+        // JPEG's Y Cb Cr given as R G B, whatever the data set says)
+        njxl_info ji;
+        if (!njxl_info_read(s, sl, &ji) && ji.width == in->width && ji.height == in->height && (ji.grey ? 1 : 3) == in->spp) {
+            uint16_t *out = malloc(px * (size_t)in->spp * 2 + 64);
+            if (out && !njxl_decode(s, sl, nthreads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_SAMPLES16, out, (size_t)in->width * in->spp * 2, NULL)) {
+                f->p = f->own = (uint8_t *)out;
+                f->len = px * (size_t)in->spp * 2;
+                f->bytes = 2;
+                f->be = host_be();
+                f->planar = 0;
+                f->ycc = 0;
+                if (ji.bits < f->stored + f->shift) f->stored = ji.bits, f->shift = 0;   // (fewer bits than the data set says)
+                rc = 0;
+            } else free(out);
+        }
+        njxl_info_free(&ji);
     } else if (in->syntax == S_J2K) {
         int jw = 0, jh = 0;   // (its size first: a damaged one is not decoded at whatever size it says)
         if (!njpx_size(s, sl, &jw, &jh) && jw == in->width && jh == in->height &&

@@ -56,8 +56,12 @@ typedef struct {
 } njxl_info;
 
 enum { NJXL_SINGLE_THREAD = 1 };       // flags: decode on the calling thread only
-enum { NJXL_BGRA8 = 0, NJXL_RGBA16 = 1 };   // formats: premultiplied 8-bit BGRA; 16-bit RGBA (straight alpha
-                                             // premultiplied as well), pitch in bytes
+enum { NJXL_BGRA8 = 0, NJXL_RGBA16 = 1,     // formats: premultiplied 8-bit BGRA; 16-bit RGBA (straight alpha
+                                             // premultiplied as well), pitch in bytes;
+       NJXL_SAMPLES16 = 2 };                 // the samples as coded (a lossless image's values exactly): 16-bit
+                                             // numbers 0 .. 2^bits - 1, grey: 1 a pixel, else R G B; no alpha, no
+                                             // colour conversion. Integer samples of at most 16 bits, not XYB
+                                             // (else NJXL_UNSUPPORTED): DICOM's pixel data
 
 // The headers only, and the ICC profile the decoded pixels will be in (a file's start is enough
 // when the codestream header and the profile are in it).

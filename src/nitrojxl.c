@@ -113,6 +113,7 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
     int level = 5, have_level = 0, mode = 0, last = 0;
     while (pos < len) {
         if (++boxes > BOX_LIMIT) return NJXL_LIMIT;
+        if (mode && len - pos < 8) break;   // (the pad byte of a DICOM fragment, which has an even length)
         if (box_read(data, len, pos, &box)) return NJXL_INVALID;
         pos = box.next;
         switch (box.type) {
@@ -154,6 +155,7 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
     if (!joined) return NJXL_NOMEM;
     size_t written = 0;
     for (pos = start; pos < len; pos = box.next) {
+        if (len - pos < 8) break;
         if (box_read(data, len, pos, &box)) { free(joined); return NJXL_INVALID; }
         if (box.type == TAG('j','x','l','p')) {
             memcpy(joined + written, box.data + 4, box.len - 4);
@@ -4369,6 +4371,25 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
         afac = 1.0f / (float)(((uint64_t)1 << abits) - 1);
     }
     int x = x0;   // (columns x0 .. w)
+    if (o->format == NJXL_SAMPLES16) {   // the numbers as coded (YCbCr: as R G B)
+        int nc = m->cspace == CS_GREY ? 1 : 3;
+        float mx = (float)((1u << m->bits) - 1);
+        uint16_t *op = (uint16_t *)(void *)(o->pixels + (size_t)(y + o->oy) * o->pitch) + (size_t)(x + o->ox) * nc;
+        for (; x < w; x++) {
+            float v[3] = {r[x], g[x], b[x]};
+            if (f->h.ycbcr) {
+                float Yv = v[1] + 128.0f / 255, cb = v[0], cr = v[2];
+                v[0] = Yv + 1.402f * cr;
+                v[1] = Yv + (-0.114f * 1.772f / 0.587f) * cb + (-0.299f * 1.402f / 0.587f) * cr;
+                v[2] = Yv + 1.772f * cb;
+            }
+            for (int c = 0; c < nc; c++) {
+                float s = v[c] < 0 ? 0 : v[c] > 1 ? 1 : v[c];
+                *op++ = (uint16_t)(s * mx + 0.5f);
+            }
+        }
+        return;
+    }
     if (k->mode != 2) for (; x + 8 <= w; x += 8) {   // 8 pixels at once (the enumerated colour spaces: below)
         vf R = vload(r + x), G = vload(g + x), B = vload(b + x), A = 1;
         if (f->h.ycbcr) {
@@ -4683,10 +4704,11 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     njxl_info tmp;
     if (!info) info = &tmp;
     memset(info, 0, sizeof(*info));
-    if (!pixels || (format != NJXL_BGRA8 && format != NJXL_RGBA16)) return NJXL_INVALID;
+    if (!pixels || (format != NJXL_BGRA8 && format != NJXL_RGBA16 && format != NJXL_SAMPLES16)) return NJXL_INVALID;
     int e = read_headers(data, len, &im);
     Meta *m = &im.m;
     Br *br = &im.br;
+    if (!e && format == NJXL_SAMPLES16 && (m->xyb || m->exp_bits || m->bits > 16)) e = ERR_UNSUP;
     if (!e && m->want_icc) e = read_icc(br, m);
     if (e) { image_free(&im); return e; }
     fill_info(&im, info);
@@ -4737,7 +4759,8 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
             for (int i = 0; i < m->num_ec; i++)
                 if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
             if (!e && !full && !drawn)   // (the canvas outside the first frames: transparent black)
-                for (int y = 0; y < m->height; y++) memset((uint8_t *)pixels + (size_t)y * pitch, 0, (size_t)m->width * (format == NJXL_RGBA16 ? 8 : 4));
+                for (int y = 0; y < m->height; y++)
+                    memset((uint8_t *)pixels + (size_t)y * pitch, 0, (size_t)m->width * (format == NJXL_RGBA16 ? 8 : format == NJXL_SAMPLES16 ? 2 * (size_t)(m->cspace == CS_GREY ? 1 : 3) : 4));
             drawn = 1;
             for (int i = 0; i < 4; i++) if (slot[i] == 1) slot[i] = 2;
             if (!h->is_last && (h->duration == 0 || h->save_as_ref)) slot[h->save_as_ref & 3] = 1;

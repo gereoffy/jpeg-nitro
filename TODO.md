@@ -18,8 +18,9 @@ a külön fájlokból álló (indirect) dokumentumok.
 
 Kész: JPEG XL (2026-11-17, nitrojxl): VarDCT és Modular, alfa, 8–32 bites egész és lebegőpontos minták, átkódolt JPEG-ek
 (YCbCr), ICC; a Lightroom-exportok pixelpontosak a libjxl-hez képest (a HDR tónusleképezve). Kimaradt: patch-ek, spline-ok,
-felskálázás, keverő rétegek / animációs képkockák (a csempézett, egymás mellé tett képkockák mennek), LF-képkockák (progresszív DC), a zaj kirajzolása; a DICOM-ba
-ágyazott JPEG XL. Sebesség (16 szál, a libjxl-hez képest): a nagy veszteséges Lightroom-export 1,0–1,1×, a kisebb
+felskálázás, keverő rétegek / animációs képkockák (a csempézett, egymás mellé tett képkockák mennek), LF-képkockák (progresszív DC), a zaj kirajzolása. DICOM-ban
+(2026-11-17) a veszteségmentes és az átkódolt JPEG megy (NJXL_SAMPLES16: a minták kódolt értéke); az XYB-s veszteséges
+.112 nem (nincs rá minta). Sebesség (16 szál, a libjxl-hez képest): a nagy veszteséges Lightroom-export 1,0–1,1×, a kisebb
 XYB-s VarDCT és az átkódolt JPEG 1,6–1,9×, a veszteségmentes 1,1–1,7× lassabb; az ImageIO-nál mindenhol gyorsabb.
 Vektoros IDCT (kifejtett 8/16/32 pontos, 8×8-as blokkos transzponálás) / szűrők / színkonverzió / króma-felskálázás,
 csempés renderelés a csoportokkal átfedve, újrahasznosított pufferek, gyors ANS-út, csatornánként metszett, kétszintes
@@ -28,7 +29,7 @@ tulajdonságok számítása a veszteségmentesnél; az LF-csoportok (6 db egy 24
 
 Kész: DICOM (2026-11-16, nitrodicom): tömörítetlen, RLE, JPEG, veszteségmentes JPEG, JPEG 2000; szürke az ablakkal,
 paletta, RGB / YBR; E / Shift+E világosít. Kimaradt: JPEG-LS (külön dekóder, ~700 sor), a színes 12 bites veszteséges JPEG
-(a szürkét 2026-11-17 óta a nitrojpeg 12 bites IDCT-je viszi: nj_decode_planes16), HTJ2K, JPEG XL (a nitrojxl már megvan), a deflate-tel tömörített fájl, a szakaszos (segmented) paletta, a modality
+(a szürkét 2026-11-17 óta a nitrojpeg 12 bites IDCT-je viszi: nj_decode_planes16), HTJ2K, a deflate-tel tömörített fájl, a szakaszos (segmented) paletta, a modality
 lookup table, az overlay-ek. A többképes fájl képei között a [ / ] lép: egy közös beállítás (mint az E-nél az
 expozíció), a kép újradekódolódik, gyorsítótár nélkül (NvDecoder.frame, NvImage.frames). Ugyanez az út jó lesz az
 animált GIF-hez és APNG-hez is.
