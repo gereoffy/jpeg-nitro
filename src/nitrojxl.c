@@ -1737,6 +1737,58 @@ static inline __attribute__((always_inline)) int channel_pixels(Br *brp, Sym *sp
     return e;
 }
 
+// A tree that branches on property 9 only (within -512 .. 510), every leaf the gradient predictor (libjxl's
+// usual LF image): the leaf from a table of the clamped property, as libjxl's is_gradient_only path.
+enum { GRAD_RANGE = 512 };
+typedef struct { int32_t ctx, mult, offset; } GradLeaf;
+static int gradient_table(const Tree *t, const FNode *tn, int count, GradLeaf *lut) {
+    for (int i = 0; i < count; i++) {
+        const FNode *n = &tn[i];
+        if (n->prop0 < 0) { if (t->nodes[n->split0].pred != 5) return 0; continue; }
+        if (n->prop0 != 9 || n->split0 < -GRAD_RANGE || n->split0 >= GRAD_RANGE - 1) return 0;
+        for (int k = 0; k < 2; k++)   // (0, 0: a leaf child)
+            if ((n->prop1[k] || n->split1[k]) && (n->prop1[k] != 9 || n->split1[k] < -GRAD_RANGE || n->split1[k] >= GRAD_RANGE - 1)) return 0;
+    }
+    for (int v = -GRAD_RANGE; v < GRAD_RANGE; v++) {
+        const FNode *n = tn;
+        while (n->prop0 >= 0) {
+            int k = v <= n->split0;
+            n = tn + n->child + 2 * k + (n->prop1[k] == 9 ? v <= n->split1[k] : 0);
+        }
+        const Node *leaf = &t->nodes[n->split0];
+        lut[v + GRAD_RANGE] = (GradLeaf){leaf->val, leaf->mult, leaf->offset};
+    }
+    return 1;
+}
+
+static inline __attribute__((always_inline)) int channel_gradient(Br *brp, Sym *sp, int fast, const GradLeaf *lut, Chan *c) {
+    int w = c->w, h = c->h;
+    int32_t *p = c->p;
+    const Code *code = sp->code;
+    const uint8_t *map = code->map;
+    const Alias *alias = code->alias;
+    const HybridCfg *cfg = code->cfg;
+    int la = code->log_alpha, bad = 0, e = 0;
+    Br lbr = *brp, *br = fast ? &lbr : brp;
+    uint32_t st = sp->state;
+    for (int y = 0; y < h && !e; y++) {
+        int32_t *row = p + (size_t)y * w;
+        const int32_t *prow = y ? row - w : NULL;
+        for (int x = 0; x < w; x++) {
+            int64_t left = x ? row[x - 1] : y ? prow[x] : 0;
+            int64_t top = y ? prow[x] : left;
+            int64_t topleft = x && y ? prow[x - 1] : left;
+            int32_t g = (int32_t)(left + top - topleft);   // (property 9: int32 as libjxl's)
+            const GradLeaf *lf = &lut[(g < -GRAD_RANGE ? -GRAD_RANGE : g > GRAD_RANGE - 1 ? GRAD_RANGE - 1 : g) + GRAD_RANGE];
+            uint32_t tok = fast ? ans_fast(br, map, alias, la, cfg, &st, &bad, lf->ctx) : sym_read(br, sp, lf->ctx);
+            row[x] = (int32_t)((int64_t)unpack_signed(tok) * lf->mult + lf->offset + clamped_gradient(left, top, topleft));
+        }
+        if (bad || sp->bad || ((y & 15) == 15 && br_overrun(br))) e = ERR_INVALID;
+    }
+    if (fast) { *brp = lbr; sp->state = st; sp->bad |= bad; }
+    return e;
+}
+
 static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int ci, uint32_t stream_id) {
     const Chan *c = &m->ch[ci];
     // the previous channels of the same size and shifts (properties 16 ...)
@@ -1763,8 +1815,14 @@ static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int c
             use_wp = 1;
         }
     }
-    e = !s->code->use_prefix && !s->code->lz77 ? channel_pixels(br, s, 1, t, tn, m, ci, use_wp, max_prop, refs, nref)
-                                               : channel_pixels(br, s, 0, t, tn, m, ci, use_wp, max_prop, refs, nref);
+    int fast = !s->code->use_prefix && !s->code->lz77;
+    GradLeaf *lut = !use_wp && max_prop <= 9 && count > 1 ? xmalloc(2 * GRAD_RANGE, sizeof(GradLeaf)) : NULL;
+    if (lut && gradient_table(t, tn, count, lut))
+        e = fast ? channel_gradient(br, s, 1, lut, &m->ch[ci]) : channel_gradient(br, s, 0, lut, &m->ch[ci]);
+    else
+        e = fast ? channel_pixels(br, s, 1, t, tn, m, ci, use_wp, max_prop, refs, nref)
+                 : channel_pixels(br, s, 0, t, tn, m, ci, use_wp, max_prop, refs, nref);
+    free(lut);
     free(tn);
     return e;
 }
@@ -2367,7 +2425,7 @@ static void fdct_rec(float *out, float *in, int t, int rep) { fdct_core(out, in,
 
 // the same 8 columns at a time (rep = 8 * rv)
 typedef void (*DctHalfV)(vfu *out, vfu *in, int t, int rv);
-static void idct_core_v(vfu *out, vfu *in, int t, int rv, DctHalfV half) {
+static inline __attribute__((always_inline)) void idct_core_v(vfu *out, vfu *in, int t, int rv, DctHalfV half) {
     int N = 1 << t;
     for (int i = 0; i < N / 2; ++i) for (int r = 0; r < rv; ++r) out[i * rv + r] = in[i * 2 * rv + r];
     for (int r = 0; r < rv; ++r) out[N / 2 * rv + r] = SQRT2 * in[1 * rv + r];
@@ -2388,7 +2446,15 @@ static void dct2_v(vfu *out, vfu *in, int t, int rv) {
     (void)t;
     for (int r = 0; r < rv; ++r) { vf x = in[r], y = in[rv + r]; out[r] = x + y; out[rv + r] = x - y; }
 }
-static void idct_rec_v(vfu *out, vfu *in, int t, int rv) { idct_core_v(out, in, t, rv, t == 2 ? dct2_v : idct_rec_v); }
+static void idct8_h(vfu *out, vfu *in, int t, int rv);
+static void idct16_h(vfu *out, vfu *in, int t, int rv) { (void)t; idct_core_v(out, in, 4, rv, idct8_h); }
+static void idct32_h(vfu *out, vfu *in, int t, int rv) { (void)t; idct_core_v(out, in, 5, rv, idct16_h); }
+static void idct_rec_v(vfu *out, vfu *in, int t, int rv) {
+    if (t == 3) idct8_h(out, in, 3, rv);
+    else if (t == 4) idct16_h(out, in, 4, rv);
+    else if (t == 5) idct32_h(out, in, 5, rv);
+    else idct_core_v(out, in, t, rv, t == 2 ? dct2_v : idct_rec_v);
+}
 
 // in is used as scratch
 static void idct1d(float *out, float *in, int t, int rep) {
@@ -2418,13 +2484,88 @@ static void fdct2d_llf(float *buf, float *scratch, int log_rows, int log_cols) {
     if (log_cols > log_rows) view_transpose(&b, s); else view_copy(&b, s);
 }
 
+// the 8 x 8 transform unrolled: the same butterflies as idct_core (4 and 8 points), 8 columns at a
+// time, the rows transposed in registers
+static inline __attribute__((always_inline)) void idct4v(vf x0, vf x1, vf x2, vf x3, vf *y) {
+    vf a0 = x0 + x2, a1 = x0 - x2, o0 = SQRT2 * x1, o1 = x1 + x3;
+    vf b0 = (o0 + o1) * HALF_SECANTS[2], b1 = (o0 - o1) * HALF_SECANTS[3];
+    y[0] = a0 + b0; y[3] = a0 - b0; y[1] = a1 + b1; y[2] = a1 - b1;
+}
+static inline __attribute__((always_inline)) void idct8v(vf *x) {
+    vf e[4], o[4];
+    idct4v(x[0], x[2], x[4], x[6], e);
+    idct4v(SQRT2 * x[1], x[1] + x[3], x[3] + x[5], x[5] + x[7], o);
+    for (int i = 0; i < 4; i++) {
+        vf t = o[i] * HALF_SECANTS[4 + i];
+        x[i] = e[i] + t; x[7 - i] = e[i] - t;
+    }
+}
+static inline __attribute__((always_inline)) void transpose8v(vf *r) {
+    vf t[8], u[8];
+    for (int i = 0; i < 8; i += 2) {
+        t[i] = __builtin_shufflevector(r[i], r[i + 1], 0, 8, 1, 9, 4, 12, 5, 13);
+        t[i + 1] = __builtin_shufflevector(r[i], r[i + 1], 2, 10, 3, 11, 6, 14, 7, 15);
+    }
+    for (int i = 0; i < 8; i += 4)
+        for (int j = 0; j < 2; j++) {
+            u[i + j] = __builtin_shufflevector(t[i + j], t[i + j + 2], 0, 1, 8, 9, 4, 5, 12, 13);
+            u[i + j + 2] = __builtin_shufflevector(t[i + j], t[i + j + 2], 2, 3, 10, 11, 6, 7, 14, 15);
+        }
+    static const int M[4] = {0, 2, 1, 3};   // (u[0..3]: columns 0 / 4, 2 / 6, 1 / 5, 3 / 7 of rows 0..3)
+    for (int i = 0; i < 4; i++) {
+        r[i] = __builtin_shufflevector(u[M[i]], u[M[i] + 4], 0, 1, 2, 3, 8, 9, 10, 11);
+        r[i + 4] = __builtin_shufflevector(u[M[i]], u[M[i] + 4], 4, 5, 6, 7, 12, 13, 14, 15);
+    }
+}
+static void idct8x8(float *buf) {
+    vf r[8];
+    for (int i = 0; i < 8; i++) r[i] = vload(buf + 8 * i);
+    idct8v(r);
+    transpose8v(r);
+    idct8v(r);
+    for (int i = 0; i < 8; i++) vstore(buf + 8 * i, r[i]);
+}
+
+// the 8-point transform over rv groups of 8 columns (element (i, r) at [i * rv + r])
+static void idct8_h(vfu *out, vfu *in, int t, int rv) {
+    (void)t;
+    for (int r = 0; r < rv; r++) {
+        vf x[8];
+        for (int i = 0; i < 8; i++) x[i] = in[i * rv + r];
+        idct8v(x);
+        for (int i = 0; i < 8; i++) out[i * rv + r] = x[i];
+    }
+}
+
+// out (2^logh rows of 2^logw) = in (2^logw rows of 2^logh) transposed; 8 x 8 blocks in registers
+static void transpose_f(float *out, const float *in, int logw, int logh) {
+    int w = 1 << logw, h = 1 << logh;   // (of out)
+    if (logw < 3 || logh < 3) {
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) out[y * w + x] = in[x * h + y];
+        return;
+    }
+    for (int by = 0; by < h; by += 8)
+        for (int bx = 0; bx < w; bx += 8) {
+            vf r[8];
+            for (int i = 0; i < 8; i++) r[i] = vload(in + (size_t)(bx + i) * h + by);
+            transpose8v(r);
+            for (int i = 0; i < 8; i++) vstore(out + (size_t)(by + i) * w + bx, r[i]);
+        }
+}
+
+// (scratch: the size of the block)
 static void idct2d(float *buf, float *scratch, int log_rows, int log_cols) {
-    View b, s = mkview(log_cols, log_rows, scratch);
-    if (log_cols > log_rows) { b = mkview(log_cols, log_rows, buf); view_transpose(&s, b); }
-    else { b = mkview(log_rows, log_cols, buf); view_copy(&s, b); }
-    idct_view(&b, &s);
-    view_transpose(&s, b);
-    idct_view(&b, &s);
+    if (log_rows == 3 && log_cols == 3) { idct8x8(buf); return; }
+    int R = 1 << log_rows, C = 1 << log_cols;
+    float *src = buf, *p, *q, *res;
+    if (log_cols > log_rows) { transpose_f(scratch, buf, log_rows, log_cols); src = scratch; }   // (coefficients are stored wide)
+    p = src == buf ? scratch : buf;
+    idct1d(p, src, log_cols, R);         // columns: 2^log_cols rows of R
+    q = p == buf ? scratch : buf;
+    transpose_f(q, p, log_cols, log_rows);   // to R rows of C
+    res = p;
+    idct1d(res, q, log_rows, C);
+    if (res != buf) memcpy(buf, res, sizeof(float) * (size_t)R * C);
 }
 
 static inline void aux_idct11(float *out, float *in, int x, int y, int S2) {
@@ -3152,6 +3293,7 @@ typedef struct {
     int nhist;
     int32_t *orders[MAX_PASSES][NUM_ORDERS][3];
     Code coef[MAX_PASSES];
+    uint32_t used_acs;       // the varblock types the frame has (bits)
     // output: the colour planes (VarDCT: padded to blocks), coded size
     float *px[3];
     Pool *pool;              // (group buffers, render tiles)
@@ -3411,7 +3553,7 @@ static int lf_group(Frame *f, int lfg) {
                 f->ytox[o] = (int8_t)(vx < -128 ? -128 : vx > 127 ? 127 : vx);
                 f->ytob[o] = (int8_t)(vb < -128 ? -128 : vb > 127 ? 127 : vb);
             }
-        uint32_t num = 0;
+        uint32_t num = 0, used = 0;
         int is444 = !h->maxhs && !h->maxvs;
         for (int iy = 0; iy < bys && !e; iy++) {
             int y = by0 + iy;
@@ -3438,11 +3580,13 @@ static int lf_group(Frame *f, int lfg) {
                         f->qf[oo] = q;
                     }
                 f->acs[o] = (uint8_t)(st | 0x80);
+                used |= 1u << st;
                 num++;
             }
         }
         modular_free(&g);
         if (e) return e;
+        __atomic_fetch_or(&f->used_acs, used, __ATOMIC_RELAXED);
     }
     return br_overrun(br) ? ERR_INVALID : 0;
 }
@@ -3535,12 +3679,23 @@ static int hf_global(Frame *f) {
             }
         }
     }
-    for (int i = 0; i < NUM_DQ && !e; i++) {
-        int size = 1 << (DCT_PARAMS[i].log_rows + DCT_PARAMS[i].log_cols);
-        if (!(f->dqinv[i] = xmalloc((size_t)3 * size, sizeof(float)))) { e = ERR_NOMEM; break; }
-        if ((e = dq_weights(i, &enc[i], f->dqinv[i]))) break;
-        for (int k = 0; k < 3 * size; k++) f->dqinv[i][k] = 1.0f / f->dqinv[i][k];
-    }
+    if (e) { for (int i = 0; i < NUM_DQ; i++) free(enc[i].raw); return e; }
+    // the weights of the tables the frame's varblocks use (libjxl computes no others either), in parallel
+    uint32_t used_dq = 0, used_ord = 0;
+    for (int t = 0; t < NUM_DCT; t++) if (f->used_acs >> t & 1) { used_dq |= 1u << DCT_SELECT[t].param; used_ord |= 1u << DCT_SELECT[t].order; }
+    int list[NUM_DQ], nlist = 0, errs[NUM_DQ] = {0};
+    for (int i = 0; i < NUM_DQ; i++) if (used_dq >> i & 1) list[nlist++] = i;
+    int *errp = errs, *listp = list;
+    DqEnc *encp = enc;
+    nitro_parallel_n((size_t)nlist, f->threads, ^(size_t j) {
+        int i = listp[j], size = 1 << (DCT_PARAMS[i].log_rows + DCT_PARAMS[i].log_cols);
+        float *w = xmalloc((size_t)3 * size, sizeof(float));
+        int er = w ? dq_weights(i, &encp[i], w) : ERR_NOMEM;
+        if (!er) for (int k = 0; k < 3 * size; k++) w[k] = 1.0f / w[k];
+        f->dqinv[i] = w;
+        errp[i] = er;
+    });
+    for (int i = 0; i < NUM_DQ && !e; i++) e = errs[i];
     for (int i = 0; i < NUM_DQ; i++) free(enc[i].raw);
     if (e) return e;
     f->nhist = (int)br_u(br, ceil_log2((uint64_t)h->ngroups)) + 1;
@@ -3549,20 +3704,21 @@ static int hf_global(Frame *f) {
         Code c;
         Sym s;
         if (used) { TRY(read_code(br, 8, 1, &c)); sym_init(&s, &c, 0, br); }
-        for (int o = 0; o < NUM_ORDERS && !e; o++) {
+        for (int o = 0; o < NUM_ORDERS && !e; o++) {   // (orders of varblocks the frame does not have: read, not kept)
             int lr = LOG_ORDER_SIZE[o][0], lc = LOG_ORDER_SIZE[o][1], size = 1 << (lr + lc);
+            if (!(used_ord >> o & 1) && !(used >> o & 1)) continue;
             int32_t *nat = xmalloc((size_t)size, sizeof(int32_t));
             if (!nat) { e = ERR_NOMEM; break; }
             natural_order(lr, lc, nat);
             for (int ch = 0; ch < 3 && !e; ch++) {
-                int32_t *ord = xmalloc((size_t)size, sizeof(int32_t));
-                if (!ord) { e = ERR_NOMEM; break; }
+                int32_t *ord = used_ord >> o & 1 ? xmalloc((size_t)size, sizeof(int32_t)) : NULL;
+                if ((used_ord >> o & 1) && !ord) { e = ERR_NOMEM; break; }
                 f->orders[p][o][ch] = ord;
                 if (used >> o & 1) {
                     int32_t *perm = xmalloc((size_t)size, sizeof(int32_t));
                     if (!perm) { e = ERR_NOMEM; break; }
                     e = read_permutation(br, &s, size, size / 64, perm);
-                    for (int k = 0; k < size && !e; k++) ord[k] = nat[perm[k]];
+                    for (int k = 0; k < size && !e && ord; k++) ord[k] = nat[perm[k]];
                     free(perm);
                 } else {
                     memcpy(ord, nat, sizeof(int32_t) * (size_t)size);
@@ -3926,9 +4082,17 @@ typedef struct {
 } Colour;
 
 // the sRGB transfer function, libjxl's rational approximation (error ~5e-7); for x in [0, 1]
-static inline vf srgb_v(vf x) {
+static inline vf vsqrt(vf x) {
+#if defined(__has_builtin) && __has_builtin(__builtin_elementwise_sqrt)
+    return __builtin_elementwise_sqrt(x);
+#else
     vf r;
     for (int i = 0; i < 8; i++) r[i] = sqrtf(x[i]);
+    return r;
+#endif
+}
+static inline vf srgb_v(vf x) {
+    vf r = vsqrt(x);
     vf p = (((7.352629620e-01f * r + 1.474205315e+00f) * r + 3.903842876e-01f) * r + 5.287254571e-03f) * r - 5.135152395e-04f;
     vf q = (((2.424867759e-02f * r + 9.258482155e-01f) * r + 1.340816930e+00f) * r + 3.036675394e-01f) * r + 1.004519624e-02f;
     return x > 0.0031308f ? p / q : x * 12.92f;
@@ -4144,14 +4308,28 @@ static void load_row(const Frame *f, int c, int y, int x0, int x1, float *dst) {
         } else {
             r0 = r1 = prow(f, c, y);
         }
-        for (int x = x0; x < x1; x++) {
-            if (h->hs[c]) {
-                int xs = x >> 1, xn = mirror(xs + (x & 1 ? 1 : -1), cw);
-                float v0 = a * r0[xs] + b * r1[xs], v1 = a * r0[xn] + b * r1[xn];
-                dst[x] = 0.75f * v0 + 0.25f * v1;
-            } else {
-                dst[x] = a * r0[x] + b * r1[x];
+        if (!h->hs[c]) {
+            int x = x0;
+            for (; x + 8 <= x1; x += 8) vstore(dst + x, a * vload(r0 + x) + b * vload(r1 + x));
+            for (; x < x1; x++) dst[x] = a * r0[x] + b * r1[x];
+            return;
+        }
+        for (int c0 = x0; c0 < x1; c0 += 1024) {   // in chunks: the vertical pass into v, then 3/4, 1/4 across
+            int c1 = x1 - c0 > 1024 ? c0 + 1024 : x1;
+            int k0 = (c0 >> 1) - 1, k1 = ((c1 - 1) >> 1) + 1, k = k0;
+            float vb[1024 / 2 + 16], *v = vb - k0;   // v[k0 .. k1]
+            for (; k <= k1 && (k < 0 || k + 8 > cw); k++) { int i = mirror(k, cw); v[k] = a * r0[i] + b * r1[i]; }
+            for (; k + 8 <= k1 + 1 && k + 8 <= cw; k += 8) vstore(v + k, a * vload(r0 + k) + b * vload(r1 + k));
+            for (; k <= k1; k++) { int i = mirror(k, cw); v[k] = a * r0[i] + b * r1[i]; }
+            int x = c0;
+            if (x & 1) { dst[x] = 0.75f * v[x >> 1] + 0.25f * v[(x >> 1) + 1]; x++; }
+            for (; x + 16 <= c1; x += 16) {
+                const float *p = v + (x >> 1);
+                vf m = vload(p), e = 0.75f * m + 0.25f * vload(p - 1), o = 0.75f * m + 0.25f * vload(p + 1);
+                vstore(dst + x, __builtin_shufflevector(e, o, 0, 8, 1, 9, 2, 10, 3, 11));
+                vstore(dst + x + 8, __builtin_shufflevector(e, o, 4, 12, 5, 13, 6, 14, 7, 15));
             }
+            for (; x < c1; x++) dst[x] = 0.75f * v[x >> 1] + 0.25f * v[(x >> 1) + (x & 1 ? 1 : -1)];
         }
         return;
     }
@@ -4223,9 +4401,8 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
         if (o->format == NJXL_BGRA8) {
             vi bi = __builtin_convertvector(B * 255 + 0.5f, vi), gi = __builtin_convertvector(G * 255 + 0.5f, vi);
             vi ri = __builtin_convertvector(R * 255 + 0.5f, vi), ai = __builtin_convertvector(A * 255 + 0.5f, vi);
-            uint32_t px[8];
-            for (int i = 0; i < 8; i++) px[i] = (uint32_t)bi[i] | (uint32_t)gi[i] << 8 | (uint32_t)ri[i] << 16 | (uint32_t)ai[i] << 24;
-            memcpy(o->pixels + (size_t)y * o->pitch + (size_t)x * 4, px, sizeof px);
+            vi px = bi | gi << 8 | ri << 16 | ai << 24;   // (each 0 .. 255)
+            memcpy(o->pixels + (size_t)y * o->pitch + (size_t)x * 4, &px, sizeof px);
         } else {
             vi ri = __builtin_convertvector(R * 65535 + 0.5f, vi), gi = __builtin_convertvector(G * 65535 + 0.5f, vi);
             vi bi = __builtin_convertvector(B * 65535 + 0.5f, vi), ai = __builtin_convertvector(A * 65535 + 0.5f, vi);
