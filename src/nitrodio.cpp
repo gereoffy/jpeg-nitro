@@ -1633,7 +1633,9 @@ struct Builder {
             b = {p.x, p.y, 0, 0};
         }
         Box inner = &lc == &edgeCell || lc.w <= 0 ? b : labelBox(s, b);
-        double wrap = str(s, "whiteSpace") == "wrap" && inner.w > 0 ? inner.w : 0;
+        // (an edge's own label: centred on its point, wrapped to the width its geometry gives, as mxCellRenderer)
+        double width = &lc == &edgeCell ? lc.w : inner.w;
+        double wrap = str(s, "whiteSpace") == "wrap" && width > 0 ? width : 0;
         addLabel(layoutLabel(lc.value, s, inner, wrap));
     }
 
