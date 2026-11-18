@@ -1619,9 +1619,110 @@ struct Builder {
         Pt c = t.b.centre();
         return rotated(uprightPoint(t, rotated(next, -t.rotation, c), orthogonal), t.rotation, c);
     }
+    // mxUtils.getPerimeterPoint: of the outline's segments that cross the segment centre - next, the crossing nearest to next
+    static bool outlineCrossing(const std::vector<Pt> &pts, Pt c, Pt n, Pt &out) {
+        bool found = false;
+        double best = 0;
+        for (size_t i = 0; i + 1 < pts.size(); i++) {
+            Pt a = pts[i], b = pts[i + 1];
+            double den = (n.y - c.y) * (b.x - a.x) - (n.x - c.x) * (b.y - a.y);
+            if (den == 0) continue;
+            double ua = ((n.x - c.x) * (a.y - c.y) - (n.y - c.y) * (a.x - c.x)) / den;
+            double ub = ((b.x - a.x) * (a.y - c.y) - (b.y - a.y) * (a.x - c.x)) / den;
+            if (ua < 0 || ua > 1 || ub < 0 || ub > 1) continue;
+            Pt p{a.x + ua * (b.x - a.x), a.y + ua * (b.y - a.y)};
+            double d = (n.x - p.x) * (n.x - p.x) + (n.y - p.y) * (n.y - p.y);
+            if (!found || d < best) found = true, best = d, out = p;
+        }
+        return found;
+    }
+    // Shapes.js getOutlinePerimeterPoint: where an edge towards next leaves an outline (orthogonal: on next's
+    // vertical or horizontal line where that reaches the outline)
+    static Pt outlinePoint(const Box &b, const std::vector<Pt> &pts, Pt next, bool orthogonal) {
+        Pt c = b.centre(), r;
+        if (orthogonal) {
+            Pt p1 = c;
+            if (next.x < b.x || next.x > b.x + b.w) {
+                p1.y = next.y;
+                if (outlineCrossing(pts, p1, next, r)) return r;
+                p1.x = next.x > p1.x ? b.x - 1 : b.x + b.w + 1;
+                if (outlineCrossing(pts, p1, next, r)) return r;
+            } else {
+                p1.x = next.x;
+                if (outlineCrossing(pts, p1, next, r)) return r;
+                if (next.y < b.y || next.y > b.y + b.h) {
+                    p1.y = next.y > p1.y ? b.y - 1 : b.y + b.h + 1;
+                    if (outlineCrossing(pts, p1, next, r)) return r;
+                }
+            }
+        }
+        return outlineCrossing(pts, c, next, r) ? r : c;
+    }
+    // the outlines of draw.io's parallelogram, trapezoid, step and hexagon perimeters (Shapes.js); false for other perimeters
+    static bool perimeterOutline(const Term &t, std::vector<Pt> &pts) {
+        const std::string &pm = t.perimeter;
+        bool para = pm == "parallelogramPerimeter", trap = pm == "trapezoidPerimeter", step = pm == "stepPerimeter",
+             hex = pm == "hexagonPerimeter2";
+        if (!(para || trap || step || hex) || !t.style) return false;
+        const Style &s = *t.style;
+        bool fixed = str(s, "fixedSize") != "" && str(s, "fixedSize") != "0";
+        double size = num(s, "size", fixed ? 20 : hex ? 0.25 : 0.2);
+        const std::string &d = str(s, "direction");
+        std::string dir = d.empty() ? "east" : d;
+        double x = t.b.x, y = t.b.y, w = t.b.w, h = t.b.h, cx = x + w / 2, cy = y + h / 2;
+        auto along = [&](double len, double half) { return fixed ? std::max(0.0, std::min(half, size)) : len * std::max(0.0, std::min(1.0, size)); };
+        bool vertical = dir == "north" || dir == "south";
+        if (para) {
+            if (vertical) { double dy = along(h, h); pts = {{x, y}, {x + w, y + dy}, {x + w, y + h}, {x, y + h - dy}, {x, y}}; }
+            else { double dx = along(w, w * 0.5); pts = {{x + dx, y}, {x + w, y}, {x + w - dx, y + h}, {x, y + h}, {x + dx, y}}; }
+        } else if (trap) {
+            if (dir == "east") { double dx = along(w, w * 0.5); pts = {{x + dx, y}, {x + w - dx, y}, {x + w, y + h}, {x, y + h}, {x + dx, y}}; }
+            else if (dir == "west") { double dx = along(w, w); pts = {{x, y}, {x + w, y}, {x + w - dx, y + h}, {x + dx, y + h}, {x, y}}; }
+            else if (dir == "north") { double dy = along(h, h); pts = {{x, y + dy}, {x + w, y}, {x + w, y + h}, {x, y + h - dy}, {x, y + dy}}; }
+            else { double dy = along(h, h); pts = {{x, y}, {x + w, y + dy}, {x + w, y + h - dy}, {x, y + h}, {x, y}}; }
+        } else if (step) {
+            if (dir == "east") { double dx = along(w, w); pts = {{x, y}, {x + w - dx, y}, {x + w, cy}, {x + w - dx, y + h}, {x, y + h}, {x + dx, cy}, {x, y}}; }
+            else if (dir == "west") { double dx = along(w, w); pts = {{x + dx, y}, {x + w, y}, {x + w - dx, cy}, {x + w, y + h}, {x + dx, y + h}, {x, cy}, {x + dx, y}}; }
+            else if (dir == "north") { double dy = along(h, h); pts = {{x, y + dy}, {cx, y}, {x + w, y + dy}, {x + w, y + h}, {cx, y + h - dy}, {x, y + h}, {x, y + dy}}; }
+            else { double dy = along(h, h); pts = {{x, y}, {cx, y + dy}, {x + w, y}, {x + w, y + h - dy}, {cx, y + h}, {x, y + h - dy}, {x, y}}; }
+        } else {
+            if (vertical) { double dy = along(h, h); pts = {{cx, y}, {x + w, y + dy}, {x + w, y + h - dy}, {cx, y + h}, {x, y + h - dy}, {x, y + dy}, {cx, y}}; }
+            else { double dx = along(w, w); pts = {{x + dx, y}, {x + w - dx, y}, {x + w, cy}, {x + w - dx, y + h}, {x + dx, y + h}, {x, cy}, {x + dx, y}}; }
+        }
+        return true;
+    }
     static Pt uprightPoint(const Term &t, Pt next, bool orthogonal) {
-        const Box &b = t.b;
+        Box b = t.b;
         if (t.perimeter == "centerPerimeter") return b.centre();   // (draw.io's: a waypoint's edges meet at its centre)
+        if (t.perimeter == "orthogonalPerimeter") orthogonal = true;   // (Shapes.js: the rectangle, always orthogonal)
+        if (t.style && (t.perimeter == "lifelinePerimeter" || t.perimeter == "backbonePerimeter")) {
+            // Shapes.js: on the (lifeline's, backbone's) line in the middle, beside it by half the line width
+            const Style &s = *t.style;
+            double sw = num(s, "strokeWidth", 1) / 2 - 1, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+            if (t.perimeter == "lifelinePerimeter") {
+                double size = num(s, "size", 40), max = b.y + b.h;
+                if (str(s, "lifelineMirror") == "1") max -= size;
+                if (next.x < cx) sw = -(sw + 1);
+                return {cx + sw, std::min(max, std::max(b.y + size, next.y))};
+            }
+            if (!str(s, "backboneSize").empty()) sw += num(s, "backboneSize", 0) / 2 - 1;
+            const std::string &d = str(s, "direction");
+            if (d == "south" || d == "north") {
+                if (next.x < cx) sw = -(sw + 1);
+                return {cx + sw, std::min(b.y + b.h, std::max(b.y, next.y))};
+            }
+            if (next.y < cy) sw = -(sw + 1);
+            return {std::min(b.x + b.w, std::max(b.x, next.x)), cy + sw};
+        }
+        if (std::vector<Pt> pts; perimeterOutline(t, pts)) return outlinePoint(b, pts, next, orthogonal);
+        if (t.perimeter == "calloutPerimeter" && t.style) {   // (Shapes.js: the body, without the pointer)
+            const std::string &d = str(*t.style, "direction");
+            double size = std::max(0.0, num(*t.style, "size", 30));
+            if (d == "south") size = std::min(b.w, size), b.x += size, b.w -= size;
+            else if (d == "west") size = std::min(b.h, size), b.y += size, b.h -= size;
+            else if (d == "north") b.w -= std::min(b.w, size);
+            else b.h -= std::min(b.h, size);
+        }
         if (t.perimeter == "trianglePerimeter" && b.w > 0 && b.h > 0) return trianglePoint(t, next, orthogonal);
         if (b.w <= 0 && b.h <= 0) return b.centre();
         double cx = b.x + b.w / 2, cy = b.y + b.h / 2, px = next.x, py = next.y;
