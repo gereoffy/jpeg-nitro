@@ -1840,7 +1840,7 @@ struct Builder {
         }
         if (!contains(t, x, y1) && !contains(s, x, y1)) result.push_back({x, y1});
         if (!contains(t, x, y2) && !contains(s, x, y2)) result.push_back({x, y2});
-        if (result.size() == 1) {
+        if (result.empty()) {   // (mxGraph's result starts with the source's slot: its "1 == length" means no point yet)
             if (pt) {
                 if (!contains(t, x, pt->y) && !contains(s, x, pt->y)) result.push_back({x, pt->y});
             } else {
@@ -1862,7 +1862,7 @@ struct Builder {
         if (!contains(t, x, y) && !contains(s, x, y)) result.push_back({x, y});
         x = pt && pt->x >= t.x && pt->x <= t.x + t.w ? pt->x : t.x + t.w / 2;
         if (!contains(t, x, y) && !contains(s, x, y)) result.push_back({x, y});
-        if (result.size() == 1) {
+        if (result.empty()) {   // (mxGraph's result starts with the source's slot: its "1 == length" means no point yet)
             if (pt) {
                 if (!contains(t, pt->x, y) && !contains(s, pt->x, y)) result.push_back({pt->x, y});
             } else {
