@@ -197,6 +197,8 @@ struct Label {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the text box
     bool turned = false;   // rotated about (cx, cy)
     float cx = 0, cy = 0, angle = 0;
+    bool clip = false;     // (overflow=hidden: drawn only inside cx0, cy0 - cx1, cy1, in its own frame (before turning))
+    float clipX0 = 0, clipY0 = 0, clipX1 = 0, clipY1 = 0;
 };
 struct Picture {   // premultiplied BGRA
     int w = 0, h = 0;
@@ -840,11 +842,41 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 size_t e = sg.text.find(' ', i);
                 e = e == std::string::npos ? sg.text.size() : e + 1;
                 std::string word = sg.text.substr(i, e - i);
+                bool glued = i == 0 && !lines.back().empty() && !lines.back().back().text.empty() && lines.back().back().text.back() != ' ';
                 i = e;
                 float w = textWidth(f, sz, word);
                 std::string bare = word;
                 while (!bare.empty() && bare.back() == ' ') bare.pop_back();
-                if (widths.back() > indents.back() && widths.back() + textWidth(f, sz, bare) > wrapWidth + 0.5) {   // (wrapped)
+                std::vector<LineRun> carry;   // (a word begun in the runs before (elő<b>fizetés</b>): wrapped whole, from its start)
+                bool wrapIt = widths.back() > indents.back() && widths.back() + textWidth(f, sz, bare) > wrapWidth + 0.5;
+                if (wrapIt && glued) {
+                    std::vector<LineRun> &ln = lines.back();
+                    bool found = false;
+                    while (!ln.empty()) {
+                        LineRun &r = ln.back();
+                        size_t sp = r.text.find_last_of(' ');
+                        if (sp != std::string::npos) {
+                            if (sp + 1 < r.text.size()) {
+                                LineRun t = r;
+                                t.text = r.text.substr(sp + 1);
+                                t.width = textWidth(t.face, t.size, t.text);
+                                carry.insert(carry.begin(), t);
+                                r.text.resize(sp + 1);
+                                r.width = textWidth(r.face, r.size, r.text);
+                            }
+                            found = true;
+                            break;
+                        }
+                        carry.insert(carry.begin(), r);
+                        ln.pop_back();
+                    }
+                    if (!found) {   // (no break in the line before it: the word stays, past the width, as a browser's)
+                        ln.insert(ln.end(), carry.begin(), carry.end());
+                        carry.clear();
+                        wrapIt = false;
+                    }
+                }
+                if (wrapIt) {   // (wrapped)
                     if (!lines.back().empty()) {
                         LineRun &last = lines.back().back();
                         while (!last.text.empty() && last.text.back() == ' ') last.text.pop_back();
@@ -858,6 +890,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                     markers.emplace_back();
                     lineAligns.push_back(p.align);
                     struts.push_back(p.strut);
+                    for (const LineRun &r : carry) lines.back().push_back(r), widths.back() += r.width;
                 }
                 uint32_t col = sg.rgba ? withOpacity(sg.rgba, alpha) : rgba;
                 if (!lines.back().empty() && lines.back().back().face == f && lines.back().back().rgba == col && lines.back().back().size == sz &&
@@ -1068,7 +1101,7 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
     struct Cell {
         std::string html, tag;
         size_t row;
-        int col = 0, span = 1;
+        int col = 0, span = 1, rspan = 1;   // (its columns and rows)
         bool th = false;
     };
     std::string tableTag;
@@ -1108,6 +1141,7 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
             c.row = rowTags.size() - 1;
             c.th = name == "th";
             c.span = std::clamp(atoi(htmlAttr(tag, "colspan").c_str()), 1, 64);
+            c.rspan = std::clamp(atoi(htmlAttr(tag, "rowspan").c_str()), 1, 64);
             cells.push_back(c);
             open = i;
         }
@@ -1129,6 +1163,12 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
     if (hv.empty()) hv = htmlAttr(tableTag, "height");
     double tw = cssLength(wv, avail, em), th = cssLength(hv, availH, em);
     // the cells' columns, styles and natural widths
+    // (a row's cells in the columns its rows above leave free: a rowspan holds its columns in the rows below)
+    std::vector<std::vector<bool>> taken(rows);
+    auto freeCol = [&](size_t r, int from) {
+        while ((size_t)from < taken[r].size() && taken[r][(size_t)from]) from++;
+        return from;
+    };
     std::vector<int> next(rows, 0);
     int cols = 0;
     struct Look {
@@ -1141,8 +1181,13 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
     std::vector<Look> looks(cells.size());
     for (size_t k = 0; k < cells.size(); k++) {
         Cell &c = cells[k];
-        c.col = next[c.row];
-        next[c.row] += c.span;
+        c.col = freeCol(c.row, next[c.row]);
+        c.rspan = (int)std::min<size_t>((size_t)c.rspan, rows - c.row);
+        for (size_t r = c.row; r < c.row + (size_t)c.rspan; r++) {
+            if (taken[r].size() < (size_t)(c.col + c.span)) taken[r].resize((size_t)(c.col + c.span), false);
+            for (int q = c.col; q < c.col + c.span; q++) taken[r][(size_t)q] = true;
+        }
+        next[c.row] = c.col + c.span;
         cols = std::max(cols, next[c.row]);
         const std::string &tr = rowTags[c.row];
         Look &lk = looks[k];
@@ -1236,8 +1281,15 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
             for (char ch : cells[k].html) line = line || (ch != ' ' && ch != '\n' && ch != '\t' && ch != '\r');
             if (line) textH[k] = num(lk.style, "fontSize", 12) * 1.2;
         }
-        rowH[cells[k].row] = std::max(rowH[cells[k].row], textH[k] + 2 * lk.pad + lk.bw);
+        if (cells[k].rspan == 1) rowH[cells[k].row] = std::max(rowH[cells[k].row], textH[k] + 2 * lk.pad + lk.bw);
     }
+    for (size_t k = 0; k < cells.size(); k++)   // (a cell over several rows: what they lack to the last of them)
+        if (cells[k].rspan > 1) {
+            size_t r0 = cells[k].row, r1 = r0 + (size_t)cells[k].rspan - 1;
+            double have = spacing * (double)(r1 - r0), need = textH[k] + 2 * looks[k].pad + looks[k].bw;
+            for (size_t r = r0; r <= r1; r++) have += rowH[r];
+            if (have < need) rowH[r1] += need - have;
+        }
     double hsum = 0;
     for (double h : rowH) hsum += h;
     double vroom = spacing * ((double)rows + 1);
@@ -1252,7 +1304,7 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
     if (uint32_t bg = tagBackground(tableTag)) out.rects.push_back({x, y, out.w, out.h, bg});
     for (size_t k = 0; k < cells.size(); k++) {
         const Look &lk = looks[k];
-        float cx = x + (float)colX[cells[k].col], cy = y + (float)rowY[cells[k].row], cw = (float)cellW[k], ch = (float)rowH[cells[k].row];
+        float cx = x + (float)colX[cells[k].col], cy = y + (float)rowY[cells[k].row], cw = (float)cellW[k], ch = (float)(rowY[cells[k].row + (size_t)cells[k].rspan] - spacing - rowY[cells[k].row]);
         if (lk.bg) out.rects.push_back({cx, cy, cw, ch, lk.bg});
         double inner = std::max(0.0, cellW[k] - 2 * lk.pad - lk.bw);
         double free = ch - 2 * lk.pad - lk.bw - textH[k];
@@ -1334,6 +1386,19 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         textFrom = i = end;
     }
     text(v.size());
+    // (a <div>'s own colour, font size and text-align for what is in it)
+    auto divStyle = [&](const std::string &tag) {
+        Style d = s;
+        if (uint32_t c = tagColour(tag)) {
+            char hex[16];
+            snprintf(hex, sizeof hex, "#%06x", c & 0xffffff);
+            d["fontColor"] = hex;
+        }
+        if (float fs = tagSize(tag, (float)num(s, "fontSize", 12))) d["fontSize"] = std::to_string(fs);
+        std::string ta = cssValue(tag, "text-align");
+        if (ta == "left" || ta == "center" || ta == "right") d["align"] = ta;
+        return d;
+    };
     // measured, then placed: the text's lines aligned in the widest block
     std::vector<Flow> laid(blocks.size());
     float wide = 0;
@@ -1342,10 +1407,11 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         if (bk.kind == 1) laid[b] = flowTable(bk.html, s, 0, 0, avail, availH, depth);
         else if (bk.kind == 2) {
             double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
-            laid[b] = flowHtml(bk.html, s, 0, 0, avail > 0 ? std::max(0.f, avail - 2 * (float)p) : 0, 0, wrap, depth + 1);
-            laid[b].w += 2 * (float)p, laid[b].h += 2 * (float)p;
             double cw = cssLength(cssValue(bk.tag, "width"), avail, 16);   // (a width of its own: px, or % of the room)
-            if (cw > 0) laid[b].w = std::max(laid[b].w, (float)cw);
+            float in = cw > 0 ? std::max(0.f, (float)cw - 2 * (float)p) : avail > 0 ? std::max(0.f, avail - 2 * (float)p) : 0;
+            laid[b] = flowHtml(bk.html, divStyle(bk.tag), 0, 0, in, 0, wrap || cw > 0, depth + 1);
+            laid[b].w += 2 * (float)p, laid[b].h += 2 * (float)p;
+            if (cw > 0) laid[b].w = (float)cw;
         } else {
             Style ts = s;
             ts["verticalAlign"] = "top";
@@ -1363,7 +1429,8 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
             double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
             float bw = cssLength(cssValue(bk.tag, "width"), avail, 16) > 0 ? laid[b].w : wide;   // (its own width, else the block's)
             out.rects.push_back({x, cy, bw, laid[b].h, tagBackground(bk.tag)});
-            f = flowHtml(bk.html, s, x + (float)p, cy + (float)p, std::max(0.f, wide - 2 * (float)p), 0, wrap, depth + 1);
+            bool own = cssLength(cssValue(bk.tag, "width"), avail, 16) > 0;
+            f = flowHtml(bk.html, divStyle(bk.tag), x + (float)p, cy + (float)p, std::max(0.f, bw - 2 * (float)p), 0, wrap || own, depth + 1);
             f.h = laid[b].h;
         } else {
             Style ts = s;
@@ -1384,12 +1451,13 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
 std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s, Box box, double wrapWidth) {
     bool fill = str(s, "overflow") == "fill";
     float avail = (float)(wrapWidth > 0 ? wrapWidth : fill ? box.w : 0), availH = (float)(fill ? box.h : 0);
-    flowBudget = 20000;
+    flowBudget = 100000;   // (each pass its own: the measuring one cannot use up the placing one's)
     Flow m = flowHtml(value, s, 0, 0, avail, availH, wrapWidth > 0 || fill, 0);
     const std::string &va = str(s, "verticalAlign"), &al = str(s, "align");
     float left = (float)(al == "left" ? box.x : al == "right" ? box.x + box.w - m.w : box.x + (box.w - m.w) / 2);
     float top = (float)(va == "top" ? box.y : va == "bottom" ? box.y + box.h - m.h : box.y + (box.h - m.h) / 2);
     if (fill) left = (float)box.x, top = (float)box.y;
+    flowBudget = 100000;
     Flow f = flowHtml(value, s, left, top, avail, availH, wrapWidth > 0 || fill, 0);
     if (f.runs.empty() && f.rects.empty()) return nullptr;
     auto label = std::make_shared<Label>();
@@ -1992,6 +2060,10 @@ struct Builder {
         Item it;
         it.label = l;
         float x0 = l->x0, y0 = l->y0, x1 = l->x1, y1 = l->y1;
+        if (l->clip) {   // (what shows of it)
+            x0 = std::max(x0, l->clipX0), y0 = std::max(y0, l->clipY0), x1 = std::min(x1, l->clipX1), y1 = std::min(y1, l->clipY1);
+            if (x1 <= x0 || y1 <= y0) return;
+        }
         if (l->turned) {   // (the box of the turned one: its corners turned)
             nd::Box b = nd::turnedBox(l->cx, l->cy, x0, y0, x1, y1, l->angle);
             x0 = b.x0, y0 = b.y0, x1 = b.x1, y1 = b.y1;
@@ -2558,6 +2630,20 @@ struct Builder {
         }
         double wrap = str(s, "whiteSpace") == "wrap" ? inner.w + (str(s, "html") == "1" ? 2 : 0) : 0;   // (an HTML label's div: 2 wider)
         std::shared_ptr<Label> l = layoutLabel(c.value, s, inner, wrap);
+        if (l && str(s, "overflow") == "hidden") {   // (mxText clipped: the label's box beside the shape as labelPosition puts it,
+            Style ns = s;                              // its spacing inside)
+            ns["spacing"] = "0";
+            for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom", "verticalAlign"}) ns.erase(k);
+            Box cb = turned ? lb : labelBox(ns, lb);
+            if (l->y1 - l->y0 > inner.h && l->y0 != (float)inner.y) {   // (taller than its box: the clipped block no taller, from its top)
+                float dy = (float)inner.y - l->y0;
+                for (Run &r : l->runs) r.y += dy;
+                for (Label::Rect &q : l->rects) q.y += dy;
+                l->y0 += dy, l->y1 += dy;
+            }
+            l->clip = true;
+            l->clipX0 = (float)cb.x, l->clipY0 = (float)cb.y, l->clipX1 = (float)(cb.x + cb.w), l->clipY1 = (float)(cb.y + cb.h);
+        }
         // (turned: its own quarter turn about its box's centre; the shape's rotation moves that centre round the shape's)
         auto place = [&](std::shared_ptr<Label> &lab, Box box) {
             if (!lab || (!turned && rotation == 0)) return;
@@ -2568,6 +2654,7 @@ struct Builder {
                 for (Run &r : lab->runs) r.x += dx, r.y += dy;
                 for (Label::Rect &q : lab->rects) q.x += dx, q.y += dy;
                 lab->x0 += dx, lab->x1 += dx, lab->y0 += dy, lab->y1 += dy;
+                lab->clipX0 += dx, lab->clipX1 += dx, lab->clipY0 += dy, lab->clipY1 += dy;
                 ce = to;
             }
             lab->turned = true;
@@ -4333,6 +4420,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
             plutovg_canvas_rotate(c, l.angle);
             plutovg_canvas_translate(c, -l.cx, -l.cy);
         }
+        if (l.clip) plutovg_canvas_clip_rect(c, l.clipX0, l.clipY0, l.clipX1 - l.clipX0, l.clipY1 - l.clipY0);
         if (l.background >> 24) {
             nd::setRgba(c, l.background);
             plutovg_canvas_fill_rect(c, l.x0, l.y0, l.x1 - l.x0, l.y1 - l.y0);
