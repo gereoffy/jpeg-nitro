@@ -2526,18 +2526,31 @@ struct Builder {
         }
         double wrap = str(s, "whiteSpace") == "wrap" ? inner.w + (str(s, "html") == "1" ? 2 : 0) : 0;   // (an HTML label's div: 2 wider)
         std::shared_ptr<Label> l = layoutLabel(c.value, s, inner, wrap);
-        if (l && (turned || rotation != 0)) {
-            Pt ce = lb.centre();
-            l->turned = true;
-            l->cx = (float)ce.x, l->cy = (float)ce.y;
-            l->angle = (float)(quarter + rotation) * (float)M_PI / 180;
-        }
+        // (turned: its own quarter turn about its box's centre; the shape's rotation moves that centre round the shape's)
+        auto place = [&](std::shared_ptr<Label> &lab, Box box) {
+            if (!lab || (!turned && rotation == 0)) return;
+            Pt ce = box.centre(), bc = b.centre();
+            if (rotation != 0 && (ce.x != bc.x || ce.y != bc.y)) {
+                Pt to = rotated(ce, rotation, bc);
+                float dx = (float)(to.x - ce.x), dy = (float)(to.y - ce.y);
+                for (Run &r : lab->runs) r.x += dx, r.y += dy;
+                for (Label::Rect &q : lab->rects) q.x += dx, q.y += dy;
+                lab->x0 += dx, lab->x1 += dx, lab->y0 += dy, lab->y1 += dy;
+                ce = to;
+            }
+            lab->turned = true;
+            lab->cx = (float)ce.x, lab->cy = (float)ce.y;
+            lab->angle = (float)(quarter + rotation) * (float)M_PI / 180;
+        };
+        place(l, lb);
         addLabel(l);
-        if (shape == "umlLifeline" && str(s, "lifelineMirror") == "1" && !turned && rotation == 0) {   // (a copy in its foot)
+        if (shape == "umlLifeline" && str(s, "lifelineMirror") == "1" && !turned) {   // (a copy in its foot, turned with it)
             Box fb = lb;
             fb.y = b.y + b.h - lb.h;
             Box fi = labelBox(s, fb);
-            addLabel(layoutLabel(c.value, s, fi, str(s, "whiteSpace") == "wrap" ? fi.w + (str(s, "html") == "1" ? 2 : 0) : 0));
+            std::shared_ptr<Label> foot = layoutLabel(c.value, s, fi, str(s, "whiteSpace") == "wrap" ? fi.w + (str(s, "html") == "1" ? 2 : 0) : 0);
+            place(foot, fb);
+            addLabel(foot);
         }
     }
 
