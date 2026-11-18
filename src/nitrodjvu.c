@@ -546,9 +546,10 @@ typedef struct {
     int decoded;                      // what it has is in memory: the mask, the layers
     int unread;                       // it has a mask or a picture, but none that could be decoded (a grey sheet;
                                       //   a page with nothing on it is a white one)
-    uint8_t *bits;                    // the mask: rows of packed bits (1: foreground), turned; NULL: none
+    uint8_t *bits;                    // the mask: rows of packed bits (1: foreground), turned; NULL: none. It lies
+                                      //   at mx, my on the turned page (bw x bh: no more than the page)
     size_t rowbytes;
-    int bw, bh;
+    int bw, bh, mx, my;
     Layer bg, fg;                     // (y NULL: none. Without foreground colours the mask is black)
     uint8_t *pal, *entry;             // the foreground's colours by a palette (FGbz): RGB triplets; each mask
                                       //   pixel's entry (bw x bh; NULL: all of the mask is entry 0)
@@ -784,29 +785,36 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
     return used;
 }
 
-// The mask (a bitmap, rows from the top) into the page as packed bits, turned; entry (the palette
-// entries of its pixels, or NULL) taken over. -1: out of memory.
-static int mask_bits(Page *pg, const Bm *b, uint8_t **entry) {
-    int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
+// The mask (a bitmap, rows from the top) into the page as packed bits, turned: what lies on the page
+// (pw x ph, as its file has it), from the page's top left, wherever the turn puts that corner (a mask
+// smaller than the page lies at mx, my of the turned page). entry: the palette entries of its pixels
+// (b->w x b->h, or NULL), freed. -1: out of memory.
+static int mask_bits(Page *pg, const Bm *b, uint8_t **entry, int pw, int ph) {
+    int t = pg->turn, cw = b->w < pw ? b->w : pw, ch = b->h < ph ? b->h : ph;
+    int ow = t & 1 ? ch : cw, oh = t & 1 ? cw : ch;
     size_t rb = ((size_t)ow + 7) / 8;
-    uint8_t *bits = calloc(rb * (size_t)oh, 1);
-    if (!bits) return -1;
-    for (int y = 0; y < b->h; y++) {
+    uint8_t *bits = calloc(rb * (size_t)oh, 1), *src = *entry, *e = NULL;
+    *entry = NULL;
+    if (bits && src) e = calloc((size_t)ow, (size_t)oh);
+    if (!bits || (src && !e)) {
+        free(bits), free(src), free(e);
+        return -1;
+    }
+    for (int y = 0; y < ch; y++) {
         const uint8_t *s = bm_row(b, y);
-        for (int x = 0; x < b->w; x++) {
+        for (int x = 0; x < cw; x++) {
             if (!s[x]) continue;
-            int ox = pg->turn == 1 ? b->h - 1 - y : pg->turn == 2 ? b->w - 1 - x : pg->turn == 3 ? y : x;
-            int oy = pg->turn == 1 ? x : pg->turn == 2 ? b->h - 1 - y : pg->turn == 3 ? b->w - 1 - x : y;
+            int ox = t == 1 ? ch - 1 - y : t == 2 ? cw - 1 - x : t == 3 ? y : x;
+            int oy = t == 1 ? x : t == 2 ? ch - 1 - y : t == 3 ? cw - 1 - x : y;
             bits[(size_t)oy * rb + (ox >> 3)] |= (uint8_t)(0x80 >> (ox & 7));
+            if (e) e[(size_t)oy * (size_t)ow + (size_t)ox] = src[(size_t)y * (size_t)b->w + (size_t)x];
         }
     }
-    pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh;
-    pg->bytes += rb * (size_t)oh;
-    if (*entry) {
-        pg->entry = plane_turn(*entry, b->w, b->h, pg->turn), *entry = NULL;
-        if (!pg->entry) return -1;
-        pg->bytes += (size_t)ow * (size_t)oh;
-    }
+    free(src);
+    pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh, pg->entry = e;
+    pg->mx = t == 1 ? ph - ch : t == 2 ? pw - cw : 0;
+    pg->my = t == 2 ? ph - ch : t == 3 ? pw - cw : 0;
+    pg->bytes += rb * (size_t)oh + (e ? (size_t)ow * (size_t)oh : 0);
     return 0;
 }
 
@@ -895,7 +903,7 @@ static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
         free(entries);
         // (a mask of another size than the page's INFO: drawn from the page's top left all the same - the
         // symbols' places are reckoned from the top - and cut at the page's edge)
-        if (j->have_page && !j->stopped) nomem |= mask_bits(pg, &j->page, &j->entry);
+        if (j->have_page && !j->stopped) nomem |= mask_bits(pg, &j->page, &j->entry, pw, ph);
         int stop_now = j->stopped;
         jb2_free(j, 0);
         free(j);
@@ -904,7 +912,7 @@ static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
         Bm b = {0};
         uint8_t *none = NULL, *entries = NULL;
         int rc = smmr_decode(smmr, smmr_len, &b, pw, ph), blits = 0;
-        nomem |= rc < 0 || (!rc && mask_bits(pg, &b, &none) < 0);
+        nomem |= rc < 0 || (!rc && mask_bits(pg, &b, &none, pw, ph) < 0);
         if (colours && fgbz(colours, colours_len, &pg->pal, &entries, &blits) < 0) nomem = 1;
         free(entries), free(b.mem);
     }
@@ -1242,14 +1250,15 @@ static int smooth_init(Smooth *s, int mode, int w, double scale, double x0) {
 
 // the mask's row r filtered along x, for every output column
 static const uint16_t *smooth_row(Smooth *s, const Page *pg, int r) {
-    if (r < 0 || r >= pg->bh) return s->none;
+    if (r - pg->my < 0 || r - pg->my >= pg->bh) return s->none;
     int k = r & 3;
     if (s->valid[k] && s->have[k] == r) return s->row[k];
-    const uint8_t *bits = pg->bits + (size_t)r * pg->rowbytes;
-    int a = s->lo < 0 ? -s->lo : 0, b = pg->bw - s->lo < s->n ? pg->bw - s->lo : s->n;   // (the columns of them the mask has)
+    const uint8_t *bits = pg->bits + (size_t)(r - pg->my) * pg->rowbytes;
+    int lo = s->lo - pg->mx;   // (the first column, the mask's)
+    int a = lo < 0 ? -lo : 0, b = pg->bw - lo < s->n ? pg->bw - lo : s->n;   // (the columns of them the mask has)
     memset(s->px, 0, (size_t)s->n);
     for (int x = a; x < b; x++) {
-        int c = s->lo + x;
+        int c = lo + x;
         s->px[x] = bits[c >> 3] >> (7 - (c & 7)) & 1;
     }
     uint16_t *o = s->row[k];
@@ -1268,7 +1277,7 @@ static const uint16_t *smooth_row(Smooth *s, const Page *pg, int r) {
     return o;
 }
 
-// the palette colours of the mask's pixels around the row r, column c added up (those next to it; none
+// the palette colours of the mask's pixels around the row r, column c (the mask's) added up (those next to it; none
 // there: one further), and how many: the colour of an output pixel the smooth outline covers
 static unsigned palette_near(const Page *pg, int r, int c, uint64_t *sum) {
     unsigned n = 0;
@@ -1313,7 +1322,7 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             double xa = x0 + i / scale, xb = x0 + (i + 1) / scale;
             int a = whole(floor(scale >= 1 ? (xa + xb) / 2 : xa)), b = scale >= 1 ? a + 1 : whole(ceil(xb));
             if (a < 0) a = 0;
-            if (b > pg->bw) b = pg->bw;
+            if (b > pg->w) b = pg->w;   // (the page's columns it covers: the mask may be smaller)
             c0[i] = a, c1[i] = b;
             if (bg) span(&bx[i], xa, xb, bg->ox, bg->r, bg->w, reduced(scale, bg->r));
             if (fg) span(&fx[i], xa, xb, fg->ox, fg->r, fg->w, reduced(scale, fg->r));
@@ -1339,7 +1348,9 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
         double ya = y0 + j / scale, yb = y0 + (j + 1) / scale;
         int r0 = whole(floor(scale >= 1 ? (ya + yb) / 2 : ya)), r1 = scale >= 1 ? r0 + 1 : whole(ceil(yb));
         if (r0 < 0) r0 = 0;
-        if (r1 > pg->bh) r1 = pg->bh;
+        if (r1 > pg->h) r1 = pg->h;
+        // (the mask's rows of those)
+        int mr0 = r0 - pg->my < 0 ? 0 : r0 - pg->my, mr1 = r1 - pg->my > pg->bh ? pg->bh : r1 - pg->my;
         Span by, fy;
         if (bg) span(&by, ya, yb, bg->oy, bg->r, bg->h, reduced(scale, bg->r));
         if (fg) span(&fy, ya, yb, fg->oy, fg->r, fg->h, reduced(scale, fg->r));
@@ -1350,24 +1361,26 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             for (int k = 0; k < sm.taps; k++) sr[k] = smooth_row(&sm, pg, first + k);
         }
         for (int i = 0; i < w; i++) {
-            // the mask's share of the pixel: the foreground's colour over the background's
+            // the mask's share of the pixel (of the page it covers): the foreground's colour over the background's
             unsigned n = 0, area = pg->bits && r1 > r0 && c1[i] > c0[i] ? (unsigned)(r1 - r0) * (unsigned)(c1[i] - c0[i]) : 0;
+            int mc0 = c0[i] - pg->mx < 0 ? 0 : c0[i] - pg->mx, mc1 = c1[i] - pg->mx > pg->bw ? pg->bw : c1[i] - pg->mx;
             if (smooth) {   // (of 256: the interpolated picture's height over the cut)
                 int v = sr[0][i] * sy[0] + sr[1][i] * sy[1];
                 if (sm.taps == 4) v += sr[2][i] * sy[2] + sr[3][i] * sy[3];
                 int64_t c = 128 + (((int64_t)(v - sm.level) * sm.gain) >> 16);
                 n = c <= 0 ? 0 : c >= 256 ? 256 : (unsigned)c, area = 256;
-            } else if (area == 1) n = pg->bits[(size_t)r0 * pg->rowbytes + (size_t)(c0[i] >> 3)] >> (7 - (c0[i] & 7)) & 1;
-            else
-                for (int r = r0; area && r < r1; r++) n += black(pg->bits + (size_t)r * pg->rowbytes, c0[i], c1[i]);
+            } else if (area == 1)
+                n = mr1 > mr0 && mc1 > mc0 ? pg->bits[(size_t)mr0 * pg->rowbytes + (size_t)(mc0 >> 3)] >> (7 - (mc0 & 7)) & 1 : 0;
+            else if (mc1 > mc0)
+                for (int r = mr0; area && r < mr1; r++) n += black(pg->bits + (size_t)r * pg->rowbytes, mc0, mc1);
             uint8_t b[3] = {255, 255, 255}, f[3] = {0, 0, 0};
             if (bg && n < area + !area) layer_rgb(bg, &bx[i], &by, b);
             if (n) {
                 if (pg->entry) {
                     uint64_t sum[3] = {0, 0, 0};   // (a small thumbnail of a big page: millions of pixels to one)
                     unsigned of = n;
-                    if (smooth) of = palette_near(pg, r0, c0[i], sum);
-                    else palette_sum(pg, r0, r1, c0[i], c1[i], sum);
+                    if (smooth) of = palette_near(pg, r0 - pg->my, c0[i] - pg->mx, sum);
+                    else palette_sum(pg, mr0, mr1, mc0, mc1, sum);
                     for (int k = 0; k < 3; k++) f[k] = of ? (uint8_t)((sum[k] + of / 2) / of) : 0;
                 } else if (pg->pal)
                     memcpy(f, pg->pal, 3);
