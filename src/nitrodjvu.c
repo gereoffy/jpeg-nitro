@@ -850,13 +850,13 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
         // the directory (8.3.2): bundled or not and its version, the count, each file's offset; then, BZZ
         // coded, their sizes, their flags (the low six bits 1: a page) and their names. (Version 0, read as
         // DjVuLibre does: each offset followed by the file's size, 3 bytes, none in the BZZ part; the flags
-        // 1 a page, 2 a name, 4 a title.)
+        // 1 a page, 2 a name, 4 a title. A later version than 1, unknown: read as 1.)
         const uint8_t *id, *dir;
         size_t at = 16, n;
         if (!chunk(d, &at, end, &id, &dir, &n) || memcmp(id, "DIRM", 4) || n < 3 || !(dir[0] & 0x80)) goto fail;   // (not bundled: its pages are other files)
         int version = dir[0] & 0x7f, count = dir[1] << 8 | dir[2];
         size_t rec = version ? 4 : 7, sizes = version ? 3 * (size_t)count : 0;   // (each offset's bytes; the sizes' in the BZZ part)
-        if (version > 1 || !count || n < 3 + rec * (size_t)count) goto fail;
+        if (!count || n < 3 + rec * (size_t)count) goto fail;
         size_t names_len = 0;
         uint8_t *names = bzz_decode(dir + 3 + rec * (size_t)count, n - 3 - rec * (size_t)count, 16u << 20, &names_len);
         d->comps = calloc((size_t)count, sizeof *d->comps);
