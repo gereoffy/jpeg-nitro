@@ -297,6 +297,10 @@ struct Cell {
     int state = 0;   // (absolute box: 0 not yet, 1 being worked out, 2 done)
     int shownState = 0;   // (0 not yet, 1 shown, 2 hidden, 3 being worked out)
     Box box;
+    Pt org;   // (where its children start: its box's corner, but a transparentBounds container's geometry)
+    bool transparent = false;   // (transparentBounds=1: drawn round its children, local: that box from its geometry's corner)
+    int localState = 0;
+    Box local;
     std::vector<Pt> route;   // an edge's points, absolute
     std::unordered_map<std::string, std::string> data;   // a UserObject / object's attributes (the placeholders' values)
     bool placeholders = false;                           // (its label's %name% replaced by them)
@@ -1052,9 +1056,12 @@ struct Builder {
             Cell *x = chain[i], *up = find(x->parent);
             bool have = up && up->vertex && up->state == 2;
             Box pb = have ? up->box : Box{};
+            Pt po = have ? up->org : Pt{0, 0};
             if (x->relative && have) x->box = {pb.x + x->x * pb.w, pb.y + x->y * pb.h, x->w, x->h};
-            else x->box = {pb.x + x->x, pb.y + x->y, x->w, x->h};
+            else x->box = {po.x + x->x, po.y + x->y, x->w, x->h};
             if (x->hasOffset && x->relative) x->box.x += x->offset.x, x->box.y += x->offset.y;
+            x->org = {x->box.x, x->box.y};
+            if (x->transparent) x->box = {x->org.x + x->local.x, x->org.y + x->local.y, x->local.w, x->local.h};
             x->state = 2;
         }
         return c.state == 2 ? c.box : Box{c.x, c.y, c.w, c.h};
@@ -1062,8 +1069,74 @@ struct Builder {
     Pt origin(const std::string &parent) {   // where the children of a cell start
         Cell *p = find(parent);
         if (!p || !p->vertex) return {0, 0};
-        Box b = absBox(*p);
-        return {b.x, b.y};
+        absBox(*p);
+        return p->state == 2 ? p->org : Pt{p->x, p->y};
+    }
+    // draw.io's transparentBounds containers (Graph.getTransparentBounds): the union of the children (vertices; an edge's
+    // waypoints and loose ends), padded by groupPadding (CSS-like: 1 to 4 numbers) and a swimlane's title
+    void transparentBounds() {
+        std::unordered_map<std::string, std::vector<size_t>> kids;
+        bool any = false;
+        for (size_t i = 0; i < cells.size(); i++) {
+            if (!cells[i].parent.empty()) kids[cells[i].parent].push_back(i);
+            any = any || (cells[i].vertex && str(cells[i].style, "transparentBounds") == "1");
+        }
+        if (!any) return;
+        std::function<void(Cell &, int)> bounds = [&](Cell &c, int depth) {
+            if (c.localState) return;
+            c.localState = 1;
+            bool have = false;
+            double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            auto take = [&](double ax, double ay, double bx, double by) {
+                if (!have) x0 = ax, y0 = ay, x1 = bx, y1 = by, have = true;
+                else x0 = std::min(x0, ax), y0 = std::min(y0, ay), x1 = std::max(x1, bx), y1 = std::max(y1, by);
+            };
+            auto f = kids.find(c.id);
+            if (f != kids.end())
+                for (size_t i : f->second) {
+                    Cell &k = cells[i];
+                    if (&k == &c) continue;
+                    if (k.vertex && !k.relative) {
+                        if (str(k.style, "transparentBounds") == "1" && depth < 64) bounds(k, depth + 1);
+                        if (k.transparent) take(k.x + k.local.x, k.y + k.local.y, k.x + k.local.x + k.local.w, k.y + k.local.y + k.local.h);
+                        else take(k.x, k.y, k.x + k.w, k.y + k.h);
+                    } else if (k.edge) {
+                        if (k.source.empty() && k.hasSource) take(k.sourcePoint.x, k.sourcePoint.y, k.sourcePoint.x, k.sourcePoint.y);
+                        if (k.target.empty() && k.hasTarget) take(k.targetPoint.x, k.targetPoint.y, k.targetPoint.x, k.targetPoint.y);
+                        for (Pt q : k.points) take(q.x, q.y, q.x, q.y);
+                    }
+                }
+            if (!have) return;   // (no children: its own geometry)
+            double pad[4] = {0, 0, 0, 0};   // (n e s w)
+            {
+                const std::string &v = str(c.style, "groupPadding");
+                double n[4];
+                int cnt = 0;
+                const char *q = v.c_str();
+                while (cnt < 4 && *q) {
+                    char *e = nullptr;
+                    double d = nn_strtod(q, &e);
+                    if (e == q) break;
+                    n[cnt++] = std::isfinite(d) && std::fabs(d) < 1e6 ? d : 0;
+                    q = e;
+                    while (*q == ' ' || *q == ',') q++;
+                }
+                if (cnt == 1) pad[0] = pad[1] = pad[2] = pad[3] = n[0];
+                else if (cnt == 2) pad[0] = pad[2] = n[0], pad[1] = pad[3] = n[1];
+                else if (cnt == 3) pad[0] = n[0], pad[1] = pad[3] = n[1], pad[2] = n[2];
+                else if (cnt == 4) pad[0] = n[0], pad[1] = n[1], pad[2] = n[2], pad[3] = n[3];
+            }
+            double sx = 0, sy = 0;
+            if (str(c.style, "shape") == "swimlane") {
+                double ss = std::max(0.0, num(c.style, "startSize", 23));
+                if (str(c.style, "horizontal") == "0") sx = ss;
+                else sy = ss;
+            }
+            c.local = {x0 - pad[3] - sx, y0 - pad[0] - sy, x1 - x0 + pad[1] + pad[3] + sx, y1 - y0 + pad[0] + pad[2] + sy};
+            c.transparent = true;
+        };
+        for (Cell &c : cells)
+            if (c.vertex && str(c.style, "transparentBounds") == "1") bounds(c, 0);
     }
 
     void add(Item &&it, float margin) {
@@ -2616,6 +2689,7 @@ struct Builder {
     }
 
     void build() {
+        transparentBounds();
         for (Cell &c : cells) {   // (the colours naming others, the placeholders)
             for (const char *k : {"fillColor", "strokeColor", "fontColor", "gradientColor"}) {
                 auto f = c.style.find(k);
