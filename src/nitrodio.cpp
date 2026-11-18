@@ -2612,7 +2612,8 @@ struct Builder {
         if (lc.hasOffset && (lc.relative || &lc == &edgeCell)) p.x += lc.offset.x, p.y += lc.offset.y;
         Style s = lc.style;
         Box b{p.x - lc.w / 2, p.y - lc.h / 2, lc.w, lc.h};
-        if (&lc == &edgeCell || lc.w <= 0) {   // (no box: centred on the point)
+        if (&lc == &edgeCell) b = {p.x, p.y, 0, 0};   // (its align / verticalAlign from the point: bottom, above it)
+        else if (lc.w <= 0) {   // (no box: centred on the point)
             s["align"] = "center";
             s["verticalAlign"] = "middle";
             b = {p.x, p.y, 0, 0};
