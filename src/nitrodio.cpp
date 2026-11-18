@@ -1267,7 +1267,8 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
 bool turnsByDirection(const std::string &shape) {
     static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
                                          "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
-                                         "offPageConnector"};
+                                         "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
+                                         "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -1337,7 +1338,7 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "offPageConnector") {   // (Shapes.js OffPageConnectorShape: a box with a point below, size of its height)
         double d = h * std::clamp(num(s, "size", 0.375), 0.0, 1.0);
         polygon(q, {{0, 0}, {w, 0}, {w, h - d}, {w / 2, h}, {0, h - d}}, b);
-    } else if (shape == "card" || shape == "note") {
+    } else if (shape == "card" || shape == "note" || shape == "note2") {
         double d = std::min({num(s, "size", shape == "card" ? 30 : 30), w, h});
         if (shape == "card") polygon(q, {{d, 0}, {w, 0}, {w, h}, {0, h}, {0, d}}, b);
         else {
@@ -1451,6 +1452,109 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         double t = num(s, "wallThickness", 10);
         polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}}, b);
         polygon(q, {{t, t}, {t, h - t}, {w - t, h - t}, {w - t, t}}, b);
+    } else if (shape == "endState" || shape == "startState") {   // (Shapes.js StateShape: a disc inset by up to 4; an end
+        double in = std::min({4.0, w / 5, h / 5});                 // state's ring round it)
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2 - in), (float)(h / 2 - in));
+        if (shape == "endState") {
+            if (!lines) lines = newPath();
+            plutovg_path_add_ellipse(lines.get(), (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
+        }
+    } else if (shape == "curlyBracket") {   // (an open bracket, its point at size of the width)
+        double d = w * std::clamp(num(s, "size", 0.5), 0.0, 1.0);
+        line(w, 0, d, 0), line(d, 0, d, h), line(d, h / 2, 0, h / 2), line(d, h, w, h);
+    } else if (shape == "dimension") {   // (DimensionShape: a measure line with arrowheads between two bars)
+        double sw = num(s, "strokeWidth", 1) / 2, al = 10 + 2 * sw, cy = h - al / 2;
+        line(0, 0, 0, h), line(w, 0, w, h), line(sw, cy, w - sw, cy);
+        line(sw, cy, sw + al, cy - al / 2), line(sw, cy, sw + al, cy + al / 2);
+        line(w - sw, cy, w - al - sw, cy - al / 2), line(w - sw, cy, w - al - sw, cy + al / 2);
+    } else if (shape == "plus") {   // (PlusShape: a box with a cross in it)
+        plutovg_path_add_rect(q, x, y, (float)w, (float)h);
+        double bo = std::min(w / 5, h / 5) + 1;
+        line(w / 2, bo, w / 2, h - bo), line(bo, h / 2, w - bo, h / 2);
+    } else if (shape == "crossbar") {
+        line(0, 0, 0, h), line(w, 0, w, h), line(0, h / 2, w, h / 2);
+    } else if (shape == "umlDestroy") {
+        line(w, 0, 0, h), line(0, 0, w, h);
+    } else if (shape == "lollipop") {   // (a circle of size on a stem down the middle)
+        double sz = num(s, "size", 10);
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + sz / 2), (float)(sz / 2), (float)(sz / 2));
+        line(w / 2, sz, w / 2, h);
+    } else if (shape == "smileyFace") {   // (its features in the stroke colour)
+        double r = std::min(w, h) / 2, sc = std::min(w, h) / 30, cx = b.x + w / 2, cy = b.y + h / 2;
+        plutovg_path_add_ellipse(q, (float)cx, (float)cy, (float)r, (float)r);
+        if (!lines) lines = newPath();
+        plutovg_path_t *l = lines.get();
+        plutovg_path_add_ellipse(l, (float)(cx - 5 * sc), (float)(cy - 5 * sc), (float)(1.5 * sc), (float)(1.5 * sc));
+        plutovg_path_add_ellipse(l, (float)(cx + 5 * sc), (float)(cy - 5 * sc), (float)(1.5 * sc), (float)(1.5 * sc));
+        const std::string &type = str(s, "smileyType");
+        if (type.empty() || type == "happy") {
+            plutovg_path_move_to(l, (float)(cx + 7.5 * sc), (float)(cy + 2 * sc));
+            plutovg_path_arc_to(l, (float)(7.5 * sc), (float)(7.5 * sc), 0, true, true, (float)(cx - 7.5 * sc), (float)(cy + 2 * sc));
+        } else if (type == "sad") {
+            plutovg_path_move_to(l, (float)(cx - 7.5 * sc), (float)(cy + 7 * sc));
+            plutovg_path_arc_to(l, (float)(7.5 * sc), (float)(7.5 * sc), 0, true, true, (float)(cx + 7.5 * sc), (float)(cy + 7 * sc));
+        } else {
+            plutovg_path_move_to(l, (float)(cx - 5 * sc), (float)(cy + 7 * sc));
+            plutovg_path_line_to(l, (float)(cx + 5 * sc), (float)(cy + 7 * sc));
+        }
+    } else if (shape == "or" || shape == "xor") {   // (OrShape / XorShape: a D of two curves, xor's back bowed in)
+        auto Qd = [&](double cx, double cy, double ex, double ey) {
+            plutovg_path_quad_to(q, (float)(b.x + cx), (float)(b.y + cy), (float)(b.x + ex), (float)(b.y + ey));
+        };
+        plutovg_path_move_to(q, x, y);
+        Qd(w, 0, w, h / 2), Qd(w, h, 0, h);
+        if (shape == "xor") Qd(w / 2, h / 2, 0, 0);
+        plutovg_path_close(q);
+    } else if (shape == "delay") {
+        double dx = std::min(w, h / 2);
+        plutovg_path_move_to(q, x, y);
+        plutovg_path_line_to(q, (float)(b.x + w - dx), y);
+        plutovg_path_quad_to(q, (float)(b.x + w), y, (float)(b.x + w), (float)(b.y + h / 2));
+        plutovg_path_quad_to(q, (float)(b.x + w), (float)(b.y + h), (float)(b.x + w - dx), (float)(b.y + h));
+        plutovg_path_line_to(q, x, (float)(b.y + h));
+        plutovg_path_close(q);
+    } else if (shape == "switch") {
+        plutovg_path_move_to(q, x, y);
+        plutovg_path_quad_to(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(b.x + w), y);
+        plutovg_path_quad_to(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(b.x + w), (float)(b.y + h));
+        plutovg_path_quad_to(q, (float)(b.x + w / 2), (float)(b.y + h / 2), x, (float)(b.y + h));
+        plutovg_path_quad_to(q, (float)(b.x + w / 2), (float)(b.y + h / 2), x, y);
+        plutovg_path_close(q);
+    } else if (shape == "dataStorage") {   // (a box with a bowed left side and a hollow right one)
+        bool fixed = str(s, "fixedSize") != "" && str(s, "fixedSize") != "0";
+        double d = fixed ? std::clamp(num(s, "size", 20), 0.0, w) : w * std::clamp(num(s, "size", 0.1), 0.0, 1.0);
+        plutovg_path_move_to(q, (float)(b.x + d), y);
+        plutovg_path_line_to(q, (float)(b.x + w), y);
+        plutovg_path_quad_to(q, (float)(b.x + w - 2 * d), (float)(b.y + h / 2), (float)(b.x + w), (float)(b.y + h));
+        plutovg_path_line_to(q, (float)(b.x + d), (float)(b.y + h));
+        plutovg_path_quad_to(q, (float)(b.x - d), (float)(b.y + h / 2), (float)(b.x + d), y);
+        plutovg_path_close(q);
+    } else if (shape == "tape") {   // (TapeShape: a band with wavy top and bottom)
+        double dy = h * std::clamp(num(s, "size", 0.4), 0.0, 1.0), fy = 1.4;
+        auto P = [&](double px, double py) { return plutovg_point_t{(float)(b.x + px), (float)(b.y + py)}; };
+        plutovg_point_t p0 = P(0, dy / 2);
+        plutovg_path_move_to(q, p0.x, p0.y);
+        auto Qd = [&](double cx, double cy, double ex, double ey) {
+            plutovg_point_t c = P(cx, cy), e = P(ex, ey);
+            plutovg_path_quad_to(q, c.x, c.y, e.x, e.y);
+        };
+        Qd(w / 4, dy * fy, w / 2, dy / 2), Qd(w * 3 / 4, dy * (1 - fy), w, dy / 2);
+        plutovg_path_line_to(q, (float)(b.x + w), (float)(b.y + h - dy / 2));
+        Qd(w * 3 / 4, h - dy * fy, w / 2, h - dy / 2), Qd(w / 4, h - dy * (1 - fy), 0, h - dy / 2);
+        plutovg_path_close(q);
+    } else if (shape == "singleArrow") {   // (a shaft arrowWidth of the height, a head arrowSize of the width)
+        double aw = h * std::clamp(num(s, "arrowWidth", 0.3), 0.0, 1.0), as = w * std::clamp(num(s, "arrowSize", 0.2), 0.0, 1.0);
+        double at = (h - aw) / 2, ab = at + aw;
+        polygon(q, {{0, at}, {w - as, at}, {w - as, 0}, {w, h / 2}, {w - as, h}, {w - as, ab}, {0, ab}}, b);
+    } else if (shape == "corner") {   // (an L: dx wide down the left, dy high along the top)
+        double dx = std::clamp(num(s, "dx", 20), 0.0, w), dy = std::clamp(num(s, "dy", 20), 0.0, h);
+        polygon(q, {{0, 0}, {w, 0}, {w, dy}, {dx, dy}, {dx, h}, {0, h}}, b);
+    } else if (shape == "module") {   // (ModuleShape: a box with two jetties on its left)
+        double dx = num(s, "jettyWidth", 20), dy = num(s, "jettyHeight", 10), x0 = dx / 2, x1 = x0 + dx / 2;
+        double y0 = std::min(dy, h - dy), y1 = std::min(y0 + 2 * dy, h - dy);
+        polygon(q, {{x0, 0}, {w, 0}, {w, h}, {x0, h}, {x0, y1 + dy}, {0, y1 + dy}, {0, y1}, {x0, y1}, {x0, y0 + dy}, {0, y0 + dy}, {0, y0}, {x0, y0}}, b);
+        line(x0, y0, x1, y0), line(x1, y0, x1, y0 + dy), line(x1, y0 + dy, x0, y0 + dy);
+        line(x0, y1, x1, y1), line(x1, y1, x1, y1 + dy), line(x1, y1 + dy, x0, y1 + dy);
     } else if (shape == "line") {
         bool vertical = dir == "south" || dir == "north";
         if (vertical) line(w / 2, 0, w / 2, h);
