@@ -678,6 +678,9 @@ struct Builder {
     }
 
     void add(Item &&it, float margin) {
+        const plutovg_path_element_t *elements;
+        if (!it.label && (!it.path || !plutovg_path_get_elements(it.path.get(), &elements))) return;   // (an empty path: nothing drawn,
+                                                                                                        // its box 0, 0 no part of the page)
         if (!it.label) {
             nd::Box b = nd::pathBox(it.path.get(), margin);
             it.bx0 = b.x0, it.by0 = b.y0, it.bx1 = b.x1, it.by1 = b.y1;
