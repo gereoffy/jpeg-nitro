@@ -464,7 +464,9 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             int w = ref->right - ref->left + 1 + jb2_num(j, &j->c_dw, -JB2_BIG - 1, JB2_BIG);
             int h = ref->top - ref->bottom + 1 + jb2_num(j, &j->c_dh, -JB2_BIG - 1, JB2_BIG);
             if (j->err || shape_new(j, &s, w, h)) break;
-            jb2_cross(j, &s.bm, &j->lib[m]);
+            // (a page's type 5 codes no bitmap, only the size: so DjVuLibre writes and reads it, and with it
+            // every encoder there is; the reference's text and a dictionary's type 5 have the bitmap)
+            if (type != 5 || !page) jb2_cross(j, &s.bm, &j->lib[m]);
         }
         if (j->z.over > ZP_PAST) {
             free(s.bm.mem);
