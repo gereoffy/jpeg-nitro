@@ -1624,6 +1624,14 @@ struct Builder {
             double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
             lb.x += d, lb.y += d, lb.w -= d, lb.h -= d;
         }
+        else if (shape == "folder" && str(s, "boundedLbl") == "1") {   // (FolderShape: below its tab, labelInHeader: in it)
+            double tw = std::clamp(num(s, "tabWidth", 15), 0.0, b.w), th = std::clamp(num(s, "tabHeight", 15), 0.0, b.h);
+            if (str(s, "labelInHeader") == "1") {
+                if (str(s, "tabPosition") != "left") lb.x += b.w - tw;
+                lb.w = tw, lb.h = th;
+            } else
+                lb.y += th, lb.h -= th;
+        }
         else if (shape == "umlFrame") lb.w = std::min(b.w, std::max(10.0, num(s, "width", 60))), lb.h = std::min(b.h, std::max(15.0, num(s, "height", 30)));
         bool turned = false;
         if (shape == "swimlane") {   // (in its header)
