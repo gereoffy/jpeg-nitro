@@ -1326,7 +1326,8 @@ bool turnsByDirection(const std::string &shape) {
     static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
                                          "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
                                          "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
-                                         "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop"};
+                                         "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
+                                         "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -2291,6 +2292,18 @@ struct Builder {
         else if (shape == "cube" && str(s, "boundedLbl") == "1") {   // (on its front face)
             double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
             lb.x += d, lb.y += d, lb.w -= d, lb.h -= d;
+        }
+        else if (shape == "mxgraph.arrows2.arrow" && str(s, "boundedLbl") == "1") {   // (on the shaft)
+            std::string d = str(s, "direction");
+            if (d.empty()) d = "east";
+            if (str(s, "flipH") == "1") d = d == "west" ? "east" : d == "east" ? "west" : d;
+            if (str(s, "flipV") == "1") d = d == "north" ? "south" : d == "south" ? "north" : d;
+            bool v = d == "north" || d == "south";
+            double c = 0.5 * (v ? b.w : b.h) * std::clamp(num(s, "dy", 0.5), 0.0, 1.0), f = std::clamp(num(s, "dx", 0.5), 0.0, v ? b.h : b.w);
+            if (d == "east") lb = {b.x, b.y + c, b.w - f, b.h - 2 * c};
+            else if (d == "west") lb = {b.x + f, b.y + c, b.w - f, b.h - 2 * c};
+            else if (d == "north") lb = {b.x + c, b.y + f, b.w - 2 * c, b.h - f};
+            else lb = {b.x + c, b.y, b.w - 2 * c, b.h - f};
         }
         else if (shape == "folder" && str(s, "boundedLbl") == "1") {   // (FolderShape: below its tab, labelInHeader: in it)
             double tw = std::clamp(num(s, "tabWidth", 15), 0.0, b.w), th = std::clamp(num(s, "tabHeight", 15), 0.0, b.h);
