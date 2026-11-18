@@ -28,6 +28,9 @@
 /bench/jpxrobust
 /bench/jpxverify
 /bench/jpxbench
+/bench/jxldec
+/bench/jxlrobust
+/bench/cmykverify
 /bench/*.exe
 /examples/nitroconvert
 /examples/nitrodraw
@@ -46,3 +49,11 @@
 
 .DS_Store
 /nitroview-gnome.flatpak
+
+.claude/*
+
+# own notes, not part of the repository
+/TODO.md
+/NITROAI_REVIEW.md
+/NITROPDF.md
+/RELEASE.md

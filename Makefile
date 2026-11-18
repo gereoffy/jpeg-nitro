@@ -675,7 +675,7 @@ linux: build/libnitro.a $(LINUX_TOOLS)
 clean:
 	rm -rf build nitroview nitroview-gnome nitroview-sdl nitroview-linux-x64.tar.gz nitroview-linux-arm64.tar.gz nitroview-gnome.flatpak nitroview.app nitroview.exe nitroview.zip nitroview.dmg \
 	  bench/bench bench/verify bench/robust bench/freqprobe bench/sustain bench/pngbench bench/pngsplit \
-	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/jpxbench bench/jxldec bench/jxlrobust bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
+	  bench/pngverify bench/pngrobust bench/jpxrobust bench/jpxverify bench/jpxbench bench/jxldec bench/jxlrobust bench/cmykverify bench/psdverify bench/psdrobust bench/nbench bench/rgbverify bench/bgrxverify bench/*.exe \
 	  examples/nitroconvert
 
 # Windows (cross, llvm-mingw): self-contained .exe files, only system DLLs (UCRT: Windows 10 /
