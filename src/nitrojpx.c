@@ -1776,6 +1776,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
     for (int c = 0; c < j.nc; c++) {
         if (j.dx[c] == 1 && j.dy[c] == 1) continue;
         int cx0 = cdiv(j.x0, j.dx[c]), cy0 = cdiv(j.y0, j.dy[c]), w = j.xs - j.x0;
+        if ((int64_t)cx0 * j.dx[c] >= j.xs || (int64_t)cy0 * j.dy[c] >= j.ys) goto done;   // (none of its samples on the grid: reduced)
         for (int y = j.y0; y < j.ys; y++) for (int x = j.x0; x < j.xs; x++) {
             int sx = imax(cx0, x / j.dx[c]) * j.dx[c] - j.x0;
             int sy = imax(cy0, y / j.dy[c]) * j.dy[c] - j.y0;
