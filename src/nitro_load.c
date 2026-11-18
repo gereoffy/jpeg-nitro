@@ -29,7 +29,7 @@
 // file names
 
 const char *const nv_image_exts[] = {"jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "avif", "webp", "tif", "tiff",
-                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", "jxl", "dcm", "dicom", "dic", NULL};
+                                     "gif", "bmp", "psd", "psb", "cr2", "nef", "nrw", "arw", "raf", "dng", "jp2", "j2k", "jpf", "jpx", "j2c", "jpc", "jph", "jhc", "jxl", "dcm", "dicom", "dic", NULL};
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 

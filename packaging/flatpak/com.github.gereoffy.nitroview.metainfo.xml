@@ -18,6 +18,8 @@
     <mediatype>image/bmp</mediatype>
     <mediatype>image/webp</mediatype>
     <mediatype>image/jp2</mediatype>
+    <mediatype>image/jph</mediatype>
+    <mediatype>image/jphc</mediatype>
     <mediatype>image/jxl</mediatype>
     <mediatype>application/dicom</mediatype>
     <mediatype>image/heic</mediatype>

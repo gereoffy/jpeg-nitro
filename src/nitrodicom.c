@@ -279,8 +279,8 @@ int ndcm_read_info(const uint8_t *d, size_t n, ndcm_info *in) {
         else if (!strcmp(t, "4.50") || !strcmp(t, "4.51")) in->syntax = S_JPEG;
         else if (!strcmp(t, "4.57") || !strcmp(t, "4.70")) in->syntax = S_LJPEG;
         else if (!strcmp(t, "4.90") || !strcmp(t, "4.91") || !strcmp(t, "4.92") || !strcmp(t, "4.93")) in->syntax = S_J2K;
+        else if (!strcmp(t, "4.201") || !strcmp(t, "4.202") || !strcmp(t, "4.203")) in->syntax = S_J2K;   // (HTJ2K: nitrojpx too)
         else if (!strcmp(t, "4.80") || !strcmp(t, "4.81")) in->error = "DICOM: JPEG-LS is not supported";
-        else if (!strncmp(t, "4.20", 4)) in->error = "DICOM: HTJ2K is not supported";
         else if (!strcmp(t, "4.110") || !strcmp(t, "4.111") || !strcmp(t, "4.112")) in->syntax = S_JXL;
         else if (!strcmp(t, "1.99") || !strncmp(t, "8.", 2)) in->error = "DICOM: deflated data is not supported";
         else if (!strncmp(t, "4.", 2)) in->error = "DICOM: this compression is not supported (video, JPEG process ...)";

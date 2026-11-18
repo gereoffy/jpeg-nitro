@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitrojpx: JPEG 2000 Part 1 images as PDFs embed them (/JPXDecode), without dependencies.
+// nitrojpx: JPEG 2000 Part 1 and HTJ2K images (pictures, PDFs' /JPXDecode), without dependencies.
 // Raw codestreams and JP2 containers; 1..16 components, 1..16 bits, signed or unsigned,
 // tiles, tile-parts, precincts, layers, all five progression orders, 5/3 and 9/7 wavelets,
 // RCT/ICT, all Part 1 code-block styles and maxshift ROI. JP2 palette/channel mapping and
 // channel definitions are applied. POC: up to 32 progression volumes per header,
 // including changes in later tile-parts; overlapping volumes never repeat packets.
-// Not supported: packed packet headers (PPM/PPT),
-// Part 2 extensions and HTJ2K. Unsupported/damaged images return an error.
+// HTJ2K (Part 15): HT code-blocks of one HT set (a cleanup pass, its refinement passes), JPH files.
+// Not supported: packed packet headers (PPM/PPT), Part 2 extensions, HT code-blocks with more
+// than one HT set (placeholder passes over several layers), mixed HT / Part 1 code-blocks.
+// Unsupported/damaged images return an error.
 // Up to 28 decomposition levels and 30 coded magnitude bit-planes (including ROI).
 // ICC colour spaces are identified by their device space; ICC transforms are the caller's.
 #ifndef NITROJPX_H

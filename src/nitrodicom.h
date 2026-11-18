@@ -9,7 +9,7 @@
 // some old programs wrote (ACR-NEMA too); implicit or explicit VR, little or big endian (and GE's
 // private syntax: a little endian data set with big endian samples).
 // The pixel data: uncompressed (1, 8, 16 or 32 bits a sample), RLE, JPEG baseline (nitrojpeg),
-// lossless JPEG (nitrodng's decoder), JPEG 2000 (nitrojpx).
+// lossless JPEG (nitrodng's decoder), JPEG 2000 and HTJ2K (nitrojpx).
 // The picture: grey (MONOCHROME1 / 2) through the rescale (slope, intercept) and the window the
 // file gives (its first window, or its VOI lookup table; neither, or a window that would leave the
 // picture all white: 8-bit pictures as they are, the others from their smallest to their largest
@@ -19,7 +19,7 @@
 // values the palette is for in its colours, the others grey).
 // Of a file of several frames one frame at a time (all of the same size: the viewers step through them).
 // JPEG XL (lossless, recompressed JPEG, lossy; not with patches): nitrojxl's samples in the image's own encoding.
-// Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG in colour, HTJ2K, the video
+// Not handled (info.error says which): JPEG-LS, 12-bit lossy JPEG in colour, the video
 // codecs, the deflated transfer syntaxes, floating point pixel data, segmented palettes; overlays,
 // a modality lookup table and the pixels' aspect ratio are ignored.
 #ifndef NITRODICOM_H
