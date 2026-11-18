@@ -80,11 +80,33 @@ static int box_read(const uint8_t *data, size_t len, size_t pos, Box *box) {
     return NJXL_OK;
 }
 
+// As box_read, for a file cut off at len (cut): a jxlc / jxlp box running past it is taken as far as it goes;
+// 1: stop here (another box cut off, or a header that is not all there).
+static int box_read_cut(const uint8_t *data, size_t len, size_t pos, Box *box, int cut, int *was_cut) {
+    if (!box_read(data, len, pos, box)) return 0;
+    if (!cut) return NJXL_INVALID;
+    *was_cut = 1;
+    if (len - pos < 8) return 1;
+    uint64_t size = be32(data + pos);
+    size_t header = size == 1 ? 16 : 8;
+    if (len - pos < header) return 1;
+    if (size == 1) size = (uint64_t)be32(data + pos + 8) << 32 | be32(data + pos + 12);
+    if (size < header) return NJXL_INVALID;   // (not a cut-off box: a wrong one)
+    box->type = be32(data + pos + 4);
+    if (box->type != TAG('j','x','l','c') && box->type != TAG('j','x','l','p')) return 1;
+    if (box->type == TAG('j','x','l','p') && len - pos - header < 4) return 1;   // (its index not there yet)
+    box->data = data + pos + header;
+    box->len = len - pos - header;
+    box->next = len;
+    return 0;
+}
+
 static int codestream_magic(const uint8_t *data, size_t len) {
     return len >= 2 && data[0] == 0xff && data[1] == 0x0a;
 }
 
-int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
+// cut: the file may end inside its codestream (the start of a file): the codestream so far, the same checks
+static int unwrap(const uint8_t *data, size_t len, njxl_stream *out, int cut) {
     static const uint8_t signature[12] = {0,0,0,12,'J','X','L',' ',13,10,135,10};
     if (!out) return NJXL_INVALID;
     memset(out, 0, sizeof(*out));
@@ -110,11 +132,13 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
     size_t start = box.next, pos = start, total = 0;
     const uint8_t *single = NULL;
     unsigned boxes = 2, parts = 0;
-    int level = 5, have_level = 0, mode = 0, last = 0;
+    int level = 5, have_level = 0, mode = 0, last = 0, was_cut = 0;
     while (pos < len) {
         if (++boxes > BOX_LIMIT) return NJXL_LIMIT;
-        if (mode && len - pos < 8) break;   // (the pad byte of a DICOM fragment, which has an even length)
-        if (box_read(data, len, pos, &box)) return NJXL_INVALID;
+        if (mode && len - pos < 8) { was_cut |= cut; break; }   // (the pad byte of a DICOM fragment; cut: a box's start)
+        int b = box_read_cut(data, len, pos, &box, cut, &was_cut);
+        if (b > 0) break;
+        if (b) return NJXL_INVALID;
         pos = box.next;
         switch (box.type) {
         case TAG('J','X','L',' '):
@@ -143,7 +167,8 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
             break;  // Metadata is not needed to locate or decode the image.
         }
     }
-    if (!mode || (mode == 2 && (!last || total < 2))) return NJXL_INVALID;
+    // (cut: only a file that does end inside a box may lack its last jxlp; a whole file without it is wrong)
+    if (!mode || (mode == 2 && ((!last && !was_cut) || total < 2))) return NJXL_INVALID;
     if (mode == 1) {
         out->data = single; out->len = total; out->level = level;
         return NJXL_OK;
@@ -156,7 +181,9 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
     size_t written = 0;
     for (pos = start; pos < len; pos = box.next) {
         if (len - pos < 8) break;
-        if (box_read(data, len, pos, &box)) { free(joined); return NJXL_INVALID; }
+        int b = box_read_cut(data, len, pos, &box, cut, &was_cut);
+        if (b > 0) break;
+        if (b) { free(joined); return NJXL_INVALID; }
         if (box.type == TAG('j','x','l','p')) {
             memcpy(joined + written, box.data + 4, box.len - 4);
             written += box.len - 4;
@@ -166,6 +193,8 @@ int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) {
     out->data = out->storage = joined; out->len = total; out->level = level;
     return NJXL_OK;
 }
+
+int njxl_unwrap(const uint8_t *data, size_t len, njxl_stream *out) { return unwrap(data, len, out, 0); }
 
 void njxl_stream_free(njxl_stream *stream) {
     if (stream) { free(stream->storage); memset(stream, 0, sizeof(*stream)); }
@@ -4652,9 +4681,9 @@ typedef struct {
     njxl_stream stream;
 } Image;
 
-static int read_headers(const uint8_t *data, size_t len, Image *im) {
+static int read_headers(const uint8_t *data, size_t len, Image *im, int cut) {
     memset(im, 0, sizeof(*im));
-    TRY(njxl_unwrap(data, len, &im->stream));
+    TRY(unwrap(data, len, &im->stream, cut));
     br_init(&im->br, im->stream.data, im->stream.len);
     if (br_u(&im->br, 16) != 0x0aff) return ERR_INVALID;
     TRY(size_header(&im->br, &im->m.width, &im->m.height));
@@ -4715,12 +4744,10 @@ int njxl_info_read(const uint8_t *data, size_t len, njxl_info *info) {
     if (!info) return NJXL_INVALID;
     memset(info, 0, sizeof(*info));
     if (!data) return NJXL_INVALID;
-    int e = read_headers(data, len, &im);
-    const uint8_t *cs;
-    size_t cl;
-    if (e && !codestream_magic(data, len) && !first_codestream(data, len, &cs, &cl)) {   // (a file's start: its first box cut off)
+    int e = read_headers(data, len, &im, 0);
+    if (e == NJXL_INVALID && !codestream_magic(data, len)) {   // (a container's start: cut off in its codestream)
         image_free(&im);
-        e = read_headers(cs, cl, &im);
+        e = read_headers(data, len, &im, 1);
     }
     if (!e) {
         fill_info(&im, info);
@@ -4755,7 +4782,7 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     if (!info) info = &tmp;
     memset(info, 0, sizeof(*info));
     if (!pixels || (format != NJXL_BGRA8 && format != NJXL_RGBA16 && format != NJXL_SAMPLES16)) return NJXL_INVALID;
-    int e = read_headers(data, len, &im);
+    int e = read_headers(data, len, &im, 0);
     Meta *m = &im.m;
     Br *br = &im.br;
     if (!e) {   // (a row's bytes in the format: the pitch holds them)
