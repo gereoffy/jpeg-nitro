@@ -842,26 +842,30 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
         d->ncomps = 1;
         d->comps[0].at = 16, d->comps[0].len = end - 16, d->comps[0].is_page = 1;
     } else {
-        // the directory (8.3.2): bundled or not, the count, each file's offset; then, BZZ coded, their
-        // sizes, their flags (the low six bits 1: a page) and their names
+        // the directory (8.3.2): bundled or not and its version, the count, each file's offset; then, BZZ
+        // coded, their sizes, their flags (the low six bits 1: a page) and their names. (Version 0, read as
+        // DjVuLibre does: each offset followed by the file's size, 3 bytes, none in the BZZ part; the flags
+        // 1 a page, 2 a name, 4 a title.)
         const uint8_t *id, *dir;
         size_t at = 16, n;
         if (!chunk(d, &at, end, &id, &dir, &n) || memcmp(id, "DIRM", 4) || n < 3 || !(dir[0] & 0x80)) goto fail;   // (not bundled: its pages are other files)
-        int count = dir[1] << 8 | dir[2];
-        if (!count || n < 3 + 4 * (size_t)count) goto fail;
+        int version = dir[0] & 0x7f, count = dir[1] << 8 | dir[2];
+        size_t rec = version ? 4 : 7, sizes = version ? 3 * (size_t)count : 0;   // (each offset's bytes; the sizes' in the BZZ part)
+        if (version > 1 || !count || n < 3 + rec * (size_t)count) goto fail;
         size_t names_len = 0;
-        uint8_t *names = bzz_decode(dir + 3 + 4 * (size_t)count, n - 3 - 4 * (size_t)count, 16u << 20, &names_len);
+        uint8_t *names = bzz_decode(dir + 3 + rec * (size_t)count, n - 3 - rec * (size_t)count, 16u << 20, &names_len);
         d->comps = calloc((size_t)count, sizeof *d->comps);
         if (!d->comps) {
             free(names);
             goto fail;
         }
         d->ncomps = count;
-        size_t s = 4 * (size_t)count;   // (after the sizes and the flags: the names)
+        size_t s = sizes + (size_t)count;   // (after the sizes and the flags: the names)
         for (int k = 0; k < count; k++) {
             Comp *co = &d->comps[k];
-            size_t off = be32(dir + 3 + 4 * (size_t)k);
-            int flags = names && names_len >= 4 * (size_t)count ? names[3 * (size_t)count + k] : -1;
+            size_t off = be32(dir + 3 + rec * (size_t)k);
+            int flags = names && names_len >= s ? names[sizes + (size_t)k] : -1;
+            if (!version && flags >= 0) flags = (flags & 1) | (flags & 2 ? 0x80 : 0) | (flags & 4 ? 0x40 : 0);
             if (off + 12 <= len && !memcmp(d->data + off, "FORM", 4)) {
                 size_t fl = be32(d->data + off + 4);
                 if (fl > len - off - 8) fl = len - off - 8;
