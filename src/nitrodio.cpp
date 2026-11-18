@@ -263,6 +263,7 @@ struct Cell {
     std::vector<Pt> points;
     // worked out
     int state = 0;   // (absolute box: 0 not yet, 1 being worked out, 2 done)
+    int shownState = 0;   // (0 not yet, 1 shown, 2 hidden, 3 being worked out)
     Box box;
     std::vector<Pt> route;   // an edge's points, absolute
 };
@@ -643,37 +644,49 @@ struct Builder {
         return f == byId.end() ? nullptr : &cells[f->second];
     }
     bool layer(const Cell &c) { return !c.vertex && !c.edge; }
-    // whether a cell is shown: it and its ancestors visible, none of them collapsed above it
-    bool shown(const Cell &c) {
-        const Cell *p = &c;
-        for (int depth = 0; p && depth < 256; depth++) {
-            if (!p->visible) return false;
-            const Cell *up = find(p->parent);
-            if (up && up != p && up->collapsed && up->vertex) return false;
-            p = up == p ? nullptr : up;
+    // whether a cell is shown: it and its ancestors visible, none of them collapsed above it. The chain
+    // up to a cell already known, then down it (no recursion: any depth; a cycle of parents ends at no parent)
+    bool shown(Cell &c) {
+        std::vector<Cell *> chain;
+        Cell *p = &c;
+        while (p && !p->shownState) {
+            p->shownState = 3;
+            chain.push_back(p);
+            p = find(p->parent);
         }
-        return true;
+        for (size_t i = chain.size(); i-- > 0;) {
+            Cell *x = chain[i], *up = i + 1 < chain.size() ? chain[i + 1] : p && p->shownState != 3 ? p : nullptr;
+            bool v = x->visible && (!up || (up->shownState == 1 && !(up->collapsed && up->vertex)));
+            x->shownState = v ? 1 : 2;
+        }
+        return c.shownState == 1;
     }
-    // a vertex's absolute box (its parents' origins added; 256 levels at most, as shown(): a
-    // deeper chain, listed children first, recursed once per cell and overflowed the stack)
-    Box absBox(Cell &c, int depth = 0) {
+    // a vertex's absolute box (its parents' origins added): the chain of parent vertices up to one already
+    // worked out, then down it (as shown(): any depth, a cycle of parents ends at no parent)
+    Box absBox(Cell &c) {
         if (c.state == 2) return c.box;
-        if (c.state == 1 || depth > 256) return {c.x, c.y, c.w, c.h};   // (a cycle of parents)
-        c.state = 1;
-        Pt o = origin(c.parent, depth + 1);
-        Box pb;
-        Cell *p = find(c.parent);
-        if (p && p->vertex) pb = absBox(*p, depth + 1);
-        if (c.relative && p && p->vertex) c.box = {pb.x + c.x * pb.w, pb.y + c.y * pb.h, c.w, c.h};
-        else c.box = {o.x + c.x, o.y + c.y, c.w, c.h};
-        if (c.hasOffset && c.relative) c.box.x += c.offset.x, c.box.y += c.offset.y;
-        c.state = 2;
-        return c.box;
+        std::vector<Cell *> chain;
+        for (Cell *p = &c; p && !p->state;) {
+            p->state = 1;
+            chain.push_back(p);
+            Cell *up = find(p->parent);
+            p = up && up->vertex ? up : nullptr;
+        }
+        for (size_t i = chain.size(); i-- > 0;) {
+            Cell *x = chain[i], *up = find(x->parent);
+            bool have = up && up->vertex && up->state == 2;
+            Box pb = have ? up->box : Box{};
+            if (x->relative && have) x->box = {pb.x + x->x * pb.w, pb.y + x->y * pb.h, x->w, x->h};
+            else x->box = {pb.x + x->x, pb.y + x->y, x->w, x->h};
+            if (x->hasOffset && x->relative) x->box.x += x->offset.x, x->box.y += x->offset.y;
+            x->state = 2;
+        }
+        return c.state == 2 ? c.box : Box{c.x, c.y, c.w, c.h};
     }
-    Pt origin(const std::string &parent, int depth = 0) {   // where the children of a cell start
+    Pt origin(const std::string &parent) {   // where the children of a cell start
         Cell *p = find(parent);
         if (!p || !p->vertex) return {0, 0};
-        Box b = absBox(*p, depth);
+        Box b = absBox(*p);
         return {b.x, b.y};
     }
 
