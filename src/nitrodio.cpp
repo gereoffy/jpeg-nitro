@@ -115,7 +115,7 @@ Style parseStyle(const std::string &str, bool edge) {
         if (e == std::string::npos) e = str.size();
         std::string tok = str.substr(i, e - i);
         size_t eq = tok.find('=');
-        if (eq == std::string::npos && tok.compare(0, 7, "base64,") == 0 && s.count("image")) s["image"] += ";" + tok;   // (data:...;base64,)
+        if (tok.compare(0, 7, "base64,") == 0 && s.count("image")) s["image"] += ";" + tok;   // (data:...;base64, : its = padding no key)
         else if (eq == std::string::npos) applyNamed(s, tok);
         else s[tok.substr(0, eq)] = tok.substr(eq + 1);
         i = e + 1;
@@ -217,6 +217,8 @@ struct Item {
     float ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
     bool aspect = true;
     float pictureAlpha = 1;   // (the image shape's opacity)
+    bool turned = false;      // (the picture turned / mirrored with its shape by pm, after its placing in ix0 .. iy1)
+    plutovg_matrix_t pm{1, 0, 0, 1, 0, 0};
     float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
 };
 struct Page {
@@ -2475,6 +2477,11 @@ struct Builder {
                 PathP t = newPath();
                 plutovg_path_add_path(t.get(), it.path.get(), &m);
                 it.path = t;
+                if (!it.uri.empty() || it.picture) {   // (a picture turned and mirrored with its frame)
+                    plutovg_matrix_t pm = it.pm;
+                    plutovg_matrix_multiply(&it.pm, &pm, &m);
+                    it.turned = true;
+                }
                 nd::Box bb = nd::pathBox(t.get(), std::max(it.width, 1.f));
                 it.bx0 = bb.x0, it.by0 = bb.y0, it.bx1 = bb.x1, it.by1 = bb.y1;
                 if (it.fill2) {   // (a gradient's line turned with it)
@@ -4095,24 +4102,46 @@ std::shared_ptr<Picture> pngPicture(const std::string &d) {
     auto pic = std::make_shared<Picture>();
     pic->w = in.width, pic->h = in.height;
     pic->px.resize((size_t)in.width * in.height * 4);
-    bool alpha8 = in.bit_depth == 8 && !in.interlace && (in.color_type == 6 || in.color_type == 4 || in.color_type == 3);
-    if (!alpha8) {   // (no alpha, or a form np_to_bgrx converts: over black, opaque)
-        if (np_to_bgrx(p, d.size(), &in, raw.data(), pic->px.data(), (size_t)in.width * 4, 1)) return nullptr;
-        for (size_t k = 3; k < pic->px.size(); k += 4) pic->px[k] = 255;
-        return pic;
+    // (every form: grey / RGB (their tRNS key colour transparent), palette (its tRNS alphas), grey / RGB + alpha; 1 to 16 bits,
+    // 16-bit samples by their high byte; premultiplied)
+    int bd = in.bit_depth, ct = in.color_type, ch = ct == 2 ? 3 : ct == 4 ? 2 : ct == 6 ? 4 : 1;
+    if (bd != 1 && bd != 2 && bd != 4 && bd != 8 && bd != 16) return nullptr;
+    unsigned maxv = (1u << (bd == 16 ? 16 : bd)) - 1;
+    auto sample = [&](const uint8_t *r, size_t i) -> unsigned {   // (the i-th sample of a row, at its own depth)
+        if (bd == 16) return (unsigned)r[2 * i] << 8 | r[2 * i + 1];
+        if (bd == 8) return r[i];
+        size_t bit = i * (size_t)bd;
+        return (unsigned)(r[bit >> 3] >> (8 - bd - (bit & 7))) & maxv;
+    };
+    auto to8 = [&](unsigned v) { return bd == 16 ? v >> 8 : bd == 8 ? v : v * 255 / maxv; };
+    bool key = in.trns_pos && (ct == 0 || ct == 2) && in.trns_pos + (ct == 0 ? 2u : 6u) <= d.size();
+    unsigned kr = 0, kg = 0, kb = 0;
+    if (key) {
+        const uint8_t *t = p + in.trns_pos;
+        kr = (unsigned)t[0] << 8 | t[1];
+        if (ct == 2) kg = (unsigned)t[2] << 8 | t[3], kb = (unsigned)t[4] << 8 | t[5];
     }
-    for (int y = 0; y < in.height; y++) {   // (8-bit RGBA, grey + alpha, palette + tRNS: their alpha kept, premultiplied)
+    for (int y = 0; y < in.height; y++) {
         const uint8_t *r = raw.data() + (size_t)y * (in.stride + 1) + 1;
         uint8_t *o = pic->px.data() + (size_t)y * in.width * 4;
         for (int x = 0; x < in.width; x++, o += 4) {
-            unsigned R, G, B, A;
-            if (in.color_type == 6) R = r[x * 4], G = r[x * 4 + 1], B = r[x * 4 + 2], A = r[x * 4 + 3];
-            else if (in.color_type == 4) R = G = B = r[x * 2], A = r[x * 2 + 1];
-            else {
-                unsigned i = r[x];
-                if (!in.plte_pos || i >= in.plte_n || in.plte_pos + 3 * (size_t)i + 2 >= d.size()) R = G = B = 0;
-                else R = p[in.plte_pos + 3 * i], G = p[in.plte_pos + 3 * i + 1], B = p[in.plte_pos + 3 * i + 2];
-                A = in.trns_pos && i < in.trns_n && in.trns_pos + (size_t)i < d.size() ? p[in.trns_pos + i] : 255;
+            unsigned R, G, B, A = 255;
+            size_t i = (size_t)x * ch;
+            if (ct == 3) {
+                unsigned k = sample(r, (size_t)x);
+                if (!in.plte_pos || k >= in.plte_n || in.plte_pos + 3 * (size_t)k + 2 >= d.size()) R = G = B = 0;
+                else R = p[in.plte_pos + 3 * k], G = p[in.plte_pos + 3 * k + 1], B = p[in.plte_pos + 3 * k + 2];
+                if (in.trns_pos && k < in.trns_n && in.trns_pos + (size_t)k < d.size()) A = p[in.trns_pos + k];
+            } else if (ct == 0 || ct == 4) {
+                unsigned v = sample(r, i);
+                R = G = B = to8(v);
+                if (ct == 4) A = to8(sample(r, i + 1));
+                else if (key && v == kr) A = 0;
+            } else {
+                unsigned vr = sample(r, i), vg = sample(r, i + 1), vb = sample(r, i + 2);
+                R = to8(vr), G = to8(vg), B = to8(vb);
+                if (ct == 6) A = to8(sample(r, i + 3));
+                else if (key && vr == kr && vg == kg && vb == kb) A = 0;
             }
             o[0] = (uint8_t)(B * A / 255), o[1] = (uint8_t)(G * A / 255), o[2] = (uint8_t)(R * A / 255), o[3] = (uint8_t)A;
         }
@@ -4140,7 +4169,7 @@ std::shared_ptr<Picture> jpegPicture(const std::string &d) {
             auto at = [&](int c) { return (int)pl[c][(size_t)(y * in.v[c] / in.vmax) * pitch[c] + x * in.h[c] / in.hmax]; };
             int R, G, B;
             if (in.ncomp == 1) R = G = B = at(0);
-            else if (in.adobe == 0) R = at(0), G = at(1), B = at(2);
+            else if (in.adobe == 0 || in.rgb) R = at(0), G = at(1), B = at(2);   // (stored as R G B: Adobe's transform 0, or ids 'R' 'G' 'B')
             else {   // (BT.601 YCbCr, full range)
                 double Y = at(0), cb = at(1) - 128.0, cr = at(2) - 128.0;
                 R = (int)std::lround(Y + 1.402 * cr), G = (int)std::lround(Y - 0.344136 * cb - 0.714136 * cr), B = (int)std::lround(Y + 1.772 * cb);
@@ -4173,23 +4202,28 @@ void pictures(Page &page, std::map<std::string, std::shared_ptr<Picture>> &cache
         if (it.uri.empty()) continue;
         std::string uri;
         uri.swap(it.uri);
-        auto f = cache.find(uri);
+        // (an SVG drawn at four times its box's longer side, 256 to 2048, to the next power of two: cached by that size too,
+        // so a small use first leaves a large one sharp)
+        bool svgUri = uri.size() > 5 && uri.compare(5, 13, "image/svg+xml") == 0;
+        double side = 256;
+        while (side < 2048 && side < 4.0 * std::max(it.ix1 - it.ix0, it.iy1 - it.iy0)) side *= 2;
+        std::string key = svgUri ? uri + '\x01' + std::to_string((int)side) : uri;
+        auto f = cache.find(key);
         if (f == cache.end()) {
             std::shared_ptr<Picture> pic;
             size_t comma = uri.find(',');
             std::string mime = uri.substr(5, comma == std::string::npos ? 0 : comma - 5), body = comma == std::string::npos ? "" : uri.substr(comma + 1);
             bool b64 = mime.find(";base64") != std::string::npos;
-            if (mime.compare(0, 13, "image/svg+xml") == 0) {
+            if (svgUri) {
                 if (!b64 && body.compare(0, 1, "<") != 0 && body.compare(0, 3, "%3C") != 0 && body.compare(0, 3, "%3c") != 0) b64 = true;   // (draw.io leaves out ;base64)
                 std::string svg = b64 ? base64(body) : urlDecode(body);
-                double side = std::clamp(4.0 * std::max(it.ix1 - it.ix0, it.iy1 - it.iy0), 256.0, 2048.0);
                 if (pixels < (64u << 20)) pic = svgPicture(svg, side);
             } else if (pixels < (64u << 20)) {
                 std::string data = base64(body);
                 pic = mime.compare(0, 9, "image/png") == 0 ? pngPicture(data) : mime.compare(0, 10, "image/jpeg") == 0 || mime.compare(0, 9, "image/jpg") == 0 ? jpegPicture(data) : nullptr;
             }
             if (pic) pixels += (size_t)pic->w * pic->h;
-            f = cache.emplace(std::move(uri), pic).first;
+            f = cache.emplace(std::move(key), pic).first;
         }
         it.picture = f->second;
         if (!it.picture) it.stroke = 0xffc0c0c0, it.width = 1;   // (its frame)
@@ -4335,8 +4369,20 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_matrix_t m;
         plutovg_matrix_init_translate(&m, dx, dy);
         plutovg_matrix_scale(&m, dw / pic.w, dh / pic.h);
+        if (it.turned) {   // (placed, then turned / mirrored with its shape)
+            plutovg_matrix_t placed = m;
+            plutovg_matrix_multiply(&m, &placed, &it.pm);
+        }
         plutovg_canvas_set_texture(c, sf, PLUTOVG_TEXTURE_TYPE_PLAIN, it.pictureAlpha, &m);
-        plutovg_canvas_fill_rect(c, dx, dy, dw, dh);
+        if (it.turned) {
+            plutovg_path_t *r = plutovg_path_create();
+            plutovg_path_add_rect(r, dx, dy, dw, dh);
+            plutovg_path_t *tr = plutovg_path_create();
+            plutovg_path_add_path(tr, r, &it.pm);
+            plutovg_canvas_fill_path(c, tr);
+            plutovg_path_destroy(tr), plutovg_path_destroy(r);
+        } else
+            plutovg_canvas_fill_rect(c, dx, dy, dw, dh);
         plutovg_surface_destroy(sf);
     }
     if ((it.fill >> 24) && it.hachure > 0) {   // (hand-drawn: the fill as parallel lines inside the path)
