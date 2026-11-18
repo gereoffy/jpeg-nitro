@@ -4681,11 +4681,44 @@ static void fill_info(const Image *im, njxl_info *info) {
         if (m->ec[i].type == EC_ALPHA) { info->alpha = 1; info->premultiplied = m->ec[i].alpha_associated; break; }
 }
 
+// A container's first codestream box (jxlc, or the first jxlp's data), which may be cut off at len. -1: none.
+static int first_codestream(const uint8_t *data, size_t len, const uint8_t **cs, size_t *cl) {
+    static const uint8_t signature[12] = {0,0,0,12,'J','X','L',' ',13,10,135,10};
+    if (!data || len < 12 || memcmp(data, signature, 12)) return -1;
+    size_t pos = 12;
+    while (pos + 8 <= len) {
+        uint64_t size = be32(data + pos), hdr = 8;
+        uint32_t type = be32(data + pos + 4);
+        if (size == 1) {
+            if (pos + 16 > len) return -1;
+            size = (uint64_t)be32(data + pos + 8) << 32 | be32(data + pos + 12);
+            hdr = 16;
+        }
+        if (type == TAG('j','x','l','c') || type == TAG('j','x','l','p')) {
+            size_t skip = (size_t)hdr + (type == TAG('j','x','l','p') ? 4 : 0);
+            if (pos + skip > len || (size && size < skip)) return -1;   // (a box shorter than its own header)
+            *cs = data + pos + skip;
+            *cl = len - pos - skip;
+            if (size && size - skip < *cl) *cl = (size_t)(size - skip);
+            return 0;
+        }
+        if (!size || size < hdr || size > len - pos) return -1;
+        pos += (size_t)size;
+    }
+    return -1;
+}
+
 int njxl_info_read(const uint8_t *data, size_t len, njxl_info *info) {
     Image im;
     if (!info) return NJXL_INVALID;
     memset(info, 0, sizeof(*info));
     int e = read_headers(data, len, &im);
+    const uint8_t *cs;
+    size_t cl;
+    if (e && !codestream_magic(data, len) && !first_codestream(data, len, &cs, &cl)) {   // (a file's start: its first box cut off)
+        image_free(&im);
+        e = read_headers(cs, cl, &im);
+    }
     if (!e) {
         fill_info(&im, info);
         Colour k;
@@ -4819,35 +4852,14 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
 }
 
 int njxl_size(const uint8_t *data, size_t len, int *width, int *height, int *orientation) {
-    static const uint8_t signature[12] = {0,0,0,12,'J','X','L',' ',13,10,135,10};
     const uint8_t *cs = NULL;
     size_t cl = 0;
     if (!data) return -1;
     if (codestream_magic(data, len)) {
         cs = data; cl = len;
-    } else if (len >= 12 && !memcmp(data, signature, 12)) {   // the first codestream box; it may be cut off
-        size_t pos = 12;
-        while (!cs && pos + 8 <= len) {
-            uint64_t size = be32(data + pos), hdr = 8;
-            uint32_t type = be32(data + pos + 4);
-            if (size == 1) {
-                if (pos + 16 > len) return -1;
-                size = (uint64_t)be32(data + pos + 8) << 32 | be32(data + pos + 12);
-                hdr = 16;
-            }
-            if (type == TAG('j','x','l','c') || type == TAG('j','x','l','p')) {
-                size_t skip = (size_t)hdr + (type == TAG('j','x','l','p') ? 4 : 0);
-                if (pos + skip > len || (size && size < skip)) return -1;   // (a box shorter than its own header)
-                cs = data + pos + skip;
-                cl = len - pos - skip;
-                if (size && size - skip < cl) cl = (size_t)(size - skip);
-                break;
-            }
-            if (!size || size < hdr || size > len - pos) return -1;
-            pos += (size_t)size;
-        }
+    } else if (first_codestream(data, len, &cs, &cl)) {
+        return -1;
     }
-    if (!cs) return -1;
     Meta m;
     Br br;
     memset(&m, 0, sizeof m);
