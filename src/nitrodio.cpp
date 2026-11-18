@@ -631,10 +631,11 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
 
 struct Builder {
     Page &page;
+    size_t &budget;   // (the items the file's pages may still have, all together)
     std::vector<Cell> cells;
     std::unordered_map<std::string, size_t> byId;
 
-    explicit Builder(Page &p) : page(p) {}
+    Builder(Page &p, size_t &items) : page(p), budget(items) {}
 
     Cell *find(const std::string &id) {
         auto f = byId.find(id);
@@ -705,7 +706,7 @@ struct Builder {
                     if (!(std::fabs(pts[k].x) < 1e8f && std::fabs(pts[k].y) < 1e8f)) return;
             }
         }
-        if (page.items.size() < (4u << 20)) page.items.push_back(std::move(it));
+        if (page.items.size() < (4u << 20) && budget) page.items.push_back(std::move(it)), budget--;
     }
     void addLabel(std::shared_ptr<Label> l) {
         if (!l) return;
@@ -1570,13 +1571,13 @@ void readCells(xmlNode *root, Builder &b) {
     }
 }
 
-bool readModel(xmlNode *model, Page &page) {
+bool readModel(xmlNode *model, Page &page, size_t &budget) {
     page.background = parseColour(attr(model, "background"), 0);
     xmlNode *root = nullptr;
     for (xmlNode *k = model->children; k; k = k->next)
         if (is(k, "root")) root = k;
     if (!root) return false;
-    Builder b(page);
+    Builder b(page, budget);
     readCells(root, b);
     b.build();
     if (page.items.empty()) return false;
@@ -1590,8 +1591,9 @@ struct XmlDocFree {
     void operator()(xmlDoc *d) const { xmlFreeDoc(d); }
 };
 using XmlDoc = std::unique_ptr<xmlDoc, XmlDocFree>;
+// (256 MB of XML: libxml2's tree of it takes several times that)
 XmlDoc parseXml(const char *data, size_t len) {
-    if (len > (1u << 30)) return nullptr;
+    if (len > (256u << 20)) return nullptr;
     return XmlDoc(xmlReadMemory(data, (int)len, nullptr, nullptr, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_HUGE));
 }
 
@@ -1607,10 +1609,11 @@ static nitrodio *load(const void *data, size_t len) {
     if (!doc) return nullptr;
     xmlNode *top = xmlDocGetRootElement(doc.get());
     std::unique_ptr<nitrodio> dio(new nitrodio);
+    size_t budget = 8u << 20;   // (the items of all the pages: their display lists stay in memory together)
     auto model = [&](xmlNode *m) {
         std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
         Page p;
-        if (readModel(m, p)) dio->pages.push_back(std::move(p));
+        if (readModel(m, p, budget)) dio->pages.push_back(std::move(p));
     };
     if (top && is(top, "mxGraphModel")) model(top);
     else if (top && is(top, "mxfile")) {
