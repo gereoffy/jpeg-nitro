@@ -3420,6 +3420,7 @@ static int lf_global(Frame *f) {
         if (lim > (1 << 22)) lim = 1 << 22;
         TRY(read_tree(br, lim, &f->gtree));
     }
+    if (h->modular && h->ycbcr && (h->maxhs || h->maxvs)) return ERR_UNSUP;   // (sub-sampled chroma in Modular: not rendered)
     TRY(modular_alloc(&f->gm, nch, m->bits));
     for (int c = 0; c < f->nb_color; c++) {
         Chan *ch = &f->gm.ch[c];
