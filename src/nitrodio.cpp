@@ -805,18 +805,26 @@ struct Builder {
         if (shape.empty()) shape = "rectangle";
         double rotation = num(s, "rotation", 0);
         bool text = shape == "text" || (str(s, "strokeColor") == "none" && str(s, "fillColor") == "none");
-        if (shape == "swimlane" && b.w > 0 && b.h > 0) {   // (only its header filled: the body by swimlaneFillColor)
+        if (shape == "swimlane" && b.w > 0 && b.h > 0) {   // (its header filled, the body by swimlaneFillColor: the body first,
+                                                           // the header over it, the frame and the header's line over both)
             bool across = str(s, "horizontal") == "0";
             double ss = std::clamp(num(s, "startSize", 23), 0.0, across ? b.w : b.h);
-            Style body = s;
-            body["fillColor"] = str(s, "swimlaneFillColor").empty() ? "none" : str(s, "swimlaneFillColor");
-            body["gradientColor"] = "none";
+            const std::string &bodyFill = str(s, "swimlaneFillColor");
+            bool bodyShown = !bodyFill.empty() && parseColour(bodyFill, 0);
             PathP lines, outline = newPath();
             plutovg_path_add_rect(outline.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+            if (bodyShown) {
+                Style body = s;
+                body["fillColor"] = bodyFill;
+                body["gradientColor"] = "none";
+                body["strokeColor"] = "none";
+                paint(outline, nullptr, body, b, false);
+            }
             if (ss > 0) {
                 Box hb = across ? Box{b.x, b.y, ss, b.h} : Box{b.x, b.y, b.w, ss};
                 Style head = s;
                 head["strokeColor"] = "none";
+                if (bodyShown) head["shadow"] = "0";   // (the body's shadow is the swimlane's)
                 PathP hp = newPath();
                 plutovg_path_add_rect(hp.get(), (float)hb.x, (float)hb.y, (float)hb.w, (float)hb.h);
                 lines = newPath();
@@ -824,7 +832,11 @@ struct Builder {
                 else plutovg_path_move_to(lines.get(), (float)b.x, (float)(b.y + ss)), plutovg_path_line_to(lines.get(), (float)(b.x + b.w), (float)(b.y + ss));
                 paint(hp, nullptr, head, hb, false);
             }
-            paint(outline, lines, body, b, false);
+            Style frame = s;
+            frame["fillColor"] = "none";
+            frame["gradientColor"] = "none";
+            if (bodyShown) frame["shadow"] = "0";
+            paint(outline, lines, frame, b, false);
         } else if (!text && shape != "image" && b.w > 0 && b.h > 0) {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
