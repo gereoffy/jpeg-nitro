@@ -4837,7 +4837,7 @@ int njxl_size(const uint8_t *data, size_t len, int *width, int *height, int *ori
             }
             if (type == TAG('j','x','l','c') || type == TAG('j','x','l','p')) {
                 size_t skip = (size_t)hdr + (type == TAG('j','x','l','p') ? 4 : 0);
-                if (pos + skip > len) return -1;
+                if (pos + skip > len || (size && size < skip)) return -1;   // (a box shorter than its own header)
                 cs = data + pos + skip;
                 cl = len - pos - skip;
                 if (size && size - skip < cl) cl = (size_t)(size - skip);
