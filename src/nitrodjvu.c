@@ -502,7 +502,7 @@ static void jb2_free(Jb2 *j, int keep_lib) {
 typedef struct {   // a component file of the document: a page, or one others include
     size_t at, len;   // its FORM's content (after its "DJVU" / "DJVI")
     char *id;
-    int is_page, djvu;   // (djvu: a FORM:DJVU; a page the directory calls one that is not, DjVuLibre cannot decode either)
+    int is_page;
     Dict *dict;       // the shape dictionary it brings, decoded (its own Djbz, or the one it includes: dict_own 0)
     int dict_state, dict_own;   // (comp_dict: 0 not asked yet, 1 being read, 2 done: dict is what it brings)
 } Comp;
@@ -747,11 +747,6 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
 // mask cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
 // a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
 static void page_decode(nitrodjvu *d, Page *pg) {
-    pg->decoded = 1, pg->bytes = 0;
-    if (!d->comps[pg->comp].djvu) {   // (a grey sheet)
-        pg->unread = 1;
-        return;
-    }
     int again = 0;
     const Dict *dict = comp_dict(d, pg->comp, 0, &again);
     const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
@@ -764,6 +759,7 @@ static void page_decode(nitrodjvu *d, Page *pg) {
         if (!memcmp(id, "FGbz", 4) && !colours) colours = data, colours_len = n;
         layers |= !memcmp(id, "Sjbz", 4) || !memcmp(id, "Smmr", 4) || !memcmp(id, "BG44", 4) || !memcmp(id, "BGjp", 4);
     }
+    pg->decoded = 1, pg->bytes = 0;
     int pw = pg->turn & 1 ? pg->h : pg->w, ph = pg->turn & 1 ? pg->w : pg->h;
     layer_decode(d, "BG44", pg, pw, ph, &pg->bg);
     Jb2 *j = sjbz ? calloc(1, sizeof *j) : NULL;
@@ -848,7 +844,7 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
         d->comps = calloc(1, sizeof *d->comps);
         if (!d->comps) goto fail;
         d->ncomps = 1;
-        d->comps[0].at = 16, d->comps[0].len = end - 16, d->comps[0].is_page = d->comps[0].djvu = 1;
+        d->comps[0].at = 16, d->comps[0].len = end - 16, d->comps[0].is_page = 1;
     } else {
         // the directory (8.3.2): bundled or not and its version, the count, each file's offset; then, BZZ
         // coded, their sizes, their flags (the low six bits 1: a page) and their names. (Version 0, read as
@@ -878,10 +874,8 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
                 size_t fl = be32(d->data + off + 4);
                 if (fl > len - off - 8) fl = len - off - 8;
                 co->at = off + 12, co->len = fl >= 4 ? fl - 4 : 0;
-                // (without the directory's flags: a FORM:DJVU is a page. Its bounds are the file's, not the outer
-                // FORM's: as DjVuLibre reads it)
-                co->djvu = !memcmp(d->data + off + 8, "DJVU", 4);
-                co->is_page = flags >= 0 ? (flags & 0x3f) == 1 : co->djvu;
+                // (without the directory's flags: a FORM:DJVU is a page)
+                co->is_page = flags >= 0 ? (flags & 0x3f) == 1 : !memcmp(d->data + off + 8, "DJVU", 4);
             }
             for (int str = 0; names && flags >= 0 && str < 1 + !!(flags & 0x80) + !!(flags & 0x40); str++) {   // its id, then a name, a title
                 size_t e = s;
