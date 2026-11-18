@@ -4236,9 +4236,13 @@ struct XmlDocFree {
 };
 using XmlDoc = std::unique_ptr<xmlDoc, XmlDocFree>;
 // (256 MB of XML: libxml2's tree of it takes several times that)
+// (one that does not parse whole, a cut-off file say, read again in recovery: what it has up to the damage)
 XmlDoc parseXml(const char *data, size_t len) {
     if (len > (256u << 20)) return nullptr;
-    return XmlDoc(xmlReadMemory(data, (int)len, nullptr, nullptr, XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_HUGE));
+    const int opts = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_HUGE;
+    XmlDoc d(xmlReadMemory(data, (int)len, nullptr, nullptr, opts));
+    if (!d || !xmlDocGetRootElement(d.get())) d.reset(xmlReadMemory(data, (int)len, nullptr, nullptr, opts | XML_PARSE_RECOVER));
+    return d;
 }
 
 }   // namespace
@@ -4290,7 +4294,8 @@ static nitrodio *load(const void *data, size_t len) {
             std::string text((const char *)t), xml;
             xmlFree(t);
             std::string bin = base64(text);
-            if (!inflateRaw(bin, xml)) xml = bin;
+            // (a stream cut off or damaged: what it inflated to so far, if that is XML; else taken as not deflated)
+            if (!inflateRaw(bin, xml) && !(xml.compare(0, 1, "<") == 0 || xml.compare(0, 3, "%3C") == 0 || xml.compare(0, 3, "%3c") == 0)) xml = bin;
             if (xml.compare(0, 1, "<") != 0) xml = urlDecode(xml);
             else if (xml.compare(0, 3, "%3C") == 0) xml = urlDecode(xml);
             if (xml.compare(0, 3, "%3C") == 0 || xml.compare(0, 3, "%3c") == 0) xml = urlDecode(xml);
@@ -4300,7 +4305,8 @@ static nitrodio *load(const void *data, size_t len) {
             else empty();
         }
     }
-    if (!drawn) return nullptr;
+    // (a draw.io file is one even with nothing drawn: its pages empty, of their models' size)
+    if (!drawn && (dio->pages.empty() || !top || !(is(top, "mxGraphModel") || is(top, "mxfile")))) return nullptr;
     return dio.release();
 }
 
