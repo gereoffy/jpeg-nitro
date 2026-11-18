@@ -4688,12 +4688,13 @@ int njxl_info_read(const uint8_t *data, size_t len, njxl_info *info) {
         fill_info(&im, info);
         Colour k;
         colour_init(&im.m, &k);
-        if (k.mode == 1 && im.m.want_icc && !read_icc(&im.br, &im.m)) {   // (the pixels will be in its space)
-            info->icc = im.m.icc; info->icc_len = im.m.icc_len;
-            im.m.icc = NULL;
+        if (k.mode == 1 && im.m.want_icc) {   // (the pixels will be in its space)
+            e = read_icc(&im.br, &im.m);
+            if (!e) { info->icc = im.m.icc; info->icc_len = im.m.icc_len; im.m.icc = NULL; }
         }
     }
     image_free(&im);
+    if (e) njxl_info_free(info);
     return e;
 }
 
