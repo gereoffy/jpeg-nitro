@@ -579,6 +579,7 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
                         img->icc = ji.ncomp - (ji.alpha >= 0) == 3 ? ji.icc : NULL;
                         img->icc_len = ji.icc_len;
                         img->mode = NV_MODE_NITROJPX;
+                        img->damaged = ji.damaged;
                         njpx_free(&ji);
                         *buf = b;
                         return 0;
@@ -599,7 +600,10 @@ int nv_decode(uint8_t *data, size_t *len, int raw_orientation, int raw_read, con
         } else {
             size_t pitch = align_up((size_t)xi.width * 4, dec->align);
             b = dec->get(pitch * (size_t)xi.height + xi.icc_len, cap, dec->ctx);
-            if (b && !njxl_decode(data, n, dec->threads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, b, pitch, NULL)) {
+            njxl_info di;
+            if (b && !njxl_decode(data, n, dec->threads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, b, pitch, &di)) {
+                img->damaged = di.damaged;
+                njxl_info_free(&di);
                 img->kind = NV_BGRA;
                 img->width = xi.width; img->height = xi.height;
                 img->pitch[0] = pitch;

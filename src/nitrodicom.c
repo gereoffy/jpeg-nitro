@@ -589,11 +589,14 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
         }
     } else if (in->syntax == S_JXL) {
         // JPEG XL: the samples as coded (lossless: the values exactly; signed ones as their bit pattern; a recompressed
-        // JPEG's Y Cb Cr given as R G B, whatever the data set says)
-        njxl_info ji;
+        // JPEG's Y Cb Cr given as R G B, whatever the data set says). A medical picture is not shown damaged: one
+        // the decoder could only partly read is an error.
+        njxl_info ji, di;
         if (!njxl_info_read(s, sl, &ji) && ji.width == in->width && ji.height == in->height && (ji.grey ? 1 : 3) == in->spp) {
             uint16_t *out = malloc(px * (size_t)in->spp * 2 + 64);
-            if (out && !njxl_decode(s, sl, nthreads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_SAMPLES16, out, (size_t)in->width * in->spp * 2, NULL)) {
+            int ok = out && !njxl_decode(s, sl, nthreads == 1 ? NJXL_SINGLE_THREAD : 0, NJXL_SAMPLES16, out, (size_t)in->width * in->spp * 2, &di);
+            if (ok) { ok = !di.damaged; njxl_info_free(&di); }
+            if (ok) {
                 f->p = f->own = (uint8_t *)out;
                 f->len = px * (size_t)in->spp * 2;
                 f->bytes = 2;
@@ -610,7 +613,7 @@ static int frame_get(const uint8_t *d, size_t n, const ndcm_info *in, int frame,
         if (!njpx_size(s, sl, &jw, &jh) && jw == in->width && jh == in->height &&
             !njpx_decode(s, sl, NJPX_RAW_COLORS | NJPX_IMAGE | (nthreads == 1 ? NJPX_SINGLE_THREAD : 0), &f->jpx)) {
             f->have_jpx = 1;
-            if (f->jpx.width == in->width && f->jpx.height == in->height && f->jpx.ncomp == in->spp) {
+            if (!f->jpx.damaged && f->jpx.width == in->width && f->jpx.height == in->height && f->jpx.ncomp == in->spp) {
                 // the codestream says how many bits and whether signed (SIZ: Ssiz of the first component);
                 // nitrojpx gives signed samples moved up by half their range: back to two's complement
                 size_t siz = 0;

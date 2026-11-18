@@ -10,7 +10,7 @@
 
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static uint64_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
-static size_t cases, decoded;
+static size_t cases, decoded, damaged;
 static void run(const uint8_t *d, size_t n) {
     for (unsigned k = 0; k < 4; k++) {   // (both colour paths, in full and reduced)
         unsigned flags = (k & 1 ? NJPX_RAW_COLORS : 0) | (k & 2 ? NJPX_REDUCE(1 + rnd() % 3) : 0);
@@ -21,7 +21,7 @@ static void run(const uint8_t *d, size_t n) {
             if (!im.samples || im.width <= 0 || im.height <= 0 || im.ncomp < 1 || im.ncomp > NJPX_MAX_COMPS || im.alpha >= im.ncomp) abort();
             size_t count = (size_t)im.width * im.height * im.ncomp;
             for (size_t i = 0; i < count; i++) if (im.samples[i] >= (1u << im.precision[i % im.ncomp])) abort();
-            decoded++;
+            decoded++; damaged += im.damaged != 0;
         } else if (im.samples || im.width || im.height || im.ncomp) abort();
         njpx_free(&im);
         njpx_free(&im); // releasing an empty result is safe
@@ -58,6 +58,6 @@ int main(int argc, char **argv) {
         free(d); free(original);
         printf("%s: checked\n", argv[a]); fflush(stdout);
     }
-    printf("%zu cases (%zu decoded), no sanitizer errors.\n", cases, decoded);
+    printf("%zu cases (%zu decoded, %zu of them damaged), no sanitizer errors.\n", cases, decoded, damaged);
     return 0;
 }

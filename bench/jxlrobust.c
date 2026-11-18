@@ -10,7 +10,7 @@
 
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static uint64_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
-static size_t cases, decoded;
+static size_t cases, decoded, damaged;
 static void run(const uint8_t *d, size_t n) {
     njxl_info info;
     int w, h, o;
@@ -23,7 +23,7 @@ static void run(const uint8_t *d, size_t n) {
     if (!out) abort();
     int rc = njxl_decode(d, n, (rnd() & 1) ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, out, pitch, &info);
     cases++;
-    if (!rc) decoded++;
+    if (!rc) { decoded++; damaged += info.damaged != 0; }
     else if (info.icc || info.width) abort();   // (a failure leaves info empty)
     njxl_info_free(&info);
     free(out);
@@ -42,10 +42,13 @@ int main(int argc, char **argv) {
         if (!original || !d || fread(original, 1, n, f) != n) return 2;
         fclose(f);
         run(original, n);
-        for (int t = 0; t < 40; t++) {   // truncations
+        for (int t = 0; t < 40; t++) {   // truncations (an exact buffer: a read past the end is caught)
             size_t m = (size_t)(rnd() % n);
-            memcpy(d, original, m);
-            run(d, m);
+            uint8_t *c = malloc(m ? m : 1);
+            if (!c) abort();
+            memcpy(c, original, m);
+            run(c, m);
+            free(c);
         }
         for (int t = 0; t < 400; t++) {   // mutations: mostly in the first KB (headers, TOC, histograms)
             memcpy(d, original, n);
@@ -59,6 +62,6 @@ int main(int argc, char **argv) {
         free(original); free(d);
         fprintf(stderr, "%s: %zu cases, %zu decoded\n", argv[a], cases, decoded);
     }
-    printf("%zu cases, %zu decoded\n", cases, decoded);
+    printf("%zu cases, %zu decoded (%zu of them damaged)\n", cases, decoded, damaged);
     return 0;
 }

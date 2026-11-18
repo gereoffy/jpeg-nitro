@@ -141,6 +141,7 @@ typedef struct {
 
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
     int frames, frame;                 // a file of several frames: how many, the one decoded
+    int damaged;                       // cut off or damaged: what could be read is shown
     int turn;                          // quarter turns clockwise the user gave it on screen (keys R / Shift+R)
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
@@ -858,6 +859,7 @@ static Decoded *decode_file(const wchar_t *wpath) {
             d->ev3 = img.ev3;
             d->frames = img.frames;
             d->frame = img.frame;
+            d->damaged = img.damaged;
         } else {
             d->orientation = img.orientation;   // (a JPEG's, a camera raw's: known from the header)
         }
@@ -1115,6 +1117,10 @@ static void update_title(void) {
     if (d && d->frames > 1) {
         size_t n = wcslen(t);
         swfmt(t + n, 1024 - n, L"  [frame %d/%d]", d->frame + 1, d->frames);
+    }
+    if (d && d->damaged) {
+        size_t n = wcslen(t);
+        swfmt(t + n, 1024 - n, L"  [damaged]");
     }
     if (d && nv_mode_has_ev(d->mode) && d->ev3) {
         size_t n = wcslen(t);

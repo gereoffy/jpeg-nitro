@@ -212,6 +212,13 @@ number of restart markers, …) it gives up, and the viewer falls back to the sy
 shows whatever is recoverable (the top part of a half-downloaded file, say). If nothing can decode
 it (unknown format, broken header, empty file), the title shows `CANNOT DECODE` and paging continues.
 
+The JPEG 2000 and JPEG XL decoders show what they can read themselves, and the title says
+`[damaged]`. In a cut-off or damaged JPEG 2000 file each tile keeps the packets read before the
+damage: a layered file looks blurrier, and a tile never reached is grey. In JPEG XL a damaged or
+missing 256×256 group shows only its blurry 1:8 image (a lossless image: the area is empty); when the
+part the whole frame needs is missing, the whole image is blurry. A damaged main header is still an
+error, and a medical image (DICOM) is never shown damaged.
+
 ### Color management
 
 On macOS embedded ICC profiles are honored for every format (Display P3 from iPhones and Mac

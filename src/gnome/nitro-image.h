@@ -23,6 +23,7 @@ typedef struct {
     int source_height;
     int dng, ev3;          // a DNG developed by nitrodng, with this exposure correction (1/3 EV)
     int frames, frame;     // a file of several frames (DICOM): how many, the one decoded (from 0); else 0
+    int damaged;           // cut off or damaged: what could be read is shown
     double decode_ms;
     unsigned serial;       // (from nitro_loader_get: the cached image this was copied from)
 } NitroImage;

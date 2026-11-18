@@ -89,6 +89,7 @@ typedef enum { KIND_YUV = 0, KIND_BGRA = 1, KIND_PNG = 2, KIND_PLANAR = 3 } Kind
 @property(nonatomic) int pages, page;        // a multi-page document: page count, the page shown (from 0)
 @property(nonatomic) int ev3;                // a DNG: the exposure correction it was developed with (1/3 EV)
 @property(nonatomic) int frames, frame;      // a file of several frames: how many, the one decoded
+@property(nonatomic) int damaged;           // cut off or damaged: what could be read is shown
 @property(nonatomic) int turn;               // quarter turns clockwise the user gave it on screen (keys R / Shift+R)
 @property(nonatomic) int background;         // a drawing: the background it was drawn over (nv_vector_background)
 @property(nonatomic) int limited;            // KIND_YUV: limited range (Y 16..235, as WebP), not full range
@@ -474,6 +475,7 @@ static Decoded *decode_file(NSString *path, BufferPool *pool, size_t align) {
         d.ev3 = img.ev3;
         d.frames = img.frames;
         d.frame = img.frame;
+        d.damaged = img.damaged;
         switch (img.mode) {   // the colour space the pixel values are in (the display layer is tagged with it)
         case MODE_NITRODNG: case NV_MODE_NITRODICOM: d.colorSpace = srgb_space(); break;
         case MODE_NITROTIFF: case MODE_NITROHEIC: case MODE_NITROAVIF: case MODE_NITROWEBP:
@@ -1015,6 +1017,7 @@ static NSArray<NSString *> *dropped_paths(id<NSDraggingInfo> info);
     char tail[64];   // a drawing's page, background
     t = [t stringByAppendingFormat:@"%s", nv_vector_title_suffix(d.vector, d.page, d.background, tail, sizeof tail)];
     if (d.frames > 1) t = [t stringByAppendingFormat:@"  [frame %d/%d]", d.frame + 1, d.frames];
+    if (d.damaged) t = [t stringByAppendingString:@"  [damaged]"];
     if (nv_mode_has_ev(d.mode) && d.ev3) t = [t stringByAppendingFormat:@"  %+.1f EV", d.ev3 / 3.0];
     if (_slideMs > 0)
         t = [t stringByAppendingFormat:@"   %@", _paused ? @"[slideshow paused: P]"

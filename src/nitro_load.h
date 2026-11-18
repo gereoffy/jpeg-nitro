@@ -87,6 +87,7 @@ typedef struct {
     int mode, bands;            // the decoder (see above), the parallel pieces it worked in
     int ev3;                    // a DNG, a DICOM picture: the exposure correction it was developed with (1/3 EV)
     int frames, frame;          // a file of several frames (DICOM): how many, the one decoded (from 0); else 0
+    int damaged;                // cut off or damaged: what could be read was decoded (JPEG 2000, JPEG XL)
     const uint8_t *icc;         // the file's ICC profile when the decoder read one (TIFF: RGB images only;
     size_t icc_len;             //   HEIC, AVIF, WebP): into the file data, valid as long as that is
     const char *error;          // not decoded by us: why, when a decoder recognised the file (static text)

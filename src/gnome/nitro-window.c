@@ -193,6 +193,12 @@ static void update_title(NitroWindow *self) {
         title = with_frame;
     }
 
+    if (self->image && self->image->damaged) {
+        char *with_damage = g_strdup_printf("%s  [damaged]", title);
+        g_free(title);
+        title = with_damage;
+    }
+
     if (self->image && self->image->dng && self->image->ev3) {
         char *with_ev = g_strdup_printf("%s  %+.1f EV", title, self->image->ev3 / 3.0);
         g_free(title);

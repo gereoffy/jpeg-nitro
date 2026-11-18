@@ -302,6 +302,7 @@ NitroImage *nitro_image_load(GFile *file, GError **error) {
     image->ev3 = image->dng ? img.ev3 : 0;
     image->frames = rc == 0 ? img.frames : 0;
     image->frame = rc == 0 ? img.frame : 0;
+    image->damaged = rc == 0 && img.damaged;
     image->decode_ms = (g_get_monotonic_time() - start) / 1000.0;
     return image;
 }

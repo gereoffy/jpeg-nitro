@@ -220,6 +220,13 @@ számú restart marker, …), feladja, és a néző a rendszer dekóderére vál
 menthető (például egy félig letöltött fájl felső részét). Ha semmi nem tudja dekódolni (ismeretlen
 formátum, sérült fejléc, üres fájl), a címsorban `CANNOT DECODE` áll, és a lapozás megy tovább.
 
+A JPEG 2000 és a JPEG XL dekóder maga mutatja meg, amit ki tud olvasni, a címsorban `[damaged]` áll.
+Egy csonka vagy sérült JPEG 2000 fájlban minden csempe a sérülés előtt beolvasott csomagokat tartja
+meg: egy rétegzett fájl elmosódottabb lesz, egy el nem ért csempe szürke. JPEG XL-ben egy sérült vagy
+hiányzó 256×256-os csoport csak az elmosódott 1:8-as képét mutatja (veszteségmentes képnél a terület
+üres); ha az egész keret által igényelt rész hiányzik, az egész kép elmosódott. A sérült fő fejléc
+továbbra is hiba, orvosi képet (DICOM) pedig sérülten sosem mutat.
+
 ### Színkezelés
 
 macOS-en a beágyazott ICC-profilokat minden formátumnál figyelembe veszi (Display P3 az iPhone-okról

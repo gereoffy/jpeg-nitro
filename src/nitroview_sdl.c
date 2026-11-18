@@ -227,6 +227,7 @@ typedef struct {
     int mode, bands;
     int ev3;                           // a DNG: the exposure correction it was developed with (1/3 EV)
     int frames, frame;                 // a file of several frames: how many, the one decoded
+    int damaged;                       // cut off or damaged: what could be read is shown
     int turn;                          // quarter turns clockwise the user gave it on screen (keys R / Shift+R)
     int limited;                       // KIND_YUV: limited range (Y 16..235, as WebP), not full range
 #ifdef NV_VECTOR
@@ -1041,6 +1042,7 @@ static Decoded *decode_file(const char *path, char **error) {
             d->ev3 = img.ev3;
             d->frames = img.frames;
             d->frame = img.frame;
+            d->damaged = img.damaged;
         } else {
             d->orientation = img.orientation;   // (a JPEG's, a camera raw's: known from the header)
             why = img.error;
@@ -1328,6 +1330,7 @@ static void update_title(void) {
     if (d) n += strlen(nv_vector_title_suffix(d->vec, d->page, d->background, t + n, sizeof t - n));   // a drawing's page, background
 #endif
     if (d && d->frames > 1) n += (size_t)snprintf(t + n, sizeof t - n, "  [frame %d/%d]", d->frame + 1, d->frames);
+    if (d && d->damaged) n += (size_t)snprintf(t + n, sizeof t - n, "  [damaged]");
     if (d && nv_mode_has_ev(d->mode) && d->ev3) n += (size_t)snprintf(t + n, sizeof t - n, "  %+.1f EV", d->ev3 / 3.0);
     if (V.slide_ms > 0) {
         if (V.paused) snprintf(t + n, sizeof t - n, "   [slideshow paused: P]");
