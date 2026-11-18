@@ -4549,14 +4549,16 @@ static int decode_wave(Frame *f, const Output *o, int threads) {
     render_init(f, &rd);
     int border = rd.border + 2;   // (+2: the chroma upsampling's row)
     int *band_y0 = xmalloc((size_t)gy + 1, sizeof(int)), *band_tiles = xmalloc((size_t)gy, sizeof(int));
-    int *task = xmalloc((size_t)gy * gx + (size_t)gy * 64 * 64 + 1, sizeof(int)), ntask = 0;
+    int *task = NULL, ntask = 0;
     int *rowdone = xcalloc((size_t)gy, sizeof(int)), *banddone = xcalloc((size_t)gy, sizeof(int));
     int *failed = xcalloc(1, sizeof(int)), *err = xcalloc(1, sizeof(int));
     int e = 0;
-    if (!band_y0 || !band_tiles || !task || !rowdone || !banddone || !failed || !err) e = ERR_NOMEM;
+    if (!band_y0 || !band_tiles || !rowdone || !banddone || !failed || !err) e = ERR_NOMEM;
     for (int b = 0; b <= gy && !e; b++) band_y0[b] = b == gy ? h->ch : imax(0, b * G - border);
     int ntx = tiles_x(h->cw);
-    for (int b = 0; b < gy && !e; b++) band_tiles[b] = o ? ntx * tiles_y(band_y0[b + 1] - band_y0[b]) : 0;
+    size_t ntasks = (size_t)gy * gx + 1;
+    for (int b = 0; b < gy && !e; b++) { band_tiles[b] = o ? ntx * tiles_y(band_y0[b + 1] - band_y0[b]) : 0; ntasks += (size_t)band_tiles[b]; }
+    if (!e && (ntasks > INT_MAX || !(task = xmalloc(ntasks, sizeof(int))))) e = ERR_NOMEM;   // (the groups and every band's tiles)
     // the order: groups of row r, then band r - LAG's tiles (when they come, the rows they wait for have
     // long been started); the last bands at the end. (task: group g, or -1 - (band << 16 | tile))
     for (int r = 0; r < gy + LAG && !e; r++) {
