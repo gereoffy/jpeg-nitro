@@ -2913,6 +2913,32 @@ struct Builder {
     }
 
     // mxEdgeStyle.SideToSide / TopToBottom: one elbow in the middle (or at the hint)
+    // Graph.js mxEdgeStyle.IsometricConnector: from the source (its centre) to the hint (else halfway) and on to the target
+    // along the isometric axes (-30 and -150 degrees); elbow=vertical: the other axis first
+    static void isometricConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints,
+                                   const Style &s, std::vector<Pt> &result) {
+        if ((!source && !p0) || (!target && !pe)) return;
+        Pt a = p0 ? *p0 : source->b.centre(), e = pe ? *pe : target->b.centre();
+        Pt pt = hints.empty() ? Pt{a.x + (e.x - a.x) / 2, a.y + (e.y - a.y) / 2} : hints[0];
+        const double hx = std::cos(-M_PI / 6), hy = std::sin(-M_PI / 6), vx = std::cos(-5 * M_PI / 6), vy = std::sin(-5 * M_PI / 6);
+        bool horizontal = str(s, "elbow") != "vertical";
+        Pt cur = a;
+        auto step = [&](Pt to, bool both) {
+            double dx = to.x - cur.x, dy = to.y - cur.y;
+            double ka = (vy * dx - vx * dy) / (hx * vy - hy * vx), ke = (hy * dx - hx * dy) / (hy * vx - hx * vy);
+            if (horizontal) {
+                if (both) cur = {cur.x + hx * ka, cur.y + hy * ka}, result.push_back(cur);
+                cur = {cur.x + vx * ke, cur.y + vy * ke};
+            } else {
+                if (both) cur = {cur.x + vx * ke, cur.y + vy * ke}, result.push_back(cur);
+                cur = {cur.x + hx * ka, cur.y + hy * ka};
+            }
+            result.push_back(cur);
+        };
+        step(pt, true);
+        step(e, false);   // (its last point: along one axis only; the target's perimeter towards it ends the edge)
+    }
+
     static void sideToSide(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, std::vector<Pt> &result) {
         Box s = source ? source->b : Box{}, t = target ? target->b : Box{};
         if (p0) s = {p0->x, p0->y, 0, 0};
@@ -3245,7 +3271,8 @@ struct Builder {
         else if (es == "sideToSideEdgeStyle") sideToSide(source, target, p0, pe, hints, mid);
         else if (es == "entityRelationEdgeStyle") entityRelation(source, target, p0, pe, s, mid);
         else if (es == "topToBottomEdgeStyle") topToBottom(source, target, p0, pe, hints, mid);
-        else if (es == "segmentEdgeStyle" || es == "isometricEdgeStyle") segmentConnector(source, target, p0, pe, hints, mid);
+        else if (es == "segmentEdgeStyle") segmentConnector(source, target, p0, pe, hints, mid);
+        else if (es == "isometricEdgeStyle") isometricConnector(source, target, p0, pe, hints, s, mid), orth = false;
         else mid = hints, orth = str(s, "orthogonal") == "1";
         // the floating ends: the target first, towards its neighbour (the other end, or its centre)
         if (!haveT && target) {
