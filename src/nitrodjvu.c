@@ -626,12 +626,12 @@ static int walk_next(Walk *w, const uint8_t **id, const uint8_t **data, size_t *
 // The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn.
 // NULL: none, or damaged. Decoded once, kept with the document (with the length of its longest chain of
 // includes). But a chain longer than DICT_CHAIN files from where it was entered (depth: the files
-// before it), one that comes round to a component being read (*again |= 1), or no memory (|= 2):
-// NULL, and nothing along the chain kept. So a component keeps only what it brings whoever asks, and
+// before it), one that comes round to a component being read (*again |= 1), no memory (|= 2), or
+// stop said to stop while a dictionary was decoded (|= 4): NULL, and nothing along the chain kept. So a component keeps only what it brings whoever asks, and
 // a chain too long is so whether the files along it were read before or not: the pages give the same
 // in any order.
 #define DICT_CHAIN 32
-static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
+static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again, const Stop *stop) {
     Comp *co = &d->comps[c];
     if (co->dict_state == 2 && depth + co->dict_height <= DICT_CHAIN) return co->dict;
     if (co->dict_state || depth >= DICT_CHAIN) {
@@ -646,7 +646,7 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
     while (chunk(d, &at, co->at + co->len, &id, &data, &n)) {
         if (!memcmp(id, "INCL", 4)) {
             int k = comp_by_id(d, data, n);
-            const Dict *x = k >= 0 && k != c ? comp_dict(d, k, depth + 1, &cut) : NULL;
+            const Dict *x = k >= 0 && k != c ? comp_dict(d, k, depth + 1, &cut, stop) : NULL;
             if (x) inherited = x;
             if (k >= 0 && k != c && d->comps[k].dict_state == 2 && d->comps[k].dict_height + 1 > height)
                 height = d->comps[k].dict_height + 1;
@@ -657,12 +657,13 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
     else if (!cut) {
         Jb2 *j = calloc(1, sizeof *j);
         Dict *dict = calloc(1, sizeof *dict);
+        if (j) j->stop = stop;
         if (j && dict && !jb2_decode(j, djbz, djbz_len, inherited, 0)) {
             dict->shapes = j->lib, dict->n = j->nlib, dict->inherited = j->inherited;
             jb2_free(j, 1);
             out = dict, co->dict_own = 1;
         } else {
-            cut = !j || !dict || j->nomem ? 2 : 0;   // (damaged: kept as none)
+            cut = !j || !dict || j->nomem ? 2 : j->stopped ? 4 : 0;   // (damaged: kept as none)
             if (j) jb2_free(j, 0);
             free(dict);
         }
@@ -829,9 +830,9 @@ static int mask_bits(Page *pg, const Bm *b, uint8_t **entry, int pw, int ph) {
 // each); in strips: the rows of a strip (16 bits), then each strip's length (32 bits) and its code,
 // each strip coded on its own. Only what lies on the page (pw x ph, as its file has it) is read and
 // kept: the rows down to its bottom, the columns to its right edge; the rows read are the JB2 page's
-// limit of pixels at most. 0; 1: not readable; -1: out of memory. A damaged strip: white from there
+// limit of pixels at most. 0; 1: not readable; -1: out of memory; 2: stop said to stop (asked before each strip). A damaged strip: white from there
 // (inverted too: the decoder's white rows after the damage would be black ones).
-static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
+static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph, const Stop *stop) {
     if (n < 8 || memcmp(p, "MMR", 3) || (p[3] & ~3)) return 1;
     int invert = p[3] & 1, striped = p[3] & 2, w = p[4] << 8 | p[5], h = p[6] << 8 | p[7], rows = h;
     size_t at = 8, prow = ((size_t)w + 7) / 8;
@@ -849,6 +850,10 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
         return -1;
     }
     for (int y = 0; y < h && at <= n; y += rows) {
+        if (stopped(stop)) {
+            free(bits), free(b->mem), b->mem = NULL;
+            return 2;
+        }
         size_t len = n - at;
         if (striped) {
             if (len < 4) break;
@@ -880,7 +885,8 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
 // -1: an allocation failed (what it has is less than the file: not to be kept); 1: stop said to stop.
 static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
     int again = 0, nomem = 0, rc;
-    const Dict *dict = comp_dict(d, pg->comp, 0, &again);
+    const Dict *dict = comp_dict(d, pg->comp, 0, &again, stop);
+    if (again & 4) return 1;
     const uint8_t *id, *data, *sjbz = NULL, *smmr = NULL, *colours = NULL;
     size_t n, sjbz_len = 0, smmr_len = 0, colours_len = 0;
     int layers = 0;
@@ -917,7 +923,8 @@ static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
     } else if (smmr) {   // (its colours: the palette's first, or FG44)
         Bm b = {0};
         uint8_t *none = NULL, *entries = NULL;
-        int rc = smmr_decode(smmr, smmr_len, &b, pw, ph), blits = 0;
+        int rc = smmr_decode(smmr, smmr_len, &b, pw, ph, stop), blits = 0;
+        if (rc == 2) return 1;
         nomem |= rc < 0 || (!rc && mask_bits(pg, &b, &none, pw, ph) < 0);
         if (colours && fgbz(colours, colours_len, &pg->pal, &entries, &blits) < 0) nomem = 1;
         free(entries), free(b.mem);
