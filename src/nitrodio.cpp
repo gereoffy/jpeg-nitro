@@ -148,10 +148,15 @@ uint32_t parseColour(std::string v, uint32_t def) {
         if (v.size() == 4) n = (n & 0xf00) * 0x1100 | (n & 0xf0) * 0x110 | (n & 0xf) * 0x11;
         return 0xff000000u | (uint32_t)(n & 0xffffff);
     }
-    if (v.compare(0, 4, "rgb(") == 0) {
-        int r = 0, g = 0, b = 0;
-        if (sscanf(v.c_str() + 4, "%d , %d , %d", &r, &g, &b) == 3)
-            return 0xff000000u | (uint32_t)(std::clamp(r, 0, 255) << 16 | std::clamp(g, 0, 255) << 8 | std::clamp(b, 0, 255));
+    if (v.compare(0, 4, "rgb(") == 0 || v.compare(0, 5, "rgba(") == 0) {   // (rgba: its alpha; fully transparent: 0x00000001,
+        int r = 0, g = 0, b = 0;                                              // a colour of its own, not none)
+        double al = 1;
+        int n = sscanf(v.c_str() + (v[3] == 'a' ? 5 : 4), "%d , %d , %d , %lf", &r, &g, &b, &al);
+        if (n >= 3) {
+            uint32_t a = n == 4 && std::isfinite(al) ? (uint32_t)std::lround(std::clamp(al, 0.0, 1.0) * 255) : 255;
+            uint32_t c = a << 24 | (uint32_t)(std::clamp(r, 0, 255) << 16 | std::clamp(g, 0, 255) << 8 | std::clamp(b, 0, 255));
+            return c ? c : 1;
+        }
         return def;
     }
     static const std::map<std::string, uint32_t> names = {
@@ -381,6 +386,7 @@ float tagSize(const std::string &tag, float base) {
             const char *p = tag.c_str() + v + 1;
             while (*p == ' ') p++;
             double d = nn_strtod(p, &end);
+            if (end != p && d == 0) return 0.01f;   // (0: no text to see, its lines nothing high)
             if (end != p && d > 0 && d < 1000) {
                 if (end[0] == '%') return (float)(base * d / 100);
                 if (end[0] == 'e' && end[1] == 'm') return (float)(base * d);
