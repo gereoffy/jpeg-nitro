@@ -1690,6 +1690,40 @@ struct Builder {
     // the SegmentConnector
     enum { DIR_W = 1, DIR_N = 2, DIR_S = 4, DIR_E = 8, DIR_ALL = 15 };
     static int reversePort(int c) { return (c & DIR_W) << 3 | (c & DIR_N) << 1 | (c & DIR_S) >> 1 | (c & DIR_E) >> 3; }
+    // mxEdgeStyle.EntityRelation: out of the sides segment (30) across, at the terminals' middle heights; both on one
+    // side: round it; else through the middle when the sides face away from each other
+    static void entityRelation(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const Style &s, std::vector<Pt> &result) {
+        if ((!source && !p0) || (!target && !pe)) return;
+        double seg = num(s, "segment", 30);
+        Box sb = p0 ? Box{p0->x, p0->y, 0, 0} : source->b, tb = pe ? Box{pe->x, pe->y, 0, 0} : target->b;
+        bool sl = false, tl = true;
+        if (source && target) sl = (pe ? pe->x : target->b.x + target->b.w) < (p0 ? p0->x : source->b.x);
+        if (!p0 && source) {
+            int pc = portConstraint(s, source, true);
+            if (pc == DIR_W || pc == DIR_E) sl = pc == DIR_W;
+        }
+        if (target && source) tl = (p0 ? p0->x : source->b.x + source->b.w) < (pe ? pe->x : target->b.x);
+        if (!pe && target) {
+            int pc = portConstraint(s, target, false);
+            if (pc == DIR_W || pc == DIR_E) tl = pc == DIR_W;
+        }
+        auto midY = [&](const Term *t, const Box &b) { return b.y + b.h / 2 + (t && t->style ? num(*t->style, "routingCenterY", 0) * b.h : 0); };
+        double x0 = sl ? sb.x : sb.x + sb.w, y0 = midY(p0 ? nullptr : source, sb);
+        double xe = tl ? tb.x : tb.x + tb.w, ye = midY(pe ? nullptr : target, tb);
+        Pt dep{x0 + (sl ? -seg : seg), y0}, arr{xe + (tl ? -seg : seg), ye};
+        if (sl == tl) {
+            double x = sl ? std::min(x0, xe) - seg : std::max(x0, xe) + seg;
+            result.push_back({x, y0}), result.push_back({x, ye});
+            return;
+        }
+        result.push_back(dep);
+        if ((dep.x < arr.x) == sl) {
+            double my = y0 + (ye - y0) / 2;
+            result.push_back({dep.x, my}), result.push_back({arr.x, my});
+        }
+        result.push_back(arr);
+    }
+
     static int portConstraint(const Style &edge, const Term *t, bool source) {
         std::string v = str(edge, source ? "sourcePortConstraint" : "targetPortConstraint");
         if (v.empty() && t && t->style) v = str(*t->style, "portConstraint");
@@ -1911,7 +1945,8 @@ struct Builder {
         if (isLoop) loop(source, p0, pe, hints, s, mid), orth = str(s, "orthogonal") == "1";
         else if (es == "orthogonalEdgeStyle") orthConnector(source, target, p0, pe, hints, s, mid);
         else if (es == "elbowEdgeStyle") elbowConnector(source, target, p0, pe, hints, s, mid);
-        else if (es == "sideToSideEdgeStyle" || es == "entityRelationEdgeStyle") sideToSide(source, target, p0, pe, hints, mid);
+        else if (es == "sideToSideEdgeStyle") sideToSide(source, target, p0, pe, hints, mid);
+        else if (es == "entityRelationEdgeStyle") entityRelation(source, target, p0, pe, s, mid);
         else if (es == "topToBottomEdgeStyle") topToBottom(source, target, p0, pe, hints, mid);
         else if (es == "segmentEdgeStyle" || es == "isometricEdgeStyle") segmentConnector(source, target, p0, pe, hints, mid);
         else mid = hints, orth = str(s, "orthogonal") == "1";
@@ -1972,7 +2007,43 @@ struct Builder {
             L({mid.x - n.x * half, mid.y - n.y * half});
             plutovg_path_close(q);
             retreat = len;
-        } else if (t == "dash" || t == "cross" || t == "ERone" || t == "ERmandOne") {
+        } else if (t == "ERone" || t == "ERmandOne" || t == "ERmany" || t == "ERoneToMany" || t == "ERzeroToMany" || t == "ERzeroToOne") {
+            // (draw.io's ER markers: ticks across, a crow's foot, a circle; m along the edge, size + stroke + 1 long)
+            double k = size + sw + 1;
+            Pt m{u.x * k, u.y * k};
+            auto tick = [&](double back) {   // (a line across, back * L before the tip)
+                M({tip.x - m.x * back - m.y / 2, tip.y - m.y * back + m.x / 2});
+                L({tip.x - m.x * back + m.y / 2, tip.y - m.y * back - m.x / 2});
+            };
+            auto foot = [&]() {
+                M({tip.x + m.y / 2, tip.y - m.x / 2});
+                L({tip.x - m.x, tip.y - m.y});
+                L({tip.x - m.y / 2, tip.y + m.x / 2});
+            };
+            fill = false;
+            bool zero = t == "ERzeroToMany" || t == "ERzeroToOne";
+            if (t == "ERone") tick(0.5);
+            else if (t == "ERmandOne") tick(0.5), tick(1);
+            else if (t == "ERmany") foot();
+            else if (t == "ERoneToMany") tick(1), foot();
+            else if (zero) {
+                double r = size / 2;
+                Pt c{tip.x - m.x * 1.5, tip.y - m.y * 1.5};
+                Item ring;
+                ring.path = newPath();
+                plutovg_path_add_circle(ring.path.get(), (float)c.x, (float)c.y, (float)r);
+                ring.stroke = colour, ring.width = (float)sw;
+                if (filled) ring.fill = 0xffffffff;
+                add(std::move(ring), (float)sw);
+                if (t == "ERzeroToMany") foot();
+                else tick(0.5);
+                if (!filled) {   // (the line stops before the circle, the marker draws the rest to the tip)
+                    M({tip.x - m.x - u.x * sw / 2, tip.y - m.y - u.y * sw / 2});
+                    L(tip);
+                    retreat = 2 * k - sw / 2;
+                }
+            }
+        } else if (t == "dash" || t == "cross") {
             Pt m{p.x - u.x * len / 2, p.y - u.y * len / 2};
             M({m.x + n.x * half, m.y + n.y * half});
             L({m.x - n.x * half, m.y - n.y * half});
@@ -1988,7 +2059,7 @@ struct Builder {
         Item it;
         it.path = path;
         if (fill) it.fill = colour, retreat = std::max(retreat - sw / 2, 0.0);
-        else retreat = t == "open" ? retreat : 0;
+        else retreat = t == "open" || t.compare(0, 2, "ER") == 0 ? retreat : 0;   // (an ER circle not filled: the line stops before it)
         retreat += std::hypot(p.x - tip.x, p.y - tip.y);
         it.stroke = colour;
         it.width = (float)sw;
