@@ -433,7 +433,11 @@ static int numpasses(Bits *b) {
 typedef struct { Segment *s; size_t len; } Contribution;
 static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const uint8_t *end) {
     const uint8_t *p = *pos;
-    if (t->flags & 2) { if ((size_t)(end - p) < 6 || be16(p) != 0xff91 || be16(p + 2) != 4) return -1; p += 6; }
+    // SOP "may be used" (A.6.1): a packet with the flag can come with or without one; EPH below "shall"
+    if ((t->flags & 2) && (size_t)(end - p) >= 2 && be16(p) == 0xff91) {
+        if ((size_t)(end - p) < 6 || be16(p + 2) != 4) return -1;
+        p += 6;
+    }
     Bits h = {p, end, 0, 0, 0};
     // At most 109 contributions per code-block; bounded dynamically instead of a large stack.
     Contribution *list = NULL; size_t count = 0, cap = 0;
