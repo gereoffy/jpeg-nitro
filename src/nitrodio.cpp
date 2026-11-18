@@ -2038,8 +2038,8 @@ struct Builder {
         it.path = path;
         it.fill = fill;
         uint32_t g = edge ? 0 : colour(s, "gradientColor", 0);
-        if (fill && g) {
-            it.fill2 = withOpacity(g, opacity);
+        if (!edge && colour(s, "fillColor", 0xffffffff) && g) {   // (a fill faded to nothing: its gradient still has its other end)
+            it.fill2 = withOpacity(g, opacity * num(s, "fillOpacity", 100) / 100);   // (both ends faded alike)
             const std::string &d = str(s, "gradientDirection");
             float x0 = (float)b.x, y0 = (float)b.y, x1 = (float)(b.x + b.w), y1 = (float)(b.y + b.h);
             if (d == "north") it.gx0 = x0, it.gy0 = y1, it.gx1 = x0, it.gy1 = y0;
@@ -2120,14 +2120,18 @@ struct Builder {
         double minScale = std::min(sx, sy);
         std::string sw = attr(root, "strokewidth");
         double opacity = num(s, "opacity", 100);
+        // (as mxSvgCanvas2D: the colours as they are, faded on painting by alpha (the shape's opacity, or an <alpha>) and
+        // fillAlpha / strokeAlpha (its fillOpacity / strokeOpacity, or a <fillalpha> / <strokealpha>))
         struct State {
             uint32_t fill, stroke;
             float width, alpha;
             bool dashed;
+            float fillAlpha, strokeAlpha;
         };
-        State st{withOpacity(colour(s, "fillColor", 0xffffffff), opacity * num(s, "fillOpacity", 100) / 100),
-                 withOpacity(colour(s, "strokeColor", 0xff000000), opacity * num(s, "strokeOpacity", 100) / 100),
-                 (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale), 1, false};
+        State st{colour(s, "fillColor", 0xffffffff), colour(s, "strokeColor", 0xff000000),
+                 (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
+                 (float)std::clamp(opacity / 100, 0.0, 1.0), false, (float)std::clamp(num(s, "fillOpacity", 100) / 100, 0.0, 1.0),
+                 (float)std::clamp(num(s, "strokeOpacity", 100) / 100, 0.0, 1.0)};
         uint32_t shapeFill = st.fill, shapeStroke = st.stroke;
         std::vector<State> stack;
         PathP cur;
@@ -2142,8 +2146,8 @@ struct Builder {
             if (!cur) return;
             Item it;
             it.path = cur;
-            if (fill) it.fill = alphaOf(st.fill, st.alpha);
-            if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha), it.width = st.width;
+            if (fill) it.fill = alphaOf(st.fill, st.alpha * st.fillAlpha);
+            if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
             if (stroke && st.dashed) it.dash = {3 * std::max(st.width, 1.f), 3 * std::max(st.width, 1.f)};
             add(std::move(it), st.width);
             cur = nullptr;
@@ -2186,6 +2190,8 @@ struct Builder {
             else if (name == "strokecolor") st.stroke = colourAttr(n, 0);
             else if (name == "strokewidth") st.width = (float)(attrNum(n, "width", 1) * minScale);
             else if (name == "alpha") st.alpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
+            else if (name == "fillalpha") st.fillAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
+            else if (name == "strokealpha") st.strokeAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "dashed") st.dashed = attr(n, "dashed") == "1";
             else if (name == "save") stack.push_back(st);
             else if (name == "restore" && !stack.empty()) st = stack.back(), stack.pop_back();
@@ -2442,7 +2448,7 @@ struct Builder {
                 bg.path = newPath();
                 plutovg_path_add_rect(bg.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
                 bg.fill = withOpacity(back, num(s, "opacity", 100));
-                bg.stroke = border, bg.width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+                bg.stroke = withOpacity(border, num(s, "opacity", 100)), bg.width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
                 add(std::move(bg), bg.width);
             }
             Item it;   // (a picture the file holds: decoded once the page is read, see pictures())
@@ -4236,7 +4242,7 @@ void pictures(Page &page, std::map<std::string, std::shared_ptr<Picture>> &cache
             f = cache.emplace(std::move(key), pic).first;
         }
         it.picture = f->second;
-        if (!it.picture) it.stroke = 0xffc0c0c0, it.width = 1;   // (its frame)
+        if (!it.picture) it.stroke = withOpacity(0xffc0c0c0, it.pictureAlpha * 100), it.width = 1;   // (its frame, faded with the shape)
     }
 }
 
@@ -4425,7 +4431,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_canvas_stroke_path(c, h);
         plutovg_path_destroy(h);
         plutovg_canvas_restore(c);
-    } else if (it.fill >> 24) {
+    } else if ((it.fill >> 24) || (it.fill2 >> 24)) {   // (a gradient from transparent: its other end still there)
         if (it.fill2 >> 24) {
             plutovg_gradient_stop_t stops[2] = {{0, {(it.fill >> 16 & 255) / 255.f, (it.fill >> 8 & 255) / 255.f, (it.fill & 255) / 255.f, (it.fill >> 24) / 255.f}},
                                                 {1, {(it.fill2 >> 16 & 255) / 255.f, (it.fill2 >> 8 & 255) / 255.f, (it.fill2 & 255) / 255.f, (it.fill2 >> 24) / 255.f}}};
