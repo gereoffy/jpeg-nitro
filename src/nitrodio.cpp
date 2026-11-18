@@ -13,7 +13,6 @@
 #include "nitro_font.h"
 #include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
 #include "nitrojpeg.h"   // (the pictures a diagram holds as data: URIs)
-#include "nitropng.h"
 #include "nitrosvg.h"
 
 #include <libxml/parser.h>
@@ -4109,65 +4108,39 @@ bool readModel(xmlNode *model, Page &page, size_t &budget) {
 
 // --- the pictures (data: URIs: PNG, JPEG, SVG) -----------------------------------------
 
+// a picture our own decoders leave (an interlaced PNG, a progressive JPEG ...): stb_image, as plutovg has it built in;
+// premultiplied BGRA as ours (at most 16 megapixels: its size read first)
+std::shared_ptr<Picture> stbPicture(const std::string &d, int64_t pixels) {
+    if (pixels <= 0 || pixels > (16 << 20) || d.size() > (size_t)INT32_MAX) return nullptr;
+    plutovg_surface_t *sf = plutovg_surface_load_from_image_data(d.data(), (int)d.size());
+    if (!sf) return nullptr;
+    auto pic = std::make_shared<Picture>();
+    pic->w = plutovg_surface_get_width(sf), pic->h = plutovg_surface_get_height(sf);
+    int stride = plutovg_surface_get_stride(sf);
+    const uint8_t *px = plutovg_surface_get_data(sf);
+    if (pic->w <= 0 || pic->h <= 0 || (int64_t)pic->w * pic->h > (16 << 20)) {
+        plutovg_surface_destroy(sf);
+        return nullptr;
+    }
+    pic->px.resize((size_t)pic->w * pic->h * 4);
+    for (int y = 0; y < pic->h; y++) memcpy(pic->px.data() + (size_t)y * pic->w * 4, px + (size_t)y * stride, (size_t)pic->w * 4);
+    plutovg_surface_destroy(sf);
+    return pic;
+}
+// (stb_image too: an embedded picture is small, an icon mostly, where nitropng's parallel inflate does not pay; it reads every
+// form: palette, grey, 16 bits, tRNS, interlaced. Its size from the header first)
 std::shared_ptr<Picture> pngPicture(const std::string &d) {
     const uint8_t *p = (const uint8_t *)d.data();
-    np_info in;
-    if (np_read_info(p, d.size(), &in) || !in.convertible || (int64_t)in.width * in.height > (16 << 20)) return nullptr;
-    std::vector<uint8_t> raw(in.raw_size);
-    if (np_decode(p, d.size(), &in, raw.data(), 1, nullptr)) return nullptr;
-    auto pic = std::make_shared<Picture>();
-    pic->w = in.width, pic->h = in.height;
-    pic->px.resize((size_t)in.width * in.height * 4);
-    // (every form: grey / RGB (their tRNS key colour transparent), palette (its tRNS alphas), grey / RGB + alpha; 1 to 16 bits,
-    // 16-bit samples by their high byte; premultiplied)
-    int bd = in.bit_depth, ct = in.color_type, ch = ct == 2 ? 3 : ct == 4 ? 2 : ct == 6 ? 4 : 1;
-    if (bd != 1 && bd != 2 && bd != 4 && bd != 8 && bd != 16) return nullptr;
-    unsigned maxv = (1u << (bd == 16 ? 16 : bd)) - 1;
-    auto sample = [&](const uint8_t *r, size_t i) -> unsigned {   // (the i-th sample of a row, at its own depth)
-        if (bd == 16) return (unsigned)r[2 * i] << 8 | r[2 * i + 1];
-        if (bd == 8) return r[i];
-        size_t bit = i * (size_t)bd;
-        return (unsigned)(r[bit >> 3] >> (8 - bd - (bit & 7))) & maxv;
-    };
-    auto to8 = [&](unsigned v) { return bd == 16 ? v >> 8 : bd == 8 ? v : v * 255 / maxv; };
-    bool key = in.trns_pos && (ct == 0 || ct == 2) && in.trns_pos + (ct == 0 ? 2u : 6u) <= d.size();
-    unsigned kr = 0, kg = 0, kb = 0;
-    if (key) {
-        const uint8_t *t = p + in.trns_pos;
-        kr = (unsigned)t[0] << 8 | t[1];
-        if (ct == 2) kg = (unsigned)t[2] << 8 | t[3], kb = (unsigned)t[4] << 8 | t[5];
-    }
-    for (int y = 0; y < in.height; y++) {
-        const uint8_t *r = raw.data() + (size_t)y * (in.stride + 1) + 1;
-        uint8_t *o = pic->px.data() + (size_t)y * in.width * 4;
-        for (int x = 0; x < in.width; x++, o += 4) {
-            unsigned R, G, B, A = 255;
-            size_t i = (size_t)x * ch;
-            if (ct == 3) {
-                unsigned k = sample(r, (size_t)x);
-                if (!in.plte_pos || k >= in.plte_n || in.plte_pos + 3 * (size_t)k + 2 >= d.size()) R = G = B = 0;
-                else R = p[in.plte_pos + 3 * k], G = p[in.plte_pos + 3 * k + 1], B = p[in.plte_pos + 3 * k + 2];
-                if (in.trns_pos && k < in.trns_n && in.trns_pos + (size_t)k < d.size()) A = p[in.trns_pos + k];
-            } else if (ct == 0 || ct == 4) {
-                unsigned v = sample(r, i);
-                R = G = B = to8(v);
-                if (ct == 4) A = to8(sample(r, i + 1));
-                else if (key && v == kr) A = 0;
-            } else {
-                unsigned vr = sample(r, i), vg = sample(r, i + 1), vb = sample(r, i + 2);
-                R = to8(vr), G = to8(vg), B = to8(vb);
-                if (ct == 6) A = to8(sample(r, i + 3));
-                else if (key && vr == kr && vg == kg && vb == kb) A = 0;
-            }
-            o[0] = (uint8_t)(B * A / 255), o[1] = (uint8_t)(G * A / 255), o[2] = (uint8_t)(R * A / 255), o[3] = (uint8_t)A;
-        }
-    }
-    return pic;
+    if (d.size() < 24 || memcmp(p + 12, "IHDR", 4) != 0) return nullptr;
+    uint32_t w = (uint32_t)p[16] << 24 | p[17] << 16 | p[18] << 8 | p[19], h = (uint32_t)p[20] << 24 | p[21] << 16 | p[22] << 8 | p[23];
+    return stbPicture(d, (int64_t)w * h);
 }
 std::shared_ptr<Picture> jpegPicture(const std::string &d) {
     const uint8_t *p = (const uint8_t *)d.data();
     nj_info in;
-    if (nj_read_info(p, d.size(), &in) || (in.ncomp != 1 && in.ncomp != 3) || (int64_t)in.width * in.height > (16 << 20)) return nullptr;
+    if (nj_read_info(p, d.size(), &in)) return nullptr;
+    if ((int64_t)in.width * in.height > (16 << 20)) return nullptr;
+    if (in.ncomp != 1 && in.ncomp != 3) return stbPicture(d, (int64_t)in.width * in.height);   // (CMYK ...)
     std::vector<uint8_t> pl[3];
     uint8_t *planes[4] = {nullptr, nullptr, nullptr, nullptr};
     size_t pitch[4] = {0, 0, 0, 0};
@@ -4175,7 +4148,7 @@ std::shared_ptr<Picture> jpegPicture(const std::string &d) {
         pl[c].resize((size_t)in.plane_w[c] * in.plane_h[c]);
         planes[c] = pl[c].data(), pitch[c] = (size_t)in.plane_w[c];
     }
-    if (nj_decode_planes(p, d.size(), &in, planes, pitch, 1, nullptr)) return nullptr;
+    if (nj_decode_planes(p, d.size(), &in, planes, pitch, 1, nullptr)) return stbPicture(d, (int64_t)in.width * in.height);   // (progressive ...)
     auto pic = std::make_shared<Picture>();
     pic->w = in.width, pic->h = in.height;
     pic->px.resize((size_t)in.width * in.height * 4);
