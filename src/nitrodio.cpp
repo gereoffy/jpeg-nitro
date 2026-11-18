@@ -385,9 +385,10 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             continue;
         }
         std::string piece;
-        if (c == '&') {
-            size_t e = v.find(';', i);
-            if (e != std::string::npos && e - i < 12) {
+        if (c == '&') {   // (its ';' looked for within the 12 bytes an entity can have: not through the rest of the text)
+            size_t e = i + 1, stop = std::min(v.size(), i + 12);
+            while (e < stop && v[e] != ';') e++;
+            if (e < stop) {
                 putEntity(piece, v.substr(i + 1, e - i - 1));
                 i = e + 1;
             } else
