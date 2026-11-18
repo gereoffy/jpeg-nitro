@@ -960,11 +960,45 @@ struct Builder {
         return {b.x + l, b.y + t, std::max(0.0, b.w - l - r), std::max(0.0, b.h - t - bt)};
     }
 
+    // a table's lines (Graph.getTableLines): between its rows (rowLines) and between the first row's cells (columnLines),
+    // in its stroke
+    void tableLines(Cell &t, const Box &b) {
+        std::vector<Box> rows, cols;
+        for (Cell &k : cells)
+            if (k.vertex && k.parent == t.id && k.id != t.id) rows.push_back(absBox(k));
+        if (rows.empty()) return;
+        std::sort(rows.begin(), rows.end(), [](const Box &p, const Box &q) { return p.y < q.y; });
+        Cell *firstRow = nullptr;
+        for (Cell &k : cells)
+            if (k.vertex && k.parent == t.id && absBox(k).y == rows[0].y) { firstRow = &k; break; }
+        if (firstRow)
+            for (Cell &k : cells)
+                if (k.vertex && k.parent == firstRow->id) cols.push_back(absBox(k));
+        std::sort(cols.begin(), cols.end(), [](const Box &p, const Box &q) { return p.x < q.x; });
+        PathP l = newPath();
+        if (str(t.style, "rowLines") != "0")
+            for (size_t i = 1; i < rows.size(); i++)
+                plutovg_path_move_to(l.get(), (float)b.x, (float)rows[i].y), plutovg_path_line_to(l.get(), (float)(b.x + b.w), (float)rows[i].y);
+        if (str(t.style, "columnLines") != "0")
+            for (size_t i = 1; i < cols.size(); i++)
+                plutovg_path_move_to(l.get(), (float)cols[i].x, (float)rows[0].y), plutovg_path_line_to(l.get(), (float)cols[i].x, (float)(b.y + b.h));
+        Style ls = t.style;
+        ls["fillColor"] = "none";
+        ls["shadow"] = "0";
+        paint(newPath(), l, ls, b, false);
+    }
+
     void vertex(Cell &c) {
         Box b = absBox(c);
-        const Style &s = c.style;
-        std::string shape = str(s, "shape");
+        std::string shape = str(c.style, "shape");
         if (shape.empty()) shape = "rectangle";
+        bool table = shape == "table";
+        if (shape == "table" || shape == "tableRow") {   // (Shapes.js TableShape: with a title (startSize, 40 by default) a
+            if (!c.style.count("startSize")) c.style["startSize"] = "40";   // swimlane, else a partial rectangle; rows: the same)
+            bool head = num(c.style, "startSize", 40) > 0;
+            shape = head ? "swimlane" : str(c.style, "rounded") == "1" ? "rectangle" : "partialRectangle";
+        }
+        const Style &s = c.style;
         double rotation = num(s, "rotation", 0);
         bool text = shape == "text" || (str(s, "strokeColor") == "none" && str(s, "fillColor") == "none");
         size_t first = page.items.size();   // (the shape's items: turned together by its rotation at the end)
@@ -1088,6 +1122,7 @@ struct Builder {
             it.width = 1;
             add(std::move(it), 1);
         }
+        if (table && b.w > 0 && b.h > 0) tableLines(c, b);
         bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
         if ((rotation != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
             plutovg_matrix_t m;                                          // as mxSvgCanvas2D.rotate does; their boxes again)
