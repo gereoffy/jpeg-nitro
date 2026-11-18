@@ -57,6 +57,37 @@ static std::string unprefix(const std::string &s) {
 // defines the property in a standalone file, so a browser uses the fallback, or without one the
 // inherited value (these files have fill="none" on the root: invisible); lunasvg doesn't know
 // var() at all (black squares). Replaced by the fallback, or by "inherit".
+// CSS light-dark(a, b) (draw.io's exports colour every shape with one): its light colour a, as the pages are
+// shown in their light scheme (lunasvg knows no light-dark() and drew such a shape black)
+static std::string light_colours(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    for (size_t v; (v = s.find("light-dark(", i)) != std::string::npos;) {
+        out.append(s, i, v - i);
+        size_t j = v + 11, comma = std::string::npos;
+        int depth = 1;
+        for (; j < s.size() && depth; j++) {
+            if (s[j] == '(') depth++;
+            else if (s[j] == ')') depth--;
+            else if (s[j] == ',' && depth == 1 && comma == std::string::npos) comma = j;
+            else if (s[j] == '"' || s[j] == '<' || s[j] == ';') break;   // not a well-formed light-dark()
+        }
+        if (depth || comma == std::string::npos) {   // damaged: leave it
+            out.append(s, v, 11);
+            i = v + 11;
+            continue;
+        }
+        size_t a = v + 11, b = comma;
+        while (a < b && isspace((unsigned char)s[a])) a++;
+        while (b > a && isspace((unsigned char)s[b - 1])) b--;
+        out += light_colours(s.substr(a, b - a));
+        i = j;
+    }
+    out.append(s, i, std::string::npos);
+    return out;
+}
+
 static std::string var_fallbacks(const std::string &s) {
     std::string out;
     out.reserve(s.size());
@@ -209,6 +240,7 @@ nitrosvg *nitrosvg_load(const void *data, size_t len) {
         if (sprite_sheet(src, sheet)) src = std::move(sheet);
     }
     if (src.find("var(--") != std::string::npos) src = var_fallbacks(src);
+    if (src.find("light-dark(") != std::string::npos) src = light_colours(src);
     if (src.find("<text") != std::string::npos && src.find("xml:space=\"preserve\"") == std::string::npos &&
         src.find("xml:space='preserve'") == std::string::npos)
         src = text_newlines(src);
