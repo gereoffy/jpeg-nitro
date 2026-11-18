@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1023,6 +1024,110 @@ struct Builder {
         return {b.x + l, b.y + t, std::max(0.0, b.w - l - r), std::max(0.0, b.h - t - bt)};
     }
 
+    // an inline stencil (shape=stencil(base64 of the raw deflated, URL encoded <shape>), mxStencil): its background
+    // and foreground drawn into b (scaled to its w x h, aspect=fixed: kept and centred); text and images left out
+    void stencil(const std::string &shape, const Style &s, const Box &b) {
+        std::string xml, bin = base64(shape.substr(8, shape.size() - (shape.back() == ')' ? 9 : 8)));
+        if (!inflateRaw(bin, xml)) xml = bin;
+        if (xml.compare(0, 1, "<") != 0) xml = urlDecode(xml);
+        if (xml.size() > (4u << 20)) return;
+        std::unique_ptr<xmlDoc, void (*)(xmlDoc *)> doc(xmlReadMemory(xml.data(), (int)xml.size(), nullptr, nullptr,
+                                                                     XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING),
+                                                        xmlFreeDoc);
+        xmlNode *root = doc ? xmlDocGetRootElement(doc.get()) : nullptr;
+        if (!root || !is(root, "shape")) return;
+        double w0 = attrNum(root, "w", 100), h0 = attrNum(root, "h", 100);
+        if (!(w0 > 0 && h0 > 0)) return;
+        double sx = b.w / w0, sy = b.h / h0, x0 = b.x, y0 = b.y;
+        if (attr(root, "aspect") == "fixed") {
+            sx = sy = std::min(sx, sy);
+            x0 += (b.w - w0 * sx) / 2, y0 += (b.h - h0 * sy) / 2;
+        }
+        double minScale = std::min(sx, sy);
+        std::string sw = attr(root, "strokewidth");
+        double opacity = num(s, "opacity", 100);
+        struct State {
+            uint32_t fill, stroke;
+            float width, alpha;
+            bool dashed;
+        };
+        State st{withOpacity(colour(s, "fillColor", 0xffffffff), opacity * num(s, "fillOpacity", 100) / 100),
+                 withOpacity(colour(s, "strokeColor", 0xff000000), opacity * num(s, "strokeOpacity", 100) / 100),
+                 (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale), 1, false};
+        uint32_t shapeFill = st.fill, shapeStroke = st.stroke;
+        std::vector<State> stack;
+        PathP cur;
+        auto X = [&](xmlNode *n, const char *k) { return (float)(x0 + attrNum(n, k) * sx); };
+        auto Y = [&](xmlNode *n, const char *k) { return (float)(y0 + attrNum(n, k) * sy); };
+        auto alphaOf = [](uint32_t c, float a) { return a >= 1 ? c : (uint32_t)std::lround((c >> 24) * a) << 24 | (c & 0xffffff); };
+        auto colourAttr = [&](xmlNode *n, uint32_t def) {
+            std::string v = attr(n, "color");
+            return v == "stroke" ? shapeStroke : v == "fill" ? shapeFill : parseColour(v, def);
+        };
+        auto paintCur = [&](bool fill, bool stroke) {
+            if (!cur) return;
+            Item it;
+            it.path = cur;
+            if (fill) it.fill = alphaOf(st.fill, st.alpha);
+            if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha), it.width = st.width;
+            if (stroke && st.dashed) it.dash = {3 * std::max(st.width, 1.f), 3 * std::max(st.width, 1.f)};
+            add(std::move(it), st.width);
+            cur = nullptr;
+        };
+        size_t budget = 20000;   // (a damaged stencil's commands)
+        std::function<void(xmlNode *)> node = [&](xmlNode *n) {
+            if (n->type != XML_ELEMENT_NODE || !budget--) return;
+            std::string name = (const char *)n->name;
+            if (name == "path") {
+                cur = newPath();
+                for (xmlNode *k = n->children; k; k = k->next) {
+                    if (k->type != XML_ELEMENT_NODE || !budget--) continue;
+                    std::string c = (const char *)k->name;
+                    plutovg_path_t *p = cur.get();
+                    if (c == "move") plutovg_path_move_to(p, X(k, "x"), Y(k, "y"));
+                    else if (c == "line") plutovg_path_line_to(p, X(k, "x"), Y(k, "y"));
+                    else if (c == "quad") plutovg_path_quad_to(p, X(k, "x1"), Y(k, "y1"), X(k, "x2"), Y(k, "y2"));
+                    else if (c == "curve") plutovg_path_cubic_to(p, X(k, "x1"), Y(k, "y1"), X(k, "x2"), Y(k, "y2"), X(k, "x3"), Y(k, "y3"));
+                    else if (c == "arc")
+                        plutovg_path_arc_to(p, (float)(attrNum(k, "rx") * sx), (float)(attrNum(k, "ry") * sy), (float)(attrNum(k, "x-axis-rotation") * M_PI / 180),
+                                            attrNum(k, "large-arc-flag") != 0, attrNum(k, "sweep-flag") != 0, X(k, "x"), Y(k, "y"));
+                    else if (c == "close") plutovg_path_close(p);
+                }
+            } else if (name == "rect" || name == "roundrect" || name == "ellipse") {
+                cur = newPath();
+                float x = X(n, "x"), y = Y(n, "y"), w = (float)(attrNum(n, "w") * sx), h = (float)(attrNum(n, "h") * sy);
+                if (name == "ellipse") plutovg_path_add_ellipse(cur.get(), x + w / 2, y + h / 2, w / 2, h / 2);
+                else if (name == "rect") plutovg_path_add_rect(cur.get(), x, y, w, h);
+                else {
+                    double a = attrNum(n, "arcsize", 0);
+                    float r = (float)(std::min(w, h) * (a > 0 ? a : 15) / 100);
+                    plutovg_path_add_round_rect(cur.get(), x, y, w, h, r, r);
+                }
+            } else if (name == "fill") paintCur(true, false);
+            else if (name == "stroke") paintCur(false, true);
+            else if (name == "fillstroke") paintCur(true, true);
+            else if (name == "fillcolor") st.fill = colourAttr(n, 0);
+            else if (name == "strokecolor") st.stroke = colourAttr(n, 0);
+            else if (name == "strokewidth") st.width = (float)(attrNum(n, "width", 1) * minScale);
+            else if (name == "alpha") st.alpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
+            else if (name == "dashed") st.dashed = attr(n, "dashed") == "1";
+            else if (name == "save") stack.push_back(st);
+            else if (name == "restore" && !stack.empty()) st = stack.back(), stack.pop_back();
+        };
+        for (xmlNode *part = root->children; part; part = part->next)
+            if (is(part, "background") || is(part, "foreground"))
+                for (xmlNode *n = part->children; n; n = n->next) node(n);
+    }
+
+    // a stencil drawn turned by its direction: in the box turned upright, then turned with the shape
+    static Box stencilBox(const Style &s, const Box &b, double &turn) {
+        const std::string &dir = str(s, "direction");
+        double deg = dir == "south" ? 90 : dir == "west" ? 180 : dir == "north" ? 270 : 0;
+        turn += deg;
+        Pt c = b.centre();
+        return deg == 90 || deg == 270 ? Box{c.x - b.h / 2, c.y - b.w / 2, b.h, b.w} : b;
+    }
+
     // a table's lines (Graph.getTableLines): between its rows (rowLines) and between the first row's cells (columnLines),
     // in its stroke
     void tableLines(Cell &t, const Box &b) {
@@ -1062,7 +1167,7 @@ struct Builder {
             shape = head ? "swimlane" : str(c.style, "rounded") == "1" ? "rectangle" : "partialRectangle";
         }
         const Style &s = c.style;
-        double rotation = num(s, "rotation", 0);
+        double rotation = num(s, "rotation", 0), turn = rotation;   // (turn: and a stencil's direction)
         bool text = shape == "text" || (str(s, "strokeColor") == "none" && str(s, "fillColor") == "none");
         size_t first = page.items.size();   // (the shape's items: turned together by its rotation at the end)
         if (shape == "swimlane" && b.w > 0 && b.h > 0) {   // (its header filled, the body by swimlaneFillColor: the body first,
@@ -1097,6 +1202,8 @@ struct Builder {
             frame["gradientColor"] = "none";
             if (bodyShown) frame["shadow"] = "0";
             paint(outline, lines, frame, b, false);
+        } else if (shape.compare(0, 8, "stencil(") == 0 && b.w > 0 && b.h > 0) {
+            stencil(shape, s, stencilBox(s, b, turn));
         } else if (shape == "partialRectangle") {   // (Shapes.js: filled, outlined on the sides top / right / bottom / left say)
             PathP r = newPath(), l = newPath();
             plutovg_path_add_rect(r.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
@@ -1187,10 +1294,10 @@ struct Builder {
         }
         if (table && b.w > 0 && b.h > 0) tableLines(c, b);
         bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
-        if ((rotation != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
+        if ((turn != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
             plutovg_matrix_t m;                                          // as mxSvgCanvas2D.rotate does; their boxes again)
             plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
-            plutovg_matrix_rotate(&m, (float)(rotation * M_PI / 180));
+            plutovg_matrix_rotate(&m, (float)(turn * M_PI / 180));
             plutovg_matrix_scale(&m, flipH ? -1.f : 1.f, flipV ? -1.f : 1.f);
             plutovg_matrix_translate(&m, (float)-(b.x + b.w / 2), (float)-(b.y + b.h / 2));
             for (size_t k = first; k < page.items.size(); k++) {
