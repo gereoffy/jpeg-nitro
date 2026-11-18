@@ -183,6 +183,7 @@ struct Item {
     std::vector<float> dash;
     std::shared_ptr<Label> label;
     float hachure = 0, hachureAngle = -41, hachureWeight = 1;   // (sketch: the fill as lines hachure apart, at the angle)
+    bool crossHatch = false;                                    // (and across them)
     std::shared_ptr<Picture> picture;   // an image shape's picture, in ix0, iy0 - ix1, iy1 (aspect: kept, centred)
     std::string uri;                    // (its data: URI until it is decoded)
     float ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
@@ -1053,7 +1054,10 @@ struct Builder {
         const std::string &fs = str(s, "fillStyle");   // (auto, the default: solid when white or a gradient, else hachure)
         bool pattern = fs.empty() || fs == "auto" ? !(it.fill2 >> 24) && (it.fill & 0xffffff) != 0xffffff : fs != "solid";
         if (str(s, "sketchStyle") == "comic") pattern = false;   // (the comic style: wobbly lines, solid fills)
-        if (sketch && it.fill && pattern) {   // (rough.js: hachure lines, 4 stroke widths apart, half as wide)
+        // (a fill style of its own (hachure, cross-hatch ...) patterns the fill without sketch too: mxSvgCanvas2D.getFillPattern)
+        if ((sketch || (!fs.empty() && fs != "auto" && fs != "solid")) && it.fill && pattern) {   // (rough.js: hachure lines,
+                                                                                                 // 4 stroke widths apart, half as wide)
+            it.crossHatch = fs == "cross-hatch";
             double gap = num(s, "hachureGap", -1), weight = num(s, "fillWeight", -1);
             it.hachure = (float)(gap > 0 ? gap : 4 * std::max(width, 1.f));
             it.hachureWeight = (float)(weight > 0 ? weight : std::max(width, 1.f) / 2);
@@ -2681,10 +2685,13 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         float a = it.hachureAngle * (float)M_PI / 180, dx = cosf(a), dy = sinf(a);
         int n = std::min((int)(2 * r / it.hachure) + 1, 20000);
         plutovg_path_t *h = plutovg_path_create();
-        for (int k = 0; k <= n; k++) {
-            float o = -r + k * it.hachure;
-            plutovg_path_move_to(h, cx - dy * o - dx * r, cy + dx * o - dy * r);
-            plutovg_path_line_to(h, cx - dy * o + dx * r, cy + dx * o + dy * r);
+        for (int pass = 0; pass < (it.crossHatch ? 2 : 1); pass++) {
+            if (pass) std::swap(dx, dy), dx = -dx;   // (cross-hatch: the lines again, turned a quarter)
+            for (int k = 0; k <= n; k++) {
+                float o = -r + k * it.hachure;
+                plutovg_path_move_to(h, cx - dy * o - dx * r, cy + dx * o - dy * r);
+                plutovg_path_line_to(h, cx - dy * o + dx * r, cy + dx * o + dy * r);
+            }
         }
         plutovg_canvas_stroke_path(c, h);
         plutovg_path_destroy(h);
