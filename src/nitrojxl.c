@@ -4353,19 +4353,19 @@ static void load_row(const Frame *f, int c, int y, int x0, int x1, float *dst) {
         for (int c0 = x0; c0 < x1; c0 += 1024) {   // in chunks: the vertical pass into v, then 3/4, 1/4 across
             int c1 = x1 - c0 > 1024 ? c0 + 1024 : x1;
             int k0 = (c0 >> 1) - 1, k1 = ((c1 - 1) >> 1) + 1, k = k0;
-            float vb[1024 / 2 + 16], *v = vb - k0;   // v[k0 .. k1]
-            for (; k <= k1 && (k < 0 || k + 8 > cw); k++) { int i = mirror(k, cw); v[k] = a * r0[i] + b * r1[i]; }
-            for (; k + 8 <= k1 + 1 && k + 8 <= cw; k += 8) vstore(v + k, a * vload(r0 + k) + b * vload(r1 + k));
-            for (; k <= k1; k++) { int i = mirror(k, cw); v[k] = a * r0[i] + b * r1[i]; }
+            float v[1024 / 2 + 16];   // (v[k - k0]: column k, k0 .. k1)
+            for (; k <= k1 && (k < 0 || k + 8 > cw); k++) { int i = mirror(k, cw); v[k - k0] = a * r0[i] + b * r1[i]; }
+            for (; k + 8 <= k1 + 1 && k + 8 <= cw; k += 8) vstore(v + (k - k0), a * vload(r0 + k) + b * vload(r1 + k));
+            for (; k <= k1; k++) { int i = mirror(k, cw); v[k - k0] = a * r0[i] + b * r1[i]; }
             int x = c0;
-            if (x & 1) { dst[x] = 0.75f * v[x >> 1] + 0.25f * v[(x >> 1) + 1]; x++; }
+            if (x & 1) { dst[x] = 0.75f * v[(x >> 1) - k0] + 0.25f * v[(x >> 1) + 1 - k0]; x++; }
             for (; x + 16 <= c1; x += 16) {
-                const float *p = v + (x >> 1);
+                const float *p = v + ((x >> 1) - k0);
                 vf m = vload(p), e = 0.75f * m + 0.25f * vload(p - 1), o = 0.75f * m + 0.25f * vload(p + 1);
                 vstore(dst + x, __builtin_shufflevector(e, o, 0, 8, 1, 9, 2, 10, 3, 11));
                 vstore(dst + x + 8, __builtin_shufflevector(e, o, 4, 12, 5, 13, 6, 14, 7, 15));
             }
-            for (; x < c1; x++) dst[x] = 0.75f * v[x >> 1] + 0.25f * v[(x >> 1) + (x & 1 ? 1 : -1)];
+            for (; x < c1; x++) dst[x] = 0.75f * v[(x >> 1) - k0] + 0.25f * v[(x >> 1) + (x & 1 ? 1 : -1) - k0];
         }
         return;
     }
