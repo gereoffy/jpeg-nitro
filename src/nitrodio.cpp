@@ -353,6 +353,8 @@ void putEntity(std::string &o, const std::string &e) {
 std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic) {
     std::vector<Para> paras(1);
     std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
+    std::vector<int> lists;   // (the open <ul> (0) / <ol> (its next number))
+    int unordered = 0;        // (an <li> outside a list: a bullet)
     auto add = [&](const std::string &t, bool b, bool i) {
         if (t.empty()) return;
         Para &p = paras.back();
@@ -408,7 +410,16 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                         break;
                     }
             if (name == "br") newLine();
-            else if (name == "div" || name == "p" || name == "li" || name == "tr" || (name.size() == 2 && name[0] == 'h' && isdigit((unsigned char)name[1]))) {
+            else if (name == "ul" || name == "ol") {   // (a list: its items marked, numbered in an <ol>)
+                if (!paras.back().empty() || !cur.empty()) newLine();
+                if (!close) lists.push_back(name == "ol" ? 1 : 0);
+                else if (!lists.empty()) lists.pop_back();
+            } else if (name == "li" && !close) {
+                if (!paras.back().empty() || !cur.empty()) newLine();
+                int &n = lists.empty() ? unordered : lists.back();
+                cur += std::string(4 * std::max<size_t>(lists.size(), 1), ' ') + (n ? std::to_string(n++) + ". " : std::string("\xe2\x80\xa2 "));
+                space = true;
+            } else if (name == "div" || name == "p" || name == "li" || name == "tr" || (name.size() == 2 && name[0] == 'h' && isdigit((unsigned char)name[1]))) {
                 if (!paras.back().empty() || !cur.empty()) newLine();
             } else if (name == "b" || name == "strong") {
                 flush();
