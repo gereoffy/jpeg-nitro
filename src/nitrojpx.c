@@ -144,8 +144,9 @@ typedef struct { int r0, c0, l1, r1, c1, order; } Progression;
 typedef struct { uint64_t key[5]; unsigned progression; int c, r, p, l; } Packet;
 typedef struct {
     int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags, own_poc;
+    int poc_cap, poc_part;   // (poc: its list, growing over the tile-parts; poc_part: this tile-part header's)
     Coding coding[NJPX_MAX_COMPS]; Component comp[NJPX_MAX_COMPS];
-    Progression poc[POC_LIMIT]; int npoc;
+    Progression *poc; int npoc;
     Packet *packets; size_t npackets, available, next;
 } Tile;
 typedef struct {
@@ -283,9 +284,19 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
         c[p[0]].roi = p[2];
     } else if (m == 0xff5f) {
         if (!j->siz || !n || n % 7) return -1;   // component indices: nc <= 16
+        // 32 volumes a header: the main header's in j, a tile's added over its tile-parts (A.6.6)
+        if (n / 7 > (size_t)(POC_LIMIT - (t ? t->poc_part : j->npoc))) return -1;
+        if (t && t->npoc + (int)(n / 7) > t->poc_cap) {
+            int cap = t->npoc + (int)(n / 7) + POC_LIMIT;
+            if (cap > POC_LIMIT * 256) return -1;   // (at most 255 tile-parts)
+            Progression *q = jalloc(j, (size_t)cap * sizeof(Progression));
+            if (!q) return -1;
+            if (t->npoc) memcpy(q, t->poc, (size_t)t->npoc * sizeof(Progression));
+            jfree(j, t->poc); t->poc = q; t->poc_cap = cap;
+        }
+        if (t) t->poc_part += (int)(n / 7);
         Progression *poc = t ? t->poc : j->poc;
         int *count = t ? &t->npoc : &j->npoc;
-        if (n / 7 > (size_t)(POC_LIMIT - *count)) return -1;
         for (size_t i = 0; i < n; i += 7) {
             Progression q = {p[i], p[i + 1], (int)be16(p + i + 2), p[i + 4], p[i + 5], p[i + 6]};
             if (q.r0 >= q.r1 || q.r1 > 33 || q.c0 >= q.c1 || q.c1 > j->nc || !q.l1 || q.order > 4) return -1;
@@ -1560,6 +1571,7 @@ static void tile_free(Jpx *j, Tile *t) {
         jfree(j, t->comp[c].plane); t->comp[c].plane = NULL;
     }
     jfree(j, t->packets); t->packets = NULL;
+    jfree(j, t->poc); t->poc = NULL; t->poc_cap = t->npoc = 0;
 }
 
 // --- JP2 boxes and channel mapping (annex I) --------------------------------------------------
@@ -1737,8 +1749,10 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             t->layers = j.layers; t->order = j.order; t->mct = j.mct; t->flags = j.flags;
             memcpy(t->coding, j.coding, sizeof(j.coding));
             for (int c = 0; c < j.nc; c++) t->coding[c].coc = t->coding[c].qcc = 0;   // (a tile's COD / QCD win over them)
-            t->npoc = j.npoc; memcpy(t->poc, j.poc, sizeof(j.poc));
+            if (!(t->poc = jalloc(&j, POC_LIMIT * sizeof(Progression)))) goto done;
+            t->poc_cap = POC_LIMIT; t->npoc = j.npoc; memcpy(t->poc, j.poc, sizeof(j.poc));
         }
+        t->poc_part = 0;
         const uint8_t *partend = psot ? start + psot : end - 2;
         if (partend < p) goto done;
         int have_poc = 0;
