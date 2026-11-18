@@ -420,8 +420,9 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
                 if (!jb2_cell(j)) break;
                 continue;
             }
+            // (only one, and as many shapes as the dictionary has: DjVuLibre's checks)
             int n = jb2_num(j, &j->c_dict, 0, JB2_BIG);
-            if (j->err || n < 0 || j->nlib || (n && (!dict || n > dict->n))) break;
+            if (j->err || n < 0 || j->lib || (n && (!dict || n != dict->n))) break;
             j->lib = malloc((size_t)(n ? n : 1) * sizeof *j->lib);
             if (!j->lib) {
                 j->nomem = 1;
