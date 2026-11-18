@@ -278,6 +278,8 @@ struct Cell {
     int shownState = 0;   // (0 not yet, 1 shown, 2 hidden, 3 being worked out)
     Box box;
     std::vector<Pt> route;   // an edge's points, absolute
+    std::unordered_map<std::string, std::string> data;   // a UserObject / object's attributes (the placeholders' values)
+    bool placeholders = false;                           // (its label's %name% replaced by them)
 };
 
 void readGeometry(Cell &c, xmlNode *g) {
@@ -1812,7 +1814,86 @@ struct Builder {
         addLabel(layoutLabel(lc.value, s, inner, wrap));
     }
 
+    // mxCellRenderer.resolveColor: a colour naming another (inherit / parentFillColor / parentStrokeColor: the
+    // parent's; swimlane: the fill of the swimlane, table or table row it is in (an edge: its target's); fillColor /
+    // strokeColor: its own other one), resolved in its style
+    const std::string &colourOf(Cell &c, const char *key, int depth) {
+        static const std::string black = "#000000", white = "#ffffff", none;
+        std::string &v = c.style[key];
+        if (depth > 64) return v;
+        bool fillish = !strcmp(key, "fillColor") || !strcmp(key, "gradientColor");
+        Cell *ref = nullptr;
+        const char *rkey = key;
+        if (v == "inherit") ref = find(c.parent);
+        else if (v == "parentFillColor" || v == "parentStrokeColor") ref = find(c.parent), rkey = v == "parentFillColor" ? "fillColor" : "strokeColor";
+        else if (v == "swimlane") {
+            Cell *t = c.edge && find(c.target) ? find(c.target) : &c;
+            size_t n = 0;
+            for (; t && n++ <= cells.size(); t = find(t->parent)) {
+                const std::string &sh = str(t->style, "shape");
+                Cell *up = find(t->parent);
+                if (!t->edge && up && find(up->parent) && (sh == "swimlane" || sh == "table" || sh == "tableRow")) break;
+            }
+            if (!t) return v = fillish ? white : black;
+            ref = t, rkey = "fillColor";
+        } else if (strcmp(key, "fillColor") && v == "fillColor") return v = colourOf(c, "fillColor", depth + 1);
+        else if (strcmp(key, "strokeColor") && v == "strokeColor") return v = colourOf(c, "strokeColor", depth + 1);
+        else return v;
+        if (!ref || ref == &c) return v = none;
+        return v = colourOf(*ref, rkey, depth + 1);
+    }
+    static std::string measure(double v) {   // (a size as JavaScript writes it, '.' in any locale)
+        char t[40];
+        snprintf(t, sizeof t, "%.10g", v);
+        nn_cpoint(t);
+        return t;
+    }
+    // Graph.replacePlaceholders: %name% of a label with placeholders=1, from the data of the cell or its ancestors
+    // (%id%, %width%, %height% its own); one without a value is left as it is
+    std::string placeholders(Cell &c) {
+        std::string out;
+        const std::string &v = c.value;
+        size_t i = 0;
+        for (size_t a; (a = v.find('%', i)) != std::string::npos;) {
+            size_t e = v.find('%', a + 1);
+            if (e == std::string::npos) break;
+            std::string name = v.substr(a + 1, e - a - 1), val;
+            bool found = false;
+            if (name.empty() || name.find_first_of("{}\"'=;\n") != std::string::npos || name == "label" || name == "tooltip") {
+                out.append(v, i, e - i);   // (not a placeholder: its closing % may open the next)
+                i = e;
+                continue;
+            }
+            if (name == "id") val = c.id, found = true;
+            else if (name == "width" && c.vertex) val = measure(c.w), found = true;
+            else if (name == "height" && c.vertex) val = measure(c.h), found = true;
+            else {
+                size_t n = 0;
+                for (Cell *t = &c; t && n++ <= cells.size(); t = find(t->parent)) {
+                    auto f = t->data.find(name);
+                    if (f != t->data.end()) {
+                        val = f->second, found = true;
+                        break;
+                    }
+                }
+            }
+            out.append(v, i, a - i);
+            if (found) out += val;
+            else out.append(v, a, e + 1 - a);
+            i = e + 1;
+        }
+        out.append(v, i, std::string::npos);
+        return out;
+    }
+
     void build() {
+        for (Cell &c : cells) {   // (the colours naming others, the placeholders)
+            for (const char *k : {"fillColor", "strokeColor", "fontColor", "gradientColor"}) {
+                auto f = c.style.find(k);
+                if (f != c.style.end()) colourOf(c, k, 0);
+            }
+            if (c.placeholders && c.value.find('%') != std::string::npos) c.value = placeholders(c);
+        }
         std::unordered_map<std::string, std::vector<size_t>> children;   // (of every edge, in the cells' order)
         for (size_t i = 0; i < cells.size(); i++) {
             Cell *p = cells[i].vertex ? find(cells[i].parent) : nullptr;
@@ -1841,9 +1922,15 @@ void readCells(xmlNode *root, Builder &b) {
         xmlNode *cell = n;
         std::string id, value;
         bool wrapper = !is(n, "mxCell");
+        std::unordered_map<std::string, std::string> data;
         if (wrapper) {   // UserObject / object: its id and label, the cell inside
             id = attr(n, "id");
             value = attr(n, "label");
+            for (xmlAttr *a = n->properties; a && data.size() < 256; a = a->next) {
+                xmlChar *v = xmlNodeListGetString(n->doc, a->children, 1);
+                data[(const char *)a->name] = v ? (const char *)v : "";
+                xmlFree(v);
+            }
             cell = nullptr;
             for (xmlNode *k = n->children; k; k = k->next)
                 if (is(k, "mxCell")) cell = k;
@@ -1855,6 +1942,8 @@ void readCells(xmlNode *root, Builder &b) {
         Cell c;
         c.id = id;
         c.value = value;
+        c.placeholders = data.count("placeholders") && data["placeholders"] == "1";
+        c.data = std::move(data);
         c.parent = attr(cell, "parent");
         c.source = attr(cell, "source");
         c.target = attr(cell, "target");
