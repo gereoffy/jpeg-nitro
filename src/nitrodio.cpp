@@ -878,6 +878,7 @@ struct Builder {
         }
         if (c.value.empty()) return;
         Box lb = b;
+        if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
         bool turned = false;
         if (shape == "swimlane") {   // (in its header)
             double ss = num(s, "startSize", 23);
