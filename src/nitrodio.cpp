@@ -2200,9 +2200,38 @@ struct Builder {
                 add(std::move(it), 0);
             }
         } else if (!text && shape != "image" && b.w > 0 && b.h > 0) {
+            if (shape == "mxgraph.gcp2.doubleRect") {   // (mxGCP2: a box 8 lower right behind the front one)
+                PathP back = newPath(), none;
+                plutovg_path_add_round_rect(back.get(), (float)(b.x + 8), (float)(b.y + 8), (float)std::max(0.0, b.w - 8), (float)std::max(0.0, b.h - 8), 1, 1);
+                paint(back, none, s, b, false);
+            }
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
             paint(p, lines, s, b, false);
+            if (shape == "mxgraph.infographic.shadedCube") {   // (its right face 0.2 darker, its left one 0.2 lighter)
+                double d = std::min(b.w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), b.h / 2);
+                for (int k = 0; k < 2; k++) {
+                    Item f;
+                    f.path = newPath();
+                    if (!k) polygon(f.path.get(), {{b.w / 2, 2 * d}, {b.w, d}, {b.w, b.h - d}, {b.w / 2, b.h}}, b);
+                    else polygon(f.path.get(), {{b.w / 2, 2 * d}, {0, d}, {0, b.h - d}, {b.w / 2, b.h}}, b);
+                    f.fill = k ? 0x33ffffffu : 0x33000000u;
+                    add(std::move(f), 0);
+                }
+            }
+            if (shape == "mxgraph.infographic.cylinder") {   // (a sheen across it, 0.4 black at the left to 0.4 white at the right)
+                Item g;
+                g.path = newPath();
+                plutovg_path_t *q = g.path.get();
+                plutovg_path_move_to(q, (float)b.x, (float)(b.y + 10));
+                plutovg_path_arc_to(q, (float)(b.w / 2), 10, 0, false, false, (float)(b.x + b.w), (float)(b.y + 10));
+                plutovg_path_line_to(q, (float)(b.x + b.w), (float)(b.y + b.h - 10));
+                plutovg_path_arc_to(q, (float)(b.w / 2), 10, 0, false, true, (float)b.x, (float)(b.y + b.h - 10));
+                plutovg_path_close(q);
+                g.fill = 0x66000000, g.fill2 = 0x66ffffff;
+                g.gx0 = (float)b.x, g.gx1 = (float)(b.x + b.w), g.gy0 = g.gy1 = (float)b.y;
+                add(std::move(g), 0);
+            }
             if (str(s, "glass") == "1" && (shape == "rectangle" || shape == "label") && colour(s, "fillColor", 0xffffffff)) {
                 // (mxShape.paintGlassEffect: a white sheen over the top, 0.9 to 0.1 opaque, its lower edge bowed)
                 double sw = std::ceil(std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0) / 2), x = b.x - sw, y = b.y - sw, x1 = b.x + b.w + sw;
