@@ -15,6 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+// a render's question whether to stop (nitrodjvu_render's cancelled; NULL or no function: never)
+typedef struct {
+    int (*cancelled)(void *ctx);
+    void *ctx;
+} Stop;
+static int stopped(const Stop *s) { return s && s->cancelled && s->cancelled(s->ctx); }
+
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
 // --- BZZ (appendix 4): the directory's names ------------------------------------------------------
@@ -166,6 +173,8 @@ typedef struct {
     size_t pixels;
     int started, width, height, err, old;   // (old: files up to version 18 code a copy's place by its whole bitmap)
     int nomem;                               // an allocation failed (not the stream's fault: worth another try)
+    const Stop *stop;                        // (asked every 1024 records: stopped set when it said to)
+    int stopped;
     Bm page;
     int have_page;
     // a page whose shapes have colours of their own (FGbz): the palette entry of each shape put on
@@ -403,6 +412,10 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
     jb2_reset(j);
     if (!jb2_cell(j)) return -1;   // (node 0)
     for (long records = 0; records < 50000000 && !j->err; records++) {
+        if ((records & 1023) == 1023 && stopped(j->stop)) {
+            j->stopped = 1;
+            break;
+        }
         int type = jb2_num(j, &j->c_record, 0, 11);
         if (j->err) break;
         if (type == 11) return 0;
@@ -678,8 +691,8 @@ static void layer_free(Layer *l) {
 
 // A layer of a page decoded: all its chunks of the kind `id`, its included files' too (BG44: the slices
 // of one picture, each refining it; FG44: one), as planes turned like the page. pw x ph: the page as its file has it.
-// -1: out of memory (what there is of it is not all the file has).
-static int layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
+// -1: out of memory (what there is of it is not all the file has); 1: stop said to stop (asked before each chunk).
+static int layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, int pw, int ph, Layer *l, const Stop *stop) {
     niw44 *iw = NULL;
     const uint8_t *id, *data;
     size_t n;
@@ -688,6 +701,10 @@ static int layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, in
     int rc = 0;
     while (walk_next(&wk, &id, &data, &n))
         if (!memcmp(id, kind, 4)) {
+            if (stopped(stop)) {
+                rc = 1;
+                break;
+            }
             if (!iw && !(iw = niw44_new())) {
                 rc = -1;
                 break;
@@ -698,7 +715,7 @@ static int layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, in
                 break;
             }
         }
-    int w, h, nc = iw ? niw44_size(iw, &w, &h) : 0;
+    int w, h, nc = iw && rc != 1 ? niw44_size(iw, &w, &h) : 0;
     if (nc) {
         // how many times smaller than the page it is [10.3: its size is the page's divided by 1 .. 12, rounded up]
         int r = 0;
@@ -835,9 +852,9 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b) {
 // a picture: FG44); all turned as its INFO says. Each from its file or a file it includes (Walk). A
 // mask cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
 // a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
-// -1: an allocation failed (what it has is less than the file: not to be kept).
-static int page_decode(nitrodjvu *d, Page *pg) {
-    int again = 0, nomem = 0;
+// -1: an allocation failed (what it has is less than the file: not to be kept); 1: stop said to stop.
+static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
+    int again = 0, nomem = 0, rc;
     const Dict *dict = comp_dict(d, pg->comp, 0, &again);
     const uint8_t *id, *data, *sjbz = NULL, *smmr = NULL, *colours = NULL;
     size_t n, sjbz_len = 0, smmr_len = 0, colours_len = 0;
@@ -852,11 +869,12 @@ static int page_decode(nitrodjvu *d, Page *pg) {
     }
     pg->decoded = 1, pg->bytes = 0;
     int pw = pg->turn & 1 ? pg->h : pg->w, ph = pg->turn & 1 ? pg->w : pg->h;
-    nomem |= layer_decode(d, "BG44", pg, pw, ph, &pg->bg) < 0;
+    if ((rc = layer_decode(d, "BG44", pg, pw, ph, &pg->bg, stop)) > 0) return 1;
+    nomem |= rc < 0;
     Jb2 *j = sjbz ? calloc(1, sizeof *j) : NULL;
     nomem |= sjbz && !j;
     if (j) {
-        j->old = pg->version <= 18;
+        j->old = pg->version <= 18, j->stop = stop;
         uint8_t *entries = NULL;
         int used = colours ? fgbz(colours, colours_len, &pg->pal, &entries, &j->blit_entries) : 0;
         nomem |= used < 0;
@@ -866,9 +884,11 @@ static int page_decode(nitrodjvu *d, Page *pg) {
         free(entries);
         // (a mask of another size than the page's INFO: drawn from the page's top left all the same - the
         // symbols' places are reckoned from the top - and cut at the page's edge)
-        if (j->have_page) nomem |= mask_bits(pg, &j->page, &j->entry);
+        if (j->have_page && !j->stopped) nomem |= mask_bits(pg, &j->page, &j->entry);
+        int stop_now = j->stopped;
         jb2_free(j, 0);
         free(j);
+        if (stop_now) return 1;
     } else if (smmr) {   // (its colours: the palette's first, or FG44)
         Bm b = {0};
         uint8_t *none = NULL, *entries = NULL;
@@ -877,7 +897,10 @@ static int page_decode(nitrodjvu *d, Page *pg) {
         if (colours && fgbz(colours, colours_len, &pg->pal, &entries, &blits) < 0) nomem = 1;
         free(entries), free(b.mem);
     }
-    if (pg->bits && !pg->pal) nomem |= layer_decode(d, "FG44", pg, pw, ph, &pg->fg) < 0;
+    if (pg->bits && !pg->pal) {
+        if ((rc = layer_decode(d, "FG44", pg, pw, ph, &pg->fg, stop)) > 0) return 1;
+        nomem |= rc < 0;
+    }
     for (int k = 0; k < 2; k++) {
         const Layer *l = k ? &pg->fg : &pg->bg;
         if (l->y) pg->bytes += (size_t)l->w * (size_t)l->h * (l->cb ? 3 : 1);
@@ -1102,12 +1125,13 @@ static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, uint64_t
 }
 
 // A page for drawing (a user more of it, until page_release): decoded now, or still kept; the pages drawn
-// longest ago are let go, but for those being drawn. NULL: out of memory (nothing kept: the next one tries again).
-static Page *page_hold(nitrodjvu *d, int page) {
+// longest ago are let go, but for those being drawn. NULL: out of memory (*rc -1) or stop said to stop while it was
+// decoded (*rc 1); nothing kept: the next one decodes it again.
+static Page *page_hold(nitrodjvu *d, int page, const Stop *stop, int *rc) {
     Page *pg = &d->pages[page];
     pthread_mutex_lock(&d->lock);
     if (!pg->decoded) {
-        if (page_decode(d, pg)) {
+        if ((*rc = page_decode(d, pg, stop))) {
             page_drop(pg);
             pthread_mutex_unlock(&d->lock);
             return NULL;
@@ -1248,16 +1272,20 @@ static unsigned palette_near(const Page *pg, int r, int c, uint64_t *sum) {
 }
 
 void nitrodjvu_prepare(nitrodjvu *d, int page) {
-    Page *pg = d && page >= 0 && page < d->npages ? page_hold(d, page) : NULL;
+    int rc;
+    Page *pg = d && page >= 0 && page < d->npages ? page_hold(d, page, NULL, &rc) : NULL;
     if (pg) page_release(d, pg);
 }
 
 int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx) {
     if (!d || page < 0 || page >= d->npages || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
-    Page *pg = page_hold(d, page);
-    if (!pg) return -1;
-    int rc = 0;
+    if (cancelled && cancelled(ctx)) return 1;
+    Stop stop = {cancelled, ctx};
+    int rc;
+    Page *pg = page_hold(d, page, &stop, &rc);
+    if (!pg) return rc;
+    rc = 0;
     const Layer *bg = pg->bg.y ? &pg->bg : NULL, *fg = pg->fg.y ? &pg->fg : NULL;
     // per column: the mask's columns it covers (enlarged: the one at its middle), the layers' pixels
     int *c0 = NULL, *c1 = NULL;
