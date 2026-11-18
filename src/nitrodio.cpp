@@ -3476,6 +3476,72 @@ struct Builder {
         paint(path, nullptr, v2, Box{x0, y0, x1 - x0, y1 - y0}, false);
     }
 
+    // Shapes.js TaperedArrowShape: a band from startWidth wide at the source to endWidth at the target, its filled classic /
+    // block heads part of its outline (scaled with the band's width there), filled and outlined; other markers left out
+    void taperedArrow(const Style &s, std::vector<Pt> pts) {
+        std::vector<Pt> p;
+        for (Pt q : pts)
+            if (p.empty() || q.x != p.back().x || q.y != p.back().y) p.push_back(q);
+        if (p.size() < 2) return;
+        double sw0 = std::max(0.0, num(s, "startWidth", 12)), ew = std::max(0.0, num(s, "endWidth", 2));
+        double stroke = std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+        struct Head {
+            bool on = false;
+            Pt cl, tip, cr;
+        } heads[2];
+        for (int k = 0; k < 2; k++) {   // (0: the source's head, 1: the target's)
+            bool source = k == 0;
+            const std::string &type = str(s, source ? "startArrow" : "endArrow");
+            double wf = type == "classic" || type == "block" ? 2 : type == "classicThin" || type == "blockThin" ? 3 : 0;
+            if (!wf || str(s, source ? "startFill" : "endFill") == "0") continue;
+            size_t n = p.size();
+            Pt p0 = source ? p[1] : p[n - 2];
+            Pt &pe = source ? p[0] : p[n - 1];
+            double dx = pe.x - p0.x, dy = pe.y - p0.y, dist = std::hypot(dx, dy);
+            if (dist <= 0) continue;
+            double ux = dx / dist, uy = dy / dist, w = source ? sw0 : ew;
+            double size = num(s, source ? "startSize" : "endSize", 6) + w * wf / 2;
+            double ox = ux * stroke * 1.118, oy = uy * stroke * 1.118, unx = ux * (size + stroke), uny = uy * (size + stroke);
+            Pt tip{pe.x - ox, pe.y - oy};
+            double f = type == "classic" || type == "classicThin" ? 0.75 : 1;
+            pe.x += -unx * f - ox, pe.y += -uny * f - oy;
+            Pt c1{tip.x - unx - uny / wf, tip.y - uny + unx / wf}, c2{tip.x + uny / wf - unx, tip.y - uny - unx / wf};
+            heads[k].on = true, heads[k].tip = tip;
+            heads[k].cl = source ? c2 : c1, heads[k].cr = source ? c1 : c2;
+        }
+        std::vector<Pt> nrm;
+        std::vector<double> len{0};
+        for (size_t i = 1; i < p.size(); i++) {
+            double dx = p[i].x - p[i - 1].x, dy = p[i].y - p[i - 1].y, d = std::hypot(dx, dy);
+            if (d <= 0) d = 1e-9;
+            nrm.push_back({-dy / d, dx / d});
+            len.push_back(len.back() + d);
+        }
+        double total = std::max(len.back(), 1e-9);
+        std::vector<Pt> left, right;
+        for (size_t i = 0; i < p.size(); i++) {   // (each point mitred, at most twice the width out)
+            double w = (sw0 + (ew - sw0) * len[i] / total) / 2;
+            Pt n0 = nrm[i > 0 ? i - 1 : 0], n1 = nrm[std::min(nrm.size() - 1, i)];
+            double nx = n0.x + n1.x, ny = n0.y + n1.y, nl = std::hypot(nx, ny);
+            double fct = w / std::max(0.5, nl / 2);
+            nx = nl == 0 ? n1.x : nx / nl, ny = nl == 0 ? n1.y : ny / nl;
+            left.push_back({p[i].x + nx * fct, p[i].y + ny * fct});
+            right.push_back({p[i].x - nx * fct, p[i].y - ny * fct});
+        }
+        PathP band = newPath();
+        plutovg_path_t *a = band.get();
+        auto L = [&](Pt q) { plutovg_path_line_to(a, (float)q.x, (float)q.y); };
+        plutovg_path_move_to(a, (float)left[0].x, (float)left[0].y);
+        for (size_t i = 1; i < left.size(); i++) L(left[i]);
+        if (heads[1].on) L(heads[1].cl), L(heads[1].tip), L(heads[1].cr);
+        for (size_t i = right.size(); i-- > 0;) L(right[i]);
+        if (heads[0].on) L(heads[0].cr), L(heads[0].tip), L(heads[0].cl);
+        plutovg_path_close(a);
+        double x0 = p[0].x, y0 = p[0].y, x1 = x0, y1 = y0;
+        for (Pt q : p) x0 = std::min(x0, q.x), y0 = std::min(y0, q.y), x1 = std::max(x1, q.x), y1 = std::max(y1, q.y);
+        paint(band, nullptr, s, Box{x0, y0, x1 - x0, y1 - y0}, false);
+    }
+
     void drawEdge(Cell &c, std::vector<Pt> r) {
         const Style &s = c.style;
         if (str(s, "shape") == "mermaidSankeyLink") {   // (Shapes.js: a band width wide along a cubic from its first point to its
@@ -3520,6 +3586,12 @@ struct Builder {
                 if (!v2.count("fillColor") || str(v2, "fillColor").empty()) v2["fillColor"] = "#ffffff";
                 paint(band, nullptr, v2, Box{std::min(e.x, t.x), std::min(e.y, t.y), std::fabs(t.x - e.x), std::fabs(t.y - e.y)}, false);
             }
+            c.route = r;
+            if (!c.value.empty()) edgeLabel(c, c, r);
+            return;
+        }
+        if (str(s, "shape") == "taperedArrow") {
+            taperedArrow(s, r);
             c.route = r;
             if (!c.value.empty()) edgeLabel(c, c, r);
             return;
