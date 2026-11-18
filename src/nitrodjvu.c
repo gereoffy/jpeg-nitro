@@ -933,7 +933,7 @@ static void layer_rgb(const Layer *l, const Span *sx, const Span *sy, uint8_t *r
 }
 
 // the palette colours of the mask's pixels in the rows r0 .. r1 - 1 and columns c0 .. c1 - 1, added up
-static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, unsigned *sum) {
+static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, uint64_t *sum) {
     for (int r = r0; r < r1; r++) {
         const uint8_t *row = pg->bits + (size_t)r * pg->rowbytes, *e = pg->entry + (size_t)r * (size_t)pg->bw;
         for (int x = c0; x < c1; x++) {
@@ -1079,7 +1079,7 @@ static const uint16_t *smooth_row(Smooth *s, const Page *pg, int r) {
 
 // the palette colours of the mask's pixels around the row r, column c added up (those next to it; none
 // there: one further), and how many: the colour of an output pixel the smooth outline covers
-static unsigned palette_near(const Page *pg, int r, int c, unsigned *sum) {
+static unsigned palette_near(const Page *pg, int r, int c, uint64_t *sum) {
     unsigned n = 0;
     for (int far = 1; far <= 2 && !n; far++) {
         int r0 = r - far < 0 ? 0 : r - far, r1 = r + far + 1 > pg->bh ? pg->bh : r + far + 1;
@@ -1167,7 +1167,8 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             if (bg && n < area + !area) layer_rgb(bg, &bx[i], &by, b);
             if (n) {
                 if (pg->entry) {
-                    unsigned sum[3] = {0, 0, 0}, of = n;
+                    uint64_t sum[3] = {0, 0, 0};   // (a small thumbnail of a big page: millions of pixels to one)
+                    unsigned of = n;
                     if (smooth) of = palette_near(pg, r0, c0[i], sum);
                     else palette_sum(pg, r0, r1, c0[i], c1[i], sum);
                     for (int k = 0; k < 3; k++) f[k] = of ? (uint8_t)((sum[k] + of / 2) / of) : 0;
@@ -1175,7 +1176,10 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
                     memcpy(f, pg->pal, 3);
                 else if (fg)
                     layer_rgb(fg, &fx[i], &fy, f);
-                for (int k = 0; k < 3; k++) b[k] = (uint8_t)((b[k] * (area - n) + f[k] * n + area / 2) / area);
+                if (area < 1u << 23)
+                    for (int k = 0; k < 3; k++) b[k] = (uint8_t)((b[k] * (area - n) + f[k] * n + area / 2) / area);
+                else   // (255 * area beyond 32 bits)
+                    for (int k = 0; k < 3; k++) b[k] = (uint8_t)(((uint64_t)b[k] * (area - n) + (uint64_t)f[k] * n + area / 2) / area);
             }
             o[i] = 0xff000000u | (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
         }
