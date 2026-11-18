@@ -191,26 +191,22 @@ static uint32_t jb2_cell(Jb2 *j) {
 // A number in low .. high by its context's tree (11.2.5): its sign, the range its magnitude is in
 // (0, 1-2, 3-6, 7-14 ...), then its bits; a decision its bounds settle is not coded.
 static int jb2_num(Jb2 *j, uint32_t *root, int low, int high) {
-    int negative = 0, cutoff = 0, phase = 1;
-    uint32_t range = 0xffffffffu, *at = root;
+    int negative = 0, cutoff = 0, phase = 1, side = 0;   // (side: where node hangs: 0 the root, 1 / 2 parent's left / right)
+    uint32_t range = 0xffffffffu, node = *root, parent = 0;
     while (range != 1) {
-        if (!*at) {
-            // (a new node: the arrays may move, so the place it hangs from is found again by its index)
-            uint32_t *base_l = j->left, *base_r = j->right;
-            int in_left = at >= base_l && at < base_l + j->cap, in_right = at >= base_r && at < base_r + j->cap;
-            size_t idx = in_left ? (size_t)(at - base_l) : in_right ? (size_t)(at - base_r) : 0;
-            uint32_t c = jb2_cell(j);
-            if (!c) {
+        if (!node) {   // (a new node; the arrays may move, so it is hung by its parent's index)
+            node = jb2_cell(j);
+            if (!node) {
                 j->err = 1;
                 return 0;
             }
-            if (in_left) at = j->left + idx;
-            else if (in_right) at = j->right + idx;
-            *at = c;
+            if (!side) *root = node;
+            else if (side == 1) j->left[parent] = node;
+            else j->right[parent] = node;
         }
-        uint32_t node = *at;
         int decision = low < cutoff && high >= cutoff ? zp_decode(&j->z, &j->bit[node]) : low >= cutoff;
-        at = decision ? &j->right[node] : &j->left[node];
+        parent = node, side = decision ? 2 : 1;
+        node = decision ? j->right[node] : j->left[node];
         switch (phase) {
         case 1:
             negative = !decision;
