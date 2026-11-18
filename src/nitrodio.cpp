@@ -3284,12 +3284,12 @@ struct Builder {
         };
         if (!haveT && target) {
             Pt next = !mid.empty() ? mid.back() : haveS ? sp : source ? source->b.centre() : tt.b.centre();
-            tp = perimeterPoint(tt, next, orth);
+            tp = perimeterPoint(grown(tt, false), next, orth);
             haveT = true;
         }
         if (!haveS && source) {
             Pt next = !mid.empty() ? mid.front() : tp;
-            sp = perimeterPoint(st, next, orth);
+            sp = perimeterPoint(grown(st, true), next, orth);
             haveS = true;
         }
         if (str(s, "fixedPointSpacing") == "1") {   // (mxGraphView.updateFixedPointSpacing: a fixed end moved its spacing towards
@@ -3320,7 +3320,7 @@ struct Builder {
         if (thin) half = len / 3;
         Pt n{-u.y, u.x};
         // (the tip set back by the stroke's miter, as mxMarker does: the outlined tip just touches the terminal)
-        double set = t == "classic" || t == "block" || t == "open" ? sw * 1.118 : t == "diamond" ? sw * 0.7071 : 0;
+        double set = t == "classic" || t == "block" || t == "open" || t == "async" || t == "doubleBlock" ? sw * 1.118 : t == "diamond" ? sw * 0.7071 : 0;
         Pt tip = p;
         p = {p.x - u.x * set, p.y - u.y * set};
         Pt back{p.x - u.x * len, p.y - u.y * len};
@@ -3383,10 +3383,92 @@ struct Builder {
                     retreat = 2 * k - sw / 2;
                 }
             }
-        } else if (t == "dash" || t == "cross") {
-            Pt m{p.x - u.x * len / 2, p.y - u.y * len / 2};
-            M({m.x + n.x * half, m.y + n.y * half});
-            L({m.x - n.x * half, m.y - n.y * half});
+        } else if (t == "circle" || t == "circlePlus") {   // (Graph.js: a circle size + stroke in radius behind the tip; plus: a cross in it)
+            double r = len;
+            Pt c{tip.x - u.x * (r + sw), tip.y - u.y * (r + sw)};
+            plutovg_path_add_circle(q, (float)c.x, (float)c.y, (float)r);
+            if (t == "circlePlus") {
+                Item plus;
+                plus.path = newPath();
+                plutovg_path_t *pq = plus.path.get();
+                plutovg_path_move_to(pq, (float)(c.x - u.x * r), (float)(c.y - u.y * r));
+                plutovg_path_line_to(pq, (float)(c.x + u.x * r), (float)(c.y + u.y * r));
+                plutovg_path_move_to(pq, (float)(c.x - n.x * r), (float)(c.y - n.y * r));
+                plutovg_path_line_to(pq, (float)(c.x + n.x * r), (float)(c.y + n.y * r));
+                plus.stroke = filled ? 0xffffffff : colour, plus.width = (float)sw;
+                Item ring;
+                ring.path = path;
+                ring.stroke = colour, ring.width = (float)sw;
+                if (filled) ring.fill = colour;
+                add(std::move(ring), (float)sw);
+                add(std::move(plus), (float)sw);
+                return 2 * r + sw;
+            }
+            retreat = 2 * r + sw;
+            if (!fill) {
+                Item it;
+                it.path = path, it.stroke = colour, it.width = (float)sw;
+                add(std::move(it), (float)sw);
+                return retreat;
+            }
+        } else if (t == "halfCircle") {   // (an arc open towards the tip)
+            double d = size + sw + 1;
+            Pt c{tip.x - u.x * d, tip.y - u.y * d};
+            M({tip.x + n.x * d, tip.y + n.y * d});
+            plutovg_path_quad_to(q, (float)(c.x + n.x * d), (float)(c.y + n.y * d), (float)c.x, (float)c.y);
+            plutovg_path_quad_to(q, (float)(c.x - n.x * d), (float)(c.y - n.y * d), (float)(tip.x - n.x * d), (float)(tip.y - n.y * d));
+            fill = false;
+            retreat = d;
+            Item it;
+            it.path = path, it.stroke = colour, it.width = (float)sw;
+            add(std::move(it), (float)sw);
+            return retreat;
+        } else if (t == "box") {   // (a square size + stroke + 1 behind the tip)
+            double d = size + sw + 1;
+            M({tip.x + n.x * d / 2, tip.y + n.y * d / 2});
+            L({tip.x - n.x * d / 2, tip.y - n.y * d / 2});
+            L({tip.x - u.x * d - n.x * d / 2, tip.y - u.y * d - n.y * d / 2});
+            L({tip.x - u.x * d + n.x * d / 2, tip.y - u.y * d + n.y * d / 2});
+            plutovg_path_close(q);
+            retreat = d;
+            if (!fill) {
+                Item it;
+                it.path = path, it.stroke = colour, it.width = (float)sw;
+                add(std::move(it), (float)sw);
+                return retreat;
+            }
+        } else if (t == "baseDash") {   // (a line across the tip)
+            double d = size + sw + 1;
+            M({tip.x + n.x * d / 2, tip.y + n.y * d / 2});
+            L({tip.x - n.x * d / 2, tip.y - n.y * d / 2});
+            fill = false;
+        } else if (t == "async" || t == "openAsync") {   // (half an arrowhead, on the left of the line)
+            Pt a0 = t == "async" ? p : tip;
+            M(a0);
+            L({a0.x - u.x * len - n.x * len / 2, a0.y - u.y * len - n.y * len / 2});
+            if (t == "async") {
+                L({a0.x - u.x * len, a0.y - u.y * len});
+                plutovg_path_close(q);
+                retreat = len;
+            } else
+                fill = false;
+        } else if (t == "doubleBlock") {   // (two blocks one behind the other)
+            for (int k = 0; k < 2; k++) {
+                Pt a0{p.x - u.x * len * k, p.y - u.y * len * k};
+                M(a0);
+                L({a0.x - u.x * len + n.x * len / 2, a0.y - u.y * len + n.y * len / 2});
+                L({a0.x - u.x * len - n.x * len / 2, a0.y - u.y * len - n.y * len / 2});
+                plutovg_path_close(q);
+            }
+            retreat = 2 * len;
+        } else if (t == "dash" || t == "cross") {   // (Graph.js: a slanted stroke size + stroke + 1 long across the line, 1 of it
+            double d = size + sw + 1;                  // from the tip; a cross: and the other way)
+            M({tip.x - u.x * d / 2 + n.x * d / 2, tip.y - u.y * d / 2 + n.y * d / 2});
+            L({tip.x - u.x * d * 1.5 - n.x * d / 2, tip.y - u.y * d * 1.5 - n.y * d / 2});
+            if (t == "cross") {
+                M({tip.x - u.x * d / 2 - n.x * d / 2, tip.y - u.y * d / 2 - n.y * d / 2});
+                L({tip.x - u.x * d * 1.5 + n.x * d / 2, tip.y - u.y * d * 1.5 + n.y * d / 2});
+            }
             fill = false;
         } else {   // classic, block and the others
             M(p);
