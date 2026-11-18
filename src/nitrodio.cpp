@@ -380,7 +380,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     int si = tag.find("font-style") != std::string::npos && tag.find("italic") != std::string::npos;
                     if (sb || si) flush();
                     b += sb, it += si;
-                    if (spans.size() < 64) spans.push_back({sb, si});   // (a stray tag: nothing to take back)
+                    spans.push_back({sb, si});   // (every one, however deep: its end takes back its own; at most a tag per 6 bytes)
                 }
             }
             continue;
