@@ -216,6 +216,7 @@ struct Item {
     std::string uri;                    // (its data: URI until it is decoded)
     float ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
     bool aspect = true;
+    float pictureAlpha = 1;   // (the image shape's opacity)
     float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
 };
 struct Page {
@@ -2294,6 +2295,7 @@ struct Builder {
             it.uri = str(s, "image");
             it.ix0 = (float)b.x, it.iy0 = (float)b.y, it.ix1 = (float)(b.x + b.w), it.iy1 = (float)(b.y + b.h);
             it.aspect = str(s, "imageAspect") != "0";
+            it.pictureAlpha = (float)std::clamp(num(s, "opacity", 100) / 100, 0.0, 1.0);
             add(std::move(it), 0);
         } else if (shape == "image" && b.w > 0 && b.h > 0) {   // (the picture is not in the file: its frame)
             Item it;
@@ -3951,7 +3953,7 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_matrix_t m;
         plutovg_matrix_init_translate(&m, dx, dy);
         plutovg_matrix_scale(&m, dw / pic.w, dh / pic.h);
-        plutovg_canvas_set_texture(c, sf, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
+        plutovg_canvas_set_texture(c, sf, PLUTOVG_TEXTURE_TYPE_PLAIN, it.pictureAlpha, &m);
         plutovg_canvas_fill_rect(c, dx, dy, dw, dh);
         plutovg_surface_destroy(sf);
     }
