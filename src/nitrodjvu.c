@@ -813,8 +813,10 @@ static int mask_bits(Page *pg, const Bm *b, uint8_t **entry) {
 // A mask coded by MMR [8.3.6: Smmr], CCITT G4 as fax machines code it (nitrotiff's nt_ccitt): "MMR"
 // and a flags byte (1: inverted, its first run black; 2: in strips), its width and height (16 bits
 // each); in strips: the rows of a strip (16 bits), then each strip's length (32 bits) and its code,
-// each strip coded on its own. 0; 1: not readable; -1: out of memory. A damaged strip: white from there.
-static int smmr_decode(const uint8_t *p, size_t n, Bm *b) {
+// each strip coded on its own. Only what lies on the page (pw x ph, as its file has it) is read and
+// kept: the rows down to its bottom, the columns to its right edge; the rows read are the JB2 page's
+// limit of pixels at most. 0; 1: not readable; -1: out of memory. A damaged strip: white from there.
+static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
     if (n < 8 || memcmp(p, "MMR", 3) || (p[3] & ~3)) return 1;
     int invert = p[3] & 1, striped = p[3] & 2, w = p[4] << 8 | p[5], h = p[6] << 8 | p[7], rows = h;
     size_t at = 8, prow = ((size_t)w + 7) / 8;
@@ -823,8 +825,11 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b) {
         if (n < 10 || !(rows = p[8] << 8 | p[9])) return 1;
         at = 10;
     }
+    if (h > ph) h = ph;   // (the rows below the page: not read)
+    int cw = w < pw ? w : pw;
+    if ((size_t)w * (size_t)h > JB2_MAX_PIXELS) return 1;
     uint8_t *bits = calloc(prow * (size_t)h, 1);
-    if (!bits || bm_new(b, w, h)) {
+    if (!bits || bm_new(b, cw, h)) {
         free(bits);
         return -1;
     }
@@ -841,7 +846,7 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b) {
     for (int y = 0; y < h; y++) {
         uint8_t *r = bm_row(b, y);
         const uint8_t *s = bits + (size_t)y * prow;
-        for (int x = 0; x < w; x++) r[x] = s[x >> 3] >> (7 - (x & 7)) & 1;
+        for (int x = 0; x < cw; x++) r[x] = s[x >> 3] >> (7 - (x & 7)) & 1;
     }
     free(bits);
     return 0;
@@ -892,7 +897,7 @@ static int page_decode(nitrodjvu *d, Page *pg, const Stop *stop) {
     } else if (smmr) {   // (its colours: the palette's first, or FG44)
         Bm b = {0};
         uint8_t *none = NULL, *entries = NULL;
-        int rc = smmr_decode(smmr, smmr_len, &b), blits = 0;
+        int rc = smmr_decode(smmr, smmr_len, &b, pw, ph), blits = 0;
         nomem |= rc < 0 || (!rc && mask_bits(pg, &b, &none) < 0);
         if (colours && fgbz(colours, colours_len, &pg->pal, &entries, &blits) < 0) nomem = 1;
         free(entries), free(b.mem);
