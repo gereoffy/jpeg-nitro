@@ -1716,6 +1716,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         if (!j.tiles) {
             j.tiles = jalloc(&j, (size_t)j.nx * j.ny * sizeof(Tile));
             j.ox0 = cshift(j.x0, j.reduce), j.oy0 = cshift(j.y0, j.reduce), j.oxs = cshift(j.xs, j.reduce), j.oys = cshift(j.ys, j.reduce);
+            if (j.oxs <= j.ox0 || j.oys <= j.oy0) goto done;   // (reduced to nothing: an offset grid's edges round together)
             j.output = jalloc(&j, (size_t)(j.oxs - j.ox0) * (j.oys - j.oy0) * j.nc * sizeof(uint16_t));
             if (!j.tiles || !j.output) goto done;
         }
