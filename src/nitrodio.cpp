@@ -1263,9 +1263,13 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
 
 // HTML as a browser stacks it: its tables and its <div>s with a background as blocks of their own, the text between
 // them as the label's lines; x, y its top left, avail the width it has (0: as wide as it needs)
+// (the blocks a label's HTML may still lay out: a table's cells are each laid out three times, in each of the measuring and
+// the placing pass, so nested tables multiply; past this the rest of the label is left out)
+static thread_local size_t flowBudget = 0;
 Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avail, float availH, bool wrap, int depth) {
     Flow out;
-    if (depth > 8) return out;
+    if (depth > 8 || flowBudget == 0) return out;
+    flowBudget--;
     struct Block {
         int kind;   // (0 text, 1 table, 2 a <div> with a background)
         std::string html, tag;
@@ -1359,6 +1363,7 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
 std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s, Box box, double wrapWidth) {
     bool fill = str(s, "overflow") == "fill";
     float avail = (float)(wrapWidth > 0 ? wrapWidth : fill ? box.w : 0), availH = (float)(fill ? box.h : 0);
+    flowBudget = 20000;
     Flow m = flowHtml(value, s, 0, 0, avail, availH, wrapWidth > 0 || fill, 0);
     const std::string &va = str(s, "verticalAlign"), &al = str(s, "align");
     float left = (float)(al == "left" ? box.x : al == "right" ? box.x + box.w - m.w : box.x + (box.w - m.w) / 2);
@@ -2121,14 +2126,16 @@ struct Builder {
             add(std::move(it), st.width);
             cur = nullptr;
         };
-        size_t budget = 20000;   // (a damaged stencil's commands)
+        size_t budget = 20000;   // (a damaged stencil's commands; at 0 the rest left out)
         std::function<void(xmlNode *)> node = [&](xmlNode *n) {
-            if (n->type != XML_ELEMENT_NODE || !budget--) return;
+            if (n->type != XML_ELEMENT_NODE || budget == 0) return;
+            budget--;
             std::string name = (const char *)n->name;
             if (name == "path") {
                 cur = newPath();
                 for (xmlNode *k = n->children; k; k = k->next) {
-                    if (k->type != XML_ELEMENT_NODE || !budget--) continue;
+                    if (k->type != XML_ELEMENT_NODE || budget == 0) continue;
+                    budget--;
                     std::string c = (const char *)k->name;
                     plutovg_path_t *p = cur.get();
                     if (c == "move") plutovg_path_move_to(p, X(k, "x"), Y(k, "y"));
@@ -2177,18 +2184,30 @@ struct Builder {
 
     // a table's lines (Graph.getTableLines): between its rows (rowLines) and between the first row's cells (columnLines),
     // in its stroke
+    // the cells of each parent, in the cells' order (built once a page)
+    std::unordered_map<std::string, std::vector<size_t>> kidsIndex;
+    bool kidsBuilt = false;
+    const std::vector<size_t> &kidsOf(const std::string &id) {
+        static const std::vector<size_t> none;
+        if (!kidsBuilt) {
+            for (size_t i = 0; i < cells.size(); i++) kidsIndex[cells[i].parent].push_back(i);
+            kidsBuilt = true;
+        }
+        auto f = kidsIndex.find(id);
+        return f == kidsIndex.end() ? none : f->second;
+    }
     void tableLines(Cell &t, const Box &b) {
         std::vector<Box> rows, cols;
-        for (Cell &k : cells)
-            if (k.vertex && k.parent == t.id && k.id != t.id) rows.push_back(absBox(k));
+        for (size_t i : kidsOf(t.id))
+            if (cells[i].vertex && cells[i].id != t.id) rows.push_back(absBox(cells[i]));
         if (rows.empty()) return;
         std::sort(rows.begin(), rows.end(), [](const Box &p, const Box &q) { return p.y < q.y; });
         Cell *firstRow = nullptr;
-        for (Cell &k : cells)
-            if (k.vertex && k.parent == t.id && absBox(k).y == rows[0].y) { firstRow = &k; break; }
+        for (size_t i : kidsOf(t.id))
+            if (cells[i].vertex && absBox(cells[i]).y == rows[0].y) { firstRow = &cells[i]; break; }
         if (firstRow)
-            for (Cell &k : cells)
-                if (k.vertex && k.parent == firstRow->id) cols.push_back(absBox(k));
+            for (size_t i : kidsOf(firstRow->id))
+                if (cells[i].vertex) cols.push_back(absBox(cells[i]));
         std::sort(cols.begin(), cols.end(), [](const Box &p, const Box &q) { return p.x < q.x; });
         PathP l = newPath();
         if (str(t.style, "rowLines") != "0")
@@ -3902,7 +3921,7 @@ struct Builder {
                 }
             }
             out.append(v, i, a - i);
-            if (found) out += val;
+            if (found && out.size() + val.size() <= (4u << 20)) out += val;   // (a label of at most 4 MB: past that, left as it is)
             else out.append(v, a, e + 1 - a);
             i = e + 1;
         }
@@ -4277,12 +4296,15 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_canvas_set_dash(c, 0, nullptr, 0);
         float cx = (it.bx0 + it.bx1) / 2, cy = (it.by0 + it.by1) / 2, r = std::hypot(it.bx1 - it.bx0, it.by1 - it.by0) / 2 + 2;
         float a = it.hachureAngle * (float)M_PI / 180, dx = cosf(a), dy = sinf(a);
-        int n = std::min((int)(2 * r / it.hachure) + 1, 20000);
+        // (at most 20000 lines: past that the gap widened, so the lines still cover the whole shape)
+        double lines = it.hachure > 0 ? 2.0 * r / it.hachure : 1e9;
+        int n = (int)std::min(lines + 1, 20000.0);
+        float gapStep = lines + 1 > 20000 ? 2 * r / 20000 : it.hachure;
         plutovg_path_t *h = plutovg_path_create();
         for (int pass = 0; pass < (it.crossHatch ? 2 : 1); pass++) {
             if (pass) std::swap(dx, dy), dx = -dx;   // (cross-hatch: the lines again, turned a quarter)
             for (int k = 0; k <= n; k++) {
-                float o = -r + k * it.hachure;
+                float o = -r + k * gapStep;
                 plutovg_path_move_to(h, cx - dy * o - dx * r, cy + dx * o - dy * r);
                 plutovg_path_line_to(h, cx - dy * o + dx * r, cy + dx * o + dy * r);
             }
