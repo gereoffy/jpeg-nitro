@@ -1793,7 +1793,26 @@ struct Builder {
         if (vx.empty() || vy.empty()) return false;
         double fx = nn_strtod(vx.c_str(), nullptr), fy = nn_strtod(vy.c_str(), nullptr);
         if (!std::isfinite(fx) || !std::isfinite(fy) || std::fabs(fx) > 1e6 || std::fabs(fy) > 1e6) return false;
-        p = {t.b.x + fx * t.b.w + num(s, source ? "exitDx" : "entryDx", 0), t.b.y + fy * t.b.h + num(s, source ? "exitDy" : "entryDy", 0)};
+        // (mxGraph.getConnectionPoint: the point in the shape before its direction turns it, flipped, then turned with it)
+        Box e = t.b;
+        Pt c = e.centre();
+        const Style *ts = t.style;
+        const std::string &dir = ts ? str(*ts, "direction") : std::string();
+        bool quarter = dir == "north" || dir == "south";
+        if (quarter) e = {c.x - e.h / 2, c.y - e.w / 2, e.h, e.w};
+        p = {e.x + fx * e.w + num(s, source ? "exitDx" : "entryDx", 0), e.y + fy * e.h + num(s, source ? "exitDy" : "entryDy", 0)};
+        if (ts) {
+            bool fh = str(*ts, "flipH") == "1", fv = str(*ts, "flipV") == "1";
+            if (str(*ts, "shape").compare(0, 8, "stencil(") == 0)
+                fh = fh || str(*ts, "stencilFlipH") == "1", fv = fv || str(*ts, "stencilFlipV") == "1";
+            if (quarter) std::swap(fh, fv);
+            if (fh) p.x = 2 * c.x - p.x;
+            if (fv) p.y = 2 * c.y - p.y;
+            if (str(*ts, "anchorPointDirection") != "0") {
+                double turn = dir == "north" ? 270 : dir == "west" ? 180 : dir == "south" ? 90 : 0;
+                if (turn != 0) p = rotated(p, turn, c);
+            }
+        }
         if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = uprightPoint(t, p, false);
         if (t.rotation != 0) p = rotated(p, t.rotation, t.b.centre());   // (the point turns with its shape)
         return true;
