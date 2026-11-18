@@ -250,6 +250,7 @@ static inline uint32_t br_u(Br *br, int n) {   // n <= 32
 static inline int br_overrun(const Br *br) { return br->zeros * 8 > (size_t)br->n; }
 static int br_skip_bits(Br *br, uint64_t nbits) {
     while (nbits && br->n) { int k = (int)(nbits < (uint64_t)br->n ? nbits : (uint64_t)br->n); if (k > 32) k = 32; br_u(br, k); nbits -= k; }
+    if (!br->n) br->buf = 0;   // (bits a refill read ahead of p: the jump leaves them behind; a refill ORs into buf)
     if (nbits >> 3 > (uint64_t)(br->end - br->p)) return ERR_INVALID;
     br->p += nbits >> 3;
     br_u(br, (int)(nbits & 7));
