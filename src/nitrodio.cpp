@@ -2441,6 +2441,8 @@ struct Builder {
         }
         if (table && b.w > 0 && b.h > 0) tableLines(c, b);
         bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
+        if (shape.compare(0, 8, "stencil(") == 0)   // (a stencil's own flips too, as its connection points take them)
+            flipH = flipH || str(s, "stencilFlipH") == "1", flipV = flipV || str(s, "stencilFlipV") == "1";
         if ((turn != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
             plutovg_matrix_t m;                                          // as mxSvgCanvas2D.rotate does; their boxes again)
             plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
@@ -2601,10 +2603,23 @@ struct Builder {
     // mxPerimeter: the point of the terminal's perimeter towards next (orthogonal: straight across
     // from next where it lies beside the terminal). A turned terminal: next turned back, the point on
     // the upright shape turned with it (as mxGraphView.getPerimeterPoint)
+    // (mxGraphView.getPerimeterPoint: next turned back by the shape's rotation and mirrored by its flips (a stencil's own
+    // too), the point on the upright perimeter mirrored and turned again)
     static Pt perimeterPoint(const Term &t, Pt next, bool orthogonal) {
-        if (t.rotation == 0) return uprightPoint(t, next, orthogonal);
         Pt c = t.b.centre();
-        return rotated(uprightPoint(t, rotated(next, -t.rotation, c), orthogonal), t.rotation, c);
+        bool fh = false, fv = false;
+        if (t.style) {
+            const Style &s = *t.style;
+            fh = str(s, "flipH") == "1", fv = str(s, "flipV") == "1";
+            if (str(s, "shape").compare(0, 8, "stencil(") == 0) fh = fh || str(s, "stencilFlipH") == "1", fv = fv || str(s, "stencilFlipV") == "1";
+        }
+        if (t.rotation != 0) next = rotated(next, -t.rotation, c);
+        if (fh) next.x = 2 * c.x - next.x;
+        if (fv) next.y = 2 * c.y - next.y;
+        Pt p = uprightPoint(t, next, orthogonal);
+        if (fh) p.x = 2 * c.x - p.x;
+        if (fv) p.y = 2 * c.y - p.y;
+        return t.rotation != 0 ? rotated(p, t.rotation, c) : p;
     }
     // mxUtils.getPerimeterPoint: of the outline's segments that cross the segment centre - next, the crossing nearest to next
     static bool outlineCrossing(const std::vector<Pt> &pts, Pt c, Pt n, Pt &out) {
