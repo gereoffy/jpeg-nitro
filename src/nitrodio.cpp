@@ -1572,8 +1572,20 @@ void readCells(xmlNode *root, Builder &b) {
     }
 }
 
+// An empty page (no content, or none that could be read): the size of the model's page, else draw.io's A4
+void emptyPage(Page &page, xmlNode *model) {
+    page.items.clear();
+    page.x = page.y = 0;
+    page.w = model ? attrNum(model, "pageWidth", 827) : 827;
+    page.h = model ? attrNum(model, "pageHeight", 1169) : 1169;
+    if (!(page.w > 0 && page.w < 1e6)) page.w = 827;
+    if (!(page.h > 0 && page.h < 1e6)) page.h = 1169;
+}
+
+// false: the page has nothing drawn (left as an empty page, keeping the pages after it in their places)
 bool readModel(xmlNode *model, Page &page, size_t &budget) {
     page.background = parseColour(attr(model, "background"), 0);
+    emptyPage(page, model);
     xmlNode *root = nullptr;
     for (xmlNode *k = model->children; k; k = k->next)
         if (is(k, "root")) root = k;
@@ -1585,7 +1597,9 @@ bool readModel(xmlNode *model, Page &page, size_t &budget) {
     nd::Union u;
     for (const Item &it : page.items) u.add(it.bx0, it.by0, it.bx1, it.by1);
     u.page(10, page.x, page.y, page.w, page.h);
-    return page.w > 0 && page.h > 0 && page.w < 1e8 && page.h < 1e8;
+    if (page.w > 0 && page.h > 0 && page.w < 1e8 && page.h < 1e8) return true;
+    emptyPage(page, model);
+    return false;
 }
 
 struct XmlDocFree {
@@ -1611,10 +1625,17 @@ static nitrodio *load(const void *data, size_t len) {
     xmlNode *top = xmlDocGetRootElement(doc.get());
     std::unique_ptr<nitrodio> dio(new nitrodio);
     size_t budget = 8u << 20;   // (the items of all the pages: their display lists stay in memory together)
+    bool drawn = false;   // (some page has something: else the file is no drawing)
     auto model = [&](xmlNode *m) {
         std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
         Page p;
-        if (readModel(m, p, budget)) dio->pages.push_back(std::move(p));
+        drawn |= readModel(m, p, budget);
+        dio->pages.push_back(std::move(p));
+    };
+    auto empty = [&] {   // (a page that cannot be read: kept empty, the pages after it in their places)
+        Page p;
+        emptyPage(p, nullptr);
+        dio->pages.push_back(std::move(p));
     };
     if (top && is(top, "mxGraphModel")) model(top);
     else if (top && is(top, "mxfile")) {
@@ -1628,7 +1649,10 @@ static nitrodio *load(const void *data, size_t len) {
                 continue;
             }
             xmlChar *t = xmlNodeGetContent(d);   // (compressed: base64 of the raw deflated, URL encoded XML)
-            if (!t) continue;
+            if (!t) {
+                empty();
+                continue;
+            }
             std::string text((const char *)t), xml;
             xmlFree(t);
             std::string bin = base64(text);
@@ -1637,12 +1661,12 @@ static nitrodio *load(const void *data, size_t len) {
             else if (xml.compare(0, 3, "%3C") == 0) xml = urlDecode(xml);
             if (xml.compare(0, 3, "%3C") == 0 || xml.compare(0, 3, "%3c") == 0) xml = urlDecode(xml);
             XmlDoc inner = parseXml(xml.data(), xml.size());
-            if (!inner) continue;
-            xmlNode *ir = xmlDocGetRootElement(inner.get());
+            xmlNode *ir = inner ? xmlDocGetRootElement(inner.get()) : nullptr;
             if (ir && is(ir, "mxGraphModel")) model(ir);
+            else empty();
         }
     }
-    if (dio->pages.empty()) return nullptr;
+    if (!drawn) return nullptr;
     return dio.release();
 }
 
