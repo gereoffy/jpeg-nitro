@@ -30,10 +30,10 @@ static unsigned bzz_raw(Zp *z, int bits) {
     return n - m;
 }
 
-// The BZZ stream decoded, at most limit bytes (from malloc; NULL: damaged or too long). Blocks, each:
+// The BZZ stream decoded, at most limit bytes (from malloc; NULL: damaged or too long, or out of memory: *nomem set). Blocks, each:
 // its size, the speed of the frequency estimate, its symbols as positions in a move-to-front array
 // kept in order of an estimate of their frequencies, then the Burrows-Wheeler transform undone.
-static uint8_t *bzz_decode(const uint8_t *p, size_t len, size_t limit, size_t *out_len) {
+static uint8_t *bzz_decode(const uint8_t *p, size_t len, size_t limit, size_t *out_len, int *nomem) {
     Zp z;
     zp_init(&z, p, len);
     uint8_t cx[300], *out = NULL, *blk = NULL;
@@ -53,7 +53,10 @@ static uint8_t *bzz_decode(const uint8_t *p, size_t len, size_t limit, size_t *o
         int marker = -1;
         free(blk), free(pos);
         blk = malloc(size), pos = malloc((size_t)size * sizeof *pos);
-        if (!blk || !pos) goto fail;
+        if (!blk || !pos) {
+            *nomem = 1;
+            goto fail;
+        }
         for (unsigned i = 0; i < size; i++) {
             unsigned id = mtfno < 2 ? mtfno : 2;
             uint8_t *c = cx;
@@ -107,7 +110,10 @@ static uint8_t *bzz_decode(const uint8_t *p, size_t len, size_t limit, size_t *o
         if (n + size > cap) {
             cap = (n + size) * 2;
             uint8_t *more = realloc(out, cap);
-            if (!more) goto fail;
+            if (!more) {
+                *nomem = 1;
+                goto fail;
+            }
             out = more;
         }
         uint32_t i = 0;
@@ -121,7 +127,7 @@ static uint8_t *bzz_decode(const uint8_t *p, size_t len, size_t limit, size_t *o
         n += size - 1;
     }
     free(blk), free(pos);
-    if (!out) out = malloc(1);
+    if (!out && !(out = malloc(1))) *nomem = 1;
     *out_len = n;
     return out;
 fail:
@@ -405,9 +411,13 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             if (j->err) break;
             if (j->started) break;   // (a second one: damage)
             if (page) {
-                if (w < 1 || h < 1 || w > 65535 || h > 65535 || (size_t)w * (size_t)h > JB2_MAX_PIXELS || bm_new(&j->page, w, h)) break;
+                if (w < 1 || h < 1 || w > 65535 || h > 65535 || (size_t)w * (size_t)h > JB2_MAX_PIXELS) break;
+                if (bm_new(&j->page, w, h)) {
+                    j->nomem = 1;
+                    break;
+                }
                 j->have_page = 1;
-                if (j->blit_entry) j->entry = calloc((size_t)w, (size_t)h);
+                if (j->blit_entry && !(j->entry = calloc((size_t)w, (size_t)h))) j->nomem = 1;
             }
             j->width = w, j->height = h, j->started = 1;
             j->last_right = j->last_row_left = 0, j->last_row_bottom = h;
@@ -599,14 +609,14 @@ static int walk_next(Walk *w, const uint8_t **id, const uint8_t **data, size_t *
 
 // The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn.
 // NULL: none, or damaged. Decoded once, kept with the document; but a chain deeper than a few, one
-// that comes round to a component being read, or no memory: NULL, *again set, and nothing along the
-// chain kept (each component keeps only what it brings whoever asks: the pages need not be read in
+// that comes round to a component being read (*again |= 1), or no memory (|= 2): NULL, and nothing
+// along the chain kept (each component keeps only what it brings whoever asks: the pages need not be read in
 // any order, and the next page asks again).
 static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
     Comp *co = &d->comps[c];
     if (co->dict_state == 2) return co->dict;
     if (co->dict_state == 1 || depth > 4) {
-        *again = 1;
+        *again |= 1;
         return NULL;
     }
     co->dict_state = 1;
@@ -631,14 +641,14 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
             jb2_free(j, 1);
             out = dict, co->dict_own = 1;
         } else {
-            cut = !j || !dict || j->nomem;   // (damaged: kept as none)
+            cut = !j || !dict || j->nomem ? 2 : 0;   // (damaged: kept as none)
             if (j) jb2_free(j, 0);
             free(dict);
         }
         free(j);
     }
     if (cut) {
-        co->dict_state = 0, *again = 1;
+        co->dict_state = 0, *again |= cut;
         return NULL;
     }
     co->dict = (Dict *)out, co->dict_state = 2;
@@ -667,14 +677,26 @@ static void layer_free(Layer *l) {
 
 // A layer of a page decoded: all its chunks of the kind `id`, its included files' too (BG44: the slices
 // of one picture, each refining it; FG44: one), as planes turned like the page. pw x ph: the page as its file has it.
-static void layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
+// -1: out of memory (what there is of it is not all the file has).
+static int layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
     niw44 *iw = NULL;
     const uint8_t *id, *data;
     size_t n;
     Walk wk;
     walk_init(&wk, d, pg->comp);
+    int rc = 0;
     while (walk_next(&wk, &id, &data, &n))
-        if (!memcmp(id, kind, 4) && (iw || (iw = niw44_new())) && niw44_chunk(iw, data, n)) break;
+        if (!memcmp(id, kind, 4)) {
+            if (!iw && !(iw = niw44_new())) {
+                rc = -1;
+                break;
+            }
+            int c = niw44_chunk(iw, data, n);
+            if (c) {
+                rc = c == -2 ? -1 : 0;
+                break;
+            }
+        }
     int w, h, nc = iw ? niw44_size(iw, &w, &h) : 0;
     if (nc) {
         // how many times smaller than the page it is [10.3: its size is the page's divided by 1 .. 12, rounded up]
@@ -692,16 +714,17 @@ static void layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, i
             l->oy = t == 1 ? x0 : t == 2 ? ph - y1 : t == 3 ? pw - x1 : y0;
             l->w = t & 1 ? h : w, l->h = t & 1 ? w : h, l->r = r;
             l->y = plane_turn(y, w, h, t), l->cb = plane_turn(cb, w, h, t), l->cr = plane_turn(cr, w, h, t);
-            if (!l->y || (nc == 3 && (!l->cb || !l->cr))) layer_free(l);
+            if (!l->y || (nc == 3 && (!l->cb || !l->cr))) layer_free(l), rc = -1;
         } else
-            free(y), free(cb), free(cr);
+            free(y), free(cb), free(cr), rc = -1;   // (with a picture there, niw44_planes fails only for memory)
     }
     niw44_free(iw);
+    return rc;
 }
 
 // The colours of a page's shapes [8.3.10]: a palette (BGR), then for each shape put on the page, in
 // their order, its palette index (16 bits each, BZZ coded). Out: the colours in use as RGB triplets
-// (at most 256: one beyond takes the nearest of those), and each blit's entry among them. 0: none.
+// (at most 256: one beyond takes the nearest of those), and each blit's entry among them. 0: none; -1: out of memory.
 static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries_out, int *blits_out) {
     if (n < 6 || !(p[0] & 0x80)) return 0;   // (without the per-shape part there is nothing to colour by)
     size_t np = (size_t)(p[1] << 8 | p[2]);
@@ -709,14 +732,15 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
     const uint8_t *bgr = p + 3, *q = bgr + 3 * np;
     size_t blits = (size_t)q[0] << 16 | (size_t)q[1] << 8 | q[2], len = 0;
     if (!blits || blits > (4u << 20)) return 0;
-    uint8_t *idx = bzz_decode(q + 3, n - 3 - 3 * np - 3, 2 * blits, &len);
-    if (!idx) return 0;
+    int nomem = 0;
+    uint8_t *idx = bzz_decode(q + 3, n - 3 - 3 * np - 3, 2 * blits, &len, &nomem);
+    if (!idx) return nomem ? -1 : 0;
     if (len / 2 < blits) blits = len / 2;
     uint8_t *pal = malloc(256 * 3), *entries = malloc(blits ? blits : 1);
     int *entry_of = malloc(np * sizeof *entry_of), used = 0;
     if (!pal || !entries || !entry_of || !blits) {
         free(idx), free(pal), free(entries), free(entry_of);
-        return 0;
+        return blits ? -1 : 0;
     }
     for (size_t k = 0; k < np; k++) entry_of[k] = -1;
     for (size_t k = 0; k < blits; k++) {
@@ -747,8 +771,9 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
 // a picture: FG44); all turned as its INFO says. Each from its file or a file it includes (Walk). A
 // mask cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
 // a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
-static void page_decode(nitrodjvu *d, Page *pg) {
-    int again = 0;
+// -1: an allocation failed (what it has is less than the file: not to be kept).
+static int page_decode(nitrodjvu *d, Page *pg) {
+    int again = 0, nomem = 0;
     const Dict *dict = comp_dict(d, pg->comp, 0, &again);
     const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
     size_t n, sjbz_len = 0, colours_len = 0;
@@ -762,14 +787,17 @@ static void page_decode(nitrodjvu *d, Page *pg) {
     }
     pg->decoded = 1, pg->bytes = 0;
     int pw = pg->turn & 1 ? pg->h : pg->w, ph = pg->turn & 1 ? pg->w : pg->h;
-    layer_decode(d, "BG44", pg, pw, ph, &pg->bg);
+    nomem |= layer_decode(d, "BG44", pg, pw, ph, &pg->bg) < 0;
     Jb2 *j = sjbz ? calloc(1, sizeof *j) : NULL;
+    nomem |= sjbz && !j;
     if (j) {
         j->old = pg->version <= 18;
         uint8_t *entries = NULL;
         int used = colours ? fgbz(colours, colours_len, &pg->pal, &entries, &j->blit_entries) : 0;
+        nomem |= used < 0;
         if (used > 1) j->blit_entry = entries;   // (one colour: no need to tell the pixels apart)
         jb2_decode(j, sjbz, sjbz_len, dict, 1);   // (cut short or damaged: what there is of it)
+        nomem |= j->nomem || (again & 2);
         free(entries);
         // (a mask of another size than the page's INFO: drawn from the page's top left all the same - the
         // symbols' places are reckoned from the top - and cut at the page's edge)
@@ -793,18 +821,21 @@ static void page_decode(nitrodjvu *d, Page *pg) {
                 if (j->entry) {
                     pg->entry = plane_turn(j->entry, b->w, b->h, pg->turn), j->entry = NULL;
                     if (pg->entry) pg->bytes += (size_t)ow * (size_t)oh;
+                    else nomem = 1;
                 }
-            }
+            } else
+                nomem = 1;
         }
         jb2_free(j, 0);
         free(j);
     }
-    if (pg->bits && !pg->pal) layer_decode(d, "FG44", pg, pw, ph, &pg->fg);
+    if (pg->bits && !pg->pal) nomem |= layer_decode(d, "FG44", pg, pw, ph, &pg->fg) < 0;
     for (int k = 0; k < 2; k++) {
         const Layer *l = k ? &pg->fg : &pg->bg;
         if (l->y) pg->bytes += (size_t)l->w * (size_t)l->h * (l->cb ? 3 : 1);
     }
     pg->unread = layers && !pg->bits && !pg->bg.y;
+    return nomem ? -1 : 0;
 }
 
 static void page_drop(Page *pg) {
@@ -859,8 +890,9 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
         size_t rec = version ? 4 : 7, sizes = version ? 3 * (size_t)count : 0;   // (each offset's bytes; the sizes' in the BZZ part)
         if (!count || n < 3 + rec * (size_t)count) goto fail;
         size_t names_len = 0;
-        uint8_t *names = bzz_decode(dir + 3 + rec * (size_t)count, n - 3 - rec * (size_t)count, 16u << 20, &names_len);
-        d->comps = calloc((size_t)count, sizeof *d->comps);
+        int nomem = 0;
+        uint8_t *names = bzz_decode(dir + 3 + rec * (size_t)count, n - 3 - rec * (size_t)count, 16u << 20, &names_len, &nomem);
+        d->comps = nomem ? NULL : calloc((size_t)count, sizeof *d->comps);   // (no memory for the names: not a book with its pages unnamed)
         if (!d->comps) {
             free(names);
             goto fail;
@@ -1022,12 +1054,16 @@ static void palette_sum(const Page *pg, int r0, int r1, int c0, int c1, uint64_t
 }
 
 // A page for drawing (a user more of it, until page_release): decoded now, or still kept; the pages drawn
-// longest ago are let go, but for those being drawn.
+// longest ago are let go, but for those being drawn. NULL: out of memory (nothing kept: the next one tries again).
 static Page *page_hold(nitrodjvu *d, int page) {
     Page *pg = &d->pages[page];
     pthread_mutex_lock(&d->lock);
     if (!pg->decoded) {
-        page_decode(d, pg);
+        if (page_decode(d, pg)) {
+            page_drop(pg);
+            pthread_mutex_unlock(&d->lock);
+            return NULL;
+        }
         for (;;) {
             int kept = 0;
             size_t bytes = 0;
@@ -1164,13 +1200,15 @@ static unsigned palette_near(const Page *pg, int r, int c, uint64_t *sum) {
 }
 
 void nitrodjvu_prepare(nitrodjvu *d, int page) {
-    if (d && page >= 0 && page < d->npages) page_release(d, page_hold(d, page));
+    Page *pg = d && page >= 0 && page < d->npages ? page_hold(d, page) : NULL;
+    if (pg) page_release(d, pg);
 }
 
 int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t pitch, double scale, double x0, double y0,
                      int (*cancelled)(void *ctx), void *ctx) {
     if (!d || page < 0 || page >= d->npages || w <= 0 || h <= 0 || pitch < (size_t)w * 4 || !(scale > 0)) return -1;
     Page *pg = page_hold(d, page);
+    if (!pg) return -1;
     int rc = 0;
     const Layer *bg = pg->bg.y ? &pg->bg : NULL, *fg = pg->fg.y ? &pg->fg : NULL;
     // per column: the mask's columns it covers (enlarged: the one at its middle), the layers' pixels

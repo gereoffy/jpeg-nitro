@@ -181,7 +181,7 @@ int niw44_chunk(niw44 *d, const uint8_t *p, size_t len) {
         }
         if (!ok) {
             for (int k = 0; k < 3; k++) free(co[k]), free(known[k]);
-            return -1;
+            return -2;
         }
         d->w = w, d->h = h, d->bw = bw, d->bh = bh, d->ncomp = ncomp, d->delay = delay;
         for (int k = 0; k < ncomp; k++) {

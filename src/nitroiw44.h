@@ -22,7 +22,7 @@ void niw44_free(niw44 *d);
 
 // The layer's next chunk, in the order the file has them (the first one has the size). 0: its
 // slices are in (a chunk cut short: as many as it has); -1: not the chunk that is due, a header
-// that makes no sense, a picture over the limits, or out of memory: the layer stays as it was.
+// that makes no sense, a picture over the limits; -2: out of memory. Either way the layer stays as it was.
 int niw44_chunk(niw44 *d, const uint8_t *data, size_t len);
 
 // Its size and components (3: Y Cb Cr, 1: grey); 0 before the first chunk.
