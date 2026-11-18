@@ -850,6 +850,16 @@ struct Builder {
             frame["gradientColor"] = "none";
             if (bodyShown) frame["shadow"] = "0";
             paint(outline, lines, frame, b, false);
+        } else if (shape == "waypoint") {   // (draw.io's waypoint: a dot of its size in the stroke colour, at the centre)
+            uint32_t dot = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
+            double r = std::clamp(num(s, "size", 6), 0.0, 1000.0) / 2;
+            if (dot && r > 0) {
+                Item it;
+                it.path = newPath();
+                plutovg_path_add_circle(it.path.get(), (float)(b.x + b.w / 2), (float)(b.y + b.h / 2), (float)r);
+                it.fill = dot;
+                add(std::move(it), 0);
+            }
         } else if (!text && shape != "image" && b.w > 0 && b.h > 0) {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
@@ -971,6 +981,7 @@ struct Builder {
     }
     static Pt uprightPoint(const Term &t, Pt next, bool orthogonal) {
         const Box &b = t.b;
+        if (t.perimeter == "centerPerimeter") return b.centre();   // (draw.io's: a waypoint's edges meet at its centre)
         if (t.perimeter == "trianglePerimeter" && b.w > 0 && b.h > 0) return trianglePoint(t, next, orthogonal);
         if (b.w <= 0 && b.h <= 0) return b.centre();
         double cx = b.x + b.w / 2, cy = b.y + b.h / 2, px = next.x, py = next.y;
@@ -1034,6 +1045,10 @@ struct Builder {
     static bool constraintPoint(const Style &s, bool source, const Term &t, Pt &p) {
         const char *kx = source ? "exitX" : "entryX", *ky = source ? "exitY" : "entryY";
         const std::string &vx = str(s, kx), &vy = str(s, ky);
+        if (t.perimeter == "centerPerimeter") {   // (draw.io: a centre-perimeter vertex's ends (a waypoint's) are fixed at its centre,
+            p = t.b.centre();                    // with or without a constraint; a loop on it is no length, not drawn)
+            return true;
+        }
         if (vx.empty() || vy.empty()) return false;
         double fx = nn_strtod(vx.c_str(), nullptr), fy = nn_strtod(vy.c_str(), nullptr);
         if (!std::isfinite(fx) || !std::isfinite(fy) || std::fabs(fx) > 1e6 || std::fabs(fy) > 1e6) return false;
