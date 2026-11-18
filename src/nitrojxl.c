@@ -4377,7 +4377,14 @@ static void emit_row(const Frame *f, const Colour *k, const Output *o, int y, in
         uint16_t *op = (uint16_t *)(void *)(o->pixels + (size_t)(y + o->oy) * o->pitch) + (size_t)(x + o->ox) * nc;
         for (; x < w; x++) {
             float v[3] = {r[x], g[x], b[x]};
-            if (f->h.ycbcr) {
+            if (m->xyb) {   // to linear sRGB, then the image's curve
+                float gr = v[1] + v[0] - k->cbrt_bias[0], gg = v[1] - v[0] - k->cbrt_bias[1], gb = v[2] - k->cbrt_bias[2];
+                float mr = gr * gr * gr + k->bias[0], mg = gg * gg * gg + k->bias[1], mb = gb * gb * gb + k->bias[2];
+                float lin[3];
+                for (int c = 0; c < 3; c++) lin[c] = k->opsin[c][0] * mr + k->opsin[c][1] * mg + k->opsin[c][2] * mb;
+                if (nc == 1) lin[0] = lin[1];   // (grey: X is 0, R = G = B)
+                for (int c = 0; c < 3; c++) v[c] = m->tf == TF_SRGB ? srgb_oetf(lin[c]) : lin[c];
+            } else if (f->h.ycbcr) {
                 float Yv = v[1] + 128.0f / 255, cb = v[0], cr = v[2];
                 v[0] = Yv + 1.402f * cr;
                 v[1] = Yv + (-0.114f * 1.772f / 0.587f) * cb + (-0.299f * 1.402f / 0.587f) * cr;
@@ -4708,7 +4715,14 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     int e = read_headers(data, len, &im);
     Meta *m = &im.m;
     Br *br = &im.br;
-    if (!e && format == NJXL_SAMPLES16 && (m->xyb || m->exp_bits || m->bits > 16)) e = ERR_UNSUP;
+    if (!e && format == NJXL_SAMPLES16 && (m->exp_bits || m->bits > 16)) e = ERR_UNSUP;
+    if (!e && format == NJXL_SAMPLES16 && m->xyb) {   // XYB: back to the image's own encoding, when it is a simple one
+        static const float W[2] = {0.3127f, 0.3290f};
+        static const float P[3][2] = {{0.639998686f, 0.330010138f}, {0.300003784f, 0.600003357f}, {0.150002046f, 0.059997204f}};
+        int prim = m->cspace == CS_GREY || (m->cspace == CS_RGB && !memcmp(m->prim, P, sizeof P));
+        if (m->want_icc || !prim || memcmp(m->white, W, sizeof W) || m->gamma || (m->tf != TF_LINEAR && m->tf != TF_SRGB) ||
+            m->intensity_target != 255) e = ERR_UNSUP;
+    }
     if (!e && m->want_icc) e = read_icc(br, m);
     if (e) { image_free(&im); return e; }
     fill_info(&im, info);

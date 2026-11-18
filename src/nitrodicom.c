@@ -106,7 +106,8 @@ static void element(Parse *P, int ctx, uint32_t tag, uint32_t vr, size_t val, ui
         while (k && (s[k - 1] == 0 || s[k - 1] == ' ')) s[--k] = 0;
         in->photometric = !strcmp(s, "MONOCHROME1") ? P_MONO1 : !strncmp(s, "PALETTE", 7) ? P_PALETTE : !strcmp(s, "RGB") ? P_RGB
                         : !strcmp(s, "YBR_FULL") ? P_YBR : !strcmp(s, "YBR_FULL_422") || !strcmp(s, "YBR_PARTIAL_422") ? P_YBR422
-                        : !strncmp(s, "YBR_", 4) ? P_RGB   // (YBR_RCT / YBR_ICT / YBR_PARTIAL_420: the codec's own transform)
+                        : !strncmp(s, "YBR_", 4) || !strcmp(s, "XYB") ? P_RGB   // (YBR_RCT / YBR_ICT / YBR_PARTIAL_420, JPEG XL's
+                                                                                  // XYB: the codec's own transform, it gives R G B)
                         : !strncmp(s, "MONOCHROME", 10) ? P_MONO2 : -1;
         break;
     }
