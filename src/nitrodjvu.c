@@ -133,7 +133,7 @@ fail:
 
 #define JB2_BIG 262142        // the largest number coded (11.5.2)
 #define JB2_MAX_CELLS (1u << 22)
-#define JB2_MAX_PIXELS (200u << 20)   // a page, and all of a library's shapes together
+#define JB2_MAX_PIXELS (200u << 20)   // a page's pixels; the bytes of all of a library's shapes together
 
 // A symbol of the library: its bitmap, and the box of its black pixels in it (columns; rows counted
 // from the bottom, as the format's coordinates are: an empty one has right < left, top < bottom).
@@ -252,11 +252,14 @@ static void jb2_reset(Jb2 *j) {
     j->c_hsame = j->c_vsame = j->c_hnew = j->c_vnew = j->c_clen = j->c_cbyte = j->c_dict = 0;
 }
 
+// the memory a shape's bitmap takes, its margins too (what j->pixels counts, at most JB2_MAX_PIXELS)
+static size_t shape_bytes(int w, int h) { return (size_t)(h + 2) * ((size_t)w + 2 * BM_MX); }
+
 static int shape_new(Jb2 *j, Shape *s, int w, int h) {
     memset(s, 0, sizeof *s);
-    if (w < 0 || h < 0 || w > 65535 || h > 65535 || (size_t)w * (size_t)h > JB2_MAX_PIXELS - j->pixels) return -1;
+    if (w < 0 || h < 0 || w > 65535 || h > 65535 || shape_bytes(w, h) > JB2_MAX_PIXELS - j->pixels) return -1;
     if (bm_new(&s->bm, w, h)) return -1;
-    j->pixels += (size_t)w * (size_t)h + 64;
+    j->pixels += shape_bytes(w, h);
     return 0;
 }
 
@@ -461,7 +464,7 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             jb2_place(j, s.bm.h, s.bm.w, &left, &bottom);
         if (to_image && !j->err) jb2_blit(j, &s.bm, left, bottom);
         if (j->err || !to_lib || jb2_add(j, &s)) {   // (not kept: its pixels are free for others again)
-            j->pixels -= (size_t)s.bm.w * (size_t)s.bm.h + 64;
+            j->pixels -= shape_bytes(s.bm.w, s.bm.h);
             free(s.bm.mem);
             if (!j->err && to_lib) break;
         }
