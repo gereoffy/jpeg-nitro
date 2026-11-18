@@ -2207,7 +2207,12 @@ struct Builder {
             }
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
-            paint(p, lines, s, b, false);
+            if ((shape == "mxgraph.aws4.resourceIcon" || (shape == "mxgraph.aws4.group" && str(s, "grStroke") == "0"))) {
+                Style f = s;   // (mxAWS4: a resource icon's box filled only (its icon: a stencil), a group's outlined if grStroke)
+                f["strokeColor"] = "none";
+                paint(p, lines, f, b, false);
+            } else
+                paint(p, lines, s, b, false);
             if (shape == "mxgraph.infographic.shadedCube") {   // (its right face 0.2 darker, its left one 0.2 lighter)
                 double d = std::min(b.w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), b.h / 2);
                 for (int k = 0; k < 2; k++) {
