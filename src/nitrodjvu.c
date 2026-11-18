@@ -8,6 +8,7 @@
 #include "nitro_bilevel.h"
 #include "nitro_zp.h"
 #include "nitroiw44.h"
+#include "nitrotiff.h"   // nt_ccitt: an Smmr mask is CCITT G4
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
@@ -766,7 +767,70 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
     return used;
 }
 
-// A page decoded: its mask (Sjbz) with the dictionary its file has or includes, as packed rows; its
+// The mask (a bitmap, rows from the top) into the page as packed bits, turned; entry (the palette
+// entries of its pixels, or NULL) taken over. -1: out of memory.
+static int mask_bits(Page *pg, const Bm *b, uint8_t **entry) {
+    int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
+    size_t rb = ((size_t)ow + 7) / 8;
+    uint8_t *bits = calloc(rb * (size_t)oh, 1);
+    if (!bits) return -1;
+    for (int y = 0; y < b->h; y++) {
+        const uint8_t *s = bm_row(b, y);
+        for (int x = 0; x < b->w; x++) {
+            if (!s[x]) continue;
+            int ox = pg->turn == 1 ? b->h - 1 - y : pg->turn == 2 ? b->w - 1 - x : pg->turn == 3 ? y : x;
+            int oy = pg->turn == 1 ? x : pg->turn == 2 ? b->h - 1 - y : pg->turn == 3 ? b->w - 1 - x : y;
+            bits[(size_t)oy * rb + (ox >> 3)] |= (uint8_t)(0x80 >> (ox & 7));
+        }
+    }
+    pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh;
+    pg->bytes += rb * (size_t)oh;
+    if (*entry) {
+        pg->entry = plane_turn(*entry, b->w, b->h, pg->turn), *entry = NULL;
+        if (!pg->entry) return -1;
+        pg->bytes += (size_t)ow * (size_t)oh;
+    }
+    return 0;
+}
+
+// A mask coded by MMR [8.3.6: Smmr], CCITT G4 as fax machines code it (nitrotiff's nt_ccitt): "MMR"
+// and a flags byte (1: inverted, its first run black; 2: in strips), its width and height (16 bits
+// each); in strips: the rows of a strip (16 bits), then each strip's length (32 bits) and its code,
+// each strip coded on its own. 0; 1: not readable; -1: out of memory. A damaged strip: white from there.
+static int smmr_decode(const uint8_t *p, size_t n, Bm *b) {
+    if (n < 8 || memcmp(p, "MMR", 3) || (p[3] & ~3)) return 1;
+    int invert = p[3] & 1, striped = p[3] & 2, w = p[4] << 8 | p[5], h = p[6] << 8 | p[7], rows = h;
+    size_t at = 8, prow = ((size_t)w + 7) / 8;
+    if (w < 1 || h < 1) return 1;
+    if (striped) {
+        if (n < 10 || !(rows = p[8] << 8 | p[9])) return 1;
+        at = 10;
+    }
+    uint8_t *bits = calloc(prow * (size_t)h, 1);
+    if (!bits || bm_new(b, w, h)) {
+        free(bits);
+        return -1;
+    }
+    for (int y = 0; y < h && at <= n; y += rows) {
+        size_t len = n - at;
+        if (striped) {
+            if (len < 4) break;
+            len = be32(p + at), at += 4;
+            if (len > n - at) len = n - at;
+        }
+        nt_ccitt(p + at, len, -1, w, h - y < rows ? h - y : rows, !invert, 0, bits + (size_t)y * prow, prow);
+        at += len;
+    }
+    for (int y = 0; y < h; y++) {
+        uint8_t *r = bm_row(b, y);
+        const uint8_t *s = bits + (size_t)y * prow;
+        for (int x = 0; x < w; x++) r[x] = s[x >> 3] >> (7 - (x & 7)) & 1;
+    }
+    free(bits);
+    return 0;
+}
+
+// A page decoded: its mask (Sjbz with the dictionary its file has or includes; or Smmr), as packed rows; its
 // background picture (BG44) and its foreground's colours (a palette entry for each shape: FGbz, or
 // a picture: FG44); all turned as its INFO says. Each from its file or a file it includes (Walk). A
 // mask cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
@@ -775,13 +839,14 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
 static int page_decode(nitrodjvu *d, Page *pg) {
     int again = 0, nomem = 0;
     const Dict *dict = comp_dict(d, pg->comp, 0, &again);
-    const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
-    size_t n, sjbz_len = 0, colours_len = 0;
+    const uint8_t *id, *data, *sjbz = NULL, *smmr = NULL, *colours = NULL;
+    size_t n, sjbz_len = 0, smmr_len = 0, colours_len = 0;
     int layers = 0;
     Walk wk;
     walk_init(&wk, d, pg->comp);
     while (walk_next(&wk, &id, &data, &n)) {
         if (!memcmp(id, "Sjbz", 4) && !sjbz) sjbz = data, sjbz_len = n;
+        if (!memcmp(id, "Smmr", 4) && !smmr) smmr = data, smmr_len = n;
         if (!memcmp(id, "FGbz", 4) && !colours) colours = data, colours_len = n;
         layers |= !memcmp(id, "Sjbz", 4) || !memcmp(id, "Smmr", 4) || !memcmp(id, "BG44", 4) || !memcmp(id, "BGjp", 4);
     }
@@ -801,33 +866,16 @@ static int page_decode(nitrodjvu *d, Page *pg) {
         free(entries);
         // (a mask of another size than the page's INFO: drawn from the page's top left all the same - the
         // symbols' places are reckoned from the top - and cut at the page's edge)
-        if (j->have_page) {
-            const Bm *b = &j->page;
-            int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
-            size_t rb = ((size_t)ow + 7) / 8;
-            uint8_t *bits = calloc(rb * (size_t)oh, 1);
-            if (bits) {
-                for (int y = 0; y < b->h; y++) {
-                    const uint8_t *s = bm_row(b, y);
-                    for (int x = 0; x < b->w; x++) {
-                        if (!s[x]) continue;
-                        int ox = pg->turn == 1 ? b->h - 1 - y : pg->turn == 2 ? b->w - 1 - x : pg->turn == 3 ? y : x;
-                        int oy = pg->turn == 1 ? x : pg->turn == 2 ? b->h - 1 - y : pg->turn == 3 ? b->w - 1 - x : y;
-                        bits[(size_t)oy * rb + (ox >> 3)] |= (uint8_t)(0x80 >> (ox & 7));
-                    }
-                }
-                pg->bits = bits, pg->rowbytes = rb, pg->bw = ow, pg->bh = oh;
-                pg->bytes += rb * (size_t)oh;
-                if (j->entry) {
-                    pg->entry = plane_turn(j->entry, b->w, b->h, pg->turn), j->entry = NULL;
-                    if (pg->entry) pg->bytes += (size_t)ow * (size_t)oh;
-                    else nomem = 1;
-                }
-            } else
-                nomem = 1;
-        }
+        if (j->have_page) nomem |= mask_bits(pg, &j->page, &j->entry);
         jb2_free(j, 0);
         free(j);
+    } else if (smmr) {   // (its colours: the palette's first, or FG44)
+        Bm b = {0};
+        uint8_t *none = NULL, *entries = NULL;
+        int rc = smmr_decode(smmr, smmr_len, &b), blits = 0;
+        nomem |= rc < 0 || (!rc && mask_bits(pg, &b, &none) < 0);
+        if (colours && fgbz(colours, colours_len, &pg->pal, &entries, &blits) < 0) nomem = 1;
+        free(entries), free(b.mem);
     }
     if (pg->bits && !pg->pal) nomem |= layer_decode(d, "FG44", pg, pw, ph, &pg->fg) < 0;
     for (int k = 0; k < 2; k++) {

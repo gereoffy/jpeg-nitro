@@ -5,8 +5,8 @@
 // line art: JB2, with shared shape dictionaries) that picks, pixel by pixel, the foreground's colour
 // over the background picture: the background (the paper, photographs: IW44 wavelets, nitroiw44) is
 // several times smaller than the page, the foreground's colours come as a palette entry for each
-// shape (FGbz) or as a still smaller picture (FG44). A black and white book is its mask alone, a
-// photograph page its background alone. The layers are decoded when a page is first drawn and kept
+// shape (FGbz) or as a still smaller picture (FG44); a mask may be coded as a fax is (Smmr: CCITT
+// G4, nitrotiff's). A black and white book is its mask alone, a photograph page its background alone. The layers are decoded when a page is first drawn and kept
 // as they are (the mask as bits, the pictures as their small YCbCr planes); a render mixes and
 // scales them for the pixels it draws. Not read: JPEG coded layers (BGjp, FGjp), the hidden text,
 // outlines and annotations; indirect documents (their pages in files of their own). Written from
