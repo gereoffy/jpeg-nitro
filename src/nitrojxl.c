@@ -4712,6 +4712,7 @@ int njxl_info_read(const uint8_t *data, size_t len, njxl_info *info) {
     Image im;
     if (!info) return NJXL_INVALID;
     memset(info, 0, sizeof(*info));
+    if (!data) return NJXL_INVALID;
     int e = read_headers(data, len, &im);
     const uint8_t *cs;
     size_t cl;
