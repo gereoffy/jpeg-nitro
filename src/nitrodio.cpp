@@ -307,7 +307,30 @@ void readGeometry(Cell &c, xmlNode *g) {
 struct Seg {
     std::string text;
     bool bold = false, italic = false;
+    uint32_t rgba = 0;   // (an HTML label's own colour; 0: the label's)
 };
+
+// the text colour an HTML tag sets: <font color="..."> or style="color: ..." (not background-color); 0: none
+uint32_t tagColour(const std::string &tag) {
+    for (size_t at = 0; (at = tag.find("color", at)) != std::string::npos; at += 5) {
+        if (at > 0 && (isalnum((unsigned char)tag[at - 1]) || tag[at - 1] == '-' || tag[at - 1] == '_')) continue;
+        size_t v = at + 5;
+        while (v < tag.size() && tag[v] == ' ') v++;
+        if (v >= tag.size() || (tag[v] != '=' && tag[v] != ':')) continue;
+        v++;
+        while (v < tag.size() && (tag[v] == ' ' || tag[v] == '"' || tag[v] == '\'')) v++;
+        size_t e = v;
+        int depth = 0;
+        while (e < tag.size() && (depth || (tag[e] != ';' && tag[e] != '"' && tag[e] != '\'' && tag[e] != ' '))) {
+            if (tag[e] == '(') depth++;
+            else if (tag[e] == ')') depth--;
+            e++;
+        }
+        uint32_t c = parseColour(tag.substr(v, e - v), 0);
+        if (c) return c;
+    }
+    return 0;
+}
 using Para = std::vector<Seg>;
 
 void putEntity(std::string &o, const std::string &e) {
@@ -329,11 +352,13 @@ void putEntity(std::string &o, const std::string &e) {
 // other tags are dropped, white space collapses
 std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic) {
     std::vector<Para> paras(1);
+    std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
     auto add = [&](const std::string &t, bool b, bool i) {
         if (t.empty()) return;
         Para &p = paras.back();
-        if (!p.empty() && p.back().bold == b && p.back().italic == i) p.back().text += t;
-        else p.push_back({t, b, i});
+        uint32_t rgba = colours.empty() ? 0 : colours.back().second;
+        if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().rgba == rgba) p.back().text += t;
+        else p.push_back({t, b, i, rgba});
     };
     if (!html) {
         std::string cur;
@@ -373,6 +398,15 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             size_t sp = tag.find_first_of(" \t\n/");
             std::string name = tag.substr(0, sp);
             for (char &ch : name) ch = (char)tolower((unsigned char)ch);
+            if (!close && name != "br" && name != "img" && name != "hr" && name != "wbr") {
+                if (uint32_t col = tagColour(tag)) flush(), colours.push_back({name, col});
+            } else if (close)
+                for (size_t k = colours.size(); k-- > 0;)
+                    if (colours[k].first == name) {
+                        flush();
+                        colours.erase(colours.begin() + (long)k);
+                        break;
+                    }
             if (name == "br") newLine();
             else if (name == "div" || name == "p" || name == "li" || name == "tr" || (name.size() == 2 && name[0] == 'h' && isdigit((unsigned char)name[1]))) {
                 if (!paras.back().empty() || !cur.empty()) newLine();
@@ -445,7 +479,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     size_t comma = family.find(',');
     if (comma != std::string::npos) family.resize(comma);
     uint32_t rgba = withOpacity(colour(s, "fontColor", 0xff000000), num(s, "textOpacity", 100) * num(s, "opacity", 100) / 100);
-    if (!(rgba >> 24)) return nullptr;
+    if (!(rgba >> 24) && (str(s, "html") != "1" || value.find("olor") == std::string::npos)) return nullptr;   // (no colour: none of its own either)
     plutovg_font_face_t *faces[4] = {nullptr, nullptr, nullptr, nullptr};
     auto face = [&](bool b, bool i) {
         plutovg_font_face_t *&f = faces[b * 2 + i];
@@ -457,7 +491,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         plutovg_font_face_t *face;
         std::string text;
         float width;
+        uint32_t rgba;
     };
+    double alpha = num(s, "textOpacity", 100) * num(s, "opacity", 100) / 100;
     std::vector<std::vector<LineRun>> lines;
     std::vector<float> widths;
     for (const Para &p : paras) {
@@ -467,7 +503,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
             plutovg_font_face_t *f = face(sg.bold, sg.italic);
             if (wrapWidth <= 0) {
                 float w = textWidth(f, size, sg.text);
-                lines.back().push_back({f, sg.text, w});
+                lines.back().push_back({f, sg.text, w, sg.rgba ? withOpacity(sg.rgba, alpha) : rgba});
                 widths.back() += w;
                 continue;
             }
@@ -491,8 +527,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                     lines.emplace_back();
                     widths.push_back(0);
                 }
-                if (!lines.back().empty() && lines.back().back().face == f) lines.back().back().text += word, lines.back().back().width += w;
-                else lines.back().push_back({f, word, w});
+                uint32_t col = sg.rgba ? withOpacity(sg.rgba, alpha) : rgba;
+                if (!lines.back().empty() && lines.back().back().face == f && lines.back().back().rgba == col) lines.back().back().text += word, lines.back().back().width += w;
+                else lines.back().push_back({f, word, w, col});
                 widths.back() += w;
             }
         }
@@ -517,7 +554,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         float pen = (float)left;
         x0 = std::min(x0, pen), x1 = std::max(x1, pen + widths[l]);
         for (LineRun &r : lines[l]) {
-            if (!r.text.empty() && r.face) label->runs.push_back({r.face, size, rgba, pen, base, r.text});
+            if (!r.text.empty() && r.face && (r.rgba >> 24)) label->runs.push_back({r.face, size, r.rgba, pen, base, r.text});
             pen += r.width;
         }
     }
