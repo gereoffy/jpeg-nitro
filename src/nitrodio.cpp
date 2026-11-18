@@ -2007,10 +2007,10 @@ struct Builder {
             plutovg_matrix_init_translate(&m, 3, 3);
             sh.path = newPath();
             plutovg_path_add_path(sh.path.get(), path.get(), &m);
-            uint32_t sc = 0x40000000;
-            if (fill) sh.fill = sc;
+            uint32_t sc = withOpacity(0x40000000, opacity);   // (faded with the shape)
+            if (fill >> 24) sh.fill = sc;
             else sh.stroke = sc, sh.width = width;
-            add(std::move(sh), width);
+            if (sc >> 24) add(std::move(sh), width);
         }
         Item it;
         it.path = path;
@@ -2362,7 +2362,7 @@ struct Builder {
                     f.path = newPath();
                     if (!k) polygon(f.path.get(), {{b.w / 2, 2 * d}, {b.w, d}, {b.w, b.h - d}, {b.w / 2, b.h}}, b);
                     else polygon(f.path.get(), {{b.w / 2, 2 * d}, {0, d}, {0, b.h - d}, {b.w / 2, b.h}}, b);
-                    f.fill = k ? 0x33ffffffu : 0x33000000u;
+                    f.fill = withOpacity(k ? 0x33ffffffu : 0x33000000u, num(s, "opacity", 100));
                     add(std::move(f), 0);
                 }
             }
@@ -2375,7 +2375,7 @@ struct Builder {
                 plutovg_path_line_to(q, (float)(b.x + b.w), (float)(b.y + b.h - 10));
                 plutovg_path_arc_to(q, (float)(b.w / 2), 10, 0, false, true, (float)b.x, (float)(b.y + b.h - 10));
                 plutovg_path_close(q);
-                g.fill = 0x66000000, g.fill2 = 0x66ffffff;
+                g.fill = withOpacity(0x66000000, num(s, "opacity", 100)), g.fill2 = withOpacity(0x66ffffff, num(s, "opacity", 100));
                 g.gx0 = (float)b.x, g.gx1 = (float)(b.x + b.w), g.gy0 = g.gy1 = (float)b.y;
                 add(std::move(g), 0);
             }
@@ -2396,7 +2396,7 @@ struct Builder {
                 plutovg_path_line_to(q, (float)x1, (float)(y + arc));
                 if (arc > 0) plutovg_path_quad_to(q, (float)x1, (float)y, (float)(x1 - arc), (float)y);
                 plutovg_path_close(q);
-                g.fill = 0xe6ffffff, g.fill2 = 0x1affffff;
+                g.fill = withOpacity(0xe6ffffff, num(s, "opacity", 100)), g.fill2 = withOpacity(0x1affffff, num(s, "opacity", 100));
                 g.gx0 = g.gx1 = (float)b.x, g.gy0 = (float)b.y, g.gy1 = (float)(b.y + b.h * 0.6);
                 add(std::move(g), 0);
             }
@@ -2409,7 +2409,7 @@ struct Builder {
                     f.path = newPath();
                     if (!k) polygon(f.path.get(), {{0, 0}, {b.w - d, 0}, {b.w, d}, {d, d}}, b);
                     else polygon(f.path.get(), {{0, 0}, {d, d}, {d, b.h}, {0, b.h - d}}, b);
-                    f.fill = (uint32_t)std::lround(std::fabs(op) * 255) << 24 | (op < 0 ? 0xffffffu : 0);
+                    f.fill = withOpacity((uint32_t)std::lround(std::fabs(op) * 255) << 24 | (op < 0 ? 0xffffffu : 0), num(s, "opacity", 100));
                     add(std::move(f), 0);
                 }
             }
@@ -3825,8 +3825,9 @@ struct Builder {
                 in["strokeWidth"] = std::to_string(sw - 2);
                 in["shadow"] = "0";
                 paint(p, nullptr, in, Box{}, true);
-                marker(str(s, "endArrow"), str(s, "endFill") != "0", num(s, "endSize", 6), sw - 2, full.back(), ue, inner);
-                marker(str(s, "startArrow"), str(s, "startFill") != "0", num(s, "startSize", 6), sw - 2, full.front(), us, inner);
+                uint32_t ic = withOpacity(inner, num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);   // (as the inner line)
+                marker(str(s, "endArrow"), str(s, "endFill") != "0", num(s, "endSize", 6), sw - 2, full.back(), ue, ic);
+                marker(str(s, "startArrow"), str(s, "startFill") != "0", num(s, "startSize", 6), sw - 2, full.front(), us, ic);
             }
         }
         c.route = full;
