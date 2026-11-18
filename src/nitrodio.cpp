@@ -3274,7 +3274,14 @@ struct Builder {
         else if (es == "segmentEdgeStyle") segmentConnector(source, target, p0, pe, hints, mid);
         else if (es == "isometricEdgeStyle") isometricConnector(source, target, p0, pe, hints, s, mid), orth = false;
         else mid = hints, orth = str(s, "orthogonal") == "1";
-        // the floating ends: the target first, towards its neighbour (the other end, or its centre)
+        // the floating ends: the target first, towards its neighbour (the other end, or its centre); on the perimeter
+        // grown by perimeterSpacing and the end's own source / targetPerimeterSpacing
+        bool fixedS = haveS, fixedT = haveT;
+        auto grown = [&](Term t, bool source) {
+            double g = num(s, "perimeterSpacing", 0) + num(s, source ? "sourcePerimeterSpacing" : "targetPerimeterSpacing", 0);
+            if (g != 0 && std::isfinite(g)) t.b = {t.b.x - g, t.b.y - g, std::max(0.0, t.b.w + 2 * g), std::max(0.0, t.b.h + 2 * g)};
+            return t;
+        };
         if (!haveT && target) {
             Pt next = !mid.empty() ? mid.back() : haveS ? sp : source ? source->b.centre() : tt.b.centre();
             tp = perimeterPoint(tt, next, orth);
@@ -3284,6 +3291,15 @@ struct Builder {
             Pt next = !mid.empty() ? mid.front() : tp;
             sp = perimeterPoint(st, next, orth);
             haveS = true;
+        }
+        if (str(s, "fixedPointSpacing") == "1") {   // (mxGraphView.updateFixedPointSpacing: a fixed end moved its spacing towards
+            auto shift = [&](Pt &e, Pt next, double g) {   // its neighbour; negative: back into the shape)
+                double d = std::hypot(next.x - e.x, next.y - e.y);
+                g = std::min(g, std::max(0.0, d - 1));
+                if (d > 0 && g != 0) e = {e.x + (next.x - e.x) * g / d, e.y + (next.y - e.y) * g / d};
+            };
+            if (fixedS && source) shift(sp, !mid.empty() ? mid.front() : tp, num(s, "sourcePerimeterSpacing", 0));
+            if (fixedT && target) shift(tp, !mid.empty() ? mid.back() : sp, num(s, "targetPerimeterSpacing", 0));
         }
         std::vector<Pt> r{sp};
         for (Pt p : mid)
