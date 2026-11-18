@@ -2891,10 +2891,12 @@ struct Builder {
             else if (!horizontal && ((pe && pe->x != hint.x) || (!pe && target && (hint.x < target->b.x || hint.x > target->b.x + target->b.w))))
                 push({hint.x, pt.y});
         }
-        if (!p0 && source)   // (bends inside the source of a floating end)
-            while (result.size() > 1 && contains(source->b, result[1].x, result[1].y)) result.erase(result.begin() + 1);
+        // (bends inside the source or target of a floating end; mxGraph's result starts with the source's slot, so its
+        // result[1] and "length > 1" are this one's result[0] and "not empty")
+        if (!p0 && source)
+            while (!result.empty() && contains(source->b, result[0].x, result[0].y)) result.erase(result.begin());
         if (!pe && target)
-            while (result.size() > 1 && contains(target->b, result.back().x, result.back().y)) result.pop_back();
+            while (!result.empty() && contains(target->b, result.back().x, result.back().y)) result.pop_back();
         if (!hints.empty() && pe && !result.empty() && std::fabs(pe->x - result.back().x) <= tol && std::fabs(pe->y - result.back().y) <= tol) {
             result.pop_back();
             if (!result.empty()) {
