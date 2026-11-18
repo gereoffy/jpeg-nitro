@@ -143,7 +143,7 @@ typedef struct { int x0, y0, x1, y1, stride; Resolution res[LEVELS]; void *plane
 typedef struct { int r0, c0, l1, r1, c1, order; } Progression;
 typedef struct { uint64_t key[5]; unsigned progression; int c, r, p, l; } Packet;
 typedef struct {
-    int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags;
+    int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags, own_poc;
     Coding coding[NJPX_MAX_COMPS]; Component comp[NJPX_MAX_COMPS];
     Progression poc[POC_LIMIT]; int npoc;
     Packet *packets; size_t npackets, available, next;
@@ -1747,7 +1747,9 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             if ((size_t)(partend - p) < 2) goto done;
             unsigned tn = be16(p); if (tn < 2 || tn > (size_t)(partend - p)) goto done;
             if (t->started && tm != 0xff64 && tm != 0xff58 && tm != 0xff5f) goto done;
-            if (tm == 0xff5f && !have_poc) { t->npoc = 0; have_poc = 1; }
+            // the tile's first POC replaces the main header's; those of its later tile-parts are added (A.6.6)
+            if (tm == 0xff5f && !t->own_poc) { t->npoc = 0; t->own_poc = 1; }
+            if (tm == 0xff5f) have_poc = 1;
             if (marker(&j, t, tm, p + 2, tn - 2)) goto done;
             p += tn;
         }
