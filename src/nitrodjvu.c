@@ -880,10 +880,15 @@ typedef struct {
 // (a coordinate far off any page: kept within what an int holds)
 static int whole(double v) { return v < -1e9 ? -1000000000 : v > 1e9 ? 1000000000 : (int)v; }
 
-// pa .. pb: the output pixel's extent on the page; o, r: the layer's origin and reduction; n: its size
-static void span(Span *s, double pa, double pb, int o, int r, int n) {
+// whether a layer of reduction r is drawn reduced at scale: decided once for the layer, so that both
+// axes and every pixel take the same way (an output pixel's extent, pb - pa, differs by rounding)
+static int reduced(double scale, int r) { return 1 / scale > r; }
+
+// pa .. pb: the output pixel's extent on the page; o, r: the layer's origin and reduction; n: its size;
+// red: reduced()
+static void span(Span *s, double pa, double pb, int o, int r, int n, int red) {
     double la = (pa - o) / r, lb = (pb - o) / r;
-    if (lb - la > 1) {
+    if (red) {
         int a = whole(floor(la)), b = whole(ceil(lb));
         if (a < 0) a = 0;
         if (b > n) b = n;
@@ -1110,8 +1115,8 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
             if (a < 0) a = 0;
             if (b > pg->bw) b = pg->bw;
             c0[i] = a, c1[i] = b;
-            if (bg) span(&bx[i], xa, xb, bg->ox, bg->r, bg->w);
-            if (fg) span(&fx[i], xa, xb, fg->ox, fg->r, fg->w);
+            if (bg) span(&bx[i], xa, xb, bg->ox, bg->r, bg->w, reduced(scale, bg->r));
+            if (fg) span(&fx[i], xa, xb, fg->ox, fg->r, fg->w, reduced(scale, fg->r));
         }
     }
     Smooth sm;
@@ -1136,8 +1141,8 @@ int nitrodjvu_render(nitrodjvu *d, int page, uint8_t *bgra, int w, int h, size_t
         if (r0 < 0) r0 = 0;
         if (r1 > pg->bh) r1 = pg->bh;
         Span by, fy;
-        if (bg) span(&by, ya, yb, bg->oy, bg->r, bg->h);
-        if (fg) span(&fy, ya, yb, fg->oy, fg->r, fg->h);
+        if (bg) span(&by, ya, yb, bg->oy, bg->r, bg->h, reduced(scale, bg->r));
+        if (fg) span(&fy, ya, yb, fg->oy, fg->r, fg->h, reduced(scale, fg->r));
         const uint16_t *sr[4] = {NULL, NULL, NULL, NULL};
         uint16_t sy[4] = {0, 0, 0, 0};
         if (smooth) {
