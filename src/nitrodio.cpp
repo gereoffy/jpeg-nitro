@@ -1266,7 +1266,8 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
 bool turnsByDirection(const std::string &shape) {
     static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
-                                         "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor"};
+                                         "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
+                                         "offPageConnector"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -1333,6 +1334,9 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         if (shape == "parallelogram") polygon(q, {{d, 0}, {w, 0}, {w - d, h}, {0, h}}, b);
         else if (shape == "trapezoid") polygon(q, {{0, h}, {d, 0}, {w - d, 0}, {w, h}}, b);
         else polygon(q, {{0, 0}, {w - d, 0}, {w, h / 2}, {w - d, h}, {0, h}, {d, h / 2}}, b);
+    } else if (shape == "offPageConnector") {   // (Shapes.js OffPageConnectorShape: a box with a point below, size of its height)
+        double d = h * std::clamp(num(s, "size", 0.375), 0.0, 1.0);
+        polygon(q, {{0, 0}, {w, 0}, {w, h - d}, {w / 2, h}, {0, h - d}}, b);
     } else if (shape == "card" || shape == "note") {
         double d = std::min({num(s, "size", shape == "card" ? 30 : 30), w, h});
         if (shape == "card") polygon(q, {{d, 0}, {w, 0}, {w, h}, {0, h}, {0, d}}, b);
