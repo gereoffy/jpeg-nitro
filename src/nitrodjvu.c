@@ -158,6 +158,7 @@ typedef struct {
     int nlib, caplib, inherited;   // (the first inherited ones are a dictionary's: not freed here)
     size_t pixels;
     int started, width, height, err, old;   // (old: files up to version 18 code a copy's place by its whole bitmap)
+    int nomem;                               // an allocation failed (not the stream's fault: worth another try)
     Bm page;
     int have_page;
     // a page whose shapes have colours of their own (FGbz): the palette entry of each shape put on
@@ -180,7 +181,10 @@ static uint32_t jb2_cell(Jb2 *j) {
         if (l) j->left = l;
         uint32_t *r = realloc(j->right, (size_t)cap * sizeof *r);
         if (r) j->right = r;
-        if (!b || !l || !r) return 0;
+        if (!b || !l || !r) {
+            j->nomem = 1;
+            return 0;
+        }
         j->cap = cap;
     }
     uint32_t c = j->ncells++;
@@ -254,7 +258,10 @@ static size_t shape_bytes(int w, int h) { return (size_t)(h + 2) * ((size_t)w + 
 static int shape_new(Jb2 *j, Shape *s, int w, int h) {
     memset(s, 0, sizeof *s);
     if (w < 0 || h < 0 || w > 65535 || h > 65535 || shape_bytes(w, h) > JB2_MAX_PIXELS - j->pixels) return -1;
-    if (bm_new(&s->bm, w, h)) return -1;
+    if (bm_new(&s->bm, w, h)) {
+        j->nomem = 1;
+        return -1;
+    }
     j->pixels += shape_bytes(w, h);
     return 0;
 }
@@ -322,7 +329,10 @@ static int jb2_add(Jb2 *j, Shape *s) {
     if (j->nlib == j->caplib) {
         int cap = j->caplib ? j->caplib * 2 : 256;
         Shape *more = realloc(j->lib, (size_t)cap * sizeof *more);
-        if (!more) return -1;
+        if (!more) {
+            j->nomem = 1;
+            return -1;
+        }
         j->lib = more, j->caplib = cap;
     }
     shape_box(s);
@@ -413,7 +423,10 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             int n = jb2_num(j, &j->c_dict, 0, JB2_BIG);
             if (j->err || n < 0 || j->nlib || (n && (!dict || n > dict->n))) break;
             j->lib = malloc((size_t)(n ? n : 1) * sizeof *j->lib);
-            if (!j->lib) break;
+            if (!j->lib) {
+                j->nomem = 1;
+                break;
+            }
             if (n) memcpy(j->lib, dict->shapes, (size_t)n * sizeof *j->lib);
             j->nlib = j->caplib = j->inherited = n;
             continue;
@@ -488,7 +501,7 @@ typedef struct {   // a component file of the document: a page, or one others in
     char *id;
     int is_page;
     Dict *dict;       // the shape dictionary it brings, decoded (its own Djbz, or the one it includes: dict_own 0)
-    int dict_tried, dict_own;
+    int dict_state, dict_own;   // (comp_dict: 0 not asked yet, 1 being read, 2 done: dict is what it brings)
 } Comp;
 
 // A picture layer of a page (its background or its foreground colours), decoded: planes as nitroiw44
@@ -547,40 +560,52 @@ static int comp_by_id(const nitrodjvu *d, const uint8_t *id, size_t n) {
     return -1;
 }
 
-// The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn
-// (depth: no deeper than a few). NULL: none, or damaged. Decoded once, kept with the document.
-static const Dict *comp_dict(nitrodjvu *d, int c, int depth) {
+// The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn.
+// NULL: none, or damaged. Decoded once, kept with the document; but a chain deeper than a few, one
+// that comes round to a component being read, or no memory: NULL, *again set, and nothing along the
+// chain kept (each component keeps only what it brings whoever asks: the pages need not be read in
+// any order, and the next page asks again).
+static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
     Comp *co = &d->comps[c];
-    if (co->dict_tried) return co->dict;
-    co->dict_tried = 1;
-    if (depth > 4) return NULL;
-    const Dict *inherited = NULL;
+    if (co->dict_state == 2) return co->dict;
+    if (co->dict_state == 1 || depth > 4) {
+        *again = 1;
+        return NULL;
+    }
+    co->dict_state = 1;
+    int cut = 0;
+    const Dict *inherited = NULL, *out = NULL;
     const uint8_t *id, *data, *djbz = NULL;
     size_t at = co->at, n, djbz_len = 0;
     while (chunk(d, &at, co->at + co->len, &id, &data, &n)) {
         if (!memcmp(id, "INCL", 4)) {
             int k = comp_by_id(d, data, n);
-            const Dict *x = k >= 0 && k != c ? comp_dict(d, k, depth + 1) : NULL;
+            const Dict *x = k >= 0 && k != c ? comp_dict(d, k, depth + 1, &cut) : NULL;
             if (x) inherited = x;
         } else if (!memcmp(id, "Djbz", 4) && !djbz)
             djbz = data, djbz_len = n;
     }
-    if (!djbz) {
-        co->dict = (Dict *)inherited;   // (a file that only passes another's on)
-        return inherited;
-    }
-    Jb2 *j = calloc(1, sizeof *j);
-    Dict *out = calloc(1, sizeof *out);
-    if (j && out && !jb2_decode(j, djbz, djbz_len, inherited, 0)) {
-        out->shapes = j->lib, out->n = j->nlib, out->inherited = j->inherited;
-        jb2_free(j, 1);
+    if (!djbz) out = inherited;   // (a file that only passes another's on)
+    else if (!cut) {
+        Jb2 *j = calloc(1, sizeof *j);
+        Dict *dict = calloc(1, sizeof *dict);
+        if (j && dict && !jb2_decode(j, djbz, djbz_len, inherited, 0)) {
+            dict->shapes = j->lib, dict->n = j->nlib, dict->inherited = j->inherited;
+            jb2_free(j, 1);
+            out = dict, co->dict_own = 1;
+        } else {
+            cut = !j || !dict || j->nomem;   // (damaged: kept as none)
+            if (j) jb2_free(j, 0);
+            free(dict);
+        }
         free(j);
-        co->dict = out, co->dict_own = 1;
-        return out;
     }
-    if (j) jb2_free(j, 0);
-    free(j), free(out);
-    return NULL;
+    if (cut) {
+        co->dict_state = 0, *again = 1;
+        return NULL;
+    }
+    co->dict = (Dict *)out, co->dict_state = 2;
+    return out;
 }
 
 // a plane of w x h bytes turned by quarter turns clockwise, into a new one (NULL: out of memory); the old one is freed
@@ -685,7 +710,8 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
 // a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
 static void page_decode(nitrodjvu *d, Page *pg) {
     Comp *co = &d->comps[pg->comp];
-    const Dict *dict = comp_dict(d, pg->comp, 0);
+    int again = 0;
+    const Dict *dict = comp_dict(d, pg->comp, 0, &again);
     const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
     size_t at = co->at, n, sjbz_len = 0, colours_len = 0;
     int layers = 0;
