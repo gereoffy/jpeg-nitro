@@ -308,7 +308,37 @@ struct Seg {
     std::string text;
     bool bold = false, italic = false;
     uint32_t rgba = 0;   // (an HTML label's own colour; 0: the label's)
+    float size = 0;      // (an HTML label's own font size; 0: the label's)
 };
+
+// the font size an HTML tag sets: style="font-size: Npx / Npt / N% / Nem" (the last two of base, the size around
+// it) or <font size="1..7">; 0: none
+float tagSize(const std::string &tag, float base) {
+    size_t at = tag.find("font-size");
+    if (at != std::string::npos) {
+        size_t v = tag.find(':', at);
+        if (v != std::string::npos) {
+            char *end = nullptr;
+            const char *p = tag.c_str() + v + 1;
+            while (*p == ' ') p++;
+            double d = nn_strtod(p, &end);
+            if (end != p && d > 0 && d < 1000) {
+                if (end[0] == '%') return (float)(base * d / 100);
+                if (end[0] == 'e' && end[1] == 'm') return (float)(base * d);
+                return (float)(end[0] == 'p' && end[1] == 't' ? d * 4 / 3 : d);
+            }
+        }
+    }
+    std::string low = tag;
+    for (char &ch : low) ch = (char)tolower((unsigned char)ch);
+    if (low.compare(0, 5, "font ") == 0 && (at = low.find("size=")) != std::string::npos) {
+        static const float sizes[8] = {0, 10, 13, 16, 18, 24, 32, 48};
+        size_t v = at + 5;
+        while (v < low.size() && (low[v] == '"' || low[v] == '\'')) v++;
+        if (v < low.size() && low[v] >= '1' && low[v] <= '7') return sizes[low[v] - '0'];
+    }
+    return 0;
+}
 
 // the text colour an HTML tag sets: <font color="..."> or style="color: ..." (not background-color); 0: none
 uint32_t tagColour(const std::string &tag) {
@@ -350,17 +380,19 @@ void putEntity(std::string &o, const std::string &e) {
 // A label's text as paragraphs: plain (its line breaks), or HTML: <br> and the block elements
 // break lines, <b> <strong> <i> <em> (and the bold / italic of fontStyle) set the font, the
 // other tags are dropped, white space collapses
-std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic) {
+std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic, float baseSize) {
     std::vector<Para> paras(1);
     std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
     std::vector<int> lists;   // (the open <ul> (0) / <ol> (its next number))
+    std::vector<std::pair<std::string, float>> sizes;   // (the open tags that set a font size, as colours)
     int unordered = 0;        // (an <li> outside a list: a bullet)
     auto add = [&](const std::string &t, bool b, bool i) {
         if (t.empty()) return;
         Para &p = paras.back();
         uint32_t rgba = colours.empty() ? 0 : colours.back().second;
-        if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().rgba == rgba) p.back().text += t;
-        else p.push_back({t, b, i, rgba});
+        float sz = sizes.empty() ? 0 : sizes.back().second;
+        if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().rgba == rgba && p.back().size == sz) p.back().text += t;
+        else p.push_back({t, b, i, rgba, sz});
     };
     if (!html) {
         std::string cur;
@@ -402,13 +434,21 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             for (char &ch : name) ch = (char)tolower((unsigned char)ch);
             if (!close && name != "br" && name != "img" && name != "hr" && name != "wbr") {
                 if (uint32_t col = tagColour(tag)) flush(), colours.push_back({name, col});
-            } else if (close)
+                if (float sz = tagSize(tag, sizes.empty() ? baseSize : sizes.back().second)) flush(), sizes.push_back({name, sz});
+            } else if (close) {
                 for (size_t k = colours.size(); k-- > 0;)
                     if (colours[k].first == name) {
                         flush();
                         colours.erase(colours.begin() + (long)k);
                         break;
                     }
+                for (size_t k = sizes.size(); k-- > 0;)
+                    if (sizes[k].first == name) {
+                        flush();
+                        sizes.erase(sizes.begin() + (long)k);
+                        break;
+                    }
+            }
             if (name == "br") newLine();
             else if (name == "ul" || name == "ol") {   // (a list: its items marked, numbered in an <ol>)
                 if (!paras.back().empty() || !cur.empty()) newLine();
@@ -484,8 +524,8 @@ float textWidth(plutovg_font_face_t *face, float size, const std::string &t) {
 std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box box, double wrapWidth) {
     bool html = str(s, "html") == "1";
     int fontStyle = (int)num(s, "fontStyle", 0);
-    std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2);
     float size = (float)std::clamp(num(s, "fontSize", 12), 1.0, 1000.0);
+    std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2, size);
     std::string family = str(s, "fontFamily");
     size_t comma = family.find(',');
     if (comma != std::string::npos) family.resize(comma);
@@ -503,6 +543,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         std::string text;
         float width;
         uint32_t rgba;
+        float size;
     };
     double alpha = num(s, "textOpacity", 100) * num(s, "opacity", 100) / 100;
     std::vector<std::vector<LineRun>> lines;
@@ -512,9 +553,10 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         widths.push_back(0);
         for (const Seg &sg : p) {
             plutovg_font_face_t *f = face(sg.bold, sg.italic);
+            float sz = sg.size > 0 ? sg.size : size;
             if (wrapWidth <= 0) {
-                float w = textWidth(f, size, sg.text);
-                lines.back().push_back({f, sg.text, w, sg.rgba ? withOpacity(sg.rgba, alpha) : rgba});
+                float w = textWidth(f, sz, sg.text);
+                lines.back().push_back({f, sg.text, w, sg.rgba ? withOpacity(sg.rgba, alpha) : rgba, sz});
                 widths.back() += w;
                 continue;
             }
@@ -524,14 +566,14 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 e = e == std::string::npos ? sg.text.size() : e + 1;
                 std::string word = sg.text.substr(i, e - i);
                 i = e;
-                float w = textWidth(f, size, word);
+                float w = textWidth(f, sz, word);
                 std::string bare = word;
                 while (!bare.empty() && bare.back() == ' ') bare.pop_back();
-                if (widths.back() > 0 && widths.back() + textWidth(f, size, bare) > wrapWidth + 0.5) {   // (wrapped)
+                if (widths.back() > 0 && widths.back() + textWidth(f, sz, bare) > wrapWidth + 0.5) {   // (wrapped)
                     if (!lines.back().empty()) {
                         LineRun &last = lines.back().back();
                         while (!last.text.empty() && last.text.back() == ' ') last.text.pop_back();
-                        last.width = textWidth(last.face, size, last.text);
+                        last.width = textWidth(last.face, last.size, last.text);
                         widths.back() = 0;
                         for (LineRun &r : lines.back()) widths.back() += r.width;
                     }
@@ -539,15 +581,22 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                     widths.push_back(0);
                 }
                 uint32_t col = sg.rgba ? withOpacity(sg.rgba, alpha) : rgba;
-                if (!lines.back().empty() && lines.back().back().face == f && lines.back().back().rgba == col) lines.back().back().text += word, lines.back().back().width += w;
-                else lines.back().push_back({f, word, w, col});
+                if (!lines.back().empty() && lines.back().back().face == f && lines.back().back().rgba == col && lines.back().back().size == sz)
+                    lines.back().back().text += word, lines.back().back().width += w;
+                else lines.back().push_back({f, word, w, col, sz});
                 widths.back() += w;
             }
         }
     }
     auto label = std::make_shared<Label>();
-    float lineH = size * 1.2f;
-    float textH = lineH * (float)lines.size(), textW = 0;
+    std::vector<float> lineSize(lines.size(), size);   // (a line as high as its largest text: 1.2 font sizes)
+    for (size_t l = 0; l < lines.size(); l++)
+        if (!lines[l].empty()) {
+            lineSize[l] = 0;
+            for (const LineRun &r : lines[l]) lineSize[l] = std::max(lineSize[l], r.size);
+        }
+    float textH = 0, textW = 0;
+    for (float z : lineSize) textH += z * 1.2f;
     for (float w : widths) textW = std::max(textW, w);
     const std::string &va = str(s, "verticalAlign"), &al = str(s, "align");
     double top = va == "top" ? box.y : va == "bottom" ? box.y + box.h - textH : box.y + (box.h - textH) / 2;
@@ -559,13 +608,16 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         asc = a, desc = -d;
     }
     float x0 = 1e30f, x1 = -1e30f;
+    double y = top;
     for (size_t l = 0; l < lines.size(); l++) {
         double left = al == "left" ? box.x : al == "right" ? box.x + box.w - widths[l] : box.x + (box.w - widths[l]) / 2;
-        float base = (float)(top + lineH * l + (lineH + asc - desc) / 2);
+        float k = lineSize[l] / size, lineH = lineSize[l] * 1.2f;
+        float base = (float)(y + (lineH + (asc - desc) * k) / 2);
+        y += lineH;
         float pen = (float)left;
         x0 = std::min(x0, pen), x1 = std::max(x1, pen + widths[l]);
         for (LineRun &r : lines[l]) {
-            if (!r.text.empty() && r.face && (r.rgba >> 24)) label->runs.push_back({r.face, size, r.rgba, pen, base, r.text});
+            if (!r.text.empty() && r.face && (r.rgba >> 24)) label->runs.push_back({r.face, r.size, r.rgba, pen, base, r.text});
             pen += r.width;
         }
     }
