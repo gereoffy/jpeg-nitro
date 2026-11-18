@@ -1087,6 +1087,33 @@ struct Builder {
         }
     }
 
+    // mxEdgeStyle.Loop: an edge from a vertex to itself, out and back beside it (by the edge's direction:
+    // west, the default, on the right; or through the first hint)
+    static void loop(const Term *source, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, const Style &s, std::vector<Pt> &result) {
+        if (p0 && pe) {
+            result = hints;
+            return;
+        }
+        if (!source) return;
+        const Box &b = source->b;
+        const Pt *pt = hints.empty() || contains(b, hints[0].x, hints[0].y) ? nullptr : &hints[0];
+        const std::string &dir = str(s, "direction");
+        double x = 0, dx = 0, y = 0, dy = 0, seg = num(s, "segment", 10);
+        if (dir == "north" || dir == "south") x = b.x + b.w / 2, dx = seg;
+        else y = b.y + b.h / 2, dy = seg;
+        if (!pt || pt->x < b.x || pt->x > b.x + b.w) {
+            if (pt) x = pt->x, dy = std::max(std::fabs(y - pt->y), dy);
+            else if (dir == "north") y = b.y - 2 * dx;
+            else if (dir == "south") y = b.y + b.h + 2 * dx;
+            else if (dir == "east") x = b.x - 2 * dy;
+            else x = b.x + b.w + 2 * dy;
+        } else {
+            x = b.x + b.w / 2, dx = std::max(std::fabs(x - pt->x), dy), y = pt->y, dy = 0;
+        }
+        result.push_back({x - dx, y - dy});
+        result.push_back({x + dx, y + dy});
+    }
+
     // mxEdgeStyle.SideToSide / TopToBottom: one elbow in the middle (or at the hint)
     static void sideToSide(const Term *source, const Term *target, const Pt *p0, const Pt *pe, const std::vector<Pt> &hints, std::vector<Pt> &result) {
         Box s = source ? source->b : Box{}, t = target ? target->b : Box{};
@@ -1353,7 +1380,7 @@ struct Builder {
         Term st, tt;
         if (src) st = {absBox(*src), str(src->style, "perimeter"), &src->style};
         if (dst) tt = {absBox(*dst), str(dst->style, "perimeter"), &dst->style};
-        const Term *source = src ? &st : nullptr, *target = dst ? &tt : nullptr;
+        const Term *source = src ? &st : nullptr, *target = dst ? (dst == src ? &st : &tt) : nullptr;   // (a loop: one terminal)
         if (!source && !c.hasSource) return;
         if (!target && !c.hasTarget) return;
         // the fixed ends
@@ -1368,7 +1395,10 @@ struct Builder {
         std::vector<Pt> mid;
         bool orth = true;
         const Pt *p0 = haveS ? &sp : nullptr, *pe = haveT ? &tp : nullptr;
-        if (es == "orthogonalEdgeStyle") orthConnector(source, target, p0, pe, hints, s, mid);
+        // (a loop's own style, as mxGraphView takes it: fewer than two points, and no fixed end that orthogonalLoop routes)
+        bool isLoop = source && target == source && c.points.size() < 2 && !(str(s, "orthogonalLoop") == "1" && (haveS || haveT));
+        if (isLoop) loop(source, p0, pe, hints, s, mid), orth = str(s, "orthogonal") == "1";
+        else if (es == "orthogonalEdgeStyle") orthConnector(source, target, p0, pe, hints, s, mid);
         else if (es == "elbowEdgeStyle") elbowConnector(source, target, p0, pe, hints, s, mid);
         else if (es == "sideToSideEdgeStyle" || es == "entityRelationEdgeStyle") sideToSide(source, target, p0, pe, hints, mid);
         else if (es == "topToBottomEdgeStyle") topToBottom(source, target, p0, pe, hints, mid);
