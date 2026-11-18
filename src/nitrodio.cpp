@@ -910,14 +910,67 @@ struct Builder {
 
     struct Term {   // a terminal vertex
         Box b;
-        std::string perimeter;   // rectanglePerimeter (the default), ellipsePerimeter, rhombusPerimeter
+        std::string perimeter;   // rectanglePerimeter (the default), ellipsePerimeter, rhombusPerimeter, trianglePerimeter
         const Style *style = nullptr;
+        double rotation = 0;   // (degrees, about the box's centre)
     };
+    static Term term(Box b, const Style &s) { return {b, str(s, "perimeter"), &s, num(s, "rotation", 0)}; }
+    static Pt rotated(Pt p, double deg, Pt c) {
+        double a = deg * M_PI / 180, co = std::cos(a), si = std::sin(a), dx = p.x - c.x, dy = p.y - c.y;
+        return {c.x + dx * co - dy * si, c.y + dx * si + dy * co};
+    }
+
+    // mxPerimeter.TrianglePerimeter: the triangle of the shape (its direction: east, the default, points right)
+    static Pt trianglePoint(const Term &t, Pt next, bool orthogonal) {
+        const Box &bb = t.b;
+        const std::string &dir = t.style ? str(*t.style, "direction") : std::string();
+        bool vertical = dir == "north" || dir == "south";
+        double x = bb.x, y = bb.y, w = bb.w, h = bb.h, cx = x + w / 2, cy = y + h / 2;
+        Pt start{x, y}, corner{x + w, cy}, end{x, y + h};
+        if (dir == "north") start = end, corner = {cx, y}, end = {x + w, y + h};
+        else if (dir == "south") corner = {cx, y + h}, end = {x + w, y};
+        else if (dir == "west") start = {x + w, y}, corner = {x, cy}, end = {x + w, y + h};
+        double dx = next.x - cx, dy = next.y - cy;
+        double alpha = vertical ? std::atan2(dx, dy) : std::atan2(dy, dx), tt = vertical ? std::atan2(w, h) : std::atan2(h, w);
+        bool base = dir == "north" || dir == "west" ? alpha > -tt && alpha < tt : alpha < -M_PI + tt || alpha > M_PI - tt;
+        auto cross = [](double x0, double y0, double x1, double y1, Pt a, Pt b, Pt &r) {   // (mxUtils.intersection: of the segments)
+            double den = (b.y - a.y) * (x1 - x0) - (b.x - a.x) * (y1 - y0);
+            if (den == 0) return false;
+            double ua = ((b.x - a.x) * (y0 - a.y) - (b.y - a.y) * (x0 - a.x)) / den, ub = ((x1 - x0) * (y0 - a.y) - (y1 - y0) * (x0 - a.x)) / den;
+            if (!(ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1)) return false;
+            r = {x0 + ua * (x1 - x0), y0 + ua * (y1 - y0)};
+            return true;
+        };
+        if (base) {
+            if (orthogonal && ((vertical && next.x >= start.x && next.x <= end.x) || (!vertical && next.y >= start.y && next.y <= end.y)))
+                return vertical ? Pt{next.x, start.y} : Pt{start.x, next.y};
+            if (dir == "north") return {x + w / 2 + h * std::tan(alpha) / 2, y + h};
+            if (dir == "south") return {x + w / 2 - h * std::tan(alpha) / 2, y};
+            if (dir == "west") return {x + w, y + h / 2 + w * std::tan(alpha) / 2};
+            return {x, y + h / 2 - w * std::tan(alpha) / 2};
+        }
+        double ox = cx, oy = cy;
+        if (orthogonal) {
+            if (next.y >= y && next.y <= y + h) ox = vertical ? cx : dir == "west" ? x + w : x, oy = next.y;
+            else if (next.x >= x && next.x <= x + w) ox = next.x, oy = !vertical ? cy : dir == "north" ? y + h : y;
+        }
+        Pt r;
+        bool first = vertical ? next.x <= x + w / 2 : next.y <= y + h / 2;
+        if (first ? cross(next.x, next.y, ox, oy, start, corner, r) : cross(next.x, next.y, ox, oy, corner, end, r)) return r;
+        return {cx, cy};
+    }
 
     // mxPerimeter: the point of the terminal's perimeter towards next (orthogonal: straight across
-    // from next where it lies beside the terminal)
+    // from next where it lies beside the terminal). A turned terminal: next turned back, the point on
+    // the upright shape turned with it (as mxGraphView.getPerimeterPoint)
     static Pt perimeterPoint(const Term &t, Pt next, bool orthogonal) {
+        if (t.rotation == 0) return uprightPoint(t, next, orthogonal);
+        Pt c = t.b.centre();
+        return rotated(uprightPoint(t, rotated(next, -t.rotation, c), orthogonal), t.rotation, c);
+    }
+    static Pt uprightPoint(const Term &t, Pt next, bool orthogonal) {
         const Box &b = t.b;
+        if (t.perimeter == "trianglePerimeter" && b.w > 0 && b.h > 0) return trianglePoint(t, next, orthogonal);
         if (b.w <= 0 && b.h <= 0) return b.centre();
         double cx = b.x + b.w / 2, cy = b.y + b.h / 2, px = next.x, py = next.y;
         if (t.perimeter == "ellipsePerimeter") {
@@ -984,7 +1037,8 @@ struct Builder {
         double fx = nn_strtod(vx.c_str(), nullptr), fy = nn_strtod(vy.c_str(), nullptr);
         if (!std::isfinite(fx) || !std::isfinite(fy) || std::fabs(fx) > 1e6 || std::fabs(fy) > 1e6) return false;
         p = {t.b.x + fx * t.b.w + num(s, source ? "exitDx" : "entryDx", 0), t.b.y + fy * t.b.h + num(s, source ? "exitDy" : "entryDy", 0)};
-        if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = perimeterPoint(t, p, false);
+        if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = uprightPoint(t, p, false);
+        if (t.rotation != 0) p = rotated(p, t.rotation, t.b.centre());   // (the point turns with its shape)
         return true;
     }
 
@@ -1378,8 +1432,8 @@ struct Builder {
         if (src && !src->vertex) src = nullptr;   // (an edge ending on an edge: at its point, if any)
         if (dst && !dst->vertex) dst = nullptr;
         Term st, tt;
-        if (src) st = {absBox(*src), str(src->style, "perimeter"), &src->style};
-        if (dst) tt = {absBox(*dst), str(dst->style, "perimeter"), &dst->style};
+        if (src) st = term(absBox(*src), src->style);
+        if (dst) tt = term(absBox(*dst), dst->style);
         const Term *source = src ? &st : nullptr, *target = dst ? (dst == src ? &st : &tt) : nullptr;   // (a loop: one terminal)
         if (!source && !c.hasSource) return;
         if (!target && !c.hasTarget) return;
