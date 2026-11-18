@@ -3422,7 +3422,8 @@ static int lf_global(Frame *f) {
         if (lim > (1 << 22)) lim = 1 << 22;
         TRY(read_tree(br, lim, &f->gtree));
     }
-    if (h->modular && h->ycbcr && (h->maxhs || h->maxvs)) return ERR_UNSUP;   // (sub-sampled chroma in Modular: not rendered)
+    if (h->modular && h->ycbcr && (h->hs[0] | h->hs[1] | h->hs[2] | h->vs[0] | h->vs[1] | h->vs[2]))
+        return ERR_UNSUP;   // (a sub-sampled channel in Modular: not rendered; all three alike are full size)
     TRY(modular_alloc(&f->gm, nch, m->bits));
     for (int c = 0; c < f->nb_color; c++) {
         Chan *ch = &f->gm.ch[c];
