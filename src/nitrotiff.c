@@ -395,18 +395,21 @@ static int row_2d(Bits *b, int w, const int *ref, int nr, int *cur) {
 }
 
 // rows of one strip / tile: packed bits, prow bytes per row; align: each row's code starts on a byte
-static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int w, int rows, size_t prow, int align) {
+// (-2: out of memory; done, if not NULL: the rows read whole)
+static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int w, int rows, size_t prow, int align, int *done) {
     uint8_t *rev = NULL;
+    if (done) *done = 0;
     if (in->fillorder == 2) {
-        if (!(rev = malloc(sl))) return -1;
+        if (!(rev = malloc(sl))) return -2;
         for (size_t i = 0; i < sl; i++) rev[i] = g_rev[s[i]];
         s = rev;
     }
-    int *ref = malloc((size_t)(w + 8) * 2 * sizeof *ref), *cur = ref + w + 8, nr = 0, rc = 0;
+    int *ref = malloc((size_t)(w + 8) * 2 * sizeof *ref), *cur, nr = 0, rc = 0;
     if (!ref) {
         free(rev);
-        return -1;
+        return -2;
     }
+    cur = ref + w + 8;
     Bits b = {s, sl, 0};
     ref[0] = ref[1] = ref[2] = w;   // (the row above the first one: all white)
     int black_one = in->photometric == 0;   // WhiteIsZero: a black pixel is 1
@@ -432,6 +435,7 @@ static int ccitt(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d, int
         }
         memset(row, black_one ? 0 : 0xFF, prow);
         for (int k = 0; k < n; k += 2) black_run(row, cur[k], k + 1 < n ? cur[k + 1] : w, black_one);
+        if (done) *done = y + 1;
         int *t = ref;   // this row is the next one's reference
         ref = cur;
         cur = t;
@@ -488,7 +492,7 @@ static int decompress(const nt_info *in, const uint8_t *s, size_t sl, uint8_t *d
     case 32773: packbits(s, sl, d, dl); break;
     case 5: if (lzw(s, sl, d, dl)) return -1; break;
     case 8: case 32946: if (np_zlib_decompress(s, sl, d, dl, nthreads)) return -1; break;
-    default: return ccitt(in, s, sl, d, w, rows, rowbytes, 0);
+    default: return ccitt(in, s, sl, d, w, rows, rowbytes, 0, NULL);
     }
     if (in->predictor == 2) {
         int sp = in->planar == 2 ? 1 : in->spp;
@@ -652,6 +656,11 @@ int nt_decode(const uint8_t *data, size_t len, const nt_info *in, uint8_t *bgrx,
 
 // A PDF's CCITTFaxDecode (nitrotiff.h)
 int nt_ccitt(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst, size_t prow) {
+    return nt_ccitt_rows(data, len, k, columns, rows, black_is_1, byte_align, dst, prow, NULL);
+}
+int nt_ccitt_rows(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst,
+                  size_t prow, int *done) {
+    if (done) *done = 0;
     if (columns <= 0 || rows <= 0 || prow < ((size_t)columns + 7) / 8) return -1;
     pthread_once(&g_once, init_tables);
     nt_info in;
@@ -661,5 +670,5 @@ int nt_ccitt(const uint8_t *data, size_t len, int k, int columns, int rows, int 
     in.photometric = black_is_1 ? 0 : 1;   // (0: a black pixel is 1)
     in.fillorder = 1;
     // (G3's rows start with an EOL whose fill bits align it: skip_eol finds it from anywhere)
-    return ccitt(&in, data, len, dst, columns, rows, prow, byte_align && k < 0);
+    return ccitt(&in, data, len, dst, columns, rows, prow, byte_align && k < 0, done);
 }

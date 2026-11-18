@@ -815,7 +815,8 @@ static int mask_bits(Page *pg, const Bm *b, uint8_t **entry) {
 // each); in strips: the rows of a strip (16 bits), then each strip's length (32 bits) and its code,
 // each strip coded on its own. Only what lies on the page (pw x ph, as its file has it) is read and
 // kept: the rows down to its bottom, the columns to its right edge; the rows read are the JB2 page's
-// limit of pixels at most. 0; 1: not readable; -1: out of memory. A damaged strip: white from there.
+// limit of pixels at most. 0; 1: not readable; -1: out of memory. A damaged strip: white from there
+// (inverted too: the decoder's white rows after the damage would be black ones).
 static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
     if (n < 8 || memcmp(p, "MMR", 3) || (p[3] & ~3)) return 1;
     int invert = p[3] & 1, striped = p[3] & 2, w = p[4] << 8 | p[5], h = p[6] << 8 | p[7], rows = h;
@@ -840,7 +841,12 @@ static int smmr_decode(const uint8_t *p, size_t n, Bm *b, int pw, int ph) {
             len = be32(p + at), at += 4;
             if (len > n - at) len = n - at;
         }
-        nt_ccitt(p + at, len, -1, w, h - y < rows ? h - y : rows, !invert, 0, bits + (size_t)y * prow, prow);
+        int nr = h - y < rows ? h - y : rows, done = 0;
+        if (nt_ccitt_rows(p + at, len, -1, w, nr, !invert, 0, bits + (size_t)y * prow, prow, &done) == -2) {
+            free(bits), free(b->mem), b->mem = NULL;
+            return -1;
+        }
+        if (invert && done < nr) memset(bits + (size_t)(y + done) * prow, 0, (size_t)(nr - done) * prow);
         at += len;
     }
     for (int y = 0; y < h; y++) {

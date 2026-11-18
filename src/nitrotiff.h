@@ -44,6 +44,9 @@ int nt_decode(const uint8_t *data, size_t len, const nt_info *info, uint8_t *bgr
 // on a byte (/EncodedByteAlign). rows x columns pixels into rows of packed bits, prow bytes apart (a
 // damaged row and the rest: white). Returns 0 on success.
 int nt_ccitt(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst, size_t prow);
+// The same, telling more: done (if not NULL) the rows read whole (those after them are white); -2: out of memory.
+int nt_ccitt_rows(const uint8_t *data, size_t len, int k, int columns, int rows, int black_is_1, int byte_align, uint8_t *dst,
+                  size_t prow, int *done);
 
 // The size of the first image from its directory alone (for a window size before the whole file is
 // read; the directory of a Photoshop TIFF is at its end): dir holds the n bytes at the directory's
