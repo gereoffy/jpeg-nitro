@@ -510,6 +510,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         int u, s;
     };
     std::vector<Deco> decos;   // (the open blocks' text-decoration: underline / line-through)
+    auto curSize = [&]() { return sizes.empty() || sizes.back().second <= 0 ? baseSize : sizes.back().second; };
     float gap = 0;   // (the block margins due before the next text: collapsed, the largest)
     auto add = [&](const std::string &t, bool b, bool i, int u) {
         if (t.empty()) return;
@@ -580,8 +581,14 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             size_t sp = tag.find_first_of(" \t\n/");
             std::string name = tag.substr(0, sp);
             for (char &ch : name) ch = (char)tolower((unsigned char)ch);
-            if (!close && name != "br" && name != "img" && name != "hr" && name != "wbr") {
-                if (uint32_t col = tagColour(tag)) flush(), colours.push_back({name, col});
+            bool isVoid = name == "br" || name == "img" || name == "hr" || name == "wbr" || name == "input" || name == "meta" ||
+                          name == "link" || name == "col" || name == "area" || name == "source" || (!name.empty() && name[0] == '!');
+            // (every tag that opens is on the colour, size and highlight stacks, with what it sets or else what it is in:
+            // its end takes back its own, however its insides set theirs)
+            if (!close && !isVoid) {
+                uint32_t col = tagColour(tag);
+                if (col) flush();
+                colours.push_back({name, col ? col : colours.empty() ? 0 : colours.back().second});
                 bool block = name == "div" || name == "p" || name == "li" || name == "ul" || name == "ol" || name == "td" || name == "th" ||
                              name == "tr" || name == "table" || (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6');
                 if (block) {   // (its text-align: its lines', inside the label's block)
@@ -590,16 +597,20 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     for (char &ch : ta) ch = (char)tolower((unsigned char)ch);
                     aligns.push_back({name, ta == "left" || ta == "center" || ta == "right" ? ta : ta == "start" ? "left" : ta == "end" ? "right" : ""});
                     if (name != "li" && name != "ul" && name != "ol") {
-                        double ml = cssLength(cssValue(tag, "margin-left"), 0, sizes.empty() ? baseSize : sizes.back().second);
+                        double ml = cssLength(cssValue(tag, "margin-left"), 0, curSize());
                         lefts.push_back({name, ml > 0 && ml < 1e4 ? (float)ml : 0.f});
                     }
-                    if (tag.find("text-decoration") != std::string::npos) {
-                        int du = tag.find("underline") != std::string::npos, ds = tag.find("line-through") != std::string::npos;
-                        if (du || ds) flush(), un += du, st += ds, decos.push_back({name, du, ds});
-                    }
-                } else if (uint32_t hb = tagBackground(tag))
-                    flush(), highlights.push_back({name, hb});
-                float around = sizes.empty() ? baseSize : sizes.back().second;
+                    int du = 0, ds = 0;
+                    if (tag.find("text-decoration") != std::string::npos)
+                        du = tag.find("underline") != std::string::npos, ds = tag.find("line-through") != std::string::npos;
+                    if (du || ds) flush(), un += du, st += ds;
+                    decos.push_back({name, du, ds});
+                } else {
+                    uint32_t hb = tagBackground(tag);
+                    if (hb) flush();
+                    highlights.push_back({name, hb ? hb : highlights.empty() ? 0 : highlights.back().second});
+                }
+                float around = curSize();
                 static const float heading[6] = {2, 1.5f, 1.17f, 1, 0.83f, 0.67f};   // (a browser's h1 .. h6, bold)
                 static const float hmargin[6] = {0.67f, 0.83f, 1, 1.33f, 1.67f, 2.33f};
                 bool h = name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
@@ -613,7 +624,8 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     margins.push_back({name, mb});
                     gap = std::max(gap, mt);
                 }
-                if (own) flush(), sizes.push_back({name, own});
+                if (own) flush();
+                sizes.push_back({name, own ? own : sizes.empty() ? 0.f : sizes.back().second});
                 bool blk = h || name == "div" || name == "p" || name == "li" || name == "td" || name == "th";
                 if (blk) struts.push_back({name, own ? own : h ? around * heading[name[1] - '1'] : around});
             } else if (close) {
@@ -673,7 +685,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             if (name == "br") newLine();
             else if (name == "hr" && !close) {   // (a rule across the block: 1 px inset border, half an em above and below)
                 if (!paras.back().empty() || !cur.empty()) newLine();
-                float em = sizes.empty() ? baseSize : sizes.back().second, half = em / 2;
+                float em = curSize(), half = em / 2;
                 Seg top;
                 top.size = std::max(gap, half) / 1.2f;
                 paras.back().push_back(top);
@@ -923,7 +935,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
             pen += r.width;
         }
     }
-    if (label->runs.empty()) return nullptr;
+    if (label->runs.empty() && label->rects.empty()) return nullptr;   // (an <hr> alone: its rule)
     label->x0 = x0 - 2, label->x1 = x1 + 2;
     label->y0 = (float)top, label->y1 = (float)(top + textH);
     label->background = colour(s, "labelBackgroundColor", 0);
@@ -1029,9 +1041,15 @@ std::string lowerName(const std::string &tag) {
     for (char &c : n) c = (char)tolower((unsigned char)c);
     return n;
 }
+// whether HTML has blocks of its own: a table, or a <div> with a background
 bool hasTable(const std::string &v) {
-    for (size_t at = 0; (at = v.find('<', at)) != std::string::npos; at++)
+    for (size_t at = 0; (at = v.find('<', at)) != std::string::npos; at++) {
         if (at + 6 <= v.size() && lowerName(v.substr(at + 1, 6)) == "table") return true;
+        if (at + 4 <= v.size() && lowerName(v.substr(at + 1, 4)) == "div") {
+            size_t e = v.find('>', at);
+            if (e != std::string::npos && v.find("background", at) < e && tagBackground(v.substr(at + 1, e - at - 1))) return true;
+        }
+    }
     return false;
 }
 
@@ -1325,7 +1343,8 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
             double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
             laid[b] = flowHtml(bk.html, s, 0, 0, avail > 0 ? std::max(0.f, avail - 2 * (float)p) : 0, 0, wrap, depth + 1);
             laid[b].w += 2 * (float)p, laid[b].h += 2 * (float)p;
-            if (cssLength(cssValue(bk.tag, "width"), avail, 16) > 0) laid[b].w = std::max(laid[b].w, avail);
+            double cw = cssLength(cssValue(bk.tag, "width"), avail, 16);   // (a width of its own: px, or % of the room)
+            if (cw > 0) laid[b].w = std::max(laid[b].w, (float)cw);
         } else {
             Style ts = s;
             ts["verticalAlign"] = "top";
@@ -1341,14 +1360,15 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         if (bk.kind == 1) f = flowTable(bk.html, s, x, cy, avail, availH, depth);
         else if (bk.kind == 2) {
             double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
-            out.rects.push_back({x, cy, wide, laid[b].h, tagBackground(bk.tag)});
+            float bw = cssLength(cssValue(bk.tag, "width"), avail, 16) > 0 ? laid[b].w : wide;   // (its own width, else the block's)
+            out.rects.push_back({x, cy, bw, laid[b].h, tagBackground(bk.tag)});
             f = flowHtml(bk.html, s, x + (float)p, cy + (float)p, std::max(0.f, wide - 2 * (float)p), 0, wrap, depth + 1);
             f.h = laid[b].h;
         } else {
             Style ts = s;
             ts["verticalAlign"] = "top";
             std::shared_ptr<Label> l = layoutLabel(bk.html, ts, Box{x, cy, wide, 0}, wrap && avail > 0 ? avail : 0, false);
-            if (l) f.runs = l->runs;
+            if (l) f.runs = l->runs, f.rects = l->rects;   // (its text and its highlights / rules)
             f.h = laid[b].h;
         }
         out.rects.insert(out.rects.end(), f.rects.begin(), f.rects.end());
