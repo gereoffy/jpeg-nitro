@@ -430,11 +430,11 @@ static int jb2_decode(Jb2 *j, const uint8_t *p, size_t len, const Dict *dict, in
             int m = j->nlib ? jb2_num(j, &j->c_match, 0, j->nlib - 1) : -1;
             if (j->err || m < 0) break;
             const Shape *ref = &j->lib[m];
+            // (an old file's place is reckoned by the whole bitmap's size, but is the box's all the same: DjVuLibre's
+            // "reproduce_old_bug")
             if (j->old) jb2_place(j, ref->bm.h, ref->bm.w, &left, &bottom);
-            else {
-                jb2_place(j, ref->top - ref->bottom + 1, ref->right - ref->left + 1, &left, &bottom);
-                left -= ref->left, bottom -= ref->bottom;
-            }
+            else jb2_place(j, ref->top - ref->bottom + 1, ref->right - ref->left + 1, &left, &bottom);
+            left -= ref->left, bottom -= ref->bottom;
             if (j->err) break;
             jb2_blit(j, &ref->bm, left, bottom);
             continue;
