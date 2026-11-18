@@ -182,7 +182,12 @@ struct Run {   // a piece of a label's line in one font
     float underline = 0;   // (its width when underlined)
 };
 struct Label {
+    struct Rect {
+        float x, y, w, h;
+        uint32_t rgba;
+    };
     std::vector<Run> runs;
+    std::vector<Rect> rects;   // (an HTML table's backgrounds and borders: under the text)
     uint32_t background = 0;   // (0: none) behind the text box
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the text box
     bool turned = false;   // rotated about (cx, cy)
@@ -613,10 +618,14 @@ float textWidth(plutovg_font_face_t *face, float size, const std::string &t) {
     return face ? plutovg_font_face_text_extents(face, size, t.data(), (int)t.size(), PLUTOVG_TEXT_ENCODING_UTF8, nullptr) : 0;
 }
 
+bool hasTable(const std::string &v);
+std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s, Box box, double wrapWidth);
+
 // The label laid out in a box (its alignments; wrapWidth > 0: words wrapped to it), the lines
-// 1.2 font sizes apart, as draw.io sets them (caller holds nf_lock)
-std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box box, double wrapWidth) {
+// 1.2 font sizes apart, as draw.io sets them (caller holds nf_lock); blocks: HTML tables laid out as tables
+std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box box, double wrapWidth, bool blocks = true) {
     bool html = str(s, "html") == "1";
+    if (html && blocks && hasTable(value)) return layoutHtmlBlocks(value, s, box, wrapWidth);
     int fontStyle = (int)num(s, "fontStyle", 0);
     float size = (float)std::clamp(num(s, "fontSize", 12), 1.0, 1000.0);
     std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2, fontStyle & 4, size);
@@ -743,6 +752,449 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     label->y0 = (float)top, label->y1 = (float)(top + textH);
     label->background = colour(s, "labelBackgroundColor", 0);
     if (textW <= 0) label->background = 0;
+    return label;
+}
+
+// --- HTML tables in labels: a browser's table layout, simplified --------------------------------
+
+// a CSS property's value in a tag's style ("" if none; prop not the end of a longer name)
+std::string cssValue(const std::string &tag, const char *prop) {
+    size_t n = strlen(prop);
+    for (size_t at = 0; (at = tag.find(prop, at)) != std::string::npos; at += n) {
+        if (at > 0 && (isalnum((unsigned char)tag[at - 1]) || tag[at - 1] == '-')) continue;
+        size_t v = at + n;
+        while (v < tag.size() && tag[v] == ' ') v++;
+        if (v >= tag.size() || tag[v] != ':') continue;
+        v++;
+        while (v < tag.size() && tag[v] == ' ') v++;
+        size_t e = v;
+        int depth = 0;
+        while (e < tag.size() && (depth || (tag[e] != ';' && tag[e] != '"' && tag[e] != '\''))) {
+            if (tag[e] == '(') depth++;
+            else if (tag[e] == ')') depth--;
+            e++;
+        }
+        std::string r = tag.substr(v, e - v);
+        while (!r.empty() && r.back() == ' ') r.pop_back();
+        return r;
+    }
+    return "";
+}
+// an HTML attribute's value (name="v", name='v' or name=v; "" if none)
+std::string htmlAttr(const std::string &tag, const char *name) {
+    size_t n = strlen(name);
+    for (size_t at = 0; (at = tag.find(name, at)) != std::string::npos; at += n) {
+        if (at == 0 || !isspace((unsigned char)tag[at - 1])) continue;
+        size_t v = at + n;
+        while (v < tag.size() && tag[v] == ' ') v++;
+        if (v >= tag.size() || tag[v] != '=') continue;
+        v++;
+        while (v < tag.size() && tag[v] == ' ') v++;
+        if (v < tag.size() && (tag[v] == '"' || tag[v] == '\'')) {
+            size_t e = tag.find(tag[v], v + 1);
+            return tag.substr(v + 1, e == std::string::npos ? std::string::npos : e - v - 1);
+        }
+        size_t e = v;
+        while (e < tag.size() && !isspace((unsigned char)tag[e]) && tag[e] != '/') e++;
+        return tag.substr(v, e - v);
+    }
+    return "";
+}
+// a CSS / HTML length in px (N, Npx, Npt, Nem; N%: of whole, none if whole <= 0); -1: none
+double cssLength(const std::string &v, double whole, double em) {
+    const char *p = v.c_str();
+    while (*p == ' ') p++;
+    char *end = nullptr;
+    double d = nn_strtod(p, &end);
+    if (end == p || !std::isfinite(d) || d < 0 || d > 1e6) return -1;
+    if (*end == '%') return whole > 0 ? whole * d / 100 : -1;
+    if (end[0] == 'e' && end[1] == 'm') return d * em;
+    if (end[0] == 'p' && end[1] == 't') return d * 4 / 3;
+    return d;
+}
+// the colour among a CSS shorthand's words (background: ..., border: 1px solid ...); 0: none
+uint32_t cssColour(const std::string &v) {
+    size_t i = 0;
+    while (i < v.size()) {
+        while (i < v.size() && v[i] == ' ') i++;
+        size_t e = i;
+        int depth = 0;
+        while (e < v.size() && (depth || v[e] != ' ')) {
+            if (v[e] == '(') depth++;
+            else if (v[e] == ')') depth--;
+            e++;
+        }
+        if (uint32_t c = parseColour(v.substr(i, e - i), 0)) return c;
+        i = e;
+    }
+    return 0;
+}
+// a tag's background colour: style background-color / background, or bgcolor
+uint32_t tagBackground(const std::string &tag) {
+    std::string v = cssValue(tag, "background-color");
+    if (v.empty()) v = cssValue(tag, "background");
+    if (uint32_t c = cssColour(v)) return c;
+    return parseColour(htmlAttr(tag, "bgcolor"), 0);
+}
+// a tag's border: its width (px, -1: none said) and colour
+double tagBorder(const std::string &tag, uint32_t &rgba) {
+    std::string v = cssValue(tag, "border");
+    if (v.empty()) return -1;
+    if (v == "none" || v == "0") return 0;
+    double w = cssLength(v, 0, 16);
+    rgba = cssColour(v);
+    if (!rgba) rgba = 0xff000000;
+    return w < 0 ? 3 : w;   // (a style without a width: medium)
+}
+std::string lowerName(const std::string &tag) {
+    size_t e = 0;
+    while (e < tag.size() && !isspace((unsigned char)tag[e]) && tag[e] != '/' && tag[e] != '>') e++;
+    std::string n = tag.substr(0, e);
+    for (char &c : n) c = (char)tolower((unsigned char)c);
+    return n;
+}
+bool hasTable(const std::string &v) {
+    for (size_t at = 0; (at = v.find('<', at)) != std::string::npos; at++)
+        if (at + 6 <= v.size() && lowerName(v.substr(at + 1, 6)) == "table") return true;
+    return false;
+}
+
+
+struct Flow {   // HTML laid out as blocks: its text and boxes, its size
+    std::vector<Run> runs;
+    std::vector<Label::Rect> rects;
+    float w = 0, h = 0;
+};
+Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avail, float availH, bool wrap, int depth);
+
+// a <table> (from its tag to its end) at x, y: avail, availH the room its percentages are of (0: none)
+Flow flowTable(const std::string &t, const Style &s, float x, float y, float avail, float availH, int depth) {
+    Flow out;
+    struct Cell {
+        std::string html, tag;
+        size_t row;
+        int col = 0, span = 1;
+        bool th = false;
+    };
+    std::string tableTag;
+    std::vector<std::string> rowTags;
+    std::vector<Cell> cells;
+    size_t open = std::string::npos;   // (the open cell's content start)
+    int level = 0;
+    auto closeCell = [&](size_t at) {
+        if (open != std::string::npos && !cells.empty()) cells.back().html = t.substr(open, at - open);
+        open = std::string::npos;
+    };
+    for (size_t i = 0; (i = t.find('<', i)) != std::string::npos && cells.size() < 4096;) {
+        size_t e = t.find('>', i);
+        if (e == std::string::npos) break;
+        std::string tag = t.substr(i + 1, e - i - 1);
+        bool close = !tag.empty() && tag[0] == '/';
+        if (close) tag.erase(0, 1);
+        std::string name = lowerName(tag);
+        size_t at = i;
+        i = e + 1;
+        if (name == "table") {
+            if (!close && ++level == 1) tableTag = tag;
+            if (close && --level == 0) {
+                closeCell(at);
+                break;
+            }
+            continue;
+        }
+        if (level != 1) continue;
+        if (name == "tr" || name == "td" || name == "th") closeCell(at);
+        if (close) continue;
+        if (name == "tr") rowTags.push_back(tag);
+        else if (name == "td" || name == "th") {
+            if (rowTags.empty()) rowTags.push_back("");
+            Cell c;
+            c.tag = tag;
+            c.row = rowTags.size() - 1;
+            c.th = name == "th";
+            c.span = std::clamp(atoi(htmlAttr(tag, "colspan").c_str()), 1, 64);
+            cells.push_back(c);
+            open = i;
+        }
+    }
+    if (cells.empty()) return out;
+    size_t rows = rowTags.size();
+    float em = (float)num(s, "fontSize", 12);
+    if (float fs = tagSize(tableTag, em)) em = fs;
+    // the table's own measures
+    int border = std::clamp(atoi(htmlAttr(tableTag, "border").c_str()), 0, 100);
+    double pad = cssLength(htmlAttr(tableTag, "cellpadding"), 0, em);
+    if (pad < 0) pad = 1;
+    bool collapse = cssValue(tableTag, "border-collapse") == "collapse";
+    double spacing = cssLength(htmlAttr(tableTag, "cellspacing"), 0, em);
+    if (spacing < 0) spacing = 2;
+    if (collapse) spacing = 0;
+    std::string wv = cssValue(tableTag, "width"), hv = cssValue(tableTag, "height");
+    if (wv.empty()) wv = htmlAttr(tableTag, "width");
+    if (hv.empty()) hv = htmlAttr(tableTag, "height");
+    double tw = cssLength(wv, avail, em), th = cssLength(hv, availH, em);
+    // the cells' columns, styles and natural widths
+    std::vector<int> next(rows, 0);
+    int cols = 0;
+    struct Look {
+        Style style;
+        double pad, bw;
+        uint32_t bg, bc;
+        std::string valign;
+        double fixed;   // (a width the cell asks for; -1: none)
+    };
+    std::vector<Look> looks(cells.size());
+    for (size_t k = 0; k < cells.size(); k++) {
+        Cell &c = cells[k];
+        c.col = next[c.row];
+        next[c.row] += c.span;
+        cols = std::max(cols, next[c.row]);
+        const std::string &tr = rowTags[c.row];
+        Look &lk = looks[k];
+        lk.style = s;
+        Style &cs = lk.style;
+        uint32_t col = tagColour(c.tag);
+        if (!col) col = tagColour(tr);
+        if (!col) col = tagColour(tableTag);
+        if (col) {
+            char hex[16];
+            snprintf(hex, sizeof hex, "#%06x", col & 0xffffff);
+            cs["fontColor"] = hex;
+        }
+        std::string al = cssValue(c.tag, "text-align");
+        if (al.empty()) al = htmlAttr(c.tag, "align");
+        if (al.empty()) al = cssValue(tr, "text-align");
+        if (al.empty()) al = htmlAttr(tr, "align");
+        if (al == "left" || al == "center" || al == "right") cs["align"] = al;
+        cs["verticalAlign"] = "top";
+        if (c.th) cs["fontStyle"] = std::to_string((int)num(s, "fontStyle", 0) | 1);
+        float fs = tagSize(c.tag, em);
+        if (!fs) fs = tagSize(tr, em);
+        cs["fontSize"] = std::to_string(fs ? fs : em);
+        lk.valign = cssValue(c.tag, "vertical-align");
+        if (lk.valign.empty()) lk.valign = htmlAttr(c.tag, "valign");
+        if (lk.valign.empty()) lk.valign = cssValue(tr, "vertical-align");
+        if (lk.valign.empty()) lk.valign = htmlAttr(tr, "valign");
+        double p = cssLength(cssValue(c.tag, "padding"), 0, em);
+        lk.pad = p >= 0 ? p : pad;
+        lk.bc = 0xff808080;
+        lk.bw = tagBorder(c.tag, lk.bc);
+        if (lk.bw < 0 && collapse) lk.bw = tagBorder(tr, lk.bc);
+        if (lk.bw < 0) lk.bw = border > 0 ? 1 : 0;
+        lk.bg = tagBackground(c.tag);
+        if (!lk.bg) lk.bg = tagBackground(tr);
+        std::string cw = cssValue(c.tag, "width");
+        if (cw.empty()) cw = htmlAttr(c.tag, "width");
+        lk.fixed = cssLength(cw, tw > 0 ? tw : 0, em);
+    }
+    if (cols <= 0) return out;
+    std::vector<double> colW(cols, 0);
+    std::vector<bool> fixedCol(cols, false);
+    std::vector<double> nat(cells.size());
+    for (size_t k = 0; k < cells.size(); k++) {   // (single columns first, then the spans: what they lack shared out)
+        const Look &lk = looks[k];
+        nat[k] = flowHtml(cells[k].html, lk.style, 0, 0, 0, 0, false, depth + 1).w + 2 * lk.pad + lk.bw;
+        if (lk.fixed >= 0) nat[k] = std::max(nat[k], lk.fixed);
+    }
+    for (size_t k = 0; k < cells.size(); k++)
+        if (cells[k].span == 1) {
+            colW[cells[k].col] = std::max(colW[cells[k].col], nat[k]);
+            if (looks[k].fixed >= 0) fixedCol[cells[k].col] = true;
+        }
+    for (size_t k = 0; k < cells.size(); k++)
+        if (cells[k].span > 1) {
+            int c0 = cells[k].col, c1 = std::min(cols, c0 + cells[k].span);
+            double have = spacing * (c1 - c0 - 1);
+            for (int c = c0; c < c1; c++) have += colW[c];
+            if (have < nat[k])
+                for (int c = c0; c < c1; c++) colW[c] += (nat[k] - have) / (c1 - c0);
+        }
+    double sum = 0;
+    for (double w : colW) sum += w;
+    double room = spacing * (cols + 1);
+    if (tw < 0) tw = avail > 0 ? std::min(sum + room, (double)avail) : sum + room;
+    double content = std::max(0.0, tw - room);
+    if (content > sum) {   // (the room left: to the columns of no width of their own, by their widths)
+        double autoSum = 0;
+        int autos = 0;
+        for (int c = 0; c < cols; c++)
+            if (!fixedCol[c]) autoSum += colW[c], autos++;
+        double extra = content - sum;
+        for (int c = 0; c < cols; c++) {
+            if (autos == 0) colW[c] += sum > 0 ? extra * colW[c] / sum : extra / cols;
+            else if (!fixedCol[c]) colW[c] += autoSum > 0 ? extra * colW[c] / autoSum : extra / autos;
+        }
+    } else if (sum > 0)
+        for (double &w : colW) w *= content / sum;
+    std::vector<double> colX(cols + 1, spacing);
+    for (int c = 0; c < cols; c++) colX[c + 1] = colX[c] + colW[c] + spacing;
+    // the rows' heights: the cells' text wrapped to their widths
+    std::vector<double> rowH(rows, 0), cellW(cells.size()), textH(cells.size());
+    for (size_t k = 0; k < cells.size(); k++) {
+        const Look &lk = looks[k];
+        int c1 = std::min(cols, cells[k].col + cells[k].span);
+        cellW[k] = colX[c1] - spacing - colX[cells[k].col];
+        double inner = std::max(0.0, cellW[k] - 2 * lk.pad - lk.bw);
+        textH[k] = flowHtml(cells[k].html, lk.style, 0, 0, (float)inner, 0, true, depth + 1).h;
+        if (textH[k] <= 0) {   // (a <br> or a space: a line of its own)
+            bool line = false;
+            for (char ch : cells[k].html) line = line || (ch != ' ' && ch != '\n' && ch != '\t' && ch != '\r');
+            if (line) textH[k] = num(lk.style, "fontSize", 12) * 1.2;
+        }
+        rowH[cells[k].row] = std::max(rowH[cells[k].row], textH[k] + 2 * lk.pad + lk.bw);
+    }
+    double hsum = 0;
+    for (double h : rowH) hsum += h;
+    double vroom = spacing * ((double)rows + 1);
+    if (th > hsum + vroom) {   // (a taller table: its rows by their heights)
+        double extra = th - hsum - vroom;
+        for (double &h : rowH) h += hsum > 0 ? extra * h / hsum : extra / (double)rows;
+    }
+    std::vector<double> rowY(rows + 1, spacing);
+    for (size_t r = 0; r < rows; r++) rowY[r + 1] = rowY[r] + rowH[r] + spacing;
+    out.w = (float)colX[cols], out.h = (float)rowY[rows];
+    // drawn: the table's background, then a cell's background, text and border
+    if (uint32_t bg = tagBackground(tableTag)) out.rects.push_back({x, y, out.w, out.h, bg});
+    for (size_t k = 0; k < cells.size(); k++) {
+        const Look &lk = looks[k];
+        float cx = x + (float)colX[cells[k].col], cy = y + (float)rowY[cells[k].row], cw = (float)cellW[k], ch = (float)rowH[cells[k].row];
+        if (lk.bg) out.rects.push_back({cx, cy, cw, ch, lk.bg});
+        double inner = std::max(0.0, cellW[k] - 2 * lk.pad - lk.bw);
+        double free = ch - 2 * lk.pad - lk.bw - textH[k];
+        double dy = lk.valign == "top" ? 0 : lk.valign == "bottom" ? free : free / 2;
+        Flow f = flowHtml(cells[k].html, lk.style, cx + (float)(lk.pad + lk.bw / 2), cy + (float)(lk.pad + lk.bw / 2 + dy), (float)inner, 0,
+                          true, depth + 1);
+        out.rects.insert(out.rects.end(), f.rects.begin(), f.rects.end());
+        out.runs.insert(out.runs.end(), f.runs.begin(), f.runs.end());
+        if (lk.bw > 0) {
+            float b = (float)lk.bw;
+            out.rects.push_back({cx, cy, cw, b, lk.bc});
+            out.rects.push_back({cx, cy + ch - b, cw, b, lk.bc});
+            out.rects.push_back({cx, cy, b, ch, lk.bc});
+            out.rects.push_back({cx + cw - b, cy, b, ch, lk.bc});
+        }
+    }
+    if (border > 0 && !collapse) {   // (the table's own frame)
+        float b = (float)border;
+        uint32_t bc = 0xff808080;
+        out.rects.push_back({x, y, out.w, b, bc});
+        out.rects.push_back({x, y + out.h - b, out.w, b, bc});
+        out.rects.push_back({x, y, b, out.h, bc});
+        out.rects.push_back({x + out.w - b, y, b, out.h, bc});
+    }
+    return out;
+}
+
+// HTML as a browser stacks it: its tables and its <div>s with a background as blocks of their own, the text between
+// them as the label's lines; x, y its top left, avail the width it has (0: as wide as it needs)
+Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avail, float availH, bool wrap, int depth) {
+    Flow out;
+    if (depth > 8) return out;
+    struct Block {
+        int kind;   // (0 text, 1 table, 2 a <div> with a background)
+        std::string html, tag;
+    };
+    std::vector<Block> blocks;
+    size_t textFrom = 0;
+    auto text = [&](size_t to) {
+        std::string t = v.substr(textFrom, to - textFrom);
+        bool blank = true;
+        for (char ch : t) blank = blank && (ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r');
+        if (!blank) blocks.push_back({0, t, ""});
+    };
+    int divs = 0;   // (the <div>s open in the text: a block is one at the top only)
+    for (size_t i = 0; (i = v.find('<', i)) != std::string::npos;) {
+        size_t e = v.find('>', i);
+        if (e == std::string::npos) break;
+        std::string tag = v.substr(i + 1, e - i - 1);
+        bool close = !tag.empty() && tag[0] == '/';
+        std::string name = lowerName(close ? tag.substr(1) : tag);
+        if (name == "div") divs += close ? -1 : 1;
+        bool table = !close && name == "table", box = !close && name == "div" && divs == 1 && tagBackground(tag);
+        if (!table && !box) {
+            i = e + 1;
+            continue;
+        }
+        size_t end = v.size(), inner = v.size(), j = e + 1;   // (its end: the matching close tag; inner: where that starts)
+        int level = 1;
+        while ((j = v.find('<', j)) != std::string::npos) {
+            size_t k = v.find('>', j);
+            if (k == std::string::npos) break;
+            bool c2 = j + 1 < v.size() && v[j + 1] == '/';
+            std::string n2 = lowerName(v.substr(j + 1 + c2, k - j - 1 - c2));
+            if (n2 == name) level += c2 ? -1 : 1;
+            if (level == 0) {
+                inner = j, end = k + 1;
+                break;
+            }
+            j = k + 1;
+        }
+        text(i);
+        if (table) blocks.push_back({1, v.substr(i, end - i), ""});
+        else blocks.push_back({2, v.substr(e + 1, inner - e - 1), tag}), divs--;
+        textFrom = i = end;
+    }
+    text(v.size());
+    // measured, then placed: the text's lines aligned in the widest block
+    std::vector<Flow> laid(blocks.size());
+    float wide = 0;
+    for (size_t b = 0; b < blocks.size(); b++) {
+        const Block &bk = blocks[b];
+        if (bk.kind == 1) laid[b] = flowTable(bk.html, s, 0, 0, avail, availH, depth);
+        else if (bk.kind == 2) {
+            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
+            laid[b] = flowHtml(bk.html, s, 0, 0, avail > 0 ? std::max(0.f, avail - 2 * (float)p) : 0, 0, wrap, depth + 1);
+            laid[b].w += 2 * (float)p, laid[b].h += 2 * (float)p;
+            if (cssLength(cssValue(bk.tag, "width"), avail, 16) > 0) laid[b].w = std::max(laid[b].w, avail);
+        } else {
+            Style ts = s;
+            ts["verticalAlign"] = "top";
+            std::shared_ptr<Label> l = layoutLabel(bk.html, ts, Box{0, 0, 0, 0}, wrap && avail > 0 ? avail : 0, false);
+            if (l) laid[b].w = l->x1 - l->x0 - 4, laid[b].h = l->y1 - l->y0;
+        }
+        wide = std::max(wide, laid[b].w);
+    }
+    float cy = y;
+    for (size_t b = 0; b < blocks.size(); b++) {
+        const Block &bk = blocks[b];
+        Flow f;
+        if (bk.kind == 1) f = flowTable(bk.html, s, x, cy, avail, availH, depth);
+        else if (bk.kind == 2) {
+            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
+            out.rects.push_back({x, cy, wide, laid[b].h, tagBackground(bk.tag)});
+            f = flowHtml(bk.html, s, x + (float)p, cy + (float)p, std::max(0.f, wide - 2 * (float)p), 0, wrap, depth + 1);
+            f.h = laid[b].h;
+        } else {
+            Style ts = s;
+            ts["verticalAlign"] = "top";
+            std::shared_ptr<Label> l = layoutLabel(bk.html, ts, Box{x, cy, wide, 0}, wrap && avail > 0 ? avail : 0, false);
+            if (l) f.runs = l->runs;
+            f.h = laid[b].h;
+        }
+        out.rects.insert(out.rects.end(), f.rects.begin(), f.rects.end());
+        out.runs.insert(out.runs.end(), f.runs.begin(), f.runs.end());
+        cy += f.h;
+    }
+    out.w = wide, out.h = cy - y;
+    return out;
+}
+
+// a label with HTML tables: its blocks placed in the box by its align / verticalAlign (overflow=fill: the box's room)
+std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s, Box box, double wrapWidth) {
+    bool fill = str(s, "overflow") == "fill";
+    float avail = (float)(wrapWidth > 0 ? wrapWidth : fill ? box.w : 0), availH = (float)(fill ? box.h : 0);
+    Flow m = flowHtml(value, s, 0, 0, avail, availH, wrapWidth > 0 || fill, 0);
+    const std::string &va = str(s, "verticalAlign"), &al = str(s, "align");
+    float left = (float)(al == "left" ? box.x : al == "right" ? box.x + box.w - m.w : box.x + (box.w - m.w) / 2);
+    float top = (float)(va == "top" ? box.y : va == "bottom" ? box.y + box.h - m.h : box.y + (box.h - m.h) / 2);
+    if (fill) left = (float)box.x, top = (float)box.y;
+    Flow f = flowHtml(value, s, left, top, avail, availH, wrapWidth > 0 || fill, 0);
+    if (f.runs.empty() && f.rects.empty()) return nullptr;
+    auto label = std::make_shared<Label>();
+    label->runs = std::move(f.runs);
+    label->rects = std::move(f.rects);
+    label->x0 = left, label->x1 = left + f.w, label->y0 = top, label->y1 = top + f.h;
+    label->background = colour(s, "labelBackgroundColor", 0);
     return label;
 }
 
@@ -1647,6 +2099,12 @@ struct Builder {
             lb = {ce.x - lb.h / 2, ce.y - lb.w / 2, lb.h, lb.w};
         }
         Box inner = labelBox(s, lb);
+        if (str(s, "overflow") == "fill" && str(s, "html") == "1" && hasTable(c.value)) {   // (HTML blocks fill the shape: no spacing)
+            Style none = s;
+            none["spacing"] = "0";
+            for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom"}) none.erase(k);
+            inner = labelBox(none, lb);
+        }
         double wrap = str(s, "whiteSpace") == "wrap" ? inner.w : 0;
         std::shared_ptr<Label> l = layoutLabel(c.value, s, inner, wrap);
         if (l && (turned || rotation != 0)) {
@@ -3024,6 +3482,10 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         if (l.background >> 24) {
             nd::setRgba(c, l.background);
             plutovg_canvas_fill_rect(c, l.x0, l.y0, l.x1 - l.x0, l.y1 - l.y0);
+        }
+        for (const Label::Rect &q : l.rects) {
+            nd::setRgba(c, q.rgba);
+            plutovg_canvas_fill_rect(c, q.x, q.y, q.w, q.h);
         }
         for (const Run &r : l.runs) {
             nd::setRgba(c, r.rgba);
