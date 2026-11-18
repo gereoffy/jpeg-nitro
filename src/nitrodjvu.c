@@ -771,7 +771,8 @@ static void page_decode(nitrodjvu *d, Page *pg) {
         if (used > 1) j->blit_entry = entries;   // (one colour: no need to tell the pixels apart)
         jb2_decode(j, sjbz, sjbz_len, dict, 1);   // (cut short or damaged: what there is of it)
         free(entries);
-        if (j->have_page && (j->width != pw || j->height != ph)) j->have_page = 0;   // (not the page's size: no mask, as in DjVuLibre)
+        // (a mask of another size than the page's INFO: drawn from the page's top left all the same - the
+        // symbols' places are reckoned from the top - and cut at the page's edge)
         if (j->have_page) {
             const Bm *b = &j->page;
             int turned = pg->turn & 1, ow = turned ? b->h : b->w, oh = turned ? b->w : b->h;
