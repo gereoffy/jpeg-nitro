@@ -753,6 +753,10 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 widths.back() += w;
                 continue;
             }
+            if (sg.text.empty()) {   // (a spacer: its height only (a margin, an <hr>'s))
+                lines.back().push_back({f, std::string(), 0, rgba, sz, sg.underline, sg.bg});
+                continue;
+            }
             size_t i = 0;   // (word by word: a word with its following spaces)
             while (i < sg.text.size()) {
                 size_t e = sg.text.find(' ', i);
