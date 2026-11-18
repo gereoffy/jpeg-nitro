@@ -2357,11 +2357,22 @@ struct Builder {
             turned = true;
         double quarter = turned ? -90 : 0;   // (horizontal=0: read upwards; textDirection vertical-lr / -rl: downwards)
         if (str(s, "textDirection").compare(0, 8, "vertical") == 0) turned = true, quarter = 90;
+        Box inner;
         if (turned) {   // (laid out in the box turned upright, then turned back by -90 degrees)
             Pt ce = lb.centre();
+            const std::string &lp = str(s, "labelPosition"), &vp = str(s, "verticalLabelPosition");
+            double ox = lp == "left" ? -lb.w : lp == "right" ? lb.w : 0, oy = vp == "top" ? -lb.h : vp == "bottom" ? lb.h : 0;
             lb = {ce.x - lb.h / 2, ce.y - lb.w / 2, lb.h, lb.w};
-        }
-        Box inner = labelBox(s, lb);
+            // (horizontal=0: the label's offset beside the shape taken in the turned box, its x and y exchanged, as
+            // mxCellRenderer.getLabelBounds does for a text whose paint bounds are inverted)
+            if (quarter == -90) {
+                Style ns = s;
+                ns.erase("labelPosition"), ns.erase("verticalLabelPosition");
+                inner = labelBox(ns, {lb.x + oy, lb.y + ox, lb.w, lb.h});
+            } else
+                inner = labelBox(s, lb);
+        } else
+            inner = labelBox(s, lb);
         if (str(s, "overflow") == "fill" && str(s, "html") == "1" && hasTable(c.value)) {   // (HTML blocks fill the shape: no spacing)
             Style none = s;
             none["spacing"] = "0";
