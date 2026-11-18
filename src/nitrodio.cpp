@@ -638,7 +638,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     std::string family = str(s, "fontFamily");
     size_t comma = family.find(',');
     if (comma != std::string::npos) family.resize(comma);
-    uint32_t rgba = withOpacity(colour(s, "fontColor", 0xff000000), num(s, "textOpacity", 100) * num(s, "opacity", 100) / 100);
+    uint32_t rgba = withOpacity(colour(s, "fontColor", 0xff000000), num(s, "textOpacity", 100));   // (mxText: textOpacity, not opacity)
     if (!(rgba >> 24) && (str(s, "html") != "1" || value.find("olor") == std::string::npos)) return nullptr;   // (no colour: none of its own either)
     plutovg_font_face_t *faces[4] = {nullptr, nullptr, nullptr, nullptr};
     auto face = [&](bool b, bool i) {
@@ -655,7 +655,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         float size;
         bool underline;
     };
-    double alpha = num(s, "textOpacity", 100) * num(s, "opacity", 100) / 100;
+    double alpha = num(s, "textOpacity", 100);
     std::vector<std::vector<LineRun>> lines;
     std::vector<float> widths, indents;   // (a line's width: its indent and its text)
     std::vector<std::string> markers;
