@@ -1924,6 +1924,7 @@ static int read_squeeze(Br *br, Modular *m, int *cap) {   // the squeeze steps (
             m->ch[at] = r;
             m->nchan++;
         }
+        if (m->nchan > 4096) return ERR_LIMIT;   // (as for the other transforms)
     }
     // append to the transform list
     if (m->ntr + n > *cap) {
@@ -3451,13 +3452,14 @@ static int lf_global(Frame *f) {
 static int modular_group(Frame *f, Br *br, int x0, int y0, int xs, int ys, int minshift, int maxshift, uint32_t sid) {
     Modular g;
     int idx[4096], n = 0;
-    for (int c = f->gm_begin; c < f->gm.nchan && n < 4096; c++) {
+    for (int c = f->gm_begin; c < f->gm.nchan; c++) {
         Chan *fc = &f->gm.ch[c];
         int shift = imin(fc->hshift, fc->vshift);
         if (shift > maxshift || shift < minshift) continue;
         int rx = x0 >> fc->hshift, ry = y0 >> fc->vshift;
         int rw = rx > fc->w ? 0 : imin(xs >> fc->hshift, fc->w - rx), rh = ry > fc->h ? 0 : imin(ys >> fc->vshift, fc->h - ry);
         if (rw <= 0 || rh <= 0) continue;
+        if (n == 4096) return ERR_LIMIT;   // (never left out quietly)
         idx[n++] = c;
     }
     if (!n) return 0;
