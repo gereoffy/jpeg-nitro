@@ -1353,6 +1353,15 @@ struct Builder {
             PathP p = shapePath(shape, s, b, lines);
             paint(p, lines, s, b, false);
         } else if (shape == "image" && b.w > 0 && b.h > 0 && str(s, "image").compare(0, 11, "data:image/") == 0) {
+            uint32_t back = colour(s, "imageBackground", 0), border = colour(s, "imageBorder", 0);
+            if (back || border) {   // (mxImageShape: its background and border, the box behind the picture)
+                Item bg;
+                bg.path = newPath();
+                plutovg_path_add_rect(bg.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+                bg.fill = withOpacity(back, num(s, "opacity", 100));
+                bg.stroke = border, bg.width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+                add(std::move(bg), bg.width);
+            }
             Item it;   // (a picture the file holds: decoded once the page is read, see pictures())
             it.path = newPath();
             plutovg_path_add_rect(it.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
