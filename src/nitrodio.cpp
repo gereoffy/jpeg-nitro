@@ -182,6 +182,7 @@ struct Item {
     float width = 1;
     std::vector<float> dash;
     std::shared_ptr<Label> label;
+    float hachure = 0, hachureAngle = -41, hachureWeight = 1;   // (sketch: the fill as lines hachure apart, at the angle)
     std::shared_ptr<Picture> picture;   // an image shape's picture, in ix0, iy0 - ix1, iy1 (aspect: kept, centred)
     std::string uri;                    // (its data: URI until it is decoded)
     float ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
@@ -630,6 +631,54 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     return label;
 }
 
+// --- the hand-drawn look (sketch=1, draw.io's rough.js; its own randomness, so alike, not the same) ----------
+
+// a path's outline drawn twice, each line a little off and bowed (the seed: the path's own numbers, the same each time)
+PathP roughPath(const plutovg_path_t *path) {
+    PathP out = newPath();
+    std::unique_ptr<plutovg_path_t, void (*)(plutovg_path_t *)> flat(plutovg_path_clone_flatten(path), plutovg_path_destroy);
+    if (!flat) return out;
+    std::vector<std::vector<Pt>> subs;
+    plutovg_path_iterator_t it;
+    plutovg_path_iterator_init(&it, flat.get());
+    plutovg_point_t pts[3];
+    uint32_t seed = 2463534242u;
+    while (plutovg_path_iterator_has_next(&it)) {
+        switch (plutovg_path_iterator_next(&it, pts)) {
+        case PLUTOVG_PATH_COMMAND_MOVE_TO: subs.push_back({{pts[0].x, pts[0].y}}); break;
+        case PLUTOVG_PATH_COMMAND_LINE_TO:
+        case PLUTOVG_PATH_COMMAND_CLOSE:
+            if (subs.empty()) subs.push_back({});
+            subs.back().push_back({pts[0].x, pts[0].y});
+            break;
+        default: break;
+        }
+        uint32_t bits;
+        memcpy(&bits, &pts[0].x, 4), seed = seed * 31 + bits;
+    }
+    auto rnd = [&seed]() {   // (-1 .. 1)
+        seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+        return (double)(seed % 20001) / 10000 - 1;
+    };
+    size_t segments = 0;
+    for (const auto &sp : subs) {
+        if (sp.size() < 2) continue;
+        for (int pass = 0; pass < 2; pass++) {
+            for (size_t i = 1; i < sp.size() && segments < 200000; i++, segments++) {
+                Pt a = sp[i - 1], b = sp[i];
+                double len = std::hypot(b.x - a.x, b.y - a.y);
+                if (len < 0.01) continue;
+                double r = std::min(1.5, len * 0.08), nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len, bow = rnd() * r;
+                Pt a2{a.x + rnd() * r, a.y + rnd() * r}, b2{b.x + rnd() * r, b.y + rnd() * r};
+                Pt m{(a2.x + b2.x) / 2 + nx * bow, (a2.y + b2.y) / 2 + ny * bow};
+                plutovg_path_move_to(out.get(), (float)a2.x, (float)a2.y);
+                plutovg_path_quad_to(out.get(), (float)m.x, (float)m.y, (float)b2.x, (float)b2.y);
+            }
+        }
+    }
+    return out;
+}
+
 // --- shapes --------------------------------------------------------------------
 
 void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
@@ -1000,10 +1049,29 @@ struct Builder {
         it.stroke = width > 0 ? stroke : 0;
         it.width = width;
         it.dash = dash;
-        add(std::move(it), width);
+        bool sketch = str(s, "sketch") == "1";
+        const std::string &fs = str(s, "fillStyle");   // (auto, the default: solid when white or a gradient, else hachure)
+        bool pattern = fs.empty() || fs == "auto" ? !(it.fill2 >> 24) && (it.fill & 0xffffff) != 0xffffff : fs != "solid";
+        if (str(s, "sketchStyle") == "comic") pattern = false;   // (the comic style: wobbly lines, solid fills)
+        if (sketch && it.fill && pattern) {   // (rough.js: hachure lines, 4 stroke widths apart, half as wide)
+            double gap = num(s, "hachureGap", -1), weight = num(s, "fillWeight", -1);
+            it.hachure = (float)(gap > 0 ? gap : 4 * std::max(width, 1.f));
+            it.hachureWeight = (float)(weight > 0 ? weight : std::max(width, 1.f) / 2);
+            it.hachureAngle = (float)num(s, "hachureAngle", -41);
+            it.fill2 = 0;
+        }
+        if (sketch && it.stroke) {   // (the outline its own item, drawn rough over the fill)
+            Item o;
+            o.path = roughPath(path.get());
+            o.stroke = it.stroke, o.width = width, o.dash = dash;
+            it.stroke = 0;
+            add(std::move(it), width);
+            add(std::move(o), width + 2);
+        } else
+            add(std::move(it), width);
         if (lines && stroke && width > 0) {
             Item l;
-            l.path = lines;
+            l.path = sketch ? roughPath(lines.get()) : lines;
             l.stroke = stroke;
             l.width = width;
             l.dash = dash;
@@ -2603,7 +2671,25 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_canvas_fill_rect(c, dx, dy, dw, dh);
         plutovg_surface_destroy(sf);
     }
-    if (it.fill >> 24) {
+    if ((it.fill >> 24) && it.hachure > 0) {   // (hand-drawn: the fill as parallel lines inside the path)
+        plutovg_canvas_save(c);
+        plutovg_canvas_clip_path(c, it.path.get());
+        nd::setRgba(c, it.fill);
+        plutovg_canvas_set_line_width(c, std::max(it.hachureWeight, 0.5f / scale));
+        plutovg_canvas_set_dash(c, 0, nullptr, 0);
+        float cx = (it.bx0 + it.bx1) / 2, cy = (it.by0 + it.by1) / 2, r = std::hypot(it.bx1 - it.bx0, it.by1 - it.by0) / 2 + 2;
+        float a = it.hachureAngle * (float)M_PI / 180, dx = cosf(a), dy = sinf(a);
+        int n = std::min((int)(2 * r / it.hachure) + 1, 20000);
+        plutovg_path_t *h = plutovg_path_create();
+        for (int k = 0; k <= n; k++) {
+            float o = -r + k * it.hachure;
+            plutovg_path_move_to(h, cx - dy * o - dx * r, cy + dx * o - dy * r);
+            plutovg_path_line_to(h, cx - dy * o + dx * r, cy + dx * o + dy * r);
+        }
+        plutovg_canvas_stroke_path(c, h);
+        plutovg_path_destroy(h);
+        plutovg_canvas_restore(c);
+    } else if (it.fill >> 24) {
         if (it.fill2 >> 24) {
             plutovg_gradient_stop_t stops[2] = {{0, {(it.fill >> 16 & 255) / 255.f, (it.fill >> 8 & 255) / 255.f, (it.fill & 255) / 255.f, (it.fill >> 24) / 255.f}},
                                                 {1, {(it.fill2 >> 16 & 255) / 255.f, (it.fill2 >> 8 & 255) / 255.f, (it.fill2 & 255) / 255.f, (it.fill2 >> 24) / 255.f}}};
