@@ -4693,6 +4693,7 @@ static int first_codestream(const uint8_t *data, size_t len, const uint8_t **cs,
             if (pos + 16 > len) return -1;
             size = (uint64_t)be32(data + pos + 8) << 32 | be32(data + pos + 12);
             hdr = 16;
+            if (size < hdr) return -1;   // (an extended size of 0 is not "to the end")
         }
         if (type == TAG('j','x','l','c') || type == TAG('j','x','l','p')) {
             size_t skip = (size_t)hdr + (type == TAG('j','x','l','p') ? 4 : 0);
