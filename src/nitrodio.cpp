@@ -2867,8 +2867,9 @@ struct Builder {
     static void segmentConnector(const Term *source, const Term *target, const Pt *p0, const Pt *pe, std::vector<Pt> hints,
                                  std::vector<Pt> &result) {
         const double tol = 1;
-        const Pt *lastPushed = nullptr;
-        Pt lastValue;
+        const Pt *lastPushed = nullptr;   // (a point within 1 of the one before is left out; the first: of a fixed source end,
+        Pt lastValue;                     // as draw.io's starts with the result's source slot)
+        if (p0) lastValue = *p0, lastPushed = &lastValue;
         auto push = [&](Pt q) {
             if (!lastPushed || std::fabs(lastValue.x - q.x) >= tol || std::fabs(lastValue.y - q.y) >= 1) {
                 result.push_back(q);
