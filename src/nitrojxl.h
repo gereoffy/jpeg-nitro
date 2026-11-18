@@ -10,6 +10,8 @@
 // Layers and tiles (frames that replace a rectangle of the image) are put together.
 // Not supported (NJXL_UNSUPPORTED): patches, splines, upsampling, LF frames, blended layers
 // (an animation gives its first frame), noise is left out.
+// A cut-off or damaged image decodes what can be read (njxl_info.damaged); the headers, the frame's
+// LfGlobal and HfGlobal sections must be whole.
 #ifndef NITROJXL_H
 #define NITROJXL_H
 
@@ -53,6 +55,8 @@ typedef struct {
     int xyb, animated;
     uint8_t *icc;               // njxl_decode: the pixels are in this profile's colour space; NULL: sRGB
     size_t icc_len;             //   (owned: njxl_info_free)
+    int damaged;                // njxl_decode: cut off or damaged; what could be read is shown (a VarDCT group's
+                                // damaged pass: its LF image; a lost LF group or Modular group: empty)
 } njxl_info;
 
 enum { NJXL_SINGLE_THREAD = 1 };       // flags: decode on the calling thread only

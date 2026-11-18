@@ -3332,11 +3332,18 @@ typedef struct {
     Pool *pool;              // (group buffers, render tiles)
     int pxw[3], pxh[3];      // (pxh: the rows kept: all, or a ring of them while the frame is rendered as it goes)
     int err;
+    // a damaged or cut-off frame: what can be read is shown. LfGlobal and HfGlobal must be whole; an LF
+    // group lost leaves its area empty, a group's pass lost or damaged leaves its earlier passes (VarDCT:
+    // a damaged pass, the LF image alone)
+    uint8_t *missing;        // nsec: the section is cut off (NULL: all there)
+    uint8_t *lflost;         // nlfgroups: the LF group could not be read (VarDCT: its groups are LF only)
+    int cut, damaged;        // (cut: the data ends in this frame)
+    int hflost;              // HfGlobal could not be read: VarDCT groups LF only
 } Frame;
 
 static void frame_free(Frame *f) {
     if (f->pool) { pool_free(f->pool); free(f->pool); }
-    free(f->sec);
+    free(f->sec); free(f->missing); free(f->lflost);
     free(f->bctx);
     tree_free(&f->gtree);
     modular_free(&f->gm);
@@ -3385,18 +3392,21 @@ static int read_toc(Br *br, Frame *f) {
     if (!e) {
         offs[0] = 0;
         for (int64_t i = 0; i < n; i++) offs[i + 1] = offs[i] + sizes[i];
-        if (offs[n] > (uint64_t)(end - base)) e = ERR_INVALID;
+        // cut off: the sections that are not all there are missing, the frame is the last one read
+        if (offs[n] > (uint64_t)(end - base)) { f->cut = 1; if (!(f->missing = xcalloc((size_t)n, 1))) e = ERR_NOMEM; }
     }
     for (int64_t i = 0; i < n && !e; i++) {
         int64_t k = perm ? perm[i] : i;
-        br_init(&f->sec[i], base + offs[k], sizes[k]);
+        if (offs[k + 1] > (uint64_t)(end - base)) { f->missing[i] = 1; br_init(&f->sec[i], end, 0); }
+        else br_init(&f->sec[i], base + offs[k], sizes[k]);
     }
-    if (!e) br_init(br, base + offs[n], (size_t)(end - base - offs[n]));   // the next frame
+    if (!e) br_init(br, f->cut ? end : base + offs[n], f->cut ? 0 : (size_t)(end - base - offs[n]));   // the next frame
     free(offs); free(sizes); free(perm);
     return e;
 }
 
 static inline Br *sec_lfglobal(Frame *f) { return &f->sec[0]; }
+static inline int sec_missing(const Frame *f, const Br *b) { return f->missing && f->missing[b - f->sec]; }
 static inline Br *sec_lfgroup(Frame *f, int i) { return f->single ? &f->sec[0] : &f->sec[1 + i]; }
 static inline Br *sec_hfglobal(Frame *f) { return f->single ? &f->sec[0] : &f->sec[1 + f->h.nlfgroups]; }
 static inline Br *sec_pass(Frame *f, int p, int g) { return f->single ? &f->sec[0] : &f->sec[2 + f->h.nlfgroups + p * f->h.ngroups + g]; }
@@ -3405,6 +3415,7 @@ static int lf_global(Frame *f) {
     Br *br = sec_lfglobal(f);
     FrameHeader *h = &f->h;
     const Meta *m = f->m;
+    if (sec_missing(f, br)) return ERR_INVALID;
     if (h->patches || h->splines) return ERR_UNSUP;
     if (h->noise) br_u(br, 8 * 10 - 32), br_u(br, 32);   // the noise LUT, 8 x u(10): not rendered
     f->mlf[0] = 1.0f / 4096; f->mlf[1] = 1.0f / 512; f->mlf[2] = 1.0f / 256;
@@ -3627,6 +3638,22 @@ static int lf_group(Frame *f, int lfg) {
     return br_overrun(br) ? ERR_INVALID : 0;
 }
 
+// An LF group that could not be read: VarDCT, its blocks DCT8 ones without coefficients (what its LF image
+// has: nothing, or the LF before the HF metadata failed); Modular, its channels' area stays empty.
+static void lf_lost(Frame *f, int lfg) {
+    const FrameHeader *h = &f->h;
+    if (h->modular) return;
+    int bx0 = lfg % h->lfgx * h->gdim, by0 = lfg / h->lfgx * h->gdim;
+    int bxs = imin(h->gdim, h->bw - bx0), bys = imin(h->gdim, h->bh - by0);
+    for (int y = 0; y < bys; y++) {
+        size_t o = (size_t)(by0 + y) * h->bw + bx0;
+        memset(f->acs + o, 0x80, (size_t)bxs);
+        memset(f->sharp + o, 0, (size_t)bxs);
+        for (int x = 0; x < bxs; x++) f->qf[o + x] = 1;
+    }
+    f->used_acs |= 1;
+}
+
 // AdaptiveDCSmoothing over the whole frame
 static int smooth_lf(Frame *f) {
     FrameHeader *h = &f->h;
@@ -3662,14 +3689,15 @@ static int smooth_lf(Frame *f) {
     return 0;
 }
 
-static int hf_global(Frame *f) {
+// lost: the section is cut off or damaged, the frame shown from its LF image (the library's weights)
+static int hf_global(Frame *f, int lost) {
     Br *br = sec_hfglobal(f);
     FrameHeader *h = &f->h;
     uint32_t nlf = (uint32_t)h->nlfgroups;
     DqEnc enc[NUM_DQ];
     memset(enc, 0, sizeof enc);
     int e = 0;
-    if (!br_u(br, 1)) {   // the quantisation tables
+    if (!lost && !br_u(br, 1)) {   // the quantisation tables
         for (int i = 0; i < NUM_DQ && !e; i++) {
             DqEnc *d = &enc[i];
             d->mode = (int)br_u(br, 3);
@@ -3733,7 +3761,7 @@ static int hf_global(Frame *f) {
     });
     for (int i = 0; i < NUM_DQ && !e; i++) e = errs[i];
     for (int i = 0; i < NUM_DQ; i++) free(enc[i].raw);
-    if (e) return e;
+    if (e || lost) return e;
     f->nhist = (int)br_u(br, ceil_log2((uint64_t)h->ngroups)) + 1;
     for (int p = 0; p < h->npasses; p++) {
         uint32_t used = br_u32(br, 0x5F, 0, 0x13, 0, 0, 0, 0, 13);
@@ -4289,13 +4317,21 @@ static int decode_group(Frame *f, int g) {
         }
         err = group_blocks(f, gbx0, gby0, gbxs, gbys, offs);
     }
-    for (int p = 0; p < h->npasses && !err; p++) {
+    // (VarDCT: the group's blocks are not the coded ones when its LF group was lost)
+    int lost = !h->modular && (f->hflost || (f->lflost && f->lflost[(gy >> 3) * h->lfgx + (gx >> 3)]));
+    for (int p = 0; p < h->npasses && !err && !lost; p++) {
         Br *br = sec_pass(f, p, g);
-        if (!h->modular) err = hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
-        if (!err) err = modular_group(f, br, gx * h->gdim, gy * h->gdim, h->gdim, h->gdim, h->minshift[p], h->maxshift[p],
-                                      1 + 3 * (uint32_t)h->nlfgroups + NUM_DQ + (uint32_t)(p * h->ngroups + g));
-        if (!err && br_overrun(br)) err = ERR_INVALID;
+        if (sec_missing(f, br)) { lost = 1; break; }   // (cut off: the earlier passes are kept)
+        int hfe = h->modular ? 0 : hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
+        err = hfe ? hfe : modular_group(f, br, gx * h->gdim, gy * h->gdim, h->gdim, h->gdim, h->minshift[p], h->maxshift[p],
+                                        1 + 3 * (uint32_t)h->nlfgroups + NUM_DQ + (uint32_t)(p * h->ngroups + g));
+        if (!err && br_overrun(br)) err = hfe = ERR_INVALID;
+        if (err == ERR_INVALID) {   // damaged: a VarDCT group's coefficients left out (its LF image shown)
+            if (hfe) for (int c = 0; c < 3; c++) memset(gb->coef[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys * 64);
+            err = 0; lost = 1;
+        }
     }
+    if (lost) __atomic_store_n(&f->damaged, 1, __ATOMIC_RELAXED);
     if (!err && !h->modular) hf_reconstruct(f, gbx0, gby0, gbxs, gbys, offs, gb);
     pool_put(f->pool, gb);
     return err;
@@ -4654,11 +4690,27 @@ static int decode_frame(Frame *f, const Output *o) {
     }
     int nlf = h->nlfgroups, *errs = xcalloc((size_t)imax(nlf, h->ngroups), sizeof(int));
     if (!errs) return ERR_NOMEM;
-    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = lf_group(f, (int)i); });
+    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = sec_missing(f, sec_lfgroup(f, (int)i)) ? ERR_INVALID : lf_group(f, (int)i); });
     int e = 0;
-    for (int i = 0; i < nlf && !e; i++) e = errs[i];
+    for (int i = 0; i < nlf && !e; i++) {
+        if (errs[i] != ERR_INVALID || f->single) { e = errs[i]; continue; }
+        if (!f->lflost && !(f->lflost = xcalloc((size_t)nlf, 1))) { e = ERR_NOMEM; break; }
+        f->lflost[i] = 1; f->damaged = 1;
+        lf_lost(f, i);
+    }
     if (!e && !h->modular && !h->skip_smooth) e = smooth_lf(f);
-    if (!e && !h->modular) e = hf_global(f);
+    if (!e && !h->modular) {
+        e = sec_missing(f, sec_hfglobal(f)) ? ERR_INVALID : hf_global(f, 0);
+        if (e == ERR_INVALID) {   // (what it read so far dropped: every group LF only)
+            for (int i = 0; i < NUM_DQ; i++) { free(f->dqinv[i]); f->dqinv[i] = NULL; }
+            for (int p = 0; p < MAX_PASSES; p++) {
+                for (int o = 0; o < NUM_ORDERS; o++) for (int c = 0; c < 3; c++) { free(f->orders[p][o][c]); f->orders[p][o][c] = NULL; }
+                code_free(&f->coef[p]);
+            }
+            f->hflost = f->damaged = 1;
+            e = hf_global(f, 1);
+        }
+    }
     if (!e && wave) {
         e = decode_wave(f, o, threads);
     } else if (!e) {
@@ -4768,11 +4820,18 @@ void njxl_info_free(njxl_info *info) {
 }
 
 // frames drawn on the canvas side by side (their rectangles do not overlap); freed
-static int decode_batch(Frame *fr, Output *out, int *ferr, int n, int threads) {
+// A frame that cannot be decoded (damaged: ERR_INVALID) leaves its rectangle as it was; *shown counts the others.
+static int decode_batch(Frame *fr, Output *out, int *ferr, int n, int threads, int *damaged, int *shown) {
     if (n == 1) ferr[0] = decode_frame(&fr[0], &out[0]);
     else nitro_parallel_n((size_t)n, threads, ^(size_t i) { fr[i].threads = 1; ferr[i] = decode_frame(&fr[i], &out[i]); });
     int e = 0;
-    for (int i = 0; i < n; i++) { if (!e) e = ferr[i]; frame_free(&fr[i]); }
+    for (int i = 0; i < n; i++) {
+        if (ferr[i] == ERR_INVALID) *damaged = 1;
+        else if (!e) e = ferr[i];
+        *shown += !ferr[i];
+        *damaged |= fr[i].damaged | fr[i].cut;
+        frame_free(&fr[i]);
+    }
     return e;
 }
 
@@ -4782,7 +4841,12 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     if (!info) info = &tmp;
     memset(info, 0, sizeof(*info));
     if (!pixels || (format != NJXL_BGRA8 && format != NJXL_RGBA16 && format != NJXL_SAMPLES16)) return NJXL_INVALID;
-    int e = read_headers(data, len, &im, 0);
+    int e = read_headers(data, len, &im, 0), damaged = 0;
+    if (e == NJXL_INVALID && data && !codestream_magic(data, len)) {   // (a container cut off in its codestream)
+        image_free(&im);
+        e = read_headers(data, len, &im, 1);
+        damaged = 1;
+    }
     Meta *m = &im.m;
     Br *br = &im.br;
     if (!e) {   // (a row's bytes in the format: the pitch holds them)
@@ -4824,7 +4888,7 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     Output *out = xcalloc(BATCH, sizeof(Output));
     int *ferr = xcalloc(BATCH, sizeof(int));
     if (!fr || !out || !ferr) e = ERR_NOMEM;
-    int done = 0, nframes = 0, drawn = 0, nb = 0;
+    int done = 0, nframes = 0, drawn = 0, nb = 0, shown = 0;
     int slot[4] = {0, 0, 0, 0};   // 0: empty, 1: the canvas, 2: something else
     while (!e && !done) {
         Frame *f = &fr[nb];
@@ -4832,6 +4896,10 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
         f->m = m; f->threads = threads;
         e = frame_header(br, m, m->width, m->height, &f->h);
         if (!e) e = read_toc(br, f);
+        if (e == ERR_INVALID && drawn) {   // (the data ends, or is damaged, after a drawn frame: that is shown)
+            frame_free(f); e = 0; damaged = 1;
+            break;
+        }
         if (!e && ++nframes > 100000) e = ERR_LIMIT;
         const FrameHeader *h = &f->h;
         int keep = 0;
@@ -4842,7 +4910,7 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
                 replace &= h->ec_blend[i].mode == BLEND_REPLACE && h->ec_blend[i].src == h->blend.src;
             int src = h->blend.src & 3;
             if (!replace || (!full && !(slot[src] == 1 || (slot[src] == 0 && !drawn)))) e = ERR_UNSUP;   // blended layers
-            done = h->is_last || h->duration;
+            done = h->is_last || h->duration || f->cut;
             Output o = {format, pixels, pitch, -1, 0, h->x0, h->y0, m->width, m->height};
             for (int i = 0; i < m->num_ec; i++)
                 if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
@@ -4854,8 +4922,9 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
             if (!h->is_last && (h->duration == 0 || h->save_as_ref)) slot[h->save_as_ref & 3] = 1;
             out[nb] = o;
             keep = !e;
-        } else if (!e && h->is_last) {
-            e = ERR_INVALID;
+        } else if (!e && (h->is_last || f->cut)) {
+            if (drawn && !h->is_last) done = damaged = 1;   // (cut off in a frame not shown: what was drawn)
+            else e = ERR_INVALID;
         } else if (!e && h->type == FT_REFONLY) {
             slot[h->save_as_ref & 3] = 2;   // (not decoded: what it saves is not the canvas)
         }
@@ -4868,16 +4937,19 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
                     h->y0 < (int64_t)g->y0 + g->h && g->y0 < (int64_t)h->y0 + h->h;
         }
         if (flush) {
-            e = decode_batch(fr, out, ferr, nb, threads);
+            e = decode_batch(fr, out, ferr, nb, threads, &damaged, &shown);
             fr[0] = fr[nb]; out[0] = out[nb]; nb = 0;
         }
         nb++;
-        if (!e && (done || lone || nb == BATCH)) { e = decode_batch(fr, out, ferr, nb, threads); nb = 0; }
+        if (!e && (done || lone || nb == BATCH)) { e = decode_batch(fr, out, ferr, nb, threads, &damaged, &shown); nb = 0; }
     }
+    if (!e && nb) { e = decode_batch(fr, out, ferr, nb, threads, &damaged, &shown); nb = 0; }   // (ended by damage)
+    if (!e && !shown) e = ERR_INVALID;   // (no frame could be decoded: nothing to show)
     for (int i = 0; i < nb; i++) frame_free(&fr[i]);
     free(fr); free(out); free(ferr);
     image_free(&im);
     if (e || info == &tmp) njxl_info_free(info);   // (no info asked for: the profile is not kept)
+    else info->damaged = damaged;
     return e;
 }
 
