@@ -267,6 +267,8 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
         if (!j->siz || n < 10 || p[0] > 7 || p[1] > 4 || !be16(p + 2) || p[4] > 1) return -1;
         if (t) { t->flags = p[0]; t->order = p[1]; t->layers = (int)be16(p + 2); t->mct = p[4]; }
         else { j->flags = p[0]; j->order = p[1]; j->layers = (int)be16(p + 2); j->mct = p[4]; }
+        Coding check = {0};   // (checked also when every component's COC wins over it)
+        if (coding(&check, p + 5, n - 5, p[0] & 1)) return -1;
         for (int i = 0; i < j->nc; i++) if (!c[i].coc && coding(c + i, p + 5, n - 5, p[0] & 1)) return -1;
     } else if (m == 0xff53) {
         if (!j->siz || n < 7 || p[0] >= j->nc || p[1] > 1) return -1;
@@ -274,6 +276,8 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
         return coding(c + p[0], p + 2, n - 2, p[1] & 1);
     } else if (m == 0xff5c) {
         if (!j->siz) return -1;
+        Coding check = {0};
+        if (quant(&check, p, n)) return -1;
         for (int i = 0; i < j->nc; i++) if (!c[i].qcc && quant(c + i, p, n)) return -1;
     } else if (m == 0xff5d) {
         if (!j->siz || n < 3 || p[0] >= j->nc) return -1;
