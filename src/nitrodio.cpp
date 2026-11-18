@@ -3072,6 +3072,118 @@ struct Builder {
         return retreat;
     }
 
+    // mxArrowConnector (draw.io's flexArrow and link): the edge as a band width wide round its points, its corners mitred
+    // (rounded: curved), arrowheads of their own at its ends (flexArrow), filled and outlined; a link: its two sides only
+    void arrowConnector(const Style &s, std::vector<Pt> b) {
+        bool link = str(s, "shape") == "link";
+        double d = std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+        double g = std::max(0.0, num(s, "width", link ? 4 : 10)) + std::max(0.0, d - 1);   // (the band's width)
+        double e = g + num(s, "startWidth", 20) + d, f = g + num(s, "endWidth", 20) + d;   // (the heads' widths)
+        bool h = link, k = str(s, "startArrow") != "none" && !str(s, "startArrow").empty(), l = str(s, "endArrow") != "none";
+        double m = h ? 0 : d / 2, n = 3 * num(s, "startSize", 6) + d, dd = 3 * num(s, "endSize", 6) + d;
+        bool curved = str(s, "curved") == "1" && b.size() > 2, p = !curved && str(s, "rounded") == "1";
+        if (curved) {   // (getCurvePoints: quadratics through the points' midpoints)
+            std::vector<Pt> cv{b[0]};
+            Pt from = b[0];
+            for (size_t i = 1; i + 1 < b.size(); i++) {
+                Pt q = b[i], to = i + 2 < b.size() ? Pt{(b[i].x + b[i + 1].x) / 2, (b[i].y + b[i + 1].y) / 2} : b[i + 1];
+                int steps = (int)std::clamp(std::ceil((std::hypot(q.x - from.x, q.y - from.y) + std::hypot(to.x - q.x, to.y - q.y)) / 8), 4.0, 64.0);
+                for (int j = 1; j <= steps; j++) {
+                    double t = (double)j / steps, u = 1 - t;
+                    cv.push_back({u * u * from.x + 2 * u * t * q.x + t * t * to.x, u * u * from.y + 2 * u * t * q.y + t * t * to.y});
+                }
+                from = to;
+            }
+            b = cv;
+        }
+        if (b.size() < 2) return;
+        Pt c = b.back();
+        double q = b[1].x - b[0].x, r = b[1].y - b[0].y, t = std::hypot(q, r);
+        if (t == 0) return;
+        PathP path = newPath();
+        plutovg_path_t *a = path.get();
+        auto M = [&](double x, double y) { plutovg_path_move_to(a, (float)x, (float)y); };
+        auto L = [&](double x, double y) { plutovg_path_line_to(a, (float)x, (float)y); };
+        auto Q = [&](double cx, double cy, double x, double y) { plutovg_path_quad_to(a, (float)cx, (float)cy, (float)x, (float)y); };
+        auto marker = [&](double x0, double y0, double dx, double dy, double size, double aw, bool first) {   // (paintMarker)
+            double ratio = g / aw, mx = g * dy / 2, my = -g * dx / 2, nx = (m + size) * dx, ny = (m + size) * dy;
+            if (first) M(x0 - mx + nx, y0 - my + ny);
+            else L(x0 - mx + nx, y0 - my + ny);
+            L(x0 - mx / ratio + nx, y0 - my / ratio + ny);
+            L(x0 + m * dx, y0 + m * dy);
+            L(x0 + mx / ratio + nx, y0 + my / ratio + ny);
+            L(x0 + mx + nx, y0 + my + ny);
+        };
+        double v = q / t, x = r / t, u = v, y = x;
+        std::vector<std::function<void()>> back;   // (the other side, drawn backwards at the end)
+        if (k && !h) marker(b[0].x, b[0].y, v, x, n, e, true);
+        else {
+            double tx = g * x, ty = -g * v;
+            double C = b[0].x + tx / 2 + m * v, B = b[0].y + ty / 2 + m * x, z = b[0].x - tx / 2 + m * v, H = b[0].y - ty / 2 + m * x;
+            if (h) M(C, B), back.push_back([=, &L] { L(z, H); });
+            else M(z, H), L(C, B);
+        }
+        for (size_t i = 0; i + 2 < b.size(); i++) {
+            Pt p0 = b[i], p1 = b[i + 1], p2 = b[i + 2];
+            int w;   // (mxUtils.relativeCcw)
+            {
+                double x2 = p1.x - p0.x, y2 = p1.y - p0.y, px = p2.x - p0.x, py = p2.y - p0.y, ccw = px * y2 - py * x2;
+                if (ccw == 0) {
+                    ccw = px * x2 + py * y2;
+                    if (ccw > 0) {
+                        px -= x2, py -= y2;
+                        ccw = px * x2 + py * y2;
+                        if (ccw < 0) ccw = 0;
+                    }
+                }
+                w = ccw < 0 ? -1 : ccw > 0 ? 1 : 0;
+            }
+            double C = p2.x - p1.x, B = p2.y - p1.y, E = std::hypot(C, B);
+            if (E == 0) continue;
+            u = C / E, y = B / E;
+            E = std::max(std::sqrt(std::max(0.0, (v * u + x * y + 1) / 2)), .04);
+            C = v + u, B = x + y;
+            double F = std::hypot(C, B);
+            if (F == 0) continue;
+            C /= F, B /= F;
+            F = std::max(E, std::min(d / 200 + .04, .35));
+            E = w != 0 && p ? std::max(.1, F) : std::max(E, .06);
+            double O = p1.x + B * g / 2 / E, G = p1.y - C * g / 2 / E, B2 = p1.x - B * g / 2 / E, C2 = p1.y + C * g / 2 / E;
+            if (w != 0 && p) {
+                if (w == -1) {
+                    L(B2 + x * g, C2 - v * g);
+                    Q(O, G, B2 + y * g, C2 - u * g);
+                    back.push_back([=, &L] { L(B2, C2); });
+                } else {
+                    L(O, G);
+                    double M1 = O - x * g, L1 = G + v * g, N1 = O - y * g, P1 = G + u * g;
+                    back.push_back([=, &Q] { Q(B2, C2, M1, L1); });
+                    back.push_back([=, &L] { L(N1, P1); });
+                }
+            } else {
+                L(O, G);
+                back.push_back([=, &L] { L(B2, C2); });
+            }
+            v = u, x = y;
+        }
+        if (l && !h) marker(c.x, c.y, -v, -x, dd, f, false);
+        else {
+            double tx = g * y, ty = -g * u;
+            L(c.x - m * u + tx / 2, c.y - m * y + ty / 2);
+            double D = c.x - m * u - tx / 2, J = c.y - m * y - ty / 2;
+            if (h) M(D, J);
+            else L(D, J);
+        }
+        for (size_t i = back.size(); i-- > 0;) back[i]();
+        if (!h) plutovg_path_close(a);
+        Style v2 = s;
+        if (h) v2["fillColor"] = "none";
+        else if (!v2.count("fillColor") || str(v2, "fillColor").empty()) v2["fillColor"] = "#ffffff";
+        double x0 = b[0].x, y0 = b[0].y, x1 = x0, y1 = y0;
+        for (Pt q2 : b) x0 = std::min(x0, q2.x), y0 = std::min(y0, q2.y), x1 = std::max(x1, q2.x), y1 = std::max(y1, q2.y);
+        paint(path, nullptr, v2, Box{x0, y0, x1 - x0, y1 - y0}, false);
+    }
+
     void drawEdge(Cell &c, std::vector<Pt> r) {
         const Style &s = c.style;
         if (str(s, "shape") == "mermaidSankeyLink") {   // (Shapes.js: a band width wide along a cubic from its first point to its
@@ -3095,6 +3207,33 @@ struct Builder {
             Style v = s;
             if (!v.count("fillColor")) v["fillColor"] = "#ffffff";
             paint(band, nullptr, v, bb, false);
+            c.route = r;
+            if (!c.value.empty()) edgeLabel(c, c, r);
+            return;
+        }
+        if (str(s, "shape") == "arrow" && r.size() >= 2) {   // (mxArrow: a straight arrow from the first point to the last, 10 wide,
+            Pt e = r.front(), t = r.back();                    // its head 30 long and wide)
+            double fx = t.x - e.x, gy = t.y - e.y, len = std::hypot(fx, gy);
+            if (len > 0) {
+                double k = len - 30;
+                fx /= len, gy /= len;
+                double h = 10 * gy, d = -10 * fx, l = e.x - h / 2, ey = e.y - d / 2, m = l + h, n = ey + d, p = m + k * fx, k2 = n + k * gy;
+                double q = p + h, rr = k2 + d, tx = q - 3 * h, vy = rr - 3 * d;
+                PathP band = newPath();
+                plutovg_path_t *a = band.get();
+                plutovg_path_move_to(a, (float)l, (float)ey);
+                for (Pt v : {Pt{m, n}, Pt{p, k2}, Pt{q, rr}, t, Pt{tx, vy}, Pt{tx + h, vy + d}}) plutovg_path_line_to(a, (float)v.x, (float)v.y);
+                plutovg_path_close(a);
+                Style v2 = s;
+                if (!v2.count("fillColor") || str(v2, "fillColor").empty()) v2["fillColor"] = "#ffffff";
+                paint(band, nullptr, v2, Box{std::min(e.x, t.x), std::min(e.y, t.y), std::fabs(t.x - e.x), std::fabs(t.y - e.y)}, false);
+            }
+            c.route = r;
+            if (!c.value.empty()) edgeLabel(c, c, r);
+            return;
+        }
+        if (str(s, "shape") == "flexArrow" || str(s, "shape") == "link") {
+            arrowConnector(s, r);
             c.route = r;
             if (!c.value.empty()) edgeLabel(c, c, r);
             return;
@@ -3140,14 +3279,29 @@ struct Builder {
                 }
                 plutovg_path_line_to(p.get(), (float)r[i].x, (float)r[i].y);
             }
-            paint(p, nullptr, s, Box{}, true);
+            const std::string &shape = str(s, "shape");
             uint32_t inner = colour(s, "fillColor", 0);
-            if (str(s, "shape") == "filledEdge" && sw >= 3 && inner) {   // (Shapes.js FilledEdge: the line again inside, 2 narrower,
-                Style in = s;                                             // in its fill colour: an outlined band)
+            if (shape == "wire" || shape == "pipe") {   // (Shapes.js: a line in its stroke colour, again in its fill colour over it:
+                Style base = s, top = s;               // a wire's dashed, a pipe's width wide in a casing of the stroke's width)
+                base["dashed"] = "0";
+                double width = std::max(0.0, num(s, "width", 4));
+                if (shape == "pipe") base["strokeWidth"] = std::to_string(width + 2 * sw), top["strokeWidth"] = std::to_string(width);
+                paint(p, nullptr, base, Box{}, true);
+                if (inner) {
+                    top["strokeColor"] = str(s, "fillColor");
+                    top["shadow"] = "0";
+                    paint(p, nullptr, top, Box{}, true);
+                }
+            } else
+                paint(p, nullptr, s, Box{}, true);
+            if (shape == "filledEdge" && sw >= 3 && inner) {   // (Shapes.js FilledEdge: the line and its markers again inside,
+                Style in = s;                                   // 2 narrower, in its fill colour: an outlined band)
                 in["strokeColor"] = str(s, "fillColor");
                 in["strokeWidth"] = std::to_string(sw - 2);
                 in["shadow"] = "0";
                 paint(p, nullptr, in, Box{}, true);
+                marker(str(s, "endArrow"), str(s, "endFill") != "0", num(s, "endSize", 6), sw - 2, full.back(), ue, inner);
+                marker(str(s, "startArrow"), str(s, "startFill") != "0", num(s, "startSize", 6), sw - 2, full.front(), us, inner);
             }
         }
         c.route = full;
