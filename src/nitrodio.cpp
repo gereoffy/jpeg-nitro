@@ -584,7 +584,7 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
 bool turnsByDirection(const std::string &shape) {
     return shape == "cube" || shape == "folder" || shape == "component" || shape == "message" || shape == "umlActor" ||
-           shape.compare(0, 18, "mxgraph.floorplan.") == 0;
+           shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
 }
 
 PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &lines);
@@ -722,6 +722,33 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 8), (float)(w / 4), (float)(h / 8));
         line(w / 2, h / 4, w / 2, 2 * h / 3), line(w / 2, h / 3, 0, h / 3), line(w / 2, h / 3, w, h / 3);
         line(w / 2, 2 * h / 3, 0, h), line(w / 2, 2 * h / 3, w, h);
+    } else if (shape == "mxgraph.basic.pie" || shape == "mxgraph.basic.partConcEllipse" || shape == "mxgraph.basic.arc") {
+        // (mxBasic.js: angles 0..1 clockwise from the top; a pie's slice, a ring's part arcWidth wide, an open arc)
+        double a0 = 2 * M_PI * std::clamp(num(s, "startAngle", 0.25), 0.0, 1.0), a1 = 2 * M_PI * std::clamp(num(s, "endAngle", 0.75), 0.0, 1.0);
+        double rx = w / 2, ry = h / 2, diff = a1 - a0;
+        if (diff < 0) diff += 2 * M_PI;
+        if (diff == M_PI) a1 += 0.00001;
+        bool big = diff >= M_PI;
+        auto P = [&](double a, double fx, double fy) { return Pt{b.x + rx + std::sin(a) * fx, b.y + ry - std::cos(a) * fy}; };
+        Pt st = P(a0, rx, ry), en = P(a1, rx, ry);
+        if (shape == "mxgraph.basic.arc") {
+            if (!lines) lines = newPath();
+            plutovg_path_move_to(lines.get(), (float)st.x, (float)st.y);
+            plutovg_path_arc_to(lines.get(), (float)rx, (float)ry, 0, big, true, (float)en.x, (float)en.y);
+        } else if (shape == "mxgraph.basic.pie") {
+            plutovg_path_move_to(q, (float)(b.x + rx), (float)(b.y + ry));
+            plutovg_path_line_to(q, (float)st.x, (float)st.y);
+            plutovg_path_arc_to(q, (float)rx, (float)ry, 0, big, true, (float)en.x, (float)en.y);
+            plutovg_path_close(q);
+        } else {
+            double k = 1 - std::clamp(num(s, "arcWidth", 0.5), 0.0, 1.0);
+            Pt ie = P(a1, rx * k, ry * k), is = P(a0, rx * k, ry * k);
+            plutovg_path_move_to(q, (float)st.x, (float)st.y);
+            plutovg_path_arc_to(q, (float)rx, (float)ry, 0, big, true, (float)en.x, (float)en.y);
+            plutovg_path_line_to(q, (float)ie.x, (float)ie.y);
+            plutovg_path_arc_to(q, (float)(rx * k), (float)(ry * k), 0, big, false, (float)is.x, (float)is.y);
+            plutovg_path_close(q);
+        }
     } else if (shape == "mxgraph.floorplan.wall") {   // (mxFloorplan.js: a wall of wallThickness across the middle)
         double t = num(s, "wallThickness", 10);
         plutovg_path_add_rect(q, x, (float)(b.y + h / 2 - t / 2), (float)w, (float)t);
@@ -1061,10 +1088,12 @@ struct Builder {
             it.width = 1;
             add(std::move(it), 1);
         }
-        if (rotation != 0 && b.w > 0 && b.h > 0) {   // (the shape's items turned about its centre, their boxes again)
-            plutovg_matrix_t m;
+        bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
+        if ((rotation != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
+            plutovg_matrix_t m;                                          // as mxSvgCanvas2D.rotate does; their boxes again)
             plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
             plutovg_matrix_rotate(&m, (float)(rotation * M_PI / 180));
+            plutovg_matrix_scale(&m, flipH ? -1.f : 1.f, flipV ? -1.f : 1.f);
             plutovg_matrix_translate(&m, (float)-(b.x + b.w / 2), (float)-(b.y + b.h / 2));
             for (size_t k = first; k < page.items.size(); k++) {
                 Item &it = page.items[k];
