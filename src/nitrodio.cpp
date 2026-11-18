@@ -524,7 +524,40 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
 
 // The outline of a vertex shape in its box (draw.io's built-in ones; the others: their frame).
 // Second path: the lines drawn over it (a process' bars, a note's fold, a cylinder's rim)
+// the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
+// and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
+bool turnsByDirection(const std::string &shape) {
+    return shape == "cube" || shape == "folder" || shape == "component" || shape == "message" || shape == "umlActor" ||
+           shape.compare(0, 18, "mxgraph.floorplan.") == 0;
+}
+
+PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &lines);
+PathP turnedShapePath(const std::string &shape, const Style &s, const Box &b, PathP &lines) {
+    const std::string &dir = str(s, "direction");
+    double deg = dir == "south" ? 90 : dir == "west" ? 180 : dir == "north" ? 270 : 0;
+    Style upright = s;
+    upright.erase("direction");
+    Pt c = b.centre();
+    Box ub = deg == 90 || deg == 270 ? Box{c.x - b.h / 2, c.y - b.w / 2, b.h, b.w} : b;
+    PathP l, p = shapePath(shape, upright, ub, l);
+    plutovg_matrix_t m;
+    plutovg_matrix_init_translate(&m, (float)c.x, (float)c.y);
+    plutovg_matrix_rotate(&m, (float)(deg * M_PI / 180));
+    plutovg_matrix_translate(&m, (float)-c.x, (float)-c.y);
+    PathP tp = newPath();
+    plutovg_path_add_path(tp.get(), p.get(), &m);
+    if (l) {
+        lines = newPath();
+        plutovg_path_add_path(lines.get(), l.get(), &m);
+    }
+    return tp;
+}
+
 PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &lines) {
+    {
+        const std::string &dir = str(s, "direction");
+        if ((dir == "south" || dir == "west" || dir == "north") && turnsByDirection(shape)) return turnedShapePath(shape, s, b, lines);
+    }
     PathP p = newPath();
     plutovg_path_t *q = p.get();
     double w = b.w, h = b.h;
@@ -613,6 +646,39 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         C(w / 2 + w / 4, 0, w / 2 + w / 4, 2 * h / 5, w / 2, 2 * h / 5);
         C(w, 2 * h / 5, w, 3 * h / 5, w, h);
         plutovg_path_close(q);
+    } else if (shape == "cube") {   // (Shapes.js CubeShape: the front, its top and side folded back by size)
+        double d = std::clamp(num(s, "size", 20), 0.0, std::min(w, h));
+        polygon(q, {{0, 0}, {w - d, 0}, {w, d}, {w, h}, {d, h}, {0, h - d}}, b);
+        line(d, h, d, d), line(d, d, 0, 0), line(d, d, w, d);
+    } else if (shape == "folder") {   // (FolderShape: a tab over the box, on the right by default)
+        double dx = std::clamp(num(s, "tabWidth", 60), 0.0, w), dy = std::clamp(num(s, "tabHeight", 20), 0.0, h);
+        if (str(s, "tabPosition") == "left") polygon(q, {{0, dy}, {0, 0}, {dx, 0}, {dx, dy}, {w, dy}, {w, h}, {0, h}}, b);
+        else polygon(q, {{0, dy}, {w - dx, dy}, {w - dx, 0}, {w, 0}, {w, h}, {0, h}}, b);
+    } else if (shape == "component") {   // (ComponentShape: a box with two jetties on its left)
+        double jw = num(s, "jettyWidth", 32), jh = num(s, "jettyHeight", 12), x0 = jw / 2, y0 = 0.3 * h - jh / 2, y1 = 0.7 * h - jh / 2;
+        polygon(q, {{x0, 0}, {w, 0}, {w, h}, {x0, h}, {x0, y1 + jh}, {0, y1 + jh}, {0, y1}, {x0, y1}, {x0, y0 + jh}, {0, y0 + jh}, {0, y0}, {x0, y0}}, b);
+        line(x0, y0, x0 + jw / 2, y0), line(x0 + jw / 2, y0, x0 + jw / 2, y0 + jh), line(x0 + jw / 2, y0 + jh, x0, y0 + jh);
+        line(x0, y1, x0 + jw / 2, y1), line(x0 + jw / 2, y1, x0 + jw / 2, y1 + jh), line(x0 + jw / 2, y1 + jh, x0, y1 + jh);
+    } else if (shape == "message") {   // (MessageShape: an envelope)
+        plutovg_path_add_rect(q, x, y, (float)w, (float)h);
+        line(0, 0, w / 2, h / 2), line(w / 2, h / 2, w, 0);
+    } else if (shape == "umlActor") {   // (UmlActorShape: the head filled, the body lines)
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 8), (float)(w / 4), (float)(h / 8));
+        line(w / 2, h / 4, w / 2, 2 * h / 3), line(w / 2, h / 3, 0, h / 3), line(w / 2, h / 3, w, h / 3);
+        line(w / 2, 2 * h / 3, 0, h), line(w / 2, 2 * h / 3, w, h);
+    } else if (shape == "mxgraph.floorplan.wall") {   // (mxFloorplan.js: a wall of wallThickness across the middle)
+        double t = num(s, "wallThickness", 10);
+        plutovg_path_add_rect(q, x, (float)(b.y + h / 2 - t / 2), (float)w, (float)t);
+    } else if (shape == "mxgraph.floorplan.wallCorner") {
+        double t = num(s, "wallThickness", 10);
+        polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, t}, {t, t}, {t, h}}, b);
+    } else if (shape == "mxgraph.floorplan.wallU") {
+        double t = num(s, "wallThickness", 10);
+        polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}, {w - t, h}, {w - t, t}, {t, t}, {t, h}}, b);
+    } else if (shape == "mxgraph.floorplan.room") {   // (its walls: the frame less the inside)
+        double t = num(s, "wallThickness", 10);
+        polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}}, b);
+        polygon(q, {{t, t}, {t, h - t}, {w - t, h - t}, {w - t, t}}, b);
     } else if (shape == "line") {
         bool vertical = dir == "south" || dir == "north";
         if (vertical) line(w / 2, 0, w / 2, h);
@@ -818,6 +884,7 @@ struct Builder {
         if (shape.empty()) shape = "rectangle";
         double rotation = num(s, "rotation", 0);
         bool text = shape == "text" || (str(s, "strokeColor") == "none" && str(s, "fillColor") == "none");
+        size_t first = page.items.size();   // (the shape's items: turned together by its rotation at the end)
         if (shape == "swimlane" && b.w > 0 && b.h > 0) {   // (its header filled, the body by swimlaneFillColor: the body first,
                                                            // the header over it, the frame and the header's line over both)
             bool across = str(s, "horizontal") == "0";
@@ -850,6 +917,64 @@ struct Builder {
             frame["gradientColor"] = "none";
             if (bodyShown) frame["shadow"] = "0";
             paint(outline, lines, frame, b, false);
+        } else if (shape == "partialRectangle") {   // (Shapes.js: filled, outlined on the sides top / right / bottom / left say)
+            PathP r = newPath(), l = newPath();
+            plutovg_path_add_rect(r.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+            Style fill = s;
+            fill["strokeColor"] = "none";
+            paint(r, nullptr, fill, b, false);
+            Pt c[4] = {{b.x, b.y}, {b.x + b.w, b.y}, {b.x + b.w, b.y + b.h}, {b.x, b.y + b.h}};
+            const char *side[4] = {"top", "right", "bottom", "left"};
+            for (int k = 0; k < 4; k++)
+                if (str(s, side[k]) != "0") {
+                    plutovg_path_move_to(l.get(), (float)c[k].x, (float)c[k].y);
+                    plutovg_path_line_to(l.get(), (float)c[(k + 1) % 4].x, (float)c[(k + 1) % 4].y);
+                }
+            Style edges = s;
+            edges["fillColor"] = "none";
+            edges["shadow"] = "0";
+            paint(newPath(), l, edges, b, false);
+        } else if (shape == "umlLifeline" && b.w > 0 && b.h > 0) {   // (Shapes.js UmlLifeline: the head, a dashed line down)
+            double size = std::clamp(num(s, "size", 40), 0.0, b.h);
+            Box hb{b.x, b.y, b.w, size};
+            const std::string &who = str(s, "participant");
+            PathP l, head = who.empty() ? shapePath("rectangle", s, hb, l) : shapePath(who, s, hb, l);
+            paint(head, l, s, hb, false);
+            if (size < b.h) {
+                Style ls = s;
+                ls["fillColor"] = "none";
+                ls["shadow"] = "0";
+                ls["dashed"] = str(s, "lifelineDashed") == "0" ? "0" : "1";
+                if (!str(s, "lifelineColor").empty()) ls["strokeColor"] = str(s, "lifelineColor");
+                PathP down = newPath();
+                plutovg_path_move_to(down.get(), (float)(b.x + b.w / 2), (float)(b.y + size));
+                plutovg_path_line_to(down.get(), (float)(b.x + b.w / 2), (float)(b.y + b.h));
+                paint(newPath(), down, ls, b, false);
+            }
+        } else if (shape == "umlFrame" && b.w > 0 && b.h > 0) {   // (Shapes.js UmlFrame: the tab filled, the frame outlined)
+            double w0 = std::min(b.w, std::max(10.0, num(s, "width", 60))), h0 = std::min(b.h, std::max(15.0, num(s, "height", 30)));
+            const std::string &bodyFill = str(s, "swimlaneFillColor");
+            if (!bodyFill.empty() && parseColour(bodyFill, 0)) {
+                Style body = s;
+                body["fillColor"] = bodyFill;
+                body["gradientColor"] = "none";
+                body["strokeColor"] = "none";
+                PathP r = newPath();
+                plutovg_path_add_rect(r.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+                paint(r, nullptr, body, b, false);
+            }
+            PathP tab = newPath(), frame = newPath();
+            polygon(tab.get(), {{0, 0}, {w0, 0}, {w0, std::max(0.0, h0 - 15)}, {std::max(0.0, w0 - 10), h0}, {0, h0}}, b);
+            paint(tab, nullptr, s, Box{b.x, b.y, w0, h0}, false);
+            plutovg_path_move_to(frame.get(), (float)(b.x + w0), (float)b.y);
+            plutovg_path_line_to(frame.get(), (float)(b.x + b.w), (float)b.y);
+            plutovg_path_line_to(frame.get(), (float)(b.x + b.w), (float)(b.y + b.h));
+            plutovg_path_line_to(frame.get(), (float)b.x, (float)(b.y + b.h));
+            plutovg_path_line_to(frame.get(), (float)b.x, (float)(b.y + h0));
+            Style fs = s;
+            fs["fillColor"] = "none";
+            fs["shadow"] = "0";
+            paint(newPath(), frame, fs, b, false);
         } else if (shape == "waypoint") {   // (draw.io's waypoint: a dot of its size in the stroke colour, at the centre)
             uint32_t dot = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
             double r = std::clamp(num(s, "size", 6), 0.0, 1000.0) / 2;
@@ -863,20 +988,6 @@ struct Builder {
         } else if (!text && shape != "image" && b.w > 0 && b.h > 0) {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
-            if (rotation != 0) {
-                plutovg_matrix_t m;
-                plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
-                plutovg_matrix_rotate(&m, (float)(rotation * M_PI / 180));
-                plutovg_matrix_translate(&m, (float)-(b.x + b.w / 2), (float)-(b.y + b.h / 2));
-                PathP t = newPath();
-                plutovg_path_add_path(t.get(), p.get(), &m);
-                p = t;
-                if (lines) {
-                    PathP tl = newPath();
-                    plutovg_path_add_path(tl.get(), lines.get(), &m);
-                    lines = tl;
-                }
-            }
             paint(p, lines, s, b, false);
         } else if (shape == "image" && b.w > 0 && b.h > 0) {   // (the picture is not in the file: its frame)
             Item it;
@@ -886,9 +997,31 @@ struct Builder {
             it.width = 1;
             add(std::move(it), 1);
         }
+        if (rotation != 0 && b.w > 0 && b.h > 0) {   // (the shape's items turned about its centre, their boxes again)
+            plutovg_matrix_t m;
+            plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
+            plutovg_matrix_rotate(&m, (float)(rotation * M_PI / 180));
+            plutovg_matrix_translate(&m, (float)-(b.x + b.w / 2), (float)-(b.y + b.h / 2));
+            for (size_t k = first; k < page.items.size(); k++) {
+                Item &it = page.items[k];
+                if (!it.path || it.label) continue;
+                PathP t = newPath();
+                plutovg_path_add_path(t.get(), it.path.get(), &m);
+                it.path = t;
+                nd::Box bb = nd::pathBox(t.get(), std::max(it.width, 1.f));
+                it.bx0 = bb.x0, it.by0 = bb.y0, it.bx1 = bb.x1, it.by1 = bb.y1;
+                if (it.fill2) {   // (a gradient's line turned with it)
+                    plutovg_point_t g0{it.gx0, it.gy0}, g1{it.gx1, it.gy1};
+                    plutovg_matrix_map_point(&m, &g0, &g0), plutovg_matrix_map_point(&m, &g1, &g1);
+                    it.gx0 = g0.x, it.gy0 = g0.y, it.gx1 = g1.x, it.gy1 = g1.y;
+                }
+            }
+        }
         if (c.value.empty()) return;
         Box lb = b;
         if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
+        if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, b.h);   // (in its head)
+        else if (shape == "umlFrame") lb.w = std::min(b.w, std::max(10.0, num(s, "width", 60))), lb.h = std::min(b.h, std::max(15.0, num(s, "height", 30)));
         bool turned = false;
         if (shape == "swimlane") {   // (in its header)
             double ss = num(s, "startSize", 23);
