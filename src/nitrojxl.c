@@ -4790,6 +4790,8 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
             keep = !e;
         } else if (!e && h->is_last) {
             e = ERR_INVALID;
+        } else if (!e && h->type == FT_REFONLY) {
+            slot[h->save_as_ref & 3] = 2;   // (not decoded: what it saves is not the canvas)
         }
         if (!keep) { frame_free(f); continue; }
         // the batch first when the frame overlaps one of them (or it is no tile)
