@@ -2113,7 +2113,7 @@ struct Builder {
             for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom", "verticalAlign"}) none.erase(k);
             inner = labelBox(none, lb);
         }
-        double wrap = str(s, "whiteSpace") == "wrap" ? inner.w : 0;
+        double wrap = str(s, "whiteSpace") == "wrap" ? inner.w + (str(s, "html") == "1" ? 2 : 0) : 0;   // (an HTML label's div: 2 wider)
         std::shared_ptr<Label> l = layoutLabel(c.value, s, inner, wrap);
         if (l && (turned || rotation != 0)) {
             Pt ce = lb.centre();
