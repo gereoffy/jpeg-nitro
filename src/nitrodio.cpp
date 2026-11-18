@@ -2240,6 +2240,14 @@ struct Builder {
                 plutovg_path_line_to(p.get(), (float)r[i].x, (float)r[i].y);
             }
             paint(p, nullptr, s, Box{}, true);
+            uint32_t inner = colour(s, "fillColor", 0);
+            if (str(s, "shape") == "filledEdge" && sw >= 3 && inner) {   // (Shapes.js FilledEdge: the line again inside, 2 narrower,
+                Style in = s;                                             // in its fill colour: an outlined band)
+                in["strokeColor"] = str(s, "fillColor");
+                in["strokeWidth"] = std::to_string(sw - 2);
+                in["shadow"] = "0";
+                paint(p, nullptr, in, Box{}, true);
+            }
         }
         c.route = full;
         if (!c.value.empty()) edgeLabel(c, c, full);
