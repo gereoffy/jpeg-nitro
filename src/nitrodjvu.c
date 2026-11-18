@@ -813,10 +813,10 @@ nitrodjvu *nitrodjvu_load(const void *data, size_t len) {
         }
         free(names);
     }
-    for (int k = 0; k < d->ncomps; k++) d->npages += d->comps[k].is_page;
-    d->pages = calloc((size_t)(d->npages ? d->npages : 1), sizeof *d->pages);
+    int npages = 0;   // (d->npages counts the pages in d->pages: nitrodjvu_free goes by it)
+    for (int k = 0; k < d->ncomps; k++) npages += d->comps[k].is_page;
+    d->pages = calloc((size_t)(npages ? npages : 1), sizeof *d->pages);
     if (!d->pages) goto fail;
-    d->npages = 0;
     for (int k = 0; k < d->ncomps; k++) {
         Page pg;
         memset(&pg, 0, sizeof pg);
