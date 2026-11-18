@@ -1793,6 +1793,31 @@ struct Builder {
 
     void drawEdge(Cell &c, std::vector<Pt> r) {
         const Style &s = c.style;
+        if (str(s, "shape") == "mermaidSankeyLink") {   // (Shapes.js: a band width wide along a cubic from its first point to its
+            Pt a = r.front(), e = r.back();                // last, level at both ends, filled like a vertex; markers none)
+            double mx = (a.x + e.x) / 2, hw = std::max(1.0, num(s, "width", 10)) / 2;
+            Pt side[2][33];
+            for (int i = 0; i <= 32; i++) {
+                double t = i / 32.0, u = 1 - t;
+                double x = u * u * u * a.x + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * e.x;
+                double y = u * u * u * a.y + 3 * u * u * t * a.y + 3 * u * t * t * e.y + t * t * t * e.y;
+                double dx = 3 * u * u * (mx - a.x) + 3 * t * t * (e.x - mx), dy = 6 * u * t * (e.y - a.y), len = std::hypot(dx, dy);
+                if (len == 0) dx = 1, dy = 0, len = 1;
+                side[0][i] = {x - dy / len * hw, y + dx / len * hw}, side[1][i] = {x + dy / len * hw, y - dx / len * hw};
+            }
+            PathP band = newPath();
+            plutovg_path_move_to(band.get(), (float)side[0][0].x, (float)side[0][0].y);
+            for (int i = 1; i <= 32; i++) plutovg_path_line_to(band.get(), (float)side[0][i].x, (float)side[0][i].y);
+            for (int i = 32; i >= 0; i--) plutovg_path_line_to(band.get(), (float)side[1][i].x, (float)side[1][i].y);
+            plutovg_path_close(band.get());
+            Box bb{std::min(a.x, e.x), std::min(a.y, e.y) - hw, std::fabs(e.x - a.x), std::fabs(e.y - a.y) + 2 * hw};
+            Style v = s;
+            if (!v.count("fillColor")) v["fillColor"] = "#ffffff";
+            paint(band, nullptr, v, bb, false);
+            c.route = r;
+            if (!c.value.empty()) edgeLabel(c, c, r);
+            return;
+        }
         double sw = std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
         std::vector<Pt> full = r;   // (the labels along it, before the markers shorten it)
