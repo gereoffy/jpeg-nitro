@@ -4811,7 +4811,7 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     for (int i = 0; i < nb; i++) frame_free(&fr[i]);
     free(fr); free(out); free(ferr);
     image_free(&im);
-    if (e) njxl_info_free(info);
+    if (e || info == &tmp) njxl_info_free(info);   // (no info asked for: the profile is not kept)
     return e;
 }
 
