@@ -4718,6 +4718,10 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
     int e = read_headers(data, len, &im);
     Meta *m = &im.m;
     Br *br = &im.br;
+    if (!e) {   // (a row's bytes in the format: the pitch holds them)
+        size_t row = (size_t)m->width * (format == NJXL_RGBA16 ? 8 : format == NJXL_SAMPLES16 ? (m->cspace == CS_GREY ? 2 : 6) : 4);
+        if (pitch < row) e = ERR_INVALID;
+    }
     if (!e && format == NJXL_SAMPLES16 && (m->exp_bits || m->bits > 16)) e = ERR_UNSUP;
     if (!e && format == NJXL_SAMPLES16 && m->xyb) {   // XYB: back to the image's own encoding, when it is a simple one
         static const float W[2] = {0.3127f, 0.3290f};
