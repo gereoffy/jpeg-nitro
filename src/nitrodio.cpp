@@ -3483,8 +3483,8 @@ void readCells(xmlNode *root, Builder &b) {
         c.parent = attr(cell, "parent");
         c.source = attr(cell, "source");
         c.target = attr(cell, "target");
-        c.vertex = attr(cell, "vertex") == "1";
         c.edge = attr(cell, "edge") == "1";
+        c.vertex = attr(cell, "vertex") == "1" && !c.edge;   // (both: an edge, as mxGraphView takes it)
         c.visible = attr(cell, "visible") != "0" && attr(n, "visible") != "0";
         c.collapsed = attr(cell, "collapsed") == "1";
         c.style = parseStyle(attr(cell, "style"), c.edge);
