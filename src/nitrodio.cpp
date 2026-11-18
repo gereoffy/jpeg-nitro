@@ -331,6 +331,35 @@ struct Seg {
     float size = 0;      // (an HTML label's own font size; 0: the label's)
 };
 
+// a block's margins (top, bottom) in px: a browser's defaults (em of the block's font size), style margin / margin-top /
+// margin-bottom over them
+void tagMargins(const std::string &tag, float &top, float &bottom) {
+    auto value = [&](size_t at, float &out) {
+        const char *p = tag.c_str() + at;
+        while (*p == ' ') p++;
+        char *end = nullptr;
+        double d = nn_strtod(p, &end);
+        if (end == p) return (const char *)nullptr;
+        out = (float)(end[0] == 'e' && end[1] == 'm' ? d * 16 : d);
+        while (*end && *end != ' ' && *end != ';' && *end != '"' && *end != '\'') end++;
+        return (const char *)end;
+    };
+    size_t at = tag.find("margin:");
+    if (at != std::string::npos) {   // (1 value: all; 2: vertical horizontal; 3 / 4: top, .., bottom)
+        float v[4];
+        int n = 0;
+        const char *p = tag.c_str() + at + 7;
+        while (n < 4) {
+            const char *e = value((size_t)(p - tag.c_str()), v[n]);
+            if (!e) break;
+            n++, p = e;
+        }
+        if (n) top = v[0], bottom = n >= 3 ? v[2] : v[0];
+    }
+    if ((at = tag.find("margin-top:")) != std::string::npos) value(at + 11, top);
+    if ((at = tag.find("margin-bottom:")) != std::string::npos) value(at + 14, bottom);
+}
+
 // the font size an HTML tag sets: style="font-size: Npx / Npt / N% / Nem" (the last two of base, the size around
 // it) or <font size="1..7">; 0: none
 float tagSize(const std::string &tag, float base) {
@@ -405,9 +434,17 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
     std::vector<int> lists;   // (the open <ul> (0) / <ol> (its next number))
     std::vector<std::pair<std::string, float>> sizes;   // (the open tags that set a font size, as colours)
+    std::vector<std::pair<std::string, float>> margins;   // (the open blocks' bottom margins)
     int unordered = 0;        // (an <li> outside a list: a bullet)
+    float gap = 0;   // (the block margins due before the next text: collapsed, the largest)
     auto add = [&](const std::string &t, bool b, bool i, bool u) {
         if (t.empty()) return;
+        if (gap > 0 && paras.back().empty()) {   // (a line of its own, gap high)
+            Seg sp;
+            sp.size = gap / 1.2f;
+            paras.insert(paras.end() - 1, Para{sp});
+        }
+        gap = 0;
         Para &p = paras.back();
         uint32_t rgba = colours.empty() ? 0 : colours.back().second;
         float sz = sizes.empty() ? 0 : sizes.back().second;
@@ -458,8 +495,25 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             for (char &ch : name) ch = (char)tolower((unsigned char)ch);
             if (!close && name != "br" && name != "img" && name != "hr" && name != "wbr") {
                 if (uint32_t col = tagColour(tag)) flush(), colours.push_back({name, col});
-                if (float sz = tagSize(tag, sizes.empty() ? baseSize : sizes.back().second)) flush(), sizes.push_back({name, sz});
+                float around = sizes.empty() ? baseSize : sizes.back().second;
+                static const float heading[6] = {2, 1.5f, 1.17f, 1, 0.83f, 0.67f};   // (a browser's h1 .. h6, bold)
+                static const float hmargin[6] = {0.67f, 0.83f, 1, 1.33f, 1.67f, 2.33f};
+                bool h = name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
+                if (h) flush(), sizes.push_back({name, around * heading[name[1] - '1']}), b++;
+                if (h || name == "p" || name == "ul" || name == "ol") {   // (its margins: before it now, after it at its end)
+                    float fs = h ? around * heading[name[1] - '1'] : around, mt = h ? fs * hmargin[name[1] - '1'] : fs, mb = mt;
+                    tagMargins(tag, mt, mb);
+                    margins.push_back({name, mb});
+                    gap = std::max(gap, mt);
+                }
+                if (float sz = tagSize(tag, around)) flush(), sizes.push_back({name, sz});
             } else if (close) {
+                for (size_t k = margins.size(); k-- > 0;)
+                    if (margins[k].first == name) {
+                        gap = std::max(gap, margins[k].second);
+                        margins.erase(margins.begin() + (long)k);
+                        break;
+                    }
                 for (size_t k = colours.size(); k-- > 0;)
                     if (colours[k].first == name) {
                         flush();
@@ -470,6 +524,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     if (sizes[k].first == name) {
                         flush();
                         sizes.erase(sizes.begin() + (long)k);
+                        if (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && b > 0) b--;
                         break;
                     }
             }
