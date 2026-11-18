@@ -185,6 +185,7 @@ struct Run {   // a piece of a label's line in one font
     float x = 0, y = 0;   // its baseline's start
     std::string text;
     float underline = 0;   // (its width when underlined)
+    float strike = 0;      // (its width when struck through)
 };
 struct Label {
     struct Rect {
@@ -341,7 +342,7 @@ void readGeometry(Cell &c, xmlNode *g) {
 struct Seg {
     std::string text;
     bool bold = false, italic = false;
-    bool underline = false;
+    uint8_t underline = 0;   // (1: underlined, 2: struck through, 3: both)
     uint32_t rgba = 0;   // (an HTML label's own colour; 0: the label's)
     float size = 0;      // (an HTML label's own font size; 0: the label's)
     uint32_t bg = 0;     // (an HTML label's highlight: a span's background colour)
@@ -454,7 +455,7 @@ std::string htmlAttr(const std::string &tag, const char *name);
 // A label's text as paragraphs: plain (its line breaks), or HTML: <br> and the block elements
 // break lines, <b> <strong> <i> <em> (and the bold / italic of fontStyle) set the font, the
 // other tags are dropped, white space collapses
-std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic, bool underline, float baseSize) {
+std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic, int underline, float baseSize) {
     std::vector<Para> paras(1);
     std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
     std::vector<int> lists;   // (the open <ul> (0) / <ol> (its next number))
@@ -464,7 +465,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     std::vector<std::pair<std::string, uint32_t>> highlights;   // (the open inline tags with a background colour)
     std::vector<std::pair<std::string, std::string>> aligns;    // (the open blocks and their text-align, "" if none)
     float gap = 0;   // (the block margins due before the next text: collapsed, the largest)
-    auto add = [&](const std::string &t, bool b, bool i, bool u) {
+    auto add = [&](const std::string &t, bool b, bool i, int u) {
         if (t.empty()) return;
         if (gap > 0 && paras.back().empty()) {   // (a line of its own, gap high)
             Seg sp;
@@ -487,7 +488,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().underline == u && p.back().rgba == rgba && p.back().size == sz &&
             p.back().bg == bg)
             p.back().text += t;
-        else p.push_back({t, b, i, u, rgba, sz, bg});
+        else p.push_back({t, b, i, (uint8_t)u, rgba, sz, bg});
     };
     if (!html) {
         std::string cur;
@@ -502,15 +503,15 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         add(cur, bold, italic, underline);
         return paras;
     }
-    int b = bold, it = italic, un = underline;
+    int b = bold, it = italic, un = underline & 1, st = underline >> 1 & 1;
     struct Added {
-        int b, i, u;
+        int b, i, u, s;
     };
     std::vector<Added> spans;   // (the bold, italic, underline a <span> / <font> added, taken back at its end)
     bool space = true;   // (white space collapsed: at a line's start, or after one)
     std::string cur;
     auto flush = [&] {
-        add(cur, b > 0, it > 0, un > 0);
+        add(cur, b > 0, it > 0, (un > 0 ? 1 : 0) | (st > 0 ? 2 : 0));
         cur.clear();
     };
     auto newLine = [&] {
@@ -607,20 +608,24 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             } else if (name == "u" || name == "ins") {
                 flush();
                 un += close ? -1 : 1;
+            } else if (name == "s" || name == "strike" || name == "del") {
+                flush();
+                st += close ? -1 : 1;
             } else if (name == "span" || name == "font") {
                 if (close) {
                     if (!spans.empty()) {
                         flush();
-                        b -= spans.back().b, it -= spans.back().i, un -= spans.back().u;
+                        b -= spans.back().b, it -= spans.back().i, un -= spans.back().u, st -= spans.back().s;
                         spans.pop_back();
                     }
                 } else {
                     int sb = tag.find("font-weight") != std::string::npos && tag.find("bold") != std::string::npos;
                     int si = tag.find("font-style") != std::string::npos && tag.find("italic") != std::string::npos;
                     int su = tag.find("text-decoration") != std::string::npos && tag.find("underline") != std::string::npos;
-                    if (sb || si || su) flush();
-                    b += sb, it += si, un += su;
-                    spans.push_back({sb, si, su});   // (every one, however deep: its end takes back its own; at most a tag per 6 bytes)
+                    int ss = tag.find("text-decoration") != std::string::npos && tag.find("line-through") != std::string::npos;
+                    if (sb || si || su || ss) flush();
+                    b += sb, it += si, un += su, st += ss;
+                    spans.push_back({sb, si, su, ss});   // (every one, however deep: its end takes back its own; at most a tag per 6 bytes)
                 }
             }
             continue;
@@ -670,7 +675,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     if (html && blocks && hasTable(value)) return layoutHtmlBlocks(value, s, box, wrapWidth);
     int fontStyle = (int)num(s, "fontStyle", 0);
     float size = (float)std::clamp(num(s, "fontSize", 12), 1.0, 1000.0);
-    std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2, fontStyle & 4, size);
+    std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2, (fontStyle & 4 ? 1 : 0) | (fontStyle & 8 ? 2 : 0), size);
     std::string family = str(s, "fontFamily");
     size_t comma = family.find(',');
     if (comma != std::string::npos) family.resize(comma);
@@ -689,7 +694,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         float width;
         uint32_t rgba;
         float size;
-        bool underline;
+        uint8_t underline;
         uint32_t bg;
     };
     double alpha = num(s, "textOpacity", 100);
@@ -797,7 +802,8 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         for (LineRun &r : lines[l]) {
             if ((r.bg >> 24) && r.width > 0) label->rects.push_back({pen, (float)(y - lineH), r.width, lineH, r.bg});
             if (!r.text.empty() && r.face && (r.rgba >> 24))
-                label->runs.push_back({r.face, r.size, r.rgba, pen, base, r.text, r.underline ? textWidth(r.face, r.size, r.text) : 0});
+                label->runs.push_back({r.face, r.size, r.rgba, pen, base, r.text, r.underline & 1 ? textWidth(r.face, r.size, r.text) : 0,
+                                       r.underline & 2 ? textWidth(r.face, r.size, r.text) : 0});
             pen += r.width;
         }
     }
@@ -3811,6 +3817,8 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
             plutovg_canvas_fill_text(c, r.text.data(), (int)r.text.size(), PLUTOVG_TEXT_ENCODING_UTF8, r.x, r.y);
             if (r.underline > 0)   // (a line a tenth of the size under the baseline, a fifteenth thick)
                 plutovg_canvas_fill_rect(c, r.x, r.y + r.size * 0.1f, r.underline, std::max(r.size / 15, 0.5f));
+            if (r.strike > 0)   // (through the middle of the small letters)
+                plutovg_canvas_fill_rect(c, r.x, r.y - r.size * 0.3f, r.strike, std::max(r.size / 15, 0.5f));
         }
         plutovg_canvas_restore(c);
         return;
