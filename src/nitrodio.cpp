@@ -1467,6 +1467,10 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "message") {   // (MessageShape: an envelope)
         plutovg_path_add_rect(q, x, y, (float)w, (float)h);
         line(0, 0, w / 2, h / 2), line(w / 2, h / 2, w, 0);
+    } else if (shape == "seqActorStick") {   // (Shapes.js: Mermaid's stick figure, fixed size, at the top middle)
+        double cx = w / 2, r = 15, t0 = 2 * r, t1 = t0 + 20, ay = t0 + 10;
+        plutovg_path_add_circle(q, (float)(b.x + cx), (float)(b.y + r), (float)r);
+        line(cx, t0, cx, t1), line(cx - 18, ay, cx + 18, ay), line(cx, t1, cx - 16, t1 + 15), line(cx, t1, cx + 16, t1 + 15);
     } else if (shape == "umlActor") {   // (UmlActorShape: the head filled, the body lines)
         plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 8), (float)(w / 4), (float)(h / 8));
         line(w / 2, h / 4, w / 2, 2 * h / 3), line(w / 2, h / 3, 0, h / 3), line(w / 2, h / 3, w, h / 3);
@@ -2148,13 +2152,16 @@ struct Builder {
             edges["fillColor"] = "none";
             edges["shadow"] = "0";
             paint(newPath(), l, edges, b, false);
-        } else if (shape == "umlLifeline" && b.w > 0 && b.h > 0) {   // (Shapes.js UmlLifeline: the head, a dashed line down)
-            double size = std::clamp(num(s, "size", 40), 0.0, b.h);
-            Box hb{b.x, b.y, b.w, size};
+        } else if (shape == "umlLifeline" && b.w > 0 && b.h > 0) {   // (Shapes.js UmlLifeline: the head, a dashed line down;
+            bool mirror = str(s, "lifelineMirror") == "1";                // lifelineMirror: the head again at its foot)
+            double size = std::clamp(num(s, "size", 40), 0.0, mirror ? b.h / 2 : b.h), end = mirror ? b.h - size : b.h;
             const std::string &who = str(s, "participant");
-            PathP l, head = who.empty() ? shapePath("rectangle", s, hb, l) : shapePath(who, s, hb, l);
-            paint(head, l, s, hb, false);
-            if (size < b.h) {
+            for (int k = 0; k <= (int)mirror; k++) {
+                Box hb{b.x, k ? b.y + b.h - size : b.y, b.w, size};
+                PathP l, head = who.empty() ? shapePath("rectangle", s, hb, l) : shapePath(who, s, hb, l);
+                paint(head, l, s, hb, false);
+            }
+            if (size < end) {
                 Style ls = s;
                 ls["fillColor"] = "none";
                 ls["shadow"] = "0";
@@ -2162,7 +2169,7 @@ struct Builder {
                 if (!str(s, "lifelineColor").empty()) ls["strokeColor"] = str(s, "lifelineColor");
                 PathP down = newPath();
                 plutovg_path_move_to(down.get(), (float)(b.x + b.w / 2), (float)(b.y + size));
-                plutovg_path_line_to(down.get(), (float)(b.x + b.w / 2), (float)(b.y + b.h));
+                plutovg_path_line_to(down.get(), (float)(b.x + b.w / 2), (float)(b.y + end));
                 paint(newPath(), down, ls, b, false);
             }
         } else if (shape == "umlFrame" && b.w > 0 && b.h > 0) {   // (Shapes.js UmlFrame: the tab filled, the frame outlined)
@@ -2322,7 +2329,7 @@ struct Builder {
         if (c.value.empty()) return;
         Box lb = b;
         if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
-        if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, b.h);   // (in its head)
+        if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, str(s, "lifelineMirror") == "1" ? b.h / 2 : b.h);   // (in its head)
         else if (shape == "cube" && str(s, "boundedLbl") == "1") {   // (on its front face)
             double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
             lb.x += d, lb.y += d, lb.w -= d, lb.h -= d;
@@ -2388,6 +2395,12 @@ struct Builder {
             l->angle = (float)(quarter + rotation) * (float)M_PI / 180;
         }
         addLabel(l);
+        if (shape == "umlLifeline" && str(s, "lifelineMirror") == "1" && !turned && rotation == 0) {   // (a copy in its foot)
+            Box fb = lb;
+            fb.y = b.y + b.h - lb.h;
+            Box fi = labelBox(s, fb);
+            addLabel(layoutLabel(c.value, s, fi, str(s, "whiteSpace") == "wrap" ? fi.w + (str(s, "html") == "1" ? 2 : 0) : 0));
+        }
     }
 
     // --- edges ---
