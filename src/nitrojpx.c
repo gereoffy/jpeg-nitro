@@ -144,6 +144,7 @@ typedef struct { int r0, c0, l1, r1, c1, order; } Progression;
 typedef struct { uint64_t key[5]; unsigned progression; int c, r, p, l; } Packet;
 typedef struct {
     int started, parts, done, x0, y0, x1, y1, layers, order, mct, flags, own_poc;
+    int broken;   // (a damaged packet or tile-part: its later tile-parts skipped, what was read decoded)
     int poc_cap, poc_part;   // (poc: its list, growing over the tile-parts; poc_part: this tile-part header's)
     Coding coding[NJPX_MAX_COMPS]; Component comp[NJPX_MAX_COMPS];
     Progression *poc; int npoc;
@@ -159,6 +160,7 @@ typedef struct {
     Progression poc[POC_LIMIT]; int npoc;
     const uint8_t *palette, *cmap, *cdef, *icc; size_t plen, mlen, dlen, icc_len;
     uint16_t *output;
+    int damaged;   // (truncated or damaged: what could be read is decoded, the rest left mid grey)
 } Jpx;
 
 // Account for every allocation, including compressed code-block data and packet/tag-tree state.
@@ -448,7 +450,17 @@ static int numpasses(Bits *b) {
     n = bits(b, 5); if (n < 31) return 6 + (int)n;
     return 37 + (int)bits(b, 7);
 }
-typedef struct { Segment *s; size_t len; } Contribution;
+typedef struct { Segment *s; Block *cb; size_t len; int take; } Contribution;
+// A packet that cannot be read: the passes whose data did not arrive are taken back, and the
+// segments left without passes dropped; the code-blocks keep what earlier packets brought.
+static void trim(Jpx *j, Block *cb) {
+    Segment *keep = NULL, *s;
+    for (s = cb->first; s; s = s->next) if (s->passes) keep = s;
+    s = keep ? keep->next : cb->first;
+    if (keep) keep->next = NULL; else cb->first = NULL;
+    cb->last = keep;
+    while (s) { Segment *next = s->next; jfree(j, s->data); jfree(j, s); s = next; }
+}
 static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const uint8_t *end) {
     const uint8_t *p = *pos;
     // SOP "may be used" (A.6.1): a packet with the flag can come with or without one; EPH below "shall"
@@ -460,11 +472,13 @@ static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const 
     // At most 109 contributions per code-block; bounded dynamically instead of a large stack.
     Contribution *list = NULL; size_t count = 0, cap = 0;
     Precinct *pr = &t->comp[pk->c].res[pk->r].prec[pk->p];
+    Block *cur = NULL;
     int ok = 0;
+    size_t appended = 0;
     if (bits(&h, 1)) for (int b = 0; b < (pk->r ? 3 : 1); b++) {
         Band *band = pr->band + b;
         for (int y = 0; y < band->ny; y++) for (int x = 0; x < band->nx; x++) {
-            Block *cb = band->cb + y * band->nx + x;
+            Block *cb = cur = band->cb + y * band->nx + x;
             int included = cb->passes ? (int)bits(&h, 1) : tree_read(&band->inc, x, y, pk->l + 1, &h) <= pk->l;
             if (!included) continue;
             if (!cb->passes) {
@@ -473,7 +487,8 @@ static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const 
             }
             int n = numpasses(&h);
             if (n > 3 * (band->mb - cb->zbp) - 2 - cb->passes) goto done;
-            if ((t->coding[pk->c].style & 64) && cb->passes + n > 3) goto done;   // (more HT sets: placeholder passes)
+            // more HT sets (placeholder passes in a later layer): unsupported; too many passes at once is damage
+            if ((t->coding[pk->c].style & 64) && cb->passes + n > 3) { ok = cb->passes ? -2 : 0; goto done; }
             while (bits(&h, 1)) { if (++cb->lblock > 30 || h.error) goto done; }
             while (n > 0) {
                 Segment *s = cb->last;
@@ -492,7 +507,7 @@ static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const 
                     Contribution *q = jalloc(j, newcap * sizeof(*q)); if (!q) goto done;
                     if (count) memcpy(q, list, count * sizeof(*q)); jfree(j, list); list = q; cap = newcap;
                 }
-                list[count++] = (Contribution){s, bytes};
+                list[count++] = (Contribution){s, cb, bytes, take};
                 s->passes += take; cb->passes += take; n -= take;
             }
         }
@@ -504,11 +519,16 @@ static int packet(Jpx *j, Tile *t, const Packet *pk, const uint8_t **pos, const 
     if (t->flags & 4) { if ((size_t)(end - p) < 2 || be16(p) != 0xff92) goto done; p += 2; }
     for (size_t i = 0; i < count; i++) {
         if (list[i].len > (size_t)(end - p) || append(j, list[i].s, p, list[i].len)) goto done;
-        p += list[i].len;
+        p += list[i].len; appended++;
     }
     *pos = p; ok = 1;
 done:
-    jfree(j, list); return ok ? 0 : -1;
+    if (ok != 1) {
+        for (size_t i = appended; i < count; i++) { list[i].s->passes -= list[i].take; list[i].cb->passes -= list[i].take; }
+        for (size_t i = appended; i < count; i++) trim(j, list[i].cb);
+        if (cur) trim(j, cur);
+    }
+    jfree(j, list); return ok == 1 ? 0 : ok ? ok : -1;
 }
 
 // --- coefficient bit-planes (annex D) --------------------------------------------------------
@@ -1123,7 +1143,7 @@ static int ht_decode(const uint8_t *data, int lcup, int len2, int passes, int zb
 // then the samples written as block_decode's are.
 static int ht_block(Jpx *j, const Block *cb, const Band *b, const Coding *co, void *dst, int stride, int ox, int oy) {
     const Segment *s1 = cb->first, *s2 = s1 ? s1->next : NULL;
-    if (!s1 || s1->first || s1->passes != 1 || (s2 && s2->next) || s1->len < 2 || s1->len > 65535 || (s2 && s2->len > 2047)) return -1;
+    if (!s1 || s1->first || s1->passes != 1 || (s2 && s2->next) || s1->len < 2 || s1->len > 65535 || (s2 && s2->len > 2047)) return 1;
     int w = cb->x1 - cb->x0, h = cb->y1 - cb->y0, len1 = (int)s1->len, len2 = s2 ? (int)s2->len : 0;
     int passes = 1 + (s2 ? s2->passes : 0);
     int sstr = ((w + 2) + 7) & ~7, mstr = ((((w + 3) >> 2) + 2) + 7) & ~7;
@@ -1137,7 +1157,7 @@ static int ht_block(Jpx *j, const Block *cb, const Band *b, const Coding *co, vo
     if (data && out && scratch) {
         memcpy(data, s1->data, (size_t)len1);
         if (len2) memcpy(data + len1, s2->data, (size_t)len2);
-        rc = ht_decode(data, len1, len2, passes, cb->zbp, out, w, h, w, co->style & 8, scratch, nscratch);
+        rc = ht_decode(data, len1, len2, passes, cb->zbp, out, w, h, w, co->style & 8, scratch, nscratch) ? 1 : 0;
     }
     if (!rc) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
         uint32_t v = out[(size_t)y * w + x], mag = (v & 0x7fffffff) >> (30 - b->mb);   // (twice the magnitude, its bin centre in)
@@ -1160,7 +1180,7 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
     c.state = jalloc(j, count * sizeof(uint16_t)); c.mag = jalloc(j, count * sizeof(uint32_t));
     if (!c.state || !c.mag) { jfree(j, c.state); jfree(j, c.mag); return -1; }
     contexts(c.cx);
-    int rc = -1;
+    int rc = 1;   // (damaged data: the bit-planes decoded so far are kept)
     for (const Segment *s = cb->first; s; s = s->next) {
         c.raw = (co->style & 1) && s->first >= 10 && s->first % 3 != 0;
         if (c.raw) c.rb = (Bits){s->data, s->data ? s->data + s->len : NULL, 0, 0, 0};
@@ -1168,7 +1188,7 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
         for (int pass = s->first; pass < s->first + s->passes; pass++) {
             int type = pass % 3;   // 0 cleanup, 1 significance propagation, 2 refinement
             int bp = b->mb - cb->zbp - 1 - (pass + 2) / 3;
-            if (bp < 0 || bp > 29) goto done;
+            if (bp < 0 || bp > 29) goto write;
             for (int y0 = 0; y0 < c.h; y0 += 4) for (int x = 0; x < c.w; x++) {
                 int start = y0, stop = imin(y0 + 4, c.h), run = type == 0 && stop == y0 + 4;
                 if (run) for (int y = start; y < stop; y++) {
@@ -1202,13 +1222,15 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
                 for (size_t i = 0; i < count; i++) c.state[i] &= (uint16_t)~VISIT;
                 if (co->style & 32) {
                     unsigned v = 0; for (int i = 0; i < 4; i++) v = (v << 1) | mq_bit(&c.mq, c.cx + 18);
-                    if (v != 10) goto done;
+                    if (v != 10) goto write;
                 }
             }
-            if (c.raw && c.rb.error) goto done;
+            if (c.raw && c.rb.error) goto write;
             if (co->style & 2) contexts(c.cx);
         }
     }
+    rc = 0;
+write:
     for (int y = 0; y < c.h; y++) for (int x = 0; x < c.w; x++) {
         int k = (y + 1) * c.stride + x + 1;
         uint32_t mag = c.mag[k];
@@ -1217,8 +1239,6 @@ static int block_decode(Jpx *j, const Block *cb, const Band *b, const Coding *co
         if (co->reversible) ((int32_t *)dst)[at] = c.state[k] & NEG ? -(int32_t)(mag >> 1) : (int32_t)(mag >> 1);
         else { float v = (float)(mag * 0.5 * b->step); ((float *)dst)[at] = c.state[k] & NEG ? -v : v; }
     }
-    rc = 0;
-done:
     jfree(j, c.state); jfree(j, c.mag); return rc;
 }
 
@@ -1419,9 +1439,10 @@ static int tile_decode(Jpx *j, Tile *t) {
     int parallel = !j->serial && samples >= (64u << 10) && count >= 16;
     nitro_body decode = ^(size_t i) {
         const BlockJob *job = jobs + i;
-        if (!__atomic_load_n(err, __ATOMIC_RELAXED) &&
-            block_decode(j, job->cb, job->band, job->coding, job->plane, job->stride, job->x, job->y))
-            __atomic_store_n(err, 1, __ATOMIC_RELAXED);
+        if (__atomic_load_n(err, __ATOMIC_RELAXED)) return;
+        int rc = block_decode(j, job->cb, job->band, job->coding, job->plane, job->stride, job->x, job->y);
+        if (rc < 0) __atomic_store_n(err, 1, __ATOMIC_RELAXED);
+        else if (rc) __atomic_store_n(&j->damaged, 1, __ATOMIC_RELAXED);
     };
     if (parallel) nitro_parallel(count, decode);
     else for (size_t i = 0; i < count; i++) decode(i);
@@ -1582,11 +1603,15 @@ static void tile_free(Jpx *j, Tile *t) {
 static int boxes(Jpx *j, const uint8_t *p, size_t len, const uint8_t **stream, size_t *slen, int header) {
     size_t at = 0;
     while (at < len) {
-        if (len - at < 8) return -1;
+        if (len - at < 8) { if (!header && *stream) break; return -1; }   // (trailing bytes after the codestream)
         const uint8_t *b = p + at; uint64_t n = be32(b); unsigned type = be32(b + 4); size_t head = 8;
         if (n == 1) { if (len - at < 16) return -1; n = (uint64_t)be32(b + 8) << 32 | be32(b + 12); head = 16; }
         else if (!n) n = len - at;
-        if (n < head || n > len - at) return -1;
+        if (n < head) return -1;
+        if (n > len - at) {   // (a cut-off file: its codestream up to the end)
+            if (header || type != 0x6a703263 || *stream || len - at < head) return -1;
+            n = len - at; j->damaged = 1;
+        }
         const uint8_t *d = b + head; size_t size = (size_t)n - head;
         if (type == 0x6a703268 && !header) { if (boxes(j, d, size, stream, slen, 1)) return -1; } // jp2h
         else if (type == 0x6a703263 && !header) { // jp2c
@@ -1704,6 +1729,18 @@ static int channels(Jpx *j, njpx_image *out) {
     return 0;
 }
 
+// A tile's state from the main header, before its first tile-part's markers.
+static int tile_setup(Jpx *j, Tile *t, unsigned index) {
+    t->x0 = imax(j->x0, j->tx0 + (int)(index % j->nx) * j->tw); t->x1 = imin(j->xs, j->tx0 + (int)(index % j->nx + 1) * j->tw);
+    t->y0 = imax(j->y0, j->ty0 + (int)(index / j->nx) * j->th); t->y1 = imin(j->ys, j->ty0 + (int)(index / j->nx + 1) * j->th);
+    t->layers = j->layers; t->order = j->order; t->mct = j->mct; t->flags = j->flags;
+    memcpy(t->coding, j->coding, sizeof(j->coding));
+    for (int c = 0; c < j->nc; c++) t->coding[c].coc = t->coding[c].qcc = 0;   // (a tile's COD / QCD win over them)
+    if (!(t->poc = jalloc(j, POC_LIMIT * sizeof(Progression)))) return -1;
+    t->poc_cap = POC_LIMIT; t->npoc = j->npoc; memcpy(t->poc, j->poc, sizeof(j->poc));
+    return 0;
+}
+
 int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out)); out->alpha = -1;
@@ -1719,19 +1756,23 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         if (boxes(&j, data, len, &stream, &slen, 0) || !stream || slen < 4) return -1;
     }
     if (be16(stream) != 0xff4f) return -1;
+    // A viewer shows what it can: a truncated codestream, a damaged tile-part or packet ends that
+    // tile's reading (Psot finds the next tile-part), and the tiles are decoded from the packets read;
+    // a tile never reached stays mid grey (no coefficients). The main header must be whole.
     const uint8_t *p = stream + 2, *end = stream + slen;
-    int rc = -1, eoc = 0;
+    int rc = -1;
     while ((size_t)(end - p) >= 2) {
         const uint8_t *start = p; unsigned m = be16(p); p += 2;
-        if (m == 0xffd9) { eoc = 1; break; }
-        if ((size_t)(end - p) < 2) goto done;
-        unsigned n = be16(p); if (n < 2 || n > (size_t)(end - p)) goto done;
+        if (m == 0xffd9) break;
+        if ((size_t)(end - p) < 2) goto cut;
+        unsigned n = be16(p); if (n < 2 || n > (size_t)(end - p)) goto cut;
         const uint8_t *d = p + 2; p += n;
         if (m != 0xff90) {
-            if (j.tiles || marker(&j, NULL, m, d, n - 2)) goto done;
+            if (j.tiles) goto cut;
+            if (marker(&j, NULL, m, d, n - 2)) goto done;
             continue;
         }
-        if (!j.siz || !j.layers || n != 10) goto done;
+        if (!j.siz || !j.layers || n != 10) goto cut;
         if (!j.tiles) {
             j.tiles = jalloc(&j, (size_t)j.nx * j.ny * sizeof(Tile));
             j.ox0 = cshift(j.x0, j.reduce), j.oy0 = cshift(j.y0, j.reduce), j.oxs = cshift(j.xs, j.reduce), j.oys = cshift(j.ys, j.reduce);
@@ -1740,49 +1781,64 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             if (!j.tiles || !j.output) goto done;
         }
         unsigned index = be16(d), part = d[6]; size_t psot = be32(d + 2);
-        if (index >= (unsigned)(j.nx * j.ny) || (psot && (psot < 14 || psot > (size_t)(end - start)))) goto done;
+        if (index >= (unsigned)(j.nx * j.ny) || (psot && psot < 14)) goto cut;
+        // (cut off: the tile-part up to the end of the data)
+        const uint8_t *partend = psot > (size_t)(end - start) ? (j.damaged = 1, end) : psot ? start + psot : end - 2;
+        if (partend < p) goto cut;
         Tile *t = j.tiles + index;
         // Some Adobe writers put 5 in TNsot for six resolution tile-parts. Treat the
-        // declared count as advisory; sequence numbers, lengths, packets and EOC still check.
+        // declared count as advisory; sequence numbers, lengths and packets still check.
         // A writer may finish a tile with empty tile-parts after its last packet.
-        // Sequence numbers still check here; the packet loop rejects any extra data.
-        if (part != (unsigned)t->parts) goto done;
-        if (!t->parts) {
-            t->x0 = imax(j.x0, j.tx0 + (index % j.nx) * j.tw); t->x1 = imin(j.xs, j.tx0 + (index % j.nx + 1) * j.tw);
-            t->y0 = imax(j.y0, j.ty0 + (index / j.nx) * j.th); t->y1 = imin(j.ys, j.ty0 + (index / j.nx + 1) * j.th);
-            t->layers = j.layers; t->order = j.order; t->mct = j.mct; t->flags = j.flags;
-            memcpy(t->coding, j.coding, sizeof(j.coding));
-            for (int c = 0; c < j.nc; c++) t->coding[c].coc = t->coding[c].qcc = 0;   // (a tile's COD / QCD win over them)
-            if (!(t->poc = jalloc(&j, POC_LIMIT * sizeof(Progression)))) goto done;
-            t->poc_cap = POC_LIMIT; t->npoc = j.npoc; memcpy(t->poc, j.poc, sizeof(j.poc));
-        }
+        // A tile-part out of sequence (one lost) ends the tile's reading like a damaged one.
+        if (t->broken || part != (unsigned)t->parts) goto broken;
+        if (!t->parts && tile_setup(&j, t, index)) goto done;
         t->poc_part = 0;
-        const uint8_t *partend = psot ? start + psot : end - 2;
-        if (partend < p) goto done;
         int have_poc = 0;
         while ((size_t)(partend - p) >= 2 && be16(p) != 0xff93) {
             unsigned tm = be16(p); p += 2;
-            if ((size_t)(partend - p) < 2) goto done;
-            unsigned tn = be16(p); if (tn < 2 || tn > (size_t)(partend - p)) goto done;
-            if (t->started && tm != 0xff64 && tm != 0xff58 && tm != 0xff5f) goto done;
+            if ((size_t)(partend - p) < 2) goto broken;
+            unsigned tn = be16(p); if (tn < 2 || tn > (size_t)(partend - p)) goto broken;
+            if (t->started && tm != 0xff64 && tm != 0xff58 && tm != 0xff5f) goto broken;
             // the tile's first POC replaces the main header's; those of its later tile-parts are added (A.6.6)
             if (tm == 0xff5f && !t->own_poc) { t->npoc = 0; t->own_poc = 1; }
             if (tm == 0xff5f) have_poc = 1;
-            if (marker(&j, t, tm, p + 2, tn - 2)) goto done;
+            if (marker(&j, t, tm, p + 2, tn - 2)) goto broken;
             p += tn;
         }
-        if ((size_t)(partend - p) < 2 || be16(p) != 0xff93) goto done;
+        if ((size_t)(partend - p) < 2 || be16(p) != 0xff93) goto broken;
         p += 2;
-        if (!t->started) { if (tile_new(&j, t)) goto done; }
+        if (!t->started) { if (tile_new(&j, t)) goto broken; }
         else if (have_poc) packet_order(&j, t);
         while (p < partend) {
-            if (t->next >= t->available || packet(&j, t, &t->packets[t->next++], &p, partend)) goto done;
+            if (t->next >= t->available) goto broken;
+            int e = packet(&j, t, &t->packets[t->next++], &p, partend);
+            if (e == -2) goto done;   // (unsupported, not damaged)
+            if (e) goto broken;
         }
         t->parts++;
         if (t->next == t->npackets) t->done = 1;   // (decoded below, once all are read)
+        continue;
+    broken:
+        t->broken = 1; j.damaged = 1; p = partend;
     }
-    if (!eoc || !j.tiles) goto done;
-    for (int i = 0; i < j.nx * j.ny; i++) if (!j.tiles[i].done) goto done;
+    goto parsed;
+cut:
+    if (!j.tiles) goto done;
+    j.damaged = 1;
+parsed:
+    if (!j.tiles) goto done;
+    {   // Tiles never reached (or whose first tile-part's header was damaged): from the main header,
+        // without coefficients. None reached at all: nothing to show.
+        int any = 0;
+        for (int i = 0; i < j.nx * j.ny; i++) {
+            Tile *t = j.tiles + i;
+            if (!t->done) j.damaged = 1;
+            if (t->started) { any = 1; continue; }
+            tile_free(&j, t); memset(t, 0, sizeof(*t));
+            if (tile_setup(&j, t, (unsigned)i) || tile_new(&j, t)) goto done;
+        }
+        if (!any) goto done;
+    }
     {   // The tiles: many of them at once, each on one worker (small ones kept few workers busy
         // inside); a few one after the other, each in parallel inside
         int ntiles = j.nx * j.ny, error = 0, *err = &error;
@@ -1809,7 +1865,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
         }
     }
     rc = channels(&j, out);
-    if (!rc) { out->icc = j.icc; out->icc_len = j.icc_len; }
+    if (!rc) { out->icc = j.icc; out->icc_len = j.icc_len; out->damaged = j.damaged; }
 done:
     if (j.tiles) for (int i = 0; i < j.nx * j.ny; i++) tile_free(&j, j.tiles + i);
     jfree(&j, j.tiles); jfree(&j, j.output);

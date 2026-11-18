@@ -10,7 +10,8 @@
 // HTJ2K (Part 15): HT code-blocks of one HT set (a cleanup pass, its refinement passes), JPH files.
 // Not supported: packed packet headers (PPM/PPT), Part 2 extensions, HT code-blocks with more
 // than one HT set (placeholder passes over several layers), mixed HT / Part 1 code-blocks.
-// Unsupported/damaged images return an error.
+// Unsupported images return an error; truncated or damaged ones decode what can be read (damaged set),
+// an error only if the main header or every tile's start is lost.
 // Up to 28 decomposition levels and 30 coded magnitude bit-planes (including ROI).
 // ICC colour spaces are identified by their device space; ICC transforms are the caller's.
 #ifndef NITROJPX_H
@@ -51,6 +52,8 @@ typedef struct {
     uint16_t *samples;          // interleaved, width * height * ncomp, owned by this image
     const uint8_t *icc;         // a JP2's ICC profile (colr, method 2), in the data given; NULL: none
     size_t icc_len;
+    int damaged;                // a truncated or damaged codestream: decoded from what could be read (the
+                                // packets before the damage), the tiles never reached mid grey
     // Signed samples are biased into 0..(2^precision-1); sub-sampled components are
     // expanded to the reference grid by nearest neighbour. RCT/ICT is already undone;
     // enumerated sYCC is left to the caller, as is any ICC / PDF colour conversion.
