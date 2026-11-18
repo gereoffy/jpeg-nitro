@@ -1825,6 +1825,7 @@ int njpx_size(const uint8_t *data, size_t len, int *width, int *height) {
             uint64_t size = be32(data + at); size_t head = 8;
             if (size == 1) { if (len - at < 16) return -1; size = (uint64_t)be32(data + at + 8) << 32 | be32(data + at + 12); head = 16; }
             if (be32(data + at + 4) == 0x6a703263) {   // (its declared size, or the rest when it is 0 or goes beyond)
+                if (size && size < head) return -1;   // (smaller than its own header: boxes() rejects it too)
                 s = data + at + head; n = len - at - head;
                 if (size >= head && size <= len - at) n = (size_t)size - head;
                 break;
