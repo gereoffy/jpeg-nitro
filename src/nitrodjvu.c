@@ -335,6 +335,10 @@ static int median3(const int *v) {
     return a > b ? (b > c ? b : a > c ? c : a) : (a > c ? a : b > c ? c : b);
 }
 
+// a place held within +-2^24, far off any page: the differences added up record after record would
+// overflow an int (and the next places are found from it)
+static int jb2_clamp(int v) { return v < -(1 << 24) ? -(1 << 24) : v > 1 << 24 ? 1 << 24 : v; }
+
 // A symbol's place relative to those before it (11.5.8; the reference's text ends halfway, the
 // rest is as the files are coded): the first of a new line of text by the first of the line before
 // (its left edge, and its bottom edge to the new one's top), any other by the one before it (that
@@ -343,15 +347,15 @@ static int median3(const int *v) {
 static void jb2_place(Jb2 *j, int rows, int cols, int *left, int *bottom) {
     if (zp_decode(&j->z, &j->c_offset)) {
         int dx = jb2_num(j, &j->c_hnew, -JB2_BIG - 1, JB2_BIG), dy = jb2_num(j, &j->c_vnew, -JB2_BIG - 1, JB2_BIG);
-        *left = j->last_row_left + dx;
-        *bottom = j->last_row_bottom + dy - rows + 1;
+        *left = jb2_clamp(j->last_row_left + dx);
+        *bottom = jb2_clamp(j->last_row_bottom + dy - rows + 1);
         j->last_row_left = *left, j->last_row_bottom = *bottom;
         j->last_right = *left + cols - 1;
         j->base[0] = j->base[1] = j->base[2] = *bottom, j->base_at = 0;
     } else {
         int dx = jb2_num(j, &j->c_hsame, -JB2_BIG - 1, JB2_BIG), dy = jb2_num(j, &j->c_vsame, -JB2_BIG - 1, JB2_BIG);
-        *left = j->last_right + dx;
-        *bottom = median3(j->base) + dy;
+        *left = jb2_clamp(j->last_right + dx);
+        *bottom = jb2_clamp(median3(j->base) + dy);
         j->last_right = *left + cols - 1;
         if (++j->base_at == 3) j->base_at = 0;
         j->base[j->base_at] = *bottom;
