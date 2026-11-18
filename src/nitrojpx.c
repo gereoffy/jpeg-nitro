@@ -59,6 +59,7 @@ typedef struct {
     int nl, cbx, cby, style, reversible, pp[LEVELS];
     int quant, guard, nq, exp[BANDS], mant[BANDS], roi;
     int have_cod, have_qcd;
+    int coc, qcc;   // set by this header's COC / QCC: they win over its COD / QCD in either order (A.6)
 } Coding;
 typedef struct {
     const uint8_t *p, *end;
@@ -265,15 +266,17 @@ static int marker(Jpx *j, Tile *t, unsigned m, const uint8_t *p, size_t n) {
         if (!j->siz || n < 10 || p[0] > 7 || p[1] > 4 || !be16(p + 2) || p[4] > 1) return -1;
         if (t) { t->flags = p[0]; t->order = p[1]; t->layers = (int)be16(p + 2); t->mct = p[4]; }
         else { j->flags = p[0]; j->order = p[1]; j->layers = (int)be16(p + 2); j->mct = p[4]; }
-        for (int i = 0; i < j->nc; i++) if (coding(c + i, p + 5, n - 5, p[0] & 1)) return -1;
+        for (int i = 0; i < j->nc; i++) if (!c[i].coc && coding(c + i, p + 5, n - 5, p[0] & 1)) return -1;
     } else if (m == 0xff53) {
         if (!j->siz || n < 7 || p[0] >= j->nc || p[1] > 1) return -1;
+        c[p[0]].coc = 1;
         return coding(c + p[0], p + 2, n - 2, p[1] & 1);
     } else if (m == 0xff5c) {
         if (!j->siz) return -1;
-        for (int i = 0; i < j->nc; i++) if (quant(c + i, p, n)) return -1;
+        for (int i = 0; i < j->nc; i++) if (!c[i].qcc && quant(c + i, p, n)) return -1;
     } else if (m == 0xff5d) {
         if (!j->siz || n < 3 || p[0] >= j->nc) return -1;
+        c[p[0]].qcc = 1;
         return quant(c + p[0], p + 1, n - 1);
     } else if (m == 0xff5e) {
         if (!j->siz || n != 3 || p[0] >= j->nc || p[1] || p[2] > 30) return -1;
@@ -1733,6 +1736,7 @@ int njpx_decode(const uint8_t *data, size_t len, unsigned flags, njpx_image *out
             t->y0 = imax(j.y0, j.ty0 + (index / j.nx) * j.th); t->y1 = imin(j.ys, j.ty0 + (index / j.nx + 1) * j.th);
             t->layers = j.layers; t->order = j.order; t->mct = j.mct; t->flags = j.flags;
             memcpy(t->coding, j.coding, sizeof(j.coding));
+            for (int c = 0; c < j.nc; c++) t->coding[c].coc = t->coding[c].qcc = 0;   // (a tile's COD / QCD win over them)
             t->npoc = j.npoc; memcpy(t->poc, j.poc, sizeof(j.poc));
         }
         const uint8_t *partend = psot ? start + psot : end - 2;
