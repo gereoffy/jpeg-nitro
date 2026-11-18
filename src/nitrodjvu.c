@@ -530,6 +530,7 @@ typedef struct {   // a component file of the document: a page, or one others in
     int is_page;
     Dict *dict;       // the shape dictionary it brings, decoded (its own Djbz, or the one it includes: dict_own 0)
     int dict_state, dict_own;   // (comp_dict: 0 not asked yet, 1 being read, 2 done: dict is what it brings)
+    int dict_height;            // (done: the files of its longest chain of includes, itself too)
 } Comp;
 
 // A picture layer of a page (its background or its foreground colours), decoded: planes as nitroiw44
@@ -623,19 +624,22 @@ static int walk_next(Walk *w, const uint8_t **id, const uint8_t **data, size_t *
 }
 
 // The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn.
-// NULL: none, or damaged. Decoded once, kept with the document; but a chain deeper than a few, one
-// that comes round to a component being read (*again |= 1), or no memory (|= 2): NULL, and nothing
-// along the chain kept (each component keeps only what it brings whoever asks: the pages need not be read in
-// any order, and the next page asks again).
+// NULL: none, or damaged. Decoded once, kept with the document (with the length of its longest chain of
+// includes). But a chain longer than DICT_CHAIN files from where it was entered (depth: the files
+// before it), one that comes round to a component being read (*again |= 1), or no memory (|= 2):
+// NULL, and nothing along the chain kept. So a component keeps only what it brings whoever asks, and
+// a chain too long is so whether the files along it were read before or not: the pages give the same
+// in any order.
+#define DICT_CHAIN 32
 static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
     Comp *co = &d->comps[c];
-    if (co->dict_state == 2) return co->dict;
-    if (co->dict_state == 1 || depth > 4) {
+    if (co->dict_state == 2 && depth + co->dict_height <= DICT_CHAIN) return co->dict;
+    if (co->dict_state || depth >= DICT_CHAIN) {
         *again |= 1;
         return NULL;
     }
     co->dict_state = 1;
-    int cut = 0;
+    int cut = 0, height = 1;
     const Dict *inherited = NULL, *out = NULL;
     const uint8_t *id, *data, *djbz = NULL;
     size_t at = co->at, n, djbz_len = 0;
@@ -644,6 +648,8 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
             int k = comp_by_id(d, data, n);
             const Dict *x = k >= 0 && k != c ? comp_dict(d, k, depth + 1, &cut) : NULL;
             if (x) inherited = x;
+            if (k >= 0 && k != c && d->comps[k].dict_state == 2 && d->comps[k].dict_height + 1 > height)
+                height = d->comps[k].dict_height + 1;
         } else if (!memcmp(id, "Djbz", 4) && !djbz)
             djbz = data, djbz_len = n;
     }
@@ -666,7 +672,7 @@ static const Dict *comp_dict(nitrodjvu *d, int c, int depth, int *again) {
         co->dict_state = 0, *again |= cut;
         return NULL;
     }
-    co->dict = (Dict *)out, co->dict_state = 2;
+    co->dict = (Dict *)out, co->dict_state = 2, co->dict_height = height;
     return out;
 }
 
