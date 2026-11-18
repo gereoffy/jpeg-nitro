@@ -785,8 +785,11 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
 // the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
 bool turnsByDirection(const std::string &shape) {
-    return shape == "cube" || shape == "folder" || shape == "component" || shape == "message" || shape == "umlActor" ||
-           shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
+    static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
+                                         "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor"};
+    for (const char *t : turned)
+        if (shape == t) return true;
+    return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
 }
 
 PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &lines);
