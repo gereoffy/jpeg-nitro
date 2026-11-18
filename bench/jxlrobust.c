@@ -16,12 +16,12 @@ static void run(const uint8_t *d, size_t n) {
     int w, h, o;
     njxl_size(d, n, &w, &h, &o);
     if (njxl_info_read(d, n, &info)) return;
-    size_t px = (size_t)info.width * info.height;
+    size_t px = (size_t)info.width * info.height, pitch = (size_t)info.width * 4;
     njxl_info_free(&info);
     if (px > ((size_t)1 << 22)) return;   // (keeps the run short)
     uint8_t *out = malloc(px * 4 + 1);
     if (!out) abort();
-    int rc = njxl_decode(d, n, (rnd() & 1) ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, out, (size_t)info.width * 4, &info);
+    int rc = njxl_decode(d, n, (rnd() & 1) ? NJXL_SINGLE_THREAD : 0, NJXL_BGRA8, out, pitch, &info);
     cases++;
     if (!rc) decoded++;
     else if (info.icc || info.width) abort();   // (a failure leaves info empty)
