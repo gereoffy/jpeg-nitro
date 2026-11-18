@@ -682,6 +682,13 @@ struct Builder {
         }
         for (float v : {it.bx0, it.by0, it.bx1, it.by1})   // (NaN or far off: plutovg converts its coordinates to integers)
             if (!(std::fabs(v) < 1e8f)) return;
+        if (!it.dash.empty()) {   // dashes too fine for the path's size: drawn solid (plutovg's dasher adds them up in a
+                                  // float, which a dash under its precision no longer moves on: a loop without end)
+            float smallest = 0, extent = std::max(it.bx1 - it.bx0, it.by1 - it.by0);
+            for (float d : it.dash)
+                if (d > 0 && (!smallest || d < smallest)) smallest = d;
+            if (!(smallest >= extent * 1e-4f)) it.dash.clear();
+        }
         if (it.path) {
             plutovg_path_iterator_t iter;
             plutovg_path_iterator_init(&iter, it.path.get());
