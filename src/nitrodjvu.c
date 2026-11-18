@@ -560,6 +560,39 @@ static int comp_by_id(const nitrodjvu *d, const uint8_t *id, size_t n) {
     return -1;
 }
 
+// The chunks of a page's file with those of the files it includes (INCL) in their place: a shared file
+// may hold anything a page may but its INFO [8.3.3] (a background, a mask). Up to a few deep, no file
+// twice along a chain.
+#define WALK_DEPTH 5
+typedef struct {
+    const nitrodjvu *d;
+    int n, comp[WALK_DEPTH];
+    size_t at[WALK_DEPTH];
+} Walk;
+
+static void walk_init(Walk *w, const nitrodjvu *d, int comp) {
+    w->d = d, w->n = 1, w->comp[0] = comp, w->at[0] = d->comps[comp].at;
+}
+
+static int walk_next(Walk *w, const uint8_t **id, const uint8_t **data, size_t *len) {
+    while (w->n) {
+        const Comp *co = &w->d->comps[w->comp[w->n - 1]];
+        if (!chunk(w->d, &w->at[w->n - 1], co->at + co->len, id, data, len)) {
+            w->n--;
+            continue;
+        }
+        if (w->n > 1 && !memcmp(*id, "INFO", 4)) continue;
+        if (!memcmp(*id, "INCL", 4)) {
+            int k = comp_by_id(w->d, *data, *len), seen = k < 0 || w->n == WALK_DEPTH;
+            for (int i = 0; i < w->n && !seen; i++) seen = w->comp[i] == k;
+            if (!seen) w->comp[w->n] = k, w->at[w->n] = w->d->comps[k].at, w->n++;
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 // The shape dictionary a component brings: its own Djbz, which may build on one it includes in turn.
 // NULL: none, or damaged. Decoded once, kept with the document; but a chain deeper than a few, one
 // that comes round to a component being read, or no memory: NULL, *again set, and nothing along the
@@ -628,13 +661,15 @@ static void layer_free(Layer *l) {
     memset(l, 0, sizeof *l);
 }
 
-// A layer of a page decoded: all its chunks of the kind `id` (BG44: the slices of one picture, each
-// refining it; FG44: one), as planes turned like the page. pw x ph: the page as its file has it.
-static void layer_decode(const nitrodjvu *d, const Comp *co, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
+// A layer of a page decoded: all its chunks of the kind `id`, its included files' too (BG44: the slices
+// of one picture, each refining it; FG44: one), as planes turned like the page. pw x ph: the page as its file has it.
+static void layer_decode(const nitrodjvu *d, const char *kind, const Page *pg, int pw, int ph, Layer *l) {
     niw44 *iw = NULL;
     const uint8_t *id, *data;
-    size_t at = co->at, n;
-    while (chunk(d, &at, co->at + co->len, &id, &data, &n))
+    size_t n;
+    Walk wk;
+    walk_init(&wk, d, pg->comp);
+    while (walk_next(&wk, &id, &data, &n))
         if (!memcmp(id, kind, 4) && (iw || (iw = niw44_new())) && niw44_chunk(iw, data, n)) break;
     int w, h, nc = iw ? niw44_size(iw, &w, &h) : 0;
     if (nc) {
@@ -705,24 +740,25 @@ static int fgbz(const uint8_t *p, size_t n, uint8_t **pal_out, uint8_t **entries
 
 // A page decoded: its mask (Sjbz) with the dictionary its file has or includes, as packed rows; its
 // background picture (BG44) and its foreground's colours (a palette entry for each shape: FGbz, or
-// a picture: FG44); all turned as its INFO says. A mask
-// cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
+// a picture: FG44); all turned as its INFO says. Each from its file or a file it includes (Walk). A
+// mask cut short or damaged: as much of it as was drawn (what follows a damaged spot decodes as noise:
 // a stray letter here and there); a picture likewise: as sharp as the slices before the damage make it.
 static void page_decode(nitrodjvu *d, Page *pg) {
-    Comp *co = &d->comps[pg->comp];
     int again = 0;
     const Dict *dict = comp_dict(d, pg->comp, 0, &again);
     const uint8_t *id, *data, *sjbz = NULL, *colours = NULL;
-    size_t at = co->at, n, sjbz_len = 0, colours_len = 0;
+    size_t n, sjbz_len = 0, colours_len = 0;
     int layers = 0;
-    while (chunk(d, &at, co->at + co->len, &id, &data, &n)) {
+    Walk wk;
+    walk_init(&wk, d, pg->comp);
+    while (walk_next(&wk, &id, &data, &n)) {
         if (!memcmp(id, "Sjbz", 4) && !sjbz) sjbz = data, sjbz_len = n;
         if (!memcmp(id, "FGbz", 4) && !colours) colours = data, colours_len = n;
         layers |= !memcmp(id, "Sjbz", 4) || !memcmp(id, "Smmr", 4) || !memcmp(id, "BG44", 4) || !memcmp(id, "BGjp", 4);
     }
     pg->decoded = 1, pg->bytes = 0;
     int pw = pg->turn & 1 ? pg->h : pg->w, ph = pg->turn & 1 ? pg->w : pg->h;
-    layer_decode(d, co, "BG44", pg, pw, ph, &pg->bg);
+    layer_decode(d, "BG44", pg, pw, ph, &pg->bg);
     Jb2 *j = sjbz ? calloc(1, sizeof *j) : NULL;
     if (j) {
         j->old = pg->version <= 18;
@@ -757,7 +793,7 @@ static void page_decode(nitrodjvu *d, Page *pg) {
         jb2_free(j, 0);
         free(j);
     }
-    if (pg->bits && !pg->pal) layer_decode(d, co, "FG44", pg, pw, ph, &pg->fg);
+    if (pg->bits && !pg->pal) layer_decode(d, "FG44", pg, pw, ph, &pg->fg);
     for (int k = 0; k < 2; k++) {
         const Layer *l = k ? &pg->fg : &pg->bg;
         if (l->y) pg->bytes += (size_t)l->w * (size_t)l->h * (l->cb ? 3 : 1);
