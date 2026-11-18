@@ -1842,6 +1842,12 @@ int njpx_bgra(const njpx_image *im, uint8_t *bgra, size_t pitch) {
         for (uint32_t v = 0; v <= max; v++) lut[c][v] = (uint8_t)((v * 255 + max / 2) / max);
     }
     int ycc = im->colorspace == NJPX_SYCC, premult = im->premultiplied, w = im->width, h = im->height;
+    int mid[3];   // (sYCC: the chroma's zero, 2^(precision - 1), on the 8-bit scale its samples go to)
+    for (int c = 1; c < 3; c++) {
+        unsigned max = (1u << prec[c]) - 1, half = 1u << (prec[c] - 1);
+        mid[c] = prec[c] == 8 ? 128 : lut[c] ? lut[c][half] : (int)((half * 255u + max / 2) / max);
+    }
+    const int *mp = mid;
     const uint16_t *samples = im->samples;
     uint8_t **lp = lut; const int *pp = prec, *sp = src;
     int groups = h >= 64 ? imin(64, cdiv(h, 16)) : 1;
@@ -1859,7 +1865,7 @@ int njpx_bgra(const njpx_image *im, uint8_t *bgra, size_t pitch) {
                     v[c] = pp[c] == 8 ? (int)t : lp[c] ? lp[c][t] : (int)((t * 255u + max / 2) / max);
                 }
                 if (ycc) {   // (full range, the chroma around 128)
-                    int Y = v[0], cb = v[1] - 128, cr = v[2] - 128;
+                    int Y = v[0], cb = v[1] - mp[1], cr = v[2] - mp[2];
                     int r = Y + ((91881 * cr + 32768) >> 16), gg = Y - ((22554 * cb + 46802 * cr + 32768) >> 16), b = Y + ((116130 * cb + 32768) >> 16);
                     v[0] = r < 0 ? 0 : r > 255 ? 255 : r, v[1] = gg < 0 ? 0 : gg > 255 ? 255 : gg, v[2] = b < 0 ? 0 : b > 255 ? 255 : b;
                 }
