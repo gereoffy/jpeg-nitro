@@ -1352,6 +1352,19 @@ struct Builder {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
             paint(p, lines, s, b, false);
+            if (shape == "cube" && str(s, "direction").empty()) {   // (CubeShape: its top and side darkened (darkOpacity, -2: white))
+                double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
+                for (int k = 0; k < 2; k++) {
+                    double op = std::clamp(num(s, k ? "darkOpacity2" : "darkOpacity", 0), -1.0, 1.0);
+                    if (op == 0) continue;
+                    Item f;
+                    f.path = newPath();
+                    if (!k) polygon(f.path.get(), {{0, 0}, {b.w - d, 0}, {b.w, d}, {d, d}}, b);
+                    else polygon(f.path.get(), {{0, 0}, {d, d}, {d, b.h}, {0, b.h - d}}, b);
+                    f.fill = (uint32_t)std::lround(std::fabs(op) * 255) << 24 | (op < 0 ? 0xffffffu : 0);
+                    add(std::move(f), 0);
+                }
+            }
         } else if (shape == "image" && b.w > 0 && b.h > 0 && str(s, "image").compare(0, 11, "data:image/") == 0) {
             uint32_t back = colour(s, "imageBackground", 0), border = colour(s, "imageBorder", 0);
             if (back || border) {   // (mxImageShape: its background and border, the box behind the picture)
@@ -1404,6 +1417,10 @@ struct Builder {
         Box lb = b;
         if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
         if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, b.h);   // (in its head)
+        else if (shape == "cube" && str(s, "boundedLbl") == "1") {   // (on its front face)
+            double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
+            lb.x += d, lb.y += d, lb.w -= d, lb.h -= d;
+        }
         else if (shape == "umlFrame") lb.w = std::min(b.w, std::max(10.0, num(s, "width", 60))), lb.h = std::min(b.h, std::max(15.0, num(s, "height", 30)));
         bool turned = false;
         if (shape == "swimlane") {   // (in its header)
