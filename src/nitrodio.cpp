@@ -22,6 +22,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -69,7 +70,21 @@ void applyNamed(Style &s, const std::string &name) {
         {"roundImage", {{"shape", "image"}, {"verticalAlign", "top"}, {"verticalLabelPosition", "bottom"}}},
         {"rhombusImage", {{"shape", "image"}, {"verticalAlign", "top"}, {"verticalLabelPosition", "bottom"}}},
         {"arrow", {{"shape", "arrow"}, {"edgeStyle", "none"}, {"fillColor", "#ffffff"}}},
+        {"fancy", {{"shadow", "1"}, {"glass", "1"}}},
     };
+    // (default.xml's colour pairs: plain-<colour>, and <colour> = fancy (shadow, glass) with them)
+    static const std::map<std::string, std::array<const char *, 3>> colours = {
+        {"gray", {"#F5F5F5", "#B3B3B3", "#666666"}},   {"blue", {"#DAE8FC", "#7EA6E0", "#6C8EBF"}},   {"green", {"#D5E8D4", "#97D077", "#82B366"}},
+        {"turquoise", {"#D5E8D4", "#67AB9F", "#6A9153"}}, {"yellow", {"#FFF2CC", "#FFD966", "#D6B656"}}, {"orange", {"#FFCD28", "#FFA500", "#D79B00"}},
+        {"red", {"#F8CECC", "#EA6B66", "#B85450"}},     {"pink", {"#E6D0DE", "#B5739D", "#996185"}},   {"purple", {"#E1D5E7", "#8C6C9C", "#9673A6"}},
+    };
+    bool plain = name.compare(0, 6, "plain-") == 0;
+    auto c = colours.find(plain ? name.substr(6) : name);
+    if (c != colours.end()) {
+        if (!plain) s["shadow"] = "1", s["glass"] = "1";
+        s["fillColor"] = c->second[0], s["gradientColor"] = c->second[1], s["strokeColor"] = c->second[2];
+        return;
+    }
     auto f = named.find(name);
     if (f == named.end()) {
         if (name == "rounded") s["rounded"] = "1";
@@ -1365,6 +1380,27 @@ struct Builder {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
             paint(p, lines, s, b, false);
+            if (str(s, "glass") == "1" && (shape == "rectangle" || shape == "label") && colour(s, "fillColor", 0xffffffff)) {
+                // (mxShape.paintGlassEffect: a white sheen over the top, 0.9 to 0.1 opaque, its lower edge bowed)
+                double sw = std::ceil(std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0) / 2), x = b.x - sw, y = b.y - sw, x1 = b.x + b.w + sw;
+                double arc = 0;
+                if (str(s, "rounded") == "1")
+                    arc = std::clamp(str(s, "absoluteArcSize") == "1" ? num(s, "arcSize", 10) / 2 : std::min(b.w, b.h) * num(s, "arcSize", 15) / 100, 0.0,
+                                     std::min(b.w, b.h) / 2) + 2 * sw;
+                Item g;
+                g.path = newPath();
+                plutovg_path_t *q = g.path.get();
+                plutovg_path_move_to(q, (float)(x + arc), (float)y);
+                if (arc > 0) plutovg_path_quad_to(q, (float)x, (float)y, (float)x, (float)(y + arc));
+                plutovg_path_line_to(q, (float)x, (float)(b.y + b.h * 0.4));
+                plutovg_path_quad_to(q, (float)(b.x + b.w / 2), (float)(b.y + b.h * 0.7), (float)x1, (float)(b.y + b.h * 0.4));
+                plutovg_path_line_to(q, (float)x1, (float)(y + arc));
+                if (arc > 0) plutovg_path_quad_to(q, (float)x1, (float)y, (float)(x1 - arc), (float)y);
+                plutovg_path_close(q);
+                g.fill = 0xe6ffffff, g.fill2 = 0x1affffff;
+                g.gx0 = g.gx1 = (float)b.x, g.gy0 = (float)b.y, g.gy1 = (float)(b.y + b.h * 0.6);
+                add(std::move(g), 0);
+            }
             if (shape == "cube" && str(s, "direction").empty()) {   // (CubeShape: its top and side darkened (darkOpacity, -2: white))
                 double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
                 for (int k = 0; k < 2; k++) {
