@@ -727,7 +727,10 @@ struct Builder {
             char *end;
             for (double d; (d = nn_strtod(c, &end)), end != c && dash.size() < 16; c = end)
                 if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * std::max(width, 1.f)));
-            if (dash.size() % 2) dash.insert(dash.end(), dash.begin(), dash.end());
+            if (dash.size() % 2) {   // (an odd pattern twice: its own elements copied first, as insert takes no range of itself)
+                std::vector<float> once = dash;
+                dash.insert(dash.end(), once.begin(), once.end());
+            }
             float total = 0;
             for (float d : dash) total += d;
             if (total <= 0) dash.clear();
