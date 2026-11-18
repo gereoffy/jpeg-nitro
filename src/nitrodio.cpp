@@ -3321,6 +3321,14 @@ struct Builder {
         for (Pt p : c.points) hints.push_back({o.x + p.x, o.y + p.y});
         Cell *src = visibleTerminal(find(c.source)), *dst = visibleTerminal(find(c.target));
         if (src && !src->vertex) src = nullptr;   // (an edge ending on an edge: at its point, if any)
+        if (src) {   // (mxGraphView.getTerminalPort: sourcePort / targetPort name a port cell that takes the end)
+            Cell *port = find(str(s, "sourcePort"));
+            if (port && port->vertex && shown(*port)) src = port;
+        }
+        if (dst) {
+            Cell *port = find(str(s, "targetPort"));
+            if (port && port->vertex && shown(*port)) dst = port;
+        }
         if (dst && !dst->vertex) dst = nullptr;
         Term st, tt;
         if (src) st = term(absBox(*src), src->style);
@@ -3336,7 +3344,8 @@ struct Builder {
         if (target) haveT = constraintPoint(s, false, tt, tp);
         else tp = {o.x + c.targetPoint.x, o.y + c.targetPoint.y}, haveT = true;
         // the route between them
-        const std::string &es = str(s, "edgeStyle");
+        static const std::string noStyle;
+        const std::string &es = str(s, "noEdgeStyle") == "1" ? noStyle : str(s, "edgeStyle");   // (noEdgeStyle: through its points)
         std::vector<Pt> mid;
         bool orth = true;
         const Pt *p0 = haveS ? &sp : nullptr, *pe = haveT ? &tp : nullptr;
