@@ -1506,6 +1506,52 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "mxgraph.floorplan.wallU") {
         double t = num(s, "wallThickness", 10);
         polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}, {w - t, h}, {w - t, t}, {t, t}, {t, h}}, b);
+    } else if (shape == "mxgraph.gcp2.doubleRect") {   // (the front box; the one behind it: in vertex())
+        plutovg_path_add_round_rect(q, x, y, (float)std::max(0.0, w - 8), (float)std::max(0.0, h - 8), 1, 1);
+    } else if (shape == "mxgraph.infographic.ribbonSimple") {   // (a band notched at its tail, pointed at its head)
+        double n1 = std::clamp(num(s, "notch1", 0.5), 0.0, w), n2 = std::clamp(num(s, "notch2", 0.5), 0.0, w);
+        polygon(q, {{0, h}, {n1, h / 2}, {0, 0}, {w - n2, 0}, {w, h / 2}, {w - n2, h}}, b);
+    } else if (shape == "mxgraph.infographic.shadedCube") {   // (an upright isometric cube; its faces' shades in vertex())
+        double d = std::min(w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), h / 2);
+        polygon(q, {{w / 2, 0}, {w, d}, {w, h - d}, {w / 2, h}, {0, h - d}, {0, d}}, b);
+    } else if (shape == "mxgraph.infographic.cylinder") {   // (a column with ellipses 10 high at its ends; its sheen in vertex())
+        plutovg_path_move_to(q, x, (float)(b.y + 10));
+        plutovg_path_arc_to(q, (float)(w / 2), 10, 0, false, true, (float)(b.x + w), (float)(b.y + 10));
+        plutovg_path_line_to(q, (float)(b.x + w), (float)(b.y + h - 10));
+        plutovg_path_arc_to(q, (float)(w / 2), 10, 0, false, true, x, (float)(b.y + h - 10));
+        plutovg_path_close(q);
+    } else if (shape == "mxgraph.arrows2.arrow") {   // (mxArrows2: a shaft dy of the height, a head dx long, a notch at its tail)
+        double d = 0.5 * h * std::clamp(num(s, "dy", 0.5), 0.0, 1.0), e = std::clamp(num(s, "dx", 0.5), 0.0, w);
+        double f = std::clamp(num(s, "notch", 0), 0.0, w);
+        polygon(q, {{0, d}, {w - e, d}, {w - e, 0}, {w, h / 2}, {w - e, h}, {w - e, h - d}, {0, h - d}, {f, h / 2}}, b);
+        if (str(s, "headCrossline") == "1") line(w - e, d, w - e, h - d);
+        if (str(s, "tailCrossline") == "1") line(f, d, f, h - d);
+    } else if (shape == "mxgraph.floorplan.window") {   // (mxFloorplan.js: a wall's band with a line along its middle)
+        double th = num(s, "wallThickness", 10);
+        polygon(q, {{0, h / 2 - th / 2}, {w, h / 2 - th / 2}, {w, h / 2 + th / 2}, {0, h / 2 + th / 2}}, b);
+        line(0, h / 2, w, h / 2);
+    } else if (shape == "mxgraph.floorplan.stairs") {   // (steps 25 apart, an arrow along the middle; at least 50 long)
+        double mw = std::max(w, 50.0);
+        polygon(q, {{0, 0}, {mw, 0}, {mw, h}, {0, h}}, b);
+        for (double i = 25; i < mw && i < 25 * 10000; i += 25) line(i, 0, i, h);
+        line(0, h / 2, mw, h / 2), line(mw - 25, 0, mw, h / 2), line(mw, h / 2, mw - 25, h);
+    } else if (shape == "mxgraph.floorplan.doorLeft" || shape == "mxgraph.floorplan.doorRight" || shape == "mxgraph.floorplan.doorDouble") {
+        polygon(q, {{0, 0}, {w, 0}, {w, 5}, {0, 5}}, b);   // (the frame 5 deep, the leaves' swing below it)
+        if (!lines) lines = newPath();
+        plutovg_path_t *l = lines.get();
+        auto at = [&](double px, double py) { return plutovg_point_t{(float)(b.x + px), (float)(b.y + py)}; };
+        auto swing = [&](double fx, double r, bool sweep, double tx) {   // (from the hinge's far side round to the wall, back up)
+            plutovg_point_t p0 = at(fx, 5), p1 = at(tx, 5 + r), p2 = at(tx, 5);
+            plutovg_path_move_to(l, p0.x, p0.y);
+            plutovg_path_arc_to(l, (float)r, (float)r, 0, false, sweep, p1.x, p1.y);
+            plutovg_path_line_to(l, p2.x, p2.y);
+        };
+        if (shape == "mxgraph.floorplan.doorLeft") swing(w, w, true, 0);
+        else if (shape == "mxgraph.floorplan.doorRight") swing(0, w, false, w);
+        else {
+            line(w / 2, 0, w / 2, 5);
+            swing(w / 2, w / 2, true, 0), swing(w / 2, w / 2, false, w);
+        }
     } else if (shape == "mxgraph.floorplan.room") {   // (its walls: the frame less the inside)
         double t = num(s, "wallThickness", 10);
         polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}}, b);
