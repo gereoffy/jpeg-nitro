@@ -715,7 +715,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     for (float z : lineSize) textH += z * 1.2f;
     for (float w : widths) textW = std::max(textW, w);
     const std::string &va = str(s, "verticalAlign"), &al = str(s, "align");
-    double top = va == "top" ? box.y : va == "bottom" ? box.y + box.h - textH : box.y + (box.h - textH) / 2;
+    // (draw.io's text, middle or bottom: lower by about a twelfth of the font size than its lines' height puts it, as
+    // measured in its viewer (Chrome); its baseSpacingBottom included)
+    double top = va == "top" ? box.y : va == "bottom" ? box.y + box.h - textH + 0.08 * size : box.y + (box.h - textH) / 2 + 0.08 * size;
     plutovg_font_face_t *f0 = face(false, false);
     float asc = size * 0.8f, desc = size * 0.2f;
     if (f0) {
@@ -1731,6 +1733,8 @@ struct Builder {
         else if (vp == "bottom") b.y += b.h;
         double sp = num(s, "spacing", 2);
         double l = sp + num(s, "spacingLeft", 0), r = sp + num(s, "spacingRight", 0), t = sp + num(s, "spacingTop", 0), bt = sp + num(s, "spacingBottom", 0);
+        const std::string &va = str(s, "verticalAlign");   // (Graph.js: mxText's baseSpacingTop 5; its baseSpacingBottom: in layoutLabel)
+        if (va == "top") t += 5;
         return {b.x + l, b.y + t, std::max(0.0, b.w - l - r), std::max(0.0, b.h - t - bt)};
     }
 
@@ -2102,7 +2106,7 @@ struct Builder {
         if (str(s, "overflow") == "fill" && str(s, "html") == "1" && hasTable(c.value)) {   // (HTML blocks fill the shape: no spacing)
             Style none = s;
             none["spacing"] = "0";
-            for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom"}) none.erase(k);
+            for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom", "verticalAlign"}) none.erase(k);
             inner = labelBox(none, lb);
         }
         double wrap = str(s, "whiteSpace") == "wrap" ? inner.w : 0;
