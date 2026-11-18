@@ -1423,12 +1423,22 @@ struct Builder {
         }
     }
 
+    // mxGraphView.getVisibleTerminal: the terminal, or the ancestor that is shown in its place (the topmost
+    // collapsed one; an invisible terminal's first ancestor; a layer there: no vertex, the end left loose)
+    Cell *visibleTerminal(Cell *t) {
+        Cell *best = t;
+        size_t n = 0;
+        for (Cell *r = t; r && n++ <= cells.size(); r = find(r->parent))
+            if (!best->visible || r->collapsed) best = r;
+        return best;
+    }
+
     void edge(Cell &c) {
         const Style &s = c.style;
         Pt o = origin(c.parent);
         std::vector<Pt> hints;
         for (Pt p : c.points) hints.push_back({o.x + p.x, o.y + p.y});
-        Cell *src = find(c.source), *dst = find(c.target);
+        Cell *src = visibleTerminal(find(c.source)), *dst = visibleTerminal(find(c.target));
         if (src && !src->vertex) src = nullptr;   // (an edge ending on an edge: at its point, if any)
         if (dst && !dst->vertex) dst = nullptr;
         Term st, tt;
