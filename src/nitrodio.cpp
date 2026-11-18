@@ -385,6 +385,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
             }
             continue;
         }
+        if (c == '\n') {   // (a line feed in an HTML label breaks the line: mxText's replaceLinefeeds makes it a <br/>)
+            newLine();
+            i++;
+            continue;
+        }
         std::string piece;
         if (c == '&') {   // (its ';' looked for within the 12 bytes an entity can have: not through the rest of the text)
             size_t e = i + 1, stop = std::min(v.size(), i + 12);
