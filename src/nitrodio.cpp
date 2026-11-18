@@ -591,6 +591,10 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
             }
         }
     }
+    if (str(s, "textDirection") == "vertical-lr") {   // (its lines left to right once turned: in the upright box, bottom to top)
+        std::reverse(lines.begin(), lines.end());
+        std::reverse(widths.begin(), widths.end());
+    }
     auto label = std::make_shared<Label>();
     std::vector<float> lineSize(lines.size(), size);   // (a line as high as its largest text: 1.2 font sizes)
     for (size_t l = 0; l < lines.size(); l++)
@@ -1399,6 +1403,8 @@ struct Builder {
             else lb.h = std::min(ss, b.h);
         } else if (str(s, "horizontal") == "0")
             turned = true;
+        double quarter = turned ? -90 : 0;   // (horizontal=0: read upwards; textDirection vertical-lr / -rl: downwards)
+        if (str(s, "textDirection").compare(0, 8, "vertical") == 0) turned = true, quarter = 90;
         if (turned) {   // (laid out in the box turned upright, then turned back by -90 degrees)
             Pt ce = lb.centre();
             lb = {ce.x - lb.h / 2, ce.y - lb.w / 2, lb.h, lb.w};
@@ -1410,7 +1416,7 @@ struct Builder {
             Pt ce = lb.centre();
             l->turned = true;
             l->cx = (float)ce.x, l->cy = (float)ce.y;
-            l->angle = (float)((turned ? -90 : 0) + rotation) * (float)M_PI / 180;
+            l->angle = (float)(quarter + rotation) * (float)M_PI / 180;
         }
         addLabel(l);
     }
