@@ -105,6 +105,7 @@ Style parseStyle(const std::string &str, bool edge) {
     s["verticalAlign"] = "middle";
     if (edge) {
         s["endArrow"] = "classic";
+        s["rounded"] = "1";   // (default.xml's defaultEdge: edges are rounded unless they say rounded=0)
         s["labelBackgroundColor"] = "#ffffff";
     } else
         s["fillColor"] = "#ffffff";
