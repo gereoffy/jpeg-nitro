@@ -12,6 +12,9 @@
 #include "nitro_draw.h"
 #include "nitro_font.h"
 #include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
+#include "nitrojpeg.h"   // (the pictures a diagram holds as data: URIs)
+#include "nitropng.h"
+#include "nitrosvg.h"
 
 #include <libxml/parser.h>
 #include <libxml/tree.h>
@@ -95,7 +98,8 @@ Style parseStyle(const std::string &str, bool edge) {
         if (e == std::string::npos) e = str.size();
         std::string tok = str.substr(i, e - i);
         size_t eq = tok.find('=');
-        if (eq == std::string::npos) applyNamed(s, tok);
+        if (eq == std::string::npos && tok.compare(0, 7, "base64,") == 0 && s.count("image")) s["image"] += ";" + tok;   // (data:...;base64,)
+        else if (eq == std::string::npos) applyNamed(s, tok);
         else s[tok.substr(0, eq)] = tok.substr(eq + 1);
         i = e + 1;
     }
@@ -166,6 +170,10 @@ struct Label {
     bool turned = false;   // rotated about (cx, cy)
     float cx = 0, cy = 0, angle = 0;
 };
+struct Picture {   // premultiplied BGRA
+    int w = 0, h = 0;
+    std::vector<uint8_t> px;
+};
 struct Item {
     PathP path;
     uint32_t fill = 0, fill2 = 0, stroke = 0;   // fill2: a gradient's end (fill at gx0, gy0 to fill2 at gx1, gy1)
@@ -173,6 +181,10 @@ struct Item {
     float width = 1;
     std::vector<float> dash;
     std::shared_ptr<Label> label;
+    std::shared_ptr<Picture> picture;   // an image shape's picture, in ix0, iy0 - ix1, iy1 (aspect: kept, centred)
+    std::string uri;                    // (its data: URI until it is decoded)
+    float ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
+    bool aspect = true;
     float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
 };
 struct Page {
@@ -994,6 +1006,14 @@ struct Builder {
             PathP lines;
             PathP p = shapePath(shape, s, b, lines);
             paint(p, lines, s, b, false);
+        } else if (shape == "image" && b.w > 0 && b.h > 0 && str(s, "image").compare(0, 11, "data:image/") == 0) {
+            Item it;   // (a picture the file holds: decoded once the page is read, see pictures())
+            it.path = newPath();
+            plutovg_path_add_rect(it.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+            it.uri = str(s, "image");
+            it.ix0 = (float)b.x, it.iy0 = (float)b.y, it.ix1 = (float)(b.x + b.w), it.iy1 = (float)(b.y + b.h);
+            it.aspect = str(s, "imageAspect") != "0";
+            add(std::move(it), 0);
         } else if (shape == "image" && b.w > 0 && b.h > 0) {   // (the picture is not in the file: its frame)
             Item it;
             it.path = newPath();
@@ -1880,6 +1900,118 @@ bool readModel(xmlNode *model, Page &page, size_t &budget) {
     return false;
 }
 
+// --- the pictures (data: URIs: PNG, JPEG, SVG) -----------------------------------------
+
+std::shared_ptr<Picture> pngPicture(const std::string &d) {
+    const uint8_t *p = (const uint8_t *)d.data();
+    np_info in;
+    if (np_read_info(p, d.size(), &in) || !in.convertible || (int64_t)in.width * in.height > (16 << 20)) return nullptr;
+    std::vector<uint8_t> raw(in.raw_size);
+    if (np_decode(p, d.size(), &in, raw.data(), 1, nullptr)) return nullptr;
+    auto pic = std::make_shared<Picture>();
+    pic->w = in.width, pic->h = in.height;
+    pic->px.resize((size_t)in.width * in.height * 4);
+    bool alpha8 = in.bit_depth == 8 && !in.interlace && (in.color_type == 6 || in.color_type == 4 || in.color_type == 3);
+    if (!alpha8) {   // (no alpha, or a form np_to_bgrx converts: over black, opaque)
+        if (np_to_bgrx(p, d.size(), &in, raw.data(), pic->px.data(), (size_t)in.width * 4, 1)) return nullptr;
+        for (size_t k = 3; k < pic->px.size(); k += 4) pic->px[k] = 255;
+        return pic;
+    }
+    for (int y = 0; y < in.height; y++) {   // (8-bit RGBA, grey + alpha, palette + tRNS: their alpha kept, premultiplied)
+        const uint8_t *r = raw.data() + (size_t)y * (in.stride + 1) + 1;
+        uint8_t *o = pic->px.data() + (size_t)y * in.width * 4;
+        for (int x = 0; x < in.width; x++, o += 4) {
+            unsigned R, G, B, A;
+            if (in.color_type == 6) R = r[x * 4], G = r[x * 4 + 1], B = r[x * 4 + 2], A = r[x * 4 + 3];
+            else if (in.color_type == 4) R = G = B = r[x * 2], A = r[x * 2 + 1];
+            else {
+                unsigned i = r[x];
+                if (!in.plte_pos || i >= in.plte_n || in.plte_pos + 3 * (size_t)i + 2 >= d.size()) R = G = B = 0;
+                else R = p[in.plte_pos + 3 * i], G = p[in.plte_pos + 3 * i + 1], B = p[in.plte_pos + 3 * i + 2];
+                A = in.trns_pos && i < in.trns_n && in.trns_pos + (size_t)i < d.size() ? p[in.trns_pos + i] : 255;
+            }
+            o[0] = (uint8_t)(B * A / 255), o[1] = (uint8_t)(G * A / 255), o[2] = (uint8_t)(R * A / 255), o[3] = (uint8_t)A;
+        }
+    }
+    return pic;
+}
+std::shared_ptr<Picture> jpegPicture(const std::string &d) {
+    const uint8_t *p = (const uint8_t *)d.data();
+    nj_info in;
+    if (nj_read_info(p, d.size(), &in) || (in.ncomp != 1 && in.ncomp != 3) || (int64_t)in.width * in.height > (16 << 20)) return nullptr;
+    std::vector<uint8_t> pl[3];
+    uint8_t *planes[4] = {nullptr, nullptr, nullptr, nullptr};
+    size_t pitch[4] = {0, 0, 0, 0};
+    for (int c = 0; c < in.ncomp; c++) {
+        pl[c].resize((size_t)in.plane_w[c] * in.plane_h[c]);
+        planes[c] = pl[c].data(), pitch[c] = (size_t)in.plane_w[c];
+    }
+    if (nj_decode_planes(p, d.size(), &in, planes, pitch, 1, nullptr)) return nullptr;
+    auto pic = std::make_shared<Picture>();
+    pic->w = in.width, pic->h = in.height;
+    pic->px.resize((size_t)in.width * in.height * 4);
+    for (int y = 0; y < in.height; y++)
+        for (int x = 0; x < in.width; x++) {
+            uint8_t *o = pic->px.data() + ((size_t)y * in.width + x) * 4;
+            auto at = [&](int c) { return (int)pl[c][(size_t)(y * in.v[c] / in.vmax) * pitch[c] + x * in.h[c] / in.hmax]; };
+            int R, G, B;
+            if (in.ncomp == 1) R = G = B = at(0);
+            else if (in.adobe == 0) R = at(0), G = at(1), B = at(2);
+            else {   // (BT.601 YCbCr, full range)
+                double Y = at(0), cb = at(1) - 128.0, cr = at(2) - 128.0;
+                R = (int)std::lround(Y + 1.402 * cr), G = (int)std::lround(Y - 0.344136 * cb - 0.714136 * cr), B = (int)std::lround(Y + 1.772 * cb);
+            }
+            o[0] = (uint8_t)std::clamp(B, 0, 255), o[1] = (uint8_t)std::clamp(G, 0, 255), o[2] = (uint8_t)std::clamp(R, 0, 255), o[3] = 255;
+        }
+    return pic;
+}
+std::shared_ptr<Picture> svgPicture(const std::string &d, double side) {   // (drawn at side pixels on its longer side, transparent)
+    nitrosvg *svg = nitrosvg_load(d.data(), d.size());
+    if (!svg) return nullptr;
+    double w, h;
+    nitrosvg_size(svg, &w, &h);
+    std::shared_ptr<Picture> pic;
+    if (w > 0 && h > 0) {
+        double scale = side / std::max(w, h);
+        int pw = std::max(1, (int)std::lround(w * scale)), ph = std::max(1, (int)std::lround(h * scale));
+        pic = std::make_shared<Picture>();
+        pic->w = pw, pic->h = ph;
+        pic->px.resize((size_t)pw * ph * 4);
+        nitrosvg_set_background(svg, 3);
+        if (nitrosvg_render(svg, pic->px.data(), pw, ph, (size_t)pw * 4, scale, 0, 0)) pic = nullptr;
+    }
+    nitrosvg_free(svg);
+    return pic;
+}
+// The page's pictures decoded (each data: URI once a file, 64 megapixels in all); one that cannot be is its frame
+void pictures(Page &page, std::map<std::string, std::shared_ptr<Picture>> &cache, size_t &pixels) {
+    for (Item &it : page.items) {
+        if (it.uri.empty()) continue;
+        std::string uri;
+        uri.swap(it.uri);
+        auto f = cache.find(uri);
+        if (f == cache.end()) {
+            std::shared_ptr<Picture> pic;
+            size_t comma = uri.find(',');
+            std::string mime = uri.substr(5, comma == std::string::npos ? 0 : comma - 5), body = comma == std::string::npos ? "" : uri.substr(comma + 1);
+            bool b64 = mime.find(";base64") != std::string::npos;
+            if (mime.compare(0, 13, "image/svg+xml") == 0) {
+                if (!b64 && body.compare(0, 1, "<") != 0 && body.compare(0, 3, "%3C") != 0 && body.compare(0, 3, "%3c") != 0) b64 = true;   // (draw.io leaves out ;base64)
+                std::string svg = b64 ? base64(body) : urlDecode(body);
+                double side = std::clamp(4.0 * std::max(it.ix1 - it.ix0, it.iy1 - it.iy0), 256.0, 2048.0);
+                if (pixels < (64u << 20)) pic = svgPicture(svg, side);
+            } else if (pixels < (64u << 20)) {
+                std::string data = base64(body);
+                pic = mime.compare(0, 9, "image/png") == 0 ? pngPicture(data) : mime.compare(0, 10, "image/jpeg") == 0 || mime.compare(0, 9, "image/jpg") == 0 ? jpegPicture(data) : nullptr;
+            }
+            if (pic) pixels += (size_t)pic->w * pic->h;
+            f = cache.emplace(std::move(uri), pic).first;
+        }
+        it.picture = f->second;
+        if (!it.picture) it.stroke = 0xffc0c0c0, it.width = 1;   // (its frame)
+    }
+}
+
 struct XmlDocFree {
     void operator()(xmlDoc *d) const { xmlFreeDoc(d); }
 };
@@ -1904,10 +2036,15 @@ static nitrodio *load(const void *data, size_t len) {
     std::unique_ptr<nitrodio> dio(new nitrodio);
     size_t budget = 8u << 20;   // (the items of all the pages: their display lists stay in memory together)
     bool drawn = false;   // (some page has something: else the file is no drawing)
+    std::map<std::string, std::shared_ptr<Picture>> cache;   // (a file's pictures, each decoded once)
+    size_t pixels = 0;
     auto model = [&](xmlNode *m) {
-        std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
         Page p;
-        drawn |= readModel(m, p, budget);
+        {
+            std::lock_guard<std::mutex> g(nf_lock());   // (the labels' faces; not while a page's XML is inflated and parsed)
+            drawn |= readModel(m, p, budget);
+        }
+        pictures(p, cache, pixels);   // (an SVG picture takes nf_lock itself)
         dio->pages.push_back(std::move(p));
     };
     auto empty = [&] {   // (a page that cannot be read: kept empty, the pages after it in their places)
@@ -1994,6 +2131,21 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         }
         plutovg_canvas_restore(c);
         return;
+    }
+    if (it.picture) {   // (into its box: aspect kept and centred, or stretched)
+        const Picture &pic = *it.picture;
+        float dx = it.ix0, dy = it.iy0, dw = it.ix1 - it.ix0, dh = it.iy1 - it.iy0;
+        if (it.aspect) {
+            float k = std::min(dw / pic.w, dh / pic.h);
+            dx += (dw - pic.w * k) / 2, dy += (dh - pic.h * k) / 2, dw = pic.w * k, dh = pic.h * k;
+        }
+        plutovg_surface_t *sf = plutovg_surface_create_for_data(const_cast<uint8_t *>(pic.px.data()), pic.w, pic.h, pic.w * 4);
+        plutovg_matrix_t m;
+        plutovg_matrix_init_translate(&m, dx, dy);
+        plutovg_matrix_scale(&m, dw / pic.w, dh / pic.h);
+        plutovg_canvas_set_texture(c, sf, PLUTOVG_TEXTURE_TYPE_PLAIN, 1, &m);
+        plutovg_canvas_fill_rect(c, dx, dy, dw, dh);
+        plutovg_surface_destroy(sf);
     }
     if (it.fill >> 24) {
         if (it.fill2 >> 24) {
