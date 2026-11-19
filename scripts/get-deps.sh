@@ -16,6 +16,8 @@
 #     only, the Makefile compiles the modules patches/freetype/ftmodule.h lists)
 #   - Brotli (MIT): its decoder, for the WOFF2 fonts FreeType reads (nitrotype; sources only, the
 #     Makefile compiles c/common and c/dec)
+#   - Zstandard (BSD): its decoder, for the EPS files of Illustrator 24 and later (nitroai; sources
+#     only, the Makefile compiles the decoder's part of lib/common and lib/decompress)
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - zlib-ng (zlib license, static, zlib-compatible API; cmake): zlib for the builds whose system
 #     has none, the portable Linux build (built on Linux) and, with WINCC=..., the Windows viewer
@@ -39,6 +41,7 @@ PDFPARSE3_COMMIT=1a7447e65ca930f23f15e385c7ed4f98713b55bd  # 2026-11-15, github.
 LIBXML2_VER=2.13.8
 FREETYPE_VER=2.15.0   # (also in packaging/flatpak/*.json, with its sha256)
 BROTLI_VER=1.2.1      # (also in packaging/flatpak/*.json, with its sha256)
+ZSTD_VER=1.5.7        # (also in packaging/flatpak/*.json, with its sha256)
 LIBREVENGE_VER=0.0.6   # (these three: also in packaging/flatpak/*.json, with their sha256)
 LCMS2_VER=2.19.1
 ZLIBNG_VER=2.3.3    # (only for the Windows and the portable Linux build: macOS and Linux have a zlib)
@@ -101,6 +104,14 @@ if [ ! -f brotli/.stamp-$BROTLI_VER ]; then
   tar xf brotli.tar.gz && rm brotli.tar.gz
   mv brotli-$BROTLI_VER brotli
   touch brotli/.stamp-$BROTLI_VER
+fi
+# Zstandard: the sources of its release (the decoder alone is compiled)
+if [ ! -f zstd/.stamp-$ZSTD_VER ]; then
+  rm -rf zstd zstd-$ZSTD_VER
+  curl -fsSL -o zstd.tar.gz https://github.com/facebook/zstd/releases/download/v$ZSTD_VER/zstd-$ZSTD_VER.tar.gz
+  tar xf zstd.tar.gz && rm zstd.tar.gz
+  mv zstd-$ZSTD_VER zstd
+  touch zstd/.stamp-$ZSTD_VER
 fi
 LIBREVENGE_STAMP=$LIBREVENGE_VER-$(cksum < ../patches/librevenge.patch | cut -d' ' -f1)
 if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
@@ -327,4 +338,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER, Brotli $BROTLI_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER, Brotli $BROTLI_VER, Zstandard $ZSTD_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"

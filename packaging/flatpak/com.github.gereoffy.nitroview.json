@@ -92,6 +92,12 @@
         },
         {
           "type": "archive",
+          "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
+          "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
+          "dest": "third_party/zstd"
+        },
+        {
+          "type": "archive",
           "url": "https://dev-www.libreoffice.org/src/librevenge-0.0.6.tar.bz2",
           "sha256": "52a65e904d255dbdd97a8b7bb28d6574e14f999eb01416aff004502406d0904d",
           "dest": "third_party/librevenge"

@@ -28,6 +28,7 @@
 #include <vector>
 
 #include <zlib.h>
+#include <zstd.h>
 
 namespace {
 
@@ -225,6 +226,8 @@ struct Run {
     std::vector<Colour> saved;   // gcol at each q
     std::string efill, estroke;  // what the PDF's graphics state has
     int qd = 0;
+    std::vector<size_t> qAt;     // at each q: where in out its clipping path goes (see clipPath)
+    bool lateClip = false;       // the document of an EPS of Illustrator 9 and later (see doPaint)
     // a gradient instance (Bb ... BB)
     bool grad = false, hasBh = false;
     std::string gname, gpath;
@@ -497,16 +500,19 @@ struct Run {
         if (!emit() || body.empty()) return;
         if (op != 'N' && op != 'n' && e0 <= e2) placed(e0, e1, e2, e3);
         endText();
+        // (a clipping path after art of its group, as later versions write it: it clips that too; in the
+        // files of Illustrator 1-8 such art is not clipped)
+        bool late = lateClip && clipNow && !qAt.empty() && out.size() > qAt.back();
         bool fills = strchr("FfBb", op), strokes = strchr("SsBb", op);
         if (grad && fills && gflag == 2) {   // (Bg's flag 2: the gradient is not rendered)
             if (strokes) useStroke(), out += body + "S\n";
-            if (clipNow) out += body + (eo ? "W* n\n" : "W n\n");
+            if (clipNow) clipPath(body, late);
             return;
         }
         if (grad && fills && gradFill(body)) {
             gpath = body;
             if (strokes) useStroke(), out += body + "S\n";
-            if (clipNow) out += body + (eo ? "W* n\n" : "W n\n");
+            if (clipNow) clipPath(body, late);
             return;
         }
         if (fills) useFill();
@@ -519,10 +525,24 @@ struct Run {
         case 'B': o = eo ? "B*" : "B"; break;
         case 'b': o = eo ? "b*" : "b"; break;
         }
+        if (late) clipPath(body, true);
         out += body;
-        if (clipNow) out += eo ? "W* " : "W ";
+        if (clipNow && !late) out += eo ? "W* " : "W ";
         out += o;
         out += "\n";
+        if (clipNow && !late && !qAt.empty()) qAt.back() = out.size();
+    }
+    // a clipping path: where it is (after its group's q, or after the group's other clipping paths), or,
+    // after art of its group (late), inserted before that
+    void clipPath(const std::string &body, bool late) {
+        std::string c = body + (eo ? "W* n\n" : "W n\n");
+        if (late) {
+            out.insert(qAt.back(), c);
+            qAt.back() += c.size();
+            return;
+        }
+        out += c;
+        if (!qAt.empty()) qAt.back() = out.size();
     }
 
     // the gradient's function: its ramp sampled (with the mid points), in the space of its colours
@@ -697,6 +717,7 @@ struct Run {
         }
         P.content = "4 M\n1 0 0 1 " + fmt(-P.x0) + " " + fmt(-P.y0) + " cm\n";
         Run r(D, P.content, depth + 1, true);
+        r.lateClip = lateClip;
         for (size_t j = 0; j + 1 < items.size(); j += 2) {
             if (items[j]->t == Obj::STR) r.feed(items[j]->s.data(), items[j]->s.data() + items[j]->s.size());
             if (items[j + 1]->t == Obj::STR) r.feed(items[j + 1]->s.data(), items[j + 1]->s.data() + items[j + 1]->s.size());
@@ -713,12 +734,14 @@ struct Run {
 
     // ---- images: [matrix] llx lly urx ury w h bits channels alpha reserved encoding mask XI, the data after it
     void image() {
-        if (!nums(0, 12) || !arg(12) || arg(12)->t != Obj::ARR || arg(12)->a.size() != 6) return;
-        const auto &ma = arg(12)->a;
+        // (Illustrator 11 and later: four numbers more, after the ones of the format)
+        size_t x = nums(0, 16) && arg(16) && arg(16)->t == Obj::ARR ? 4 : 0;
+        if (!nums(x, 12) || !arg(x + 12) || arg(x + 12)->t != Obj::ARR || arg(x + 12)->a.size() != 6) return;
+        const auto &ma = arg(x + 12)->a;
         Mtx m{ma[0].n, ma[1].n, ma[2].n, ma[3].n, ma[4].n, ma[5].n};
-        bool mask = num(0) != 0;
-        int enc = inum(1) % 256, comp = inum(1) / 256, alpha = inum(3), ch = inum(4), bits = inum(5);
-        double w = num(7), h = num(6);
+        bool mask = num(x) != 0;
+        int enc = inum(x + 1) % 256, comp = inum(x + 1) / 256, alpha = inum(x + 3), ch = inum(x + 4), bits = inum(x + 5);
+        double w = num(x + 7), h = num(x + 6);
         // the data: hexadecimal on comment lines, or binary right after the operator
         while (p < e && *p != '\n' && *p != '\r') p++;
         if (p < e && *p == '\r') p++;
@@ -850,11 +873,11 @@ struct Run {
             case 'W': clip = true; return;
             case 'N': case 'n': case 'F': case 'f': case 'S': case 's': case 'B': case 'b': paint(s[0]); return;
             case 'q':
-                if (!pola && emit()) endText(), out += "q\n", qd++, saved.push_back(gcol);
+                if (!pola && emit()) endText(), out += "q\n", qd++, saved.push_back(gcol), qAt.push_back(out.size());
                 return;
             case 'Q':
                 if (!pola && emit() && qd > 0) {
-                    endText(), out += "Q\n", qd--, efill.clear(), estroke.clear();
+                    endText(), out += "Q\n", qd--, efill.clear(), estroke.clear(), qAt.pop_back();
                     if (!saved.empty()) gcol = saved.back(), saved.pop_back();
                 }
                 return;
@@ -1126,10 +1149,19 @@ bool header(const char *d, size_t len) {
 }
 
 // Illustrator 9 and later, as an EPS: the document in Illustrator's format at the end of the file, its
-// %AI9_DataStream (comment lines: ASCII85 of a Flate stream); empty if there is none.
+// %AI9_DataStream (comment lines: ASCII85 of a Flate stream; Illustrator 24 and later: %AI24_DataStream,
+// of a Zstandard stream); its line, or the end if there is none. (The last one: an EPS placed in the
+// document, as it is in its PostScript, has one of its own before it.)
 const char *privateData(const char *d, size_t n) {
-    const char *e = d + n, *b = findLine(d, e, "%AI9_PrivateDataBegin");
-    return b < e ? findLine(b, e, "%AI9_DataStream") : e;
+    const char *e = d + n, *b = e;
+    for (const char *q = d; (q = findLine(q, e, "%AI9_PrivateDataBegin")) < e; q++) b = q;
+    for (const char *q = b; (q = findLine(q, e, "%AI")) < e; q++) {   // (%AI<version>_DataStream)
+        const char *t = q + 3;
+        while (t < e && *t >= '0' && *t <= '9') t++;
+        if (t > q + 3 && e - t >= 11 && !memcmp(t, "_DataStream", 11)) return q;
+        if (!memcmp(q, "%AI9_PrivateDataEnd", std::min<size_t>(19, e - q))) break;
+    }
+    return e;
 }
 bool later(const char *d, size_t len) {
     return len >= 20 && !memcmp(d, "%!PS-Adobe", 10) && privateData(d, len) < d + len;
@@ -1138,7 +1170,7 @@ std::string privateDocument(const char *d, size_t n) {
     const char *e = d + n, *p = privateData(d, n);
     if (p == e) return std::string();
     const char *end = findLine(p, e, "%AI9_PrivateDataEnd");
-    p += 15;
+    while (p < end && *p != '\r' && *p != '\n') p++;   // (past the %AI..._DataStream line)
     std::string bin;
     uint32_t t = 0;
     int k = 0;
@@ -1161,22 +1193,36 @@ std::string privateDocument(const char *d, size_t n) {
         for (int j = k; j < 5; j++) t = t * 85 + 84;
         for (int j = 0; j < k - 1; j++) bin += (char)(t >> (24 - 8 * j));
     }
-    z_stream z{};
-    if (inflateInit(&z) != Z_OK) return std::string();
-    z.next_in = (Bytef *)bin.data();
-    z.avail_in = (uInt)bin.size();
-    std::string out;
-    const size_t limit = 256u << 20;
+    std::string out = "%!PS-Adobe-3.0 EPSF-3.0\n";   // (its document begins with the header's comments: an EPS, shown by its bounding box)
+    const size_t limit = 1u << 30;   // (raster images in it uncompressed: 500 MB of them seen)
     char buf[65536];
-    int rc;
-    do {
-        z.next_out = (Bytef *)buf;
-        z.avail_out = sizeof buf;
-        rc = inflate(&z, Z_NO_FLUSH);
-        out.append(buf, sizeof buf - z.avail_out);
-    } while (rc == Z_OK && out.size() <= limit);
-    inflateEnd(&z);
-    if (out.size() > limit) return std::string();
+    if (bin.size() >= 4 && !memcmp(bin.data(), "\x28\xb5\x2f\xfd", 4)) {   // (Zstandard's magic number)
+        ZSTD_DStream *zs = ZSTD_createDStream();
+        if (!zs) return std::string();
+        ZSTD_inBuffer in = {bin.data(), bin.size(), 0};
+        size_t rc;
+        do {
+            ZSTD_outBuffer o = {buf, sizeof buf, 0};
+            rc = ZSTD_decompressStream(zs, &o, &in);
+            out.append(buf, o.pos);
+            if (ZSTD_isError(rc) || (o.pos == 0 && in.pos == in.size)) break;
+        } while (rc != 0 && out.size() <= limit);
+        ZSTD_freeDStream(zs);
+    } else {
+        z_stream z{};
+        if (inflateInit(&z) != Z_OK) return std::string();
+        z.next_in = (Bytef *)bin.data();
+        z.avail_in = (uInt)bin.size();
+        int rc;
+        do {
+            z.next_out = (Bytef *)buf;
+            z.avail_out = sizeof buf;
+            rc = inflate(&z, Z_NO_FLUSH);
+            out.append(buf, sizeof buf - z.avail_out);
+        } while (rc == Z_OK && out.size() <= limit);
+        inflateEnd(&z);
+    }
+    if (out.size() > limit || out.size() <= 24) return std::string();
     return out;   // (what a damaged stream gave, too)
 }
 
@@ -1229,10 +1275,9 @@ std::string nitroai_pdf(const void *data, size_t len) {
     std::string ps;
     if (header(text, n))
         ps.assign(text, n);
-    else if (later(text, n)) {   // (its document begins with the header's comments: an EPS, shown by its bounding box)
+    else if (later(text, n)) {
         ps = privateDocument(text, n);
         if (ps.empty()) return std::string();
-        ps = "%!PS-Adobe-3.0 EPSF-3.0\n" + ps;
     } else
         return std::string();
     Pdf D;
@@ -1241,6 +1286,7 @@ std::string nitroai_pdf(const void *data, size_t len) {
     bool setup = findLine(ps.data(), ps.data() + ps.size(), "%%BeginSetup") < ps.data() + ps.size() &&
                  findLine(ps.data(), ps.data() + ps.size(), "%%EndSetup") < ps.data() + ps.size();
     Run r(D, content, 0, !setup);
+    r.lateClip = !header(text, n);   // (Illustrator 9 and later: the document their EPS keeps)
     // a document (not an EPS): its artboard, as Illustrator shows it (and the PDF of a later version
     // has it): the size the header gives, centred on the template box's centre (in the art's coordinates)
     double art[2], tb[4];

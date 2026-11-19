@@ -57,6 +57,7 @@ the builds that use them link them in, under their own licenses:
   software are copyright (c) 1996-2026 The FreeType Project (https://freetype.org), all rights
   reserved
 - Brotli (its decoder, for WOFF2 fonts): MIT
+- Zstandard (its decoder, for the EPS files of Illustrator 24 and later): BSD
 - zlib (the Windows and portable Linux builds; the others use the system's): zlib
 - boost (headers only): Boost Software License
 - mimalloc: MIT
