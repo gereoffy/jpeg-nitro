@@ -1585,7 +1585,8 @@ bool turnsByDirection(const std::string &shape) {
                                          "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
                                          "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
                                          "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
-                                         "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube"};
+                                         "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
+                                         "mxgraph.mockup.markup.curlyBrace"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -1770,6 +1771,23 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "mxgraph.floorplan.wallU") {
         double t = num(s, "wallThickness", 10);
         polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}, {w - t, h}, {w - t, t}, {t, t}, {t, h}}, b);
+    } else if (shape == "mxgraph.mockup.markup.curlyBrace") {   // (mxMockup: a brace along the middle, its point up; outlined only)
+        double d = 0.5 * h, e = std::min(0.125 * w, d);
+        if (!lines) lines = newPath();
+        plutovg_path_t *l = lines.get();
+        auto P = [&](double px, double py) { return plutovg_point_t{(float)(b.x + px), (float)(b.y + py)}; };
+        auto A = [&](double px, double py, bool sweep) {
+            plutovg_point_t t = P(px, py);
+            plutovg_path_arc_to(l, (float)e, (float)e, 0, false, sweep, t.x, t.y);
+        };
+        plutovg_point_t p0 = P(0, d + e), p1 = P(0.5 * w - e, d), p2 = P(w - e, d);
+        plutovg_path_move_to(l, p0.x, p0.y);
+        A(e, d, true);
+        plutovg_path_line_to(l, p1.x, p1.y);
+        A(0.5 * w, d - e, false);
+        A(0.5 * w + e, d, false);
+        plutovg_path_line_to(l, p2.x, p2.y);
+        A(w, d + e, true);
     } else if (shape == "isoCube2") {   // (Shapes.js IsoCubeShape2: an upright isometric box, its top's edges and front edge)
         double ih = std::min(w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), h * 0.5);
         polygon(q, {{w / 2, 0}, {w, ih}, {w, h - ih}, {w / 2, h}, {0, h - ih}, {0, ih}}, b);
