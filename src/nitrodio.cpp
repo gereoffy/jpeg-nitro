@@ -355,6 +355,7 @@ struct Seg {
     uint32_t rgba = 0;   // (an HTML label's own colour; 0: the label's)
     float size = 0;      // (an HTML label's own font size; 0: the label's)
     uint32_t bg = 0;     // (an HTML label's highlight: a span's background colour)
+    float shift = 0;     // (<sub> / <sup>: its baseline lowered / raised by this)
 };
 
 // a block's margins (top, bottom) in px: a browser's defaults (em of the block's font size), style margin / margin-top /
@@ -518,6 +519,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         int u, s;
     };
     std::vector<Deco> decos;   // (the open blocks' text-decoration: underline / line-through)
+    std::vector<std::pair<std::string, float>> shifts;   // (the open tags' baseline shifts, as the sizes)
     auto curSize = [&]() { return sizes.empty() || sizes.back().second <= 0 ? baseSize : sizes.back().second; };
     float gap = 0;   // (the block margins due before the next text: collapsed, the largest)
     auto add = [&](const std::string &t, bool b, bool i, int u) {
@@ -543,10 +545,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         uint32_t rgba = colours.empty() ? 0 : colours.back().second;
         float sz = sizes.empty() ? 0 : sizes.back().second;
         uint32_t bg = highlights.empty() ? 0 : highlights.back().second;
+        float sh = shifts.empty() ? 0 : shifts.back().second;
         if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().underline == u && p.back().rgba == rgba && p.back().size == sz &&
-            p.back().bg == bg)
+            p.back().bg == bg && p.back().shift == sh)
             p.back().text += t;
-        else p.push_back({t, b, i, (uint8_t)u, rgba, sz, bg});
+        else p.push_back({t, b, i, (uint8_t)u, rgba, sz, bg, sh});
     };
     if (!html) {
         std::string cur;
@@ -624,6 +627,10 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 bool h = name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
                 float own = tagSize(tag, around);   // (its own font size: its margins are of it)
                 if (!own && name == "small") own = around / 1.2f;   // (a browser's smaller / larger)
+                if (!own && (name == "sub" || name == "sup")) own = around / 1.2f;   // (smaller, below / above the baseline)
+                float sh0 = shifts.empty() ? 0 : shifts.back().second;
+                if (name == "sub" || name == "sup") flush();
+                shifts.push_back({name, sh0 + (name == "sub" ? around * 0.2f : name == "sup" ? -around * 0.35f : 0)});
                 if (!own && name == "big") own = around * 1.2f;
                 if (h) flush(), sizes.push_back({"#" + name, around * heading[name[1] - '1']}), b++;   // (#: a heading's own size)
                 if (h || name == "p" || name == "ul" || name == "ol") {   // (its margins: before it now, after it at its end)
@@ -638,6 +645,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 if (blk) struts.push_back({name, own ? own : h ? around * heading[name[1] - '1'] : around});
             } else if (close) {
                 flush();   // (the text before it still in the tags it closes)
+                for (size_t k = shifts.size(); k-- > 0;)
+                    if (shifts[k].first == name) {
+                        shifts.erase(shifts.begin() + (long)k);
+                        break;
+                    }
                 for (size_t k = struts.size(); k-- > 0;)
                     if (struts[k].first == name) {
                         struts.erase(struts.begin() + (long)k);
@@ -816,6 +828,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         float size;
         uint8_t underline;
         uint32_t bg;
+        float shift;
     };
     double alpha = num(s, "textOpacity", 100);
     std::vector<std::vector<LineRun>> lines;
@@ -834,12 +847,12 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
             float sz = sg.size > 0 ? sg.size : size;
             if (wrapWidth <= 0) {
                 float w = textWidth(f, sz, sg.text);
-                lines.back().push_back({f, sg.text, w, sg.rgba ? withOpacity(sg.rgba, alpha) : rgba, sz, sg.underline, sg.bg});
+                lines.back().push_back({f, sg.text, w, sg.rgba ? withOpacity(sg.rgba, alpha) : rgba, sz, sg.underline, sg.bg, sg.shift});
                 widths.back() += w;
                 continue;
             }
             if (sg.text.empty()) {   // (a spacer: its height only (a margin, an <hr>'s))
-                lines.back().push_back({f, std::string(), 0, rgba, sz, sg.underline, sg.bg});
+                lines.back().push_back({f, std::string(), 0, rgba, sz, sg.underline, sg.bg, sg.shift});
                 continue;
             }
             size_t i = 0;   // (word by word: a word with its following spaces)
@@ -899,9 +912,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 }
                 uint32_t col = sg.rgba ? withOpacity(sg.rgba, alpha) : rgba;
                 if (!lines.back().empty() && lines.back().back().face == f && lines.back().back().rgba == col && lines.back().back().size == sz &&
-                    lines.back().back().underline == sg.underline && lines.back().back().bg == sg.bg)
+                    lines.back().back().underline == sg.underline && lines.back().back().bg == sg.bg && lines.back().back().shift == sg.shift)
                     lines.back().back().text += word, lines.back().back().width += w;
-                else lines.back().push_back({f, word, w, col, sz, sg.underline, sg.bg});
+                else lines.back().push_back({f, word, w, col, sz, sg.underline, sg.bg, sg.shift});
                 widths.back() += w;
             }
         }
@@ -969,7 +982,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         for (LineRun &r : lines[l]) {
             if ((r.bg >> 24) && r.width > 0) label->rects.push_back({pen, (float)(y - lineH), r.width, lineH, r.bg});
             if (!r.text.empty() && r.face && (r.rgba >> 24))
-                label->runs.push_back({r.face, r.size, r.rgba, pen, base, r.text, r.underline & 1 ? textWidth(r.face, r.size, r.text) : 0,
+                label->runs.push_back({r.face, r.size, r.rgba, pen, base + r.shift, r.text, r.underline & 1 ? textWidth(r.face, r.size, r.text) : 0,
                                        r.underline & 2 ? textWidth(r.face, r.size, r.text) : 0});
             pen += r.width;
         }
