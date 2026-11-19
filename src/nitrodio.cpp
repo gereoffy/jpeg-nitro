@@ -3913,6 +3913,11 @@ struct Builder {
                 double dx = b.x - a.x, dy = b.y - a.y, l = std::hypot(dx, dy);
                 return l > 0 ? Pt{dx / l, dy / l} : Pt{1, 0};
             };
+            // (mxConnector.createMarker: its direction from the first point that does not round to the end itself, in screen
+            // pixels; a stub of less than a unit at an end (a rounding left over) left out, the marker along the line before it)
+            auto same = [](Pt a, Pt b) { return std::fabs(a.x - b.x) < 1 && std::fabs(a.y - b.y) < 1; };
+            while (r.size() > 2 && same(r[r.size() - 2], r.back())) r.erase(r.end() - 2);
+            while (r.size() > 2 && same(r[1], r[0])) r.erase(r.begin() + 1);
             Pt ue = unit(r[r.size() - 2], r.back()), us = unit(r[1], r[0]);
             double re = marker(str(s, "endArrow"), str(s, "endFill") != "0", num(s, "endSize", 6), sw, r.back(), ue, stroke);
             double rs = marker(str(s, "startArrow"), str(s, "startFill") != "0", num(s, "startSize", 6), sw, r.front(), us, stroke);
