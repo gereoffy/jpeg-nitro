@@ -45,22 +45,20 @@ const float GRID_TOP = MARGIN + 22;                  // under a page's heading
 const float SAMPLE_TOP = MARGIN + 62, SAMPLE_SIZE = 20, SAMPLE_PITCH = 27, TAG_W = 38;
 const size_t MAX_FACES = 256, MAX_PAGES = 4096;
 
-// The sample lines: the usual English one, then pangrams holding every accented letter of their
-// language (hu: all 9; cs: all 15; sk: all but the rare ó; pl: all 9; ro: all 5; hr / sl: all 5; de:
-// ä ö ü ß; ru: all 33 letters; el: all 24), the Central European ones first: Latin-2 is what most
-// fonts lack. In lower case first, then in capitals where that is not too long.
+// Sample texts and selected additional letters, with Central European languages first. The tags
+// document the languages represented; the short lists also show letters missing from the texts.
 const struct {
     const char *tag, *text;
 } SAMPLES[] = {
-    {"en", "the quick brown fox jumps over the lazy dog – THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"},
-    {"hu", "árvíztűrő tükörfúrógép – ÁRVÍZTŰRŐ TÜKÖRFÚRÓGÉP – 0123456789 € $ £ @ & % ! ? ( ) [ ] { }"},   // (the digits and signs here: the line above is long)
-    {"cs", "příliš žluťoučký kůň úpěl ďábelské ódy – PŘÍLIŠ ŽLUŤOUČKÝ KŮŇ ÚPĚL ĎÁBELSKÉ ÓDY"},
-    {"sk", "kŕdeľ šťastných ďatľov učí pri ústí Váhu mĺkveho koňa obhrýzať kôru a žrať čerstvé mäso – Ä Ĺ Ľ Ô Ŕ"},
-    {"pl ro", "zażółć gęślą jaźń – ZAŻÓŁĆ GĘŚLĄ JAŹŃ – muzicologă în bej vând whisky și tequila, preț fix – Ă Â Î Ș Ț"},
-    {"hr sl", "gojazni đačić s biciklom drži hmelj i finu vatu u džepu nošnje – Č Ć Đ Š Ž"},
-    {"de fr es", "falsches Üben von Xylophonmusik quält jeden größeren Zwerg – voix ambiguë d’un cœur – ¿dónde está el pingüino? – ñ ç Ä Ö"},
-    {"ru uk", "съешь же ещё этих мягких французских булок, да выпей чаю – Ё Й Щ Ъ Э Ю Я – ґ є і ї Ґ Є І Ї"},   // (the four letters Ukrainian has and Russian has not)
-    {"el", "ξεσκεπάζω την ψυχοφθόρα βδελυγμία – Α Β Γ Δ Θ Λ Ξ Π Σ Φ Ψ Ω"},
+    {"eng", "the quick brown fox jumps over the lazy dog – THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"},
+    {"latin-1", "zwölf süße bären – è già lì, però non sa più perché – ÄÖÜ Çç Ææ Œœ Ññ ¡¿ Ëë Ïï – Åå Øø Ðð Þþ Ýý"},
+    {"hun", "árvíztűrő tükörfúrógép – ÁRVÍZTŰRŐ TÜKÖRFÚRÓGÉP – 0123456789 @ & % ! ? ( ) [ ] { } € $ £"},
+    {"pl ro", "zażółć gęślą jaźń – ZAŻÓŁĆ GĘŚLĄ JAŹŃ – șase țărănci cântă în cor – Ăă Ââ Îî Șș Țț"},
+    {"cs sk", "příliš žluťoučký kůň úpěl ďábelské ódy – kŕdeľ šťastných ďatľov – Ďď Ěě Ňň Řř Ťť Ůů Ää Ĺĺ Ľľ Ôô Ŕŕ"},
+    {"tr lv lt", "çığ düştü, şoför şaşırdı – Āā Čč Ēē Ģģ Īī Ķķ Ļļ Ņņ Šš Ūū Žž – Ąą Ęę Ėė Įį Ųų – Ç Ğ I İ Ö Ş Ü"},
+    {"hr sl sr mk", "čađavi šešir na žućkastoj kući – črn maček čaka žabo v šašu – Č Ć Đ Š Ž – Ђђ Јј Љљ Њњ Ћћ Џџ – Ѓѓ Ѕѕ Ќќ"},
+    {"cyrill", "съешь же ещё этих мягких французских булок, да выпей чаю – Ё Й Щ Ъ Э Ю Я – Ґґ Єє Іі Її – гласът Ѝѝ"},
+    {"greek", "ξεσκεπάζω την ψυχοφθόρα βδελυγμία – Α Β Γ Δ Θ Λ Ξ Π Σ Φ Ψ Ω – ς Ά Έ Ή Ί Ό Ύ Ώ ΐ ΰ"},
 };
 const int NSAMPLES = sizeof SAMPLES / sizeof SAMPLES[0];
 // the one line of a font with the English alphabet alone (no accented, Cyrillic or Greek letter): the digits and signs with it
