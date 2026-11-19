@@ -1606,25 +1606,31 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, do
 // Second path: the lines drawn over it (a process' bars, a note's fold, a cylinder's rim)
 // the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
-// a shape of the stencil libraries built in (mxStencilRegistry: draw.io's basic.xml): its <shape>; NULL if not one
+// a shape of the stencil libraries built in (mxStencilRegistry: draw.io's general-purpose ones, nitrodio_stencils.h):
+// its <shape>; NULL if not one
 const std::string *libraryStencil(const std::string &shape) {
-    if (shape.size() <= 14 || strncasecmp(shape.c_str(), "mxgraph.basic.", 14) != 0) return nullptr;
+    if (shape.size() <= 8 || strncasecmp(shape.c_str(), "mxgraph.", 8) != 0) return nullptr;
     static const std::unordered_map<std::string, std::string> shapes = [] {
         std::unordered_map<std::string, std::string> m;
-        std::string all = kBasicStencils;
+        std::string all, pkg;
+        if (!inflateRaw(base64(kLibraryStencils), all)) return m;
         for (size_t i = 0, e; i < all.size(); i = e + 1) {
             e = all.find('\n', i);
             if (e == std::string::npos) e = all.size();
             std::string line = all.substr(i, e - i);
+            if (line.compare(0, 1, "@") == 0) {
+                pkg = line.substr(1) + ".";
+                continue;
+            }
             size_t n = line.find(" name=\"");
             if (n == std::string::npos) continue;
-            std::string name = line.substr(n + 7, line.find('"', n + 7) - n - 7);
+            std::string name = pkg + line.substr(n + 7, line.find('"', n + 7) - n - 7);
             for (char &c : name) c = c == ' ' ? '_' : (char)std::tolower((unsigned char)c);
             m[name] = line;
         }
         return m;
     }();
-    std::string name = shape.substr(14);
+    std::string name = shape;
     for (char &c : name) c = (char)std::tolower((unsigned char)c);
     auto f = shapes.find(name);
     return f == shapes.end() ? nullptr : &f->second;
