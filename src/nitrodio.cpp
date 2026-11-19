@@ -169,6 +169,11 @@ uint32_t parseColour(std::string v, uint32_t def) {
     return f != names.end() ? 0xff000000u | f->second : def;
 }
 uint32_t colour(const Style &s, const char *k, uint32_t def) { return parseColour(str(s, k), def); }
+// (labelBackgroundColor=default: the page's background, white)
+uint32_t labelBackground(const Style &s) {
+    const std::string &v = str(s, "labelBackgroundColor");
+    return v == "default" ? 0xffffffffu : parseColour(v, 0);
+}
 uint32_t withOpacity(uint32_t c, double opacity) {   // (0..100)
     if (opacity >= 100) return c;
     uint32_t a = (uint32_t)std::lround((c >> 24) * std::clamp(opacity, 0.0, 100.0) / 100);
@@ -972,7 +977,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     if (label->runs.empty() && label->rects.empty()) return nullptr;   // (an <hr> alone: its rule)
     label->x0 = x0 - 2, label->x1 = x1 + 2;
     label->y0 = (float)top, label->y1 = (float)(top + textH);
-    label->background = colour(s, "labelBackgroundColor", 0);
+    label->background = labelBackground(s);
     if (textW <= 0) label->background = 0;
     return label;
 }
@@ -1464,7 +1469,7 @@ std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s
     label->runs = std::move(f.runs);
     label->rects = std::move(f.rects);
     label->x0 = left, label->x1 = left + f.w, label->y0 = top, label->y1 = top + f.h;
-    label->background = colour(s, "labelBackgroundColor", 0);
+    label->background = labelBackground(s);
     return label;
 }
 
