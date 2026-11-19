@@ -18,6 +18,9 @@
 #     Makefile compiles c/common and c/dec)
 #   - Zstandard (BSD): its decoder, for the EPS files of Illustrator 24 and later (nitroai; sources
 #     only, the Makefile compiles the decoder's part of lib/common and lib/decompress)
+#   - draw.io's stencil libraries (Apache-2.0; not for Atlassian products): the general-purpose ones
+#     nitrodio draws, by scripts/gen-drawio-stencils.py (python3) into drawio/nitrodio_stencils.h;
+#     DRAWIO_STENCILS=lib,lib,... (or all) builds in others
 #   - SDL3 (static): the Linux viewer's window (SDL=0 skips it)
 #   - zlib-ng (zlib license, static, zlib-compatible API; cmake): zlib for the builds whose system
 #     has none, the portable Linux build (built on Linux) and, with WINCC=..., the Windows viewer
@@ -113,6 +116,9 @@ if [ ! -f zstd/.stamp-$ZSTD_VER ]; then
   mv zstd-$ZSTD_VER zstd
   touch zstd/.stamp-$ZSTD_VER
 fi
+# draw.io's stencil libraries (shape=mxgraph.<library>.<name>): drawio/nitrodio_stencils.h, made from its stencil bundle
+# (downloaded once) by scripts/gen-drawio-stencils.py; DRAWIO_STENCILS=basic,electrical,... (or all) picks the libraries
+python3 ../scripts/gen-drawio-stencils.py "${DRAWIO_STENCILS:-}"
 LIBREVENGE_STAMP=$LIBREVENGE_VER-$(cksum < ../patches/librevenge.patch | cut -d' ' -f1)
 if [ ! -f librevenge/.stamp-$LIBREVENGE_STAMP ]; then
   rm -rf librevenge librevenge-$LIBREVENGE_VER
@@ -338,4 +344,4 @@ EOT
 fi
 rm -rf dav1d-$DAV1D_VER
 
-echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER, Brotli $BROTLI_VER, Zstandard $ZSTD_VER$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"
+echo "dependencies ready in third_party/ (libjpeg-turbo $LJT_VER, stb_image, wuffs, lunasvg, libcdr, libvisio, pdfparse3, FreeType $FREETYPE_VER, Brotli $BROTLI_VER, Zstandard $ZSTD_VER, draw.io stencils$([ -f zlib-ng/.version-$ZLIBNG_VER ] || [ -f zlib-ng-win/.version-$ZLIBNG_VER ] && echo ", zlib-ng $ZLIBNG_VER")$([ "${SDL:-1}" = 1 ] && echo ", SDL $SDL_VER")$([ "${DAV1D:-1}" = 1 ] && echo ", dav1d $DAV1D_VER"))"

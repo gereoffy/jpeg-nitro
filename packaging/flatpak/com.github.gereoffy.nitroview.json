@@ -47,6 +47,7 @@
       "buildsystem": "simple",
       "build-commands": [
         "make clean",
+        "python3 scripts/gen-drawio-stencils.py",
         "case \"$FLATPAK_ARCH\" in x86_64) cpu='-march=x86-64-v3' ;; aarch64) cpu='-mcpu=generic' ;; *) cpu='' ;; esac; make CPUFLAGS=\"$cpu\" DAV1D_DIR=/app gnome",
         "install -Dm755 nitroview-gnome /app/bin/nitroview-gnome",
         "install -Dm644 packaging/gnome/com.github.gereoffy.nitroview.desktop /app/share/applications/com.github.gereoffy.nitroview.desktop",
@@ -95,6 +96,12 @@
           "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
           "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
           "dest": "third_party/zstd"
+        },
+        {
+          "type": "file",
+          "url": "https://raw.githubusercontent.com/jgraph/drawio/f411a11f4f6b8994d869bdbc45f4d4d9e2284f34/src/main/webapp/js/stencils.min.js",
+          "sha256": "989d72d18bbf02e61c74937d7f51f048d198bb559c3ede4ae66c08e52544b983",
+          "dest": "third_party/drawio"
         },
         {
           "type": "archive",

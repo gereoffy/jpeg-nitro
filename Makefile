@@ -402,7 +402,7 @@ PDFP_DEPS = $(PDFP_C) $(PDFP_CXX) $(wildcard $(PDFP)/*.h) $(wildcard $(PDFP)/.st
 NITRO_SVG_CXX := src/nitrosvg.cpp src/nitrodxf.cpp src/nitrodwg.cpp src/nitrometa.cpp src/nitro_font.cpp src/nitropdf.cpp src/nitroai.cpp src/nitrotype.cpp
 NITRO_CDR_CXX := src/nitrocdr.cpp src/nitrodio.cpp
 NITRO_DEPS := src/nitro_vector.c src/nitro_vector.h src/nitro_load.h src/nitro_os.h $(NITRO_SVG_CXX) $(NITRO_CDR_CXX) \
-              src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h src/nitrodio_stencils.h src/nitrotiff.h \
+              src/nitrosvg.h src/nitrodxf.h src/nitrodwg.h src/nitrometa.h src/nitro_font.h src/nitro_draw.h src/nitrocdr.h src/nitrodio.h third_party/drawio/nitrodio_stencils.h src/nitrotiff.h \
               src/nitropdf.h src/nitroai.h src/nitro_cmyk.c src/nitro_cmyk.h src/nitrojbig2.c src/nitrojbig2.h src/nitrojpx.h src/nitrodjvu.c src/nitrodjvu.h src/nitro_bilevel.h src/nitroiw44.c src/nitroiw44.h src/nitro_zp.h \
               src/nitrotype.h src/nitro_ft.h src/nitro_xmltag.h src/nitro_num.h
 # (zlib-ng's include/ for the librevenge-based parts, nitrodio and pdfparse3 too, where the system has no zlib.h:
@@ -456,7 +456,7 @@ endef
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitrodjvu.c -o $(@D)/nitrodjvu.o)
 	$(if $(VEC),$(CC) $(TCPU) $(TPORT) -O3 $(WARN) -Isrc -c src/nitroiw44.c -o $(@D)/nitroiw44.o)
 	@$(if $(VEC),printf '%s\n' $(NITRO_SVG_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS) -I$(PDFP) $(FT_DEFS) -I$(ZSTD)/lib $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
-	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
+	@$(if $(VEC),printf '%s\n' $(NITRO_CDR_CXX) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) -O2 -w $(RVNG_DEFS) -Ithird_party/drawio $(VEC_INC) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@
 # the library: the parts' objects together ($(1): the target directory, $(2): zlib where it is needed)
 VEC_PARTS = $(if $(VEC),lunasvg lcms2 libxml2 librevenge libcdr libvisio pdfparse3 freetype brotli zstd) nitro

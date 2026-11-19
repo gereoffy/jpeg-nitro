@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-# src/nitrodio_stencils.h from draw.io's stencil bundle (src/main/webapp/js/stencils.min.js of github.com/jgraph/drawio:
-# each library its XML in draw.io's compact form, deflated, base64) and its viewer (viewer-static.min.js: the shapes
-# it draws by code, left out). The general-purpose libraries only (no cloud, vendor or brand icon sets):
-#   python3 -I scripts/gen-drawio-stencils.py stencils.min.js viewer-static.min.js src/nitrodio_stencils.h
-import base64, re, struct, sys, zlib
+# third_party/drawio/nitrodio_stencils.h: the draw.io stencil libraries nitrodio draws (shape=mxgraph.<library>.<name>),
+# from draw.io's stencil bundle (src/main/webapp/js/stencils.min.js of github.com/jgraph/drawio, Apache License 2.0;
+# JGraph's stencil terms: not for use in Atlassian products). Run by scripts/get-deps.sh:
+#   python3 scripts/gen-drawio-stencils.py [LIBRARIES]
+# LIBRARIES: comma-separated names as the bundle's files start (basic, electrical = all of electrical/*, signs, aws4,
+# ...), "all" for every one; by default the general-purpose ones below. The bundle is downloaded once into
+# third_party/drawio/ (a copy already there with the right checksum is used: the Flatpak build puts it there).
+import base64, hashlib, os, re, struct, sys, urllib.request, zlib
 from xml.sax.saxutils import quoteattr
 
-LIBRARIES = ('basic', 'arrows', 'flowchart', 'bpmn', 'lean_mapping', 'eip', 'floorplan', 'cabinets', 'sitemap',
-             'networks', 'electrical', 'pid', 'fluid_power', 'mockup')   # (a file's name up to its first '/' or '.xml')
+DEFAULT = 'basic,arrows,flowchart,bpmn,lean_mapping,eip,floorplan,cabinets,networks,electrical,pid,mockup'
+COMMIT = 'f411a11f4f6b8994d869bdbc45f4d4d9e2284f34'   # (2026-11-17; also in packaging/flatpak/*.json, with the sha256)
+SHA256 = '989d72d18bbf02e61c74937d7f51f048d198bb559c3ede4ae66c08e52544b983'
+URL = 'https://raw.githubusercontent.com/jgraph/drawio/%s/src/main/webapp/js/stencils.min.js' % COMMIT
+DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'third_party', 'drawio')
+BUNDLE, OUT = os.path.join(DIR, 'stencils.min.js'), os.path.join(DIR, 'nitrodio_stencils.h')
+
 DRAW = {'move', 'line', 'quad', 'curve', 'arc', 'rect', 'roundrect', 'ellipse', 'text', 'image', 'include-shape'}
 XS, YS = {'x', 'x1', 'x2', 'x3'}, {'y', 'y1', 'y2', 'y3'}
 
 
-def decode(t):   # (the bundle's decode(): five streams - element ops, x, y and other numbers, strings)
+def decode(t):   # (the bundle's decode(): five streams - element ops, x, y and other numbers, strings - back to XML)
     d = zlib.decompress(base64.b64decode(t), -15)
     o, s = 20, []
     for i in range(5):
@@ -35,7 +43,7 @@ def decode(t):   # (the bundle's decode(): five streams - element ops, x, y and 
                 break
         return -(n + 1) // 2 if n % 2 else n // 2
 
-    def num(v):
+    def num(v):   # (thousandths)
         return ('%d' % (v // 1000)) if v % 1000 == 0 else repr(v / 1000)
 
     while p[0] < len(ops):
@@ -86,33 +94,45 @@ def decode(t):   # (the bundle's decode(): five streams - element ops, x, y and 
     return ''.join(out)
 
 
-bundle = open(sys.argv[1], encoding='utf-8').read()
-code = set(m.lower() for m in re.findall(r'"(mxgraph\.[a-zA-Z0-9_.]+)"', open(sys.argv[2], encoding='utf-8').read()))
+def bundle():
+    if os.path.exists(BUNDLE) and hashlib.sha256(open(BUNDLE, 'rb').read()).hexdigest() == SHA256:
+        return open(BUNDLE, encoding='utf-8').read()
+    data = urllib.request.urlopen(URL, timeout=120).read()
+    if hashlib.sha256(data).hexdigest() != SHA256:
+        sys.exit('gen-drawio-stencils.py: %s: checksum mismatch' % URL)
+    os.makedirs(DIR, exist_ok=True)
+    open(BUNDLE, 'wb').write(data)
+    return data.decode('utf-8')
+
+
+arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else DEFAULT
+wanted = None if arg == 'all' else set(l.strip() for l in arg.split(',') if l.strip())
+files = re.findall(r"f\['([^']+)'\] = '([^']*)'", bundle())
+known = set(re.split(r'[/.]', f)[0] for f, _ in files)
+if wanted and wanted - known:
+    sys.exit('gen-drawio-stencils.py: no such library: %s' % ', '.join(sorted(wanted - known)))
 lines, shapes, used = [], 0, []
-for file, data in re.findall(r"f\['([^']+)'\] = '([^']*)'", bundle):
-    if re.split(r'[/.]', file)[0] not in LIBRARIES:
+for file, data in files:
+    if wanted is not None and re.split(r'[/.]', file)[0] not in wanted:
         continue
     x = decode(data)
-    pkg = re.search(r'<shapes name="([^"]*)"', x).group(1)
-    lines.append('@' + pkg)
+    lines.append('@' + re.search(r'<shapes name="([^"]*)"', x).group(1))
     used.append(file)
-    for sh in re.findall(r'<shape .*?</shape>', x, re.S):
-        n = re.search(r' name="([^"]*)"', sh).group(1)
-        if (pkg + '.' + n.replace(' ', '_')).lower() in code:
-            continue
+    for sh in re.findall(r'<shape .*?</shape>', x, re.S):   # (a shape a line, without its connection points)
         lines.append(re.sub(r'<connections>.*?</connections>', '', sh, flags=re.S))
         shapes += 1
 text = '\n'.join(lines).encode()
 z = zlib.compressobj(9, zlib.DEFLATED, -15)
-packed = base64.b64encode(z.compress(text) + z.flush()).decode()
-with open(sys.argv[3], 'w') as f:
-    f.write('// draw.io\'s general-purpose stencil libraries (stencils.min.js of github.com/jgraph/drawio, Apache License 2.0;\n'
-            '// JGraph\'s stencil terms: not for use in Atlassian products), made by scripts/gen-drawio-stencils.py:\n// ' +
-            ', '.join(LIBRARIES) + '.\n'
-            '// Their shapes without connection points, those draw.io draws by code left out (%d shapes, %d KB of XML):\n'
-            '// "@<package>" starts a library, then a <shape> a line; its name as the style\'s, spaces as _, any case.\n'
-            '// Base64 of the raw deflated text.\n#pragma once\nstatic const char kLibraryStencils[] =\n' % (shapes, len(text) // 1024))
-    for i in range(0, len(packed), 120):
-        f.write('    "%s"\n' % packed[i:i + 120])
-    f.write('    ;\n')
-print(len(used), 'libraries,', shapes, 'shapes,', len(text), 'bytes of XML,', len(packed), 'of base64', file=sys.stderr)
+packed = z.compress(text) + z.flush()
+h = ['// Made by scripts/gen-drawio-stencils.py from draw.io %s (Apache License 2.0; JGraph\'s stencil terms: not for use\n'
+     '// in Atlassian products): %s - %d libraries, %d shapes, %d KB of XML.\n'
+     '// "@<package>" starts a library, then a <shape> a line, without its connection points; raw deflated.\n'
+     '#pragma once\nstatic const unsigned char kLibraryStencils[] = {\n' % (COMMIT[:12], arg, len(used), shapes, len(text) // 1024)]
+for i in range(0, len(packed), 24):
+    h.append('    ' + ','.join('0x%02x' % c for c in packed[i:i + 24]) + ',\n')
+h.append('};\n')
+h = ''.join(h)
+if not os.path.exists(OUT) or open(OUT).read() != h:   # (rewritten only when it changes: no rebuild otherwise)
+    os.makedirs(DIR, exist_ok=True)
+    open(OUT, 'w').write(h)
+print('gen-drawio-stencils.py: %d libraries, %d shapes, %d KB deflated' % (len(used), shapes, len(packed) // 1024))

@@ -1606,14 +1606,14 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, do
 // Second path: the lines drawn over it (a process' bars, a note's fold, a cylinder's rim)
 // the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
-// a shape of the stencil libraries built in (mxStencilRegistry: draw.io's general-purpose ones, nitrodio_stencils.h):
+// a shape of the stencil libraries built in (mxStencilRegistry: those scripts/gen-drawio-stencils.py put in nitrodio_stencils.h):
 // its <shape>; NULL if not one
 const std::string *libraryStencil(const std::string &shape) {
     if (shape.size() <= 8 || strncasecmp(shape.c_str(), "mxgraph.", 8) != 0) return nullptr;
     static const std::unordered_map<std::string, std::string> shapes = [] {
         std::unordered_map<std::string, std::string> m;
         std::string all, pkg;
-        if (!inflateRaw(base64(kLibraryStencils), all)) return m;
+        if (!inflateRaw(std::string((const char *)kLibraryStencils, sizeof kLibraryStencils), all)) return m;
         for (size_t i = 0, e; i < all.size(); i = e + 1) {
             e = all.find('\n', i);
             if (e == std::string::npos) e = all.size();
