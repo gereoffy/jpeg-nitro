@@ -10,6 +10,7 @@
 // their waypoints, or by the edge style's orthogonal connector.
 #include "nitrodio.h"
 #include "nitro_draw.h"
+#include "nitrodio_stencils.h"
 #include "nitro_font.h"
 #include "nitro_num.h"   // (nn_strtod: numbers read the same in every locale)
 #include "nitrojpeg.h"   // (the pictures a diagram holds as data: URIs)
@@ -1605,6 +1606,30 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, do
 // Second path: the lines drawn over it (a process' bars, a note's fold, a cylinder's rim)
 // the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
 // and height exchanged), then turned about its centre (south 90, west 180, north 270 degrees)
+// a shape of the stencil libraries built in (mxStencilRegistry: draw.io's basic.xml): its <shape>; NULL if not one
+const std::string *libraryStencil(const std::string &shape) {
+    if (shape.size() <= 14 || strncasecmp(shape.c_str(), "mxgraph.basic.", 14) != 0) return nullptr;
+    static const std::unordered_map<std::string, std::string> shapes = [] {
+        std::unordered_map<std::string, std::string> m;
+        std::string all = kBasicStencils;
+        for (size_t i = 0, e; i < all.size(); i = e + 1) {
+            e = all.find('\n', i);
+            if (e == std::string::npos) e = all.size();
+            std::string line = all.substr(i, e - i);
+            size_t n = line.find(" name=\"");
+            if (n == std::string::npos) continue;
+            std::string name = line.substr(n + 7, line.find('"', n + 7) - n - 7);
+            for (char &c : name) c = c == ' ' ? '_' : (char)std::tolower((unsigned char)c);
+            m[name] = line;
+        }
+        return m;
+    }();
+    std::string name = shape.substr(14);
+    for (char &c : name) c = (char)std::tolower((unsigned char)c);
+    auto f = shapes.find(name);
+    return f == shapes.end() ? nullptr : &f->second;
+}
+
 bool turnsByDirection(const std::string &shape) {
     static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
                                          "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
@@ -2278,10 +2303,15 @@ struct Builder {
 
     // an inline stencil (shape=stencil(base64 of the raw deflated, URL encoded <shape>), mxStencil): its background
     // and foreground drawn into b (scaled to its w x h, aspect=fixed: kept and centred); text and images left out
-    void stencil(const std::string &shape, const Style &s, const Box &b) {
-        std::string xml, bin = base64(shape.substr(8, shape.size() - (shape.back() == ')' ? 9 : 8)));
-        if (!inflateRaw(bin, xml)) xml = bin;
-        if (xml.compare(0, 1, "<") != 0) xml = urlDecode(xml);
+    // (builtIn: shape is the <shape> itself, a library's)
+    void stencil(const std::string &shape, const Style &s, const Box &b, bool builtIn = false) {
+        std::string xml;
+        if (builtIn) xml = shape;
+        else {
+            std::string bin = base64(shape.substr(8, shape.size() - (shape.back() == ')' ? 9 : 8)));
+            if (!inflateRaw(bin, xml)) xml = bin;
+            if (xml.compare(0, 1, "<") != 0) xml = urlDecode(xml);
+        }
         if (xml.size() > (4u << 20)) return;
         std::unique_ptr<xmlDoc, void (*)(xmlDoc *)> doc(xmlReadMemory(xml.data(), (int)xml.size(), nullptr, nullptr,
                                                                      XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING),
@@ -2476,6 +2506,8 @@ struct Builder {
             paint(outline, lines, frame, b, false);
         } else if (shape.compare(0, 8, "stencil(") == 0 && b.w > 0 && b.h > 0) {
             stencil(shape, s, stencilBox(s, b, turn));
+        } else if (const std::string *lib = libraryStencil(shape); lib && b.w > 0 && b.h > 0) {
+            stencil(*lib, s, stencilBox(s, b, turn), true);
         } else if (shape == "partialRectangle") {   // (Shapes.js: filled, outlined on the sides top / right / bottom / left say)
             PathP r = newPath(), l = newPath();
             plutovg_path_add_rect(r.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
