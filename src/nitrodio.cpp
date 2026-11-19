@@ -1518,12 +1518,42 @@ PathP roughPath(const plutovg_path_t *path) {
 
 // --- shapes --------------------------------------------------------------------
 
-void polygon(plutovg_path_t *p, std::initializer_list<Pt> pts, const Box &b) {
-    bool first = true;
-    for (Pt q : pts) {
-        float x = (float)(b.x + q.x), y = (float)(b.y + q.y);
-        if (first) plutovg_path_move_to(p, x, y), first = false;
-        else plutovg_path_line_to(p, x, y);
+// a closed polygon in b (its points relative); arc > 0: its corners rounded as mxShape.addPoints rounds them (a quadratic
+// through each corner, from arc before it to arc after it, at most half a side)
+void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, double arc = 0) {
+    std::vector<Pt> pts(list);
+    if (pts.empty()) return;
+    auto at = [&](Pt q) { return plutovg_point_t{(float)(b.x + q.x), (float)(b.y + q.y)}; };
+    if (!(arc > 0) || pts.size() < 3) {
+        bool first = true;
+        for (Pt q : pts) {
+            plutovg_point_t a = at(q);
+            if (first) plutovg_path_move_to(p, a.x, a.y), first = false;
+            else plutovg_path_line_to(p, a.x, a.y);
+        }
+        plutovg_path_close(p);
+        return;
+    }
+    Pt last = pts.back();
+    pts.insert(pts.begin(), Pt{last.x + (pts[0].x - last.x) / 2, last.y + (pts[0].y - last.y) / 2});   // (from mid-side)
+    size_t n = pts.size();
+    Pt cur = pts[0];
+    plutovg_point_t a0 = at(cur);
+    plutovg_path_move_to(p, a0.x, a0.y);
+    for (size_t k = 1; k < n; k++) {
+        Pt c = pts[k % n];
+        double dx = cur.x - c.x, dy = cur.y - c.y;
+        if (dx == 0 && dy == 0) continue;
+        double d = std::sqrt(dx * dx + dy * dy);
+        plutovg_point_t l = at({c.x + dx * std::min(arc, d / 2) / d, c.y + dy * std::min(arc, d / 2) / d});
+        plutovg_path_line_to(p, l.x, l.y);
+        Pt nx = pts[(k + 1) % n];
+        while (k < n - 2 && std::round(nx.x - c.x) == 0 && std::round(nx.y - c.y) == 0) nx = pts[(k + 2) % n], k++;
+        double ex = nx.x - c.x, ey = nx.y - c.y, e = std::max(1.0, std::sqrt(ex * ex + ey * ey));
+        Pt to{c.x + ex * std::min(arc, e / 2) / e, c.y + ey * std::min(arc, e / 2) / e};
+        plutovg_point_t cc = at(c), tt = at(to);
+        plutovg_path_quad_to(p, cc.x, cc.y, tt.x, tt.y);
+        cur = to;
     }
     plutovg_path_close(p);
 }
@@ -1580,6 +1610,7 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         plutovg_path_line_to(lines.get(), (float)(b.x + bx), (float)(b.y + by));
     };
     const std::string &dir = str(s, "direction");
+    const double arc = str(s, "rounded") == "1" ? std::max(0.0, num(s, "arcSize", 20)) / 2 : 0;   // (a roundable polygon's corners)
     if (shape == "ellipse" || shape == "doubleEllipse") {
         plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
         if (shape == "doubleEllipse") {
@@ -1588,22 +1619,22 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
             plutovg_path_add_ellipse(lines.get(), (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2 - in), (float)(h / 2 - in));
         }
     } else if (shape == "rhombus") {
-        polygon(q, {{w / 2, 0}, {w, h / 2}, {w / 2, h}, {0, h / 2}}, b);
+        polygon(q, {{w / 2, 0}, {w, h / 2}, {w / 2, h}, {0, h / 2}}, b, arc);
     } else if (shape == "triangle") {
-        if (dir == "north") polygon(q, {{0, h}, {w / 2, 0}, {w, h}}, b);
-        else if (dir == "south") polygon(q, {{0, 0}, {w, 0}, {w / 2, h}}, b);
-        else if (dir == "west") polygon(q, {{w, 0}, {w, h}, {0, h / 2}}, b);
-        else polygon(q, {{0, 0}, {w, h / 2}, {0, h}}, b);
+        if (dir == "north") polygon(q, {{0, h}, {w / 2, 0}, {w, h}}, b, arc);
+        else if (dir == "south") polygon(q, {{0, 0}, {w, 0}, {w / 2, h}}, b, arc);
+        else if (dir == "west") polygon(q, {{w, 0}, {w, h}, {0, h / 2}}, b, arc);
+        else polygon(q, {{0, 0}, {w, h / 2}, {0, h}}, b, arc);
     } else if (shape == "hexagon") {
         double d = std::min(w * num(s, "size", 0.25), w / 2);
         if (str(s, "fixedSize") == "1") d = std::min(num(s, "size", 20), w / 2);
-        polygon(q, {{d, 0}, {w - d, 0}, {w, h / 2}, {w - d, h}, {d, h}, {0, h / 2}}, b);
+        polygon(q, {{d, 0}, {w - d, 0}, {w, h / 2}, {w - d, h}, {d, h}, {0, h / 2}}, b, arc);
     } else if (shape == "parallelogram" || shape == "trapezoid" || shape == "step") {
         double d = str(s, "fixedSize") == "1" ? num(s, "size", 20) : w * num(s, "size", 0.2);
         d = std::clamp(d, 0.0, w / 2);
-        if (shape == "parallelogram") polygon(q, {{d, 0}, {w, 0}, {w - d, h}, {0, h}}, b);
-        else if (shape == "trapezoid") polygon(q, {{0, h}, {d, 0}, {w - d, 0}, {w, h}}, b);
-        else polygon(q, {{0, 0}, {w - d, 0}, {w, h / 2}, {w - d, h}, {0, h}, {d, h / 2}}, b);
+        if (shape == "parallelogram") polygon(q, {{d, 0}, {w, 0}, {w - d, h}, {0, h}}, b, arc);
+        else if (shape == "trapezoid") polygon(q, {{0, h}, {d, 0}, {w - d, 0}, {w, h}}, b, arc);
+        else polygon(q, {{0, 0}, {w - d, 0}, {w, h / 2}, {w - d, h}, {0, h}, {d, h / 2}}, b, arc);
     } else if (shape == "offPageConnector") {   // (Shapes.js OffPageConnectorShape: a box with a point below, size of its height)
         double d = h * std::clamp(num(s, "size", 0.375), 0.0, 1.0);
         polygon(q, {{0, 0}, {w, 0}, {w, h - d}, {w / 2, h}, {0, h - d}}, b);
