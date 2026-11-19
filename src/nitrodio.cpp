@@ -842,8 +842,33 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         indents.push_back(p.indent);
         markers.push_back(p.marker);
         lineAligns.push_back(p.align);
+        std::vector<std::pair<Seg, plutovg_font_face_t *>> pieces;   // (its text by faces: a character the font lacks (✓) from one that has it, as a browser's)
         for (const Seg &sg : p) {
             plutovg_font_face_t *f = face(sg.bold, sg.italic);
+            size_t from = 0, i = 0;
+            plutovg_font_face_t *cur = f;
+            while (i < sg.text.size()) {
+                size_t at = i;
+                uint32_t cp = (unsigned char)sg.text[i] < 0x80 ? (unsigned char)sg.text[i++] : nf_utf8_next(sg.text, i);
+                plutovg_font_face_t *g = f;
+                if (cp >= 0x80 && f && !nf_has_glyph(f, cp)) {
+                    const char *first[] = {family.c_str(), nullptr};
+                    plutovg_font_face_t *h = nf_glyph_face(first, cp, sg.bold ? 700 : 400, sg.italic);
+                    if (h) g = h;
+                }
+                if (g != cur && at > from) {
+                    pieces.push_back({sg, cur});
+                    pieces.back().first.text = sg.text.substr(from, at - from);
+                    from = at;
+                }
+                cur = g;
+            }
+            pieces.push_back({sg, cur});
+            if (from) pieces.back().first.text = sg.text.substr(from);
+        }
+        for (const auto &pc : pieces) {
+            const Seg &sg = pc.first;
+            plutovg_font_face_t *f = pc.second;
             float sz = sg.size > 0 ? sg.size : size;
             if (wrapWidth <= 0) {
                 float w = textWidth(f, sz, sg.text);
