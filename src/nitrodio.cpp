@@ -2341,11 +2341,18 @@ struct Builder {
             float width, alpha;
             bool dashed;
             float fillAlpha, strokeAlpha;
+            std::vector<float> pattern;   // (a <dashpattern>: in stroke widths)
+            float fontSize;   // (mxAbstractCanvas2D's font: 11 px Helvetica, black)
+            uint32_t fontColor;
+            int fontStyle;
+            std::string fontFamily;
+            bool gradient;   // (the shape's gradient (mxShape.configureCanvas, across its box), till a <fillcolor>)
         };
         State st{colour(s, "fillColor", 0xffffffff), colour(s, "strokeColor", 0xff000000),
                  (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
                  (float)std::clamp(opacity / 100, 0.0, 1.0), false, (float)std::clamp(num(s, "fillOpacity", 100) / 100, 0.0, 1.0),
-                 (float)std::clamp(num(s, "strokeOpacity", 100) / 100, 0.0, 1.0)};
+                 (float)std::clamp(num(s, "strokeOpacity", 100) / 100, 0.0, 1.0), {}, 11, 0xff000000, 0, "Helvetica",
+                 colour(s, "fillColor", 0xffffffff) && colour(s, "gradientColor", 0)};
         uint32_t shapeFill = st.fill, shapeStroke = st.stroke;
         std::vector<State> stack;
         PathP cur;
@@ -2361,8 +2368,20 @@ struct Builder {
             Item it;
             it.path = cur;
             if (fill) it.fill = alphaOf(st.fill, st.alpha * st.fillAlpha);
+            if (fill && st.gradient) {
+                it.fill2 = alphaOf(colour(s, "gradientColor", 0), st.alpha * st.fillAlpha);
+                const std::string &d = str(s, "gradientDirection");
+                float gx0 = (float)b.x, gy0 = (float)b.y, gx1 = (float)(b.x + b.w), gy1 = (float)(b.y + b.h);
+                if (d == "north") it.gx0 = gx0, it.gy0 = gy1, it.gx1 = gx0, it.gy1 = gy0;
+                else if (d == "east") it.gx0 = gx0, it.gy0 = gy0, it.gx1 = gx1, it.gy1 = gy0;
+                else if (d == "west") it.gx0 = gx1, it.gy0 = gy0, it.gx1 = gx0, it.gy1 = gy0;
+                else it.gx0 = gx0, it.gy0 = gy0, it.gx1 = gx0, it.gy1 = gy1;
+            }
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
-            if (stroke && st.dashed) it.dash = {3 * std::max(st.width, 1.f), 3 * std::max(st.width, 1.f)};
+            if (stroke && st.dashed) {
+                it.dash = st.pattern.empty() ? std::vector<float>{3, 3} : st.pattern;
+                for (float &d : it.dash) d *= std::max(st.width, 1.f);
+            }
             add(std::move(it), st.width);
             cur = nullptr;
         };
@@ -2400,13 +2419,61 @@ struct Builder {
             } else if (name == "fill") paintCur(true, false);
             else if (name == "stroke") paintCur(false, true);
             else if (name == "fillstroke") paintCur(true, true);
-            else if (name == "fillcolor") st.fill = colourAttr(n, 0);
+            else if (name == "fillcolor") st.fill = colourAttr(n, 0), st.gradient = false;
             else if (name == "strokecolor") st.stroke = colourAttr(n, 0);
             else if (name == "strokewidth") st.width = (float)(attrNum(n, "width", 1) * minScale);
             else if (name == "alpha") st.alpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "fillalpha") st.fillAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "strokealpha") st.strokeAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "dashed") st.dashed = attr(n, "dashed") == "1";
+            else if (name == "dashpattern") {
+                st.pattern.clear();
+                std::string v = attr(n, "pattern");
+                for (const char *q = v.c_str(); *q && st.pattern.size() < 16;) {
+                    char *e;
+                    double d = nn_strtod(q, &e);
+                    if (e == q) break;
+                    if (d > 0) st.pattern.push_back((float)d);
+                    q = e;
+                    while (*q == ' ' || *q == ',') q++;
+                }
+                if (st.pattern.size() < 2) st.pattern.clear();
+            } else if (name == "fontsize") st.fontSize = (float)std::clamp(attrNum(n, "size", 11) * minScale, 0.0, 1000.0);
+            else if (name == "fontcolor") st.fontColor = colourAttr(n, 0xff000000);
+            else if (name == "fontstyle") st.fontStyle = (int)attrNum(n, "style", 0);
+            else if (name == "fontfamily") st.fontFamily = attr(n, "family");
+            else if (name == "text") {   // (mxStencil text, mxSvgCanvas2D.plainText: the baseline a font size less 1 below y,
+                                         // up by half the text's height (middle) or all of it and 1 (bottom))
+                std::string text = attr(n, "str");
+                uint32_t col = alphaOf(st.fontColor, st.alpha);
+                std::string fam = st.fontFamily;
+                if (fam.find(',') != std::string::npos) fam.resize(fam.find(','));
+                plutovg_font_face_t *face = nf_css_face(fam.c_str(), st.fontStyle & 1, st.fontStyle & 2);
+                if (!face) face = nf_css_face("sans-serif", st.fontStyle & 1, st.fontStyle & 2);
+                if (text.empty() || !face || !(col >> 24) || st.fontSize <= 0) return;
+                std::vector<std::string> rows;
+                for (size_t i = 0, e; i <= text.size(); i = e + 1) {
+                    e = text.find('\n', i);
+                    if (e == std::string::npos) e = text.size();
+                    rows.push_back(text.substr(i, e - i));
+                }
+                float size = st.fontSize, lh = std::round(size * 1.2f), textH = size + (rows.size() - 1) * lh;
+                float x = X(n, "x"), y = Y(n, "y"), base = y + size - 1;
+                std::string al = attr(n, "align"), va = attr(n, "valign");
+                if (va == "middle") base -= textH / 2;
+                else if (va == "bottom") base -= textH + 1;
+                auto label = std::make_shared<Label>();
+                label->x0 = x, label->x1 = x, label->y0 = base - size, label->y1 = base - size + textH;
+                for (const std::string &r : rows) {
+                    float w = textWidth(face, size, r), left = al == "center" ? x - w / 2 : al == "right" ? x - w : x;
+                    label->runs.push_back({face, size, col, left, base, r, st.fontStyle & 4 ? w : 0, 0});
+                    label->x0 = std::min(label->x0, left), label->x1 = std::max(label->x1, left + w);
+                    base += lh;
+                }
+                double turn = (attr(n, "vertical") == "1" ? -90 : 0) - attrNum(n, "rotation", 0);
+                if (turn != 0) label->turned = true, label->cx = x, label->cy = y, label->angle = (float)(turn * M_PI / 180);
+                addLabel(label);
+            }
             else if (name == "save") stack.push_back(st);
             else if (name == "restore" && !stack.empty()) st = stack.back(), stack.pop_back();
         };
