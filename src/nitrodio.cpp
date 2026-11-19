@@ -2691,8 +2691,11 @@ struct Builder {
         }
         if (table && b.w > 0 && b.h > 0) tableLines(c, b);
         bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
-        if (shape.compare(0, 8, "stencil(") == 0)   // (a stencil's own flips too, as its connection points take them)
-            flipH = flipH || str(s, "stencilFlipH") == "1", flipV = flipV || str(s, "stencilFlipV") == "1";
+        if (shape.compare(0, 8, "stencil(") == 0 || libraryStencil(shape)) {   // (mxShape.apply: a stencil's own flips too; turned
+            flipH = flipH || str(s, "stencilFlipH") == "1", flipV = flipV || str(s, "stencilFlipV") == "1";   // north / south: the
+            const std::string &dir = str(s, "direction");                                                       // two swapped)
+            if (dir == "north" || dir == "south") std::swap(flipH, flipV);
+        }
         if ((turn != 0 || flipH || flipV) && b.w > 0 && b.h > 0) {   // (the shape's items mirrored, then turned about its centre
             plutovg_matrix_t m;                                          // as mxSvgCanvas2D.rotate does; their boxes again)
             plutovg_matrix_init_translate(&m, (float)(b.x + b.w / 2), (float)(b.y + b.h / 2));
