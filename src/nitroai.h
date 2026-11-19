@@ -2,7 +2,8 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
 // nitroai: Adobe Illustrator 1.0-8.0 documents (the PostScript ones, also as EPS: Illustrator 9 and
-// later save a PDF, which nitropdf reads as it is), turned into a PDF of one page for nitropdf.
+// later save a PDF, which nitropdf reads as it is; their EPS: the document in this format that it keeps
+// at its end), turned into a PDF of one page for nitropdf.
 #pragma once
 #include <stddef.h>
 #include <string>

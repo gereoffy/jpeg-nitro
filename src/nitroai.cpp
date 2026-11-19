@@ -11,6 +11,9 @@
 // nitropdf draws that page: it has the rest (system fonts for the ones named, CMYK, rendering).
 // The page: the document's bounding box. Not read: placed (linked) art, graphs' data, multi-layer
 // masks (Illustrator 5), objects of plug-ins (their art is in the file as plain paths too).
+// An EPS of Illustrator 9 and later: its PostScript is of another kind (Adobe's AGM procsets), but at its
+// end it keeps the document in Illustrator's own format (%AI9_PrivateDataBegin, compressed), which is
+// that of version 8 with additions: that is read.
 #include "nitroai.h"
 
 #include <algorithm>
@@ -23,6 +26,8 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include <zlib.h>
 
 namespace {
 
@@ -1120,6 +1125,61 @@ bool header(const char *d, size_t len) {
     return h.find("%AI3_") != std::string::npos || h.find("%AI5_") != std::string::npos || h.find("%AI7_") != std::string::npos;
 }
 
+// Illustrator 9 and later, as an EPS: the document in Illustrator's format at the end of the file, its
+// %AI9_DataStream (comment lines: ASCII85 of a Flate stream); empty if there is none.
+const char *privateData(const char *d, size_t n) {
+    const char *e = d + n, *b = findLine(d, e, "%AI9_PrivateDataBegin");
+    return b < e ? findLine(b, e, "%AI9_DataStream") : e;
+}
+bool later(const char *d, size_t len) {
+    return len >= 20 && !memcmp(d, "%!PS-Adobe", 10) && privateData(d, len) < d + len;
+}
+std::string privateDocument(const char *d, size_t n) {
+    const char *e = d + n, *p = privateData(d, n);
+    if (p == e) return std::string();
+    const char *end = findLine(p, e, "%AI9_PrivateDataEnd");
+    p += 15;
+    std::string bin;
+    uint32_t t = 0;
+    int k = 0;
+    bool line = false, done = false;
+    for (; p < end && !done; p++) {
+        char c = *p;
+        if (c == '\r' || c == '\n') { line = false; continue; }
+        if (!line) { line = c == '%'; continue; }   // (each line: a comment)
+        if (c == '~') done = true;
+        else if (c == 'z' && k == 0) bin.append(4, '\0');
+        else if (c >= '!' && c <= 'u') {
+            t = t * 85 + (uint32_t)(c - '!');
+            if (++k == 5) {
+                for (int s = 24; s >= 0; s -= 8) bin += (char)(t >> s);
+                t = 0, k = 0;
+            }
+        }
+    }
+    if (k > 1) {   // (the last group, short)
+        for (int j = k; j < 5; j++) t = t * 85 + 84;
+        for (int j = 0; j < k - 1; j++) bin += (char)(t >> (24 - 8 * j));
+    }
+    z_stream z{};
+    if (inflateInit(&z) != Z_OK) return std::string();
+    z.next_in = (Bytef *)bin.data();
+    z.avail_in = (uInt)bin.size();
+    std::string out;
+    const size_t limit = 256u << 20;
+    char buf[65536];
+    int rc;
+    do {
+        z.next_out = (Bytef *)buf;
+        z.avail_out = sizeof buf;
+        rc = inflate(&z, Z_NO_FLUSH);
+        out.append(buf, sizeof buf - z.avail_out);
+    } while (rc == Z_OK && out.size() <= limit);
+    inflateEnd(&z);
+    if (out.size() > limit) return std::string();
+    return out;   // (what a damaged stream gave, too)
+}
+
 bool values(const std::string &ps, const char *key, int n, double *v) {   // a header comment's numbers
     size_t i = ps.find(key);
     if (i == std::string::npos || i > 65536) return false;
@@ -1159,14 +1219,22 @@ bool box(const std::string &ps, const char *key, double b[4]) {
 bool nitroai_is(const void *data, size_t len) {
     const char *ps;
     size_t n;
-    return data && postscript(data, len, ps, n) && header(ps, n);
+    return data && postscript(data, len, ps, n) && (header(ps, n) || later(ps, n));
 }
 
 std::string nitroai_pdf(const void *data, size_t len) {
     const char *text;
     size_t n;
-    if (!data || !postscript(data, len, text, n) || !header(text, n)) return std::string();
-    std::string ps(text, n);
+    if (!data || !postscript(data, len, text, n)) return std::string();
+    std::string ps;
+    if (header(text, n))
+        ps.assign(text, n);
+    else if (later(text, n)) {   // (its document begins with the header's comments: an EPS, shown by its bounding box)
+        ps = privateDocument(text, n);
+        if (ps.empty()) return std::string();
+        ps = "%!PS-Adobe-3.0 EPSF-3.0\n" + ps;
+    } else
+        return std::string();
     Pdf D;
     for (int k = 0; k < 4; k++) D.add("");   // catalog, pages, page, resources
     std::string content = "4 M\n";   // (Illustrator's first miter limit; PDF's is 10)
