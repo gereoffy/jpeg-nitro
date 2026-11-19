@@ -2421,7 +2421,13 @@ struct Builder {
             Style fill = s;
             fill["strokeColor"] = "none";
             paint(r, nullptr, fill, b, false);
-            Pt c[4] = {{b.x, b.y}, {b.x + b.w, b.y}, {b.x + b.w, b.y + b.h}, {b.x, b.y + b.h}};
+            // (its sides in the box turned upright by its direction, then turned with it: south 90, west 180, north 270)
+            const std::string &dir = str(s, "direction");
+            double deg = dir == "south" ? 90 : dir == "west" ? 180 : dir == "north" ? 270 : 0;
+            Pt ce = b.centre();
+            Box ub = deg == 90 || deg == 270 ? Box{ce.x - b.h / 2, ce.y - b.w / 2, b.h, b.w} : b;
+            Pt c[4] = {{ub.x, ub.y}, {ub.x + ub.w, ub.y}, {ub.x + ub.w, ub.y + ub.h}, {ub.x, ub.y + ub.h}};
+            for (Pt &q : c) q = rotated(q, deg, ce);
             const char *side[4] = {"top", "right", "bottom", "left"};
             for (int k = 0; k < 4; k++)
                 if (str(s, side[k]) != "0") {
