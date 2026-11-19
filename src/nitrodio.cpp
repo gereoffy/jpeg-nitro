@@ -1721,6 +1721,21 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "mxgraph.floorplan.wallU") {
         double t = num(s, "wallThickness", 10);
         polygon(q, {{0, h}, {0, 0}, {w, 0}, {w, h}, {w - t, h}, {w - t, t}, {t, t}, {t, h}}, b);
+    } else if (shape == "isoCube2") {   // (Shapes.js IsoCubeShape2: an upright isometric box, its top's edges and front edge)
+        double ih = std::min(w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), h * 0.5);
+        polygon(q, {{w / 2, 0}, {w, ih}, {w, h - ih}, {w / 2, h}, {0, h - ih}, {0, ih}}, b);
+        line(0, ih, w / 2, 2 * ih), line(w / 2, 2 * ih, w, ih), line(w / 2, 2 * ih, w / 2, h);
+    } else if (shape == "isoRectangle" || shape == "isoCube") {   // (an isometric tile; a cube: its sides below it)
+        const double t30 = std::tan(M_PI / 6), dx30 = (0.5 - t30) / 2;
+        bool cube = shape == "isoCube";
+        double m = cube ? std::min(w, h / (0.5 + t30)) : std::min(w, h / t30);
+        Box o{b.x + (w - m) / 2, b.y + (h - m) / 2 + (cube ? 0 : m / 4), m, m};
+        if (cube) {
+            polygon(q, {{0, 0.25 * m}, {0.5 * m, m * dx30}, {m, 0.25 * m}, {m, 0.75 * m}, {0.5 * m, (1 - dx30) * m}, {0, 0.75 * m}}, o);
+            auto L = [&](double ax, double ay, double bx, double by) { line(o.x - b.x + ax, o.y - b.y + ay, o.x - b.x + bx, o.y - b.y + by); };
+            L(0, 0.25 * m, 0.5 * m, (0.5 - dx30) * m), L(0.5 * m, (0.5 - dx30) * m, m, 0.25 * m), L(0.5 * m, (0.5 - dx30) * m, 0.5 * m, (1 - dx30) * m);
+        } else
+            polygon(q, {{0, 0.25 * m}, {0.5 * m, m * dx30}, {m, 0.25 * m}, {0.5 * m, (0.5 - dx30) * m}}, o);
     } else if (shape == "mxgraph.gcp2.doubleRect") {   // (the front box; the one behind it: in vertex())
         plutovg_path_add_round_rect(q, x, y, (float)std::max(0.0, w - 8), (float)std::max(0.0, h - 8), 1, 1);
     } else if (shape == "mxgraph.infographic.ribbonSimple") {   // (a band notched at its tail, pointed at its head)
