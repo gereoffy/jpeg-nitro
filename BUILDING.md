@@ -29,6 +29,7 @@ CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and
 | [pdfparse3](https://github.com/gereoffy/pdfparse3)'s C++ object layer; FreeType (the font drivers `patches/freetype/` configures); Brotli's and Zstandard's decoders | PDF (nitropdf), font files (nitrotype); Brotli: the WOFF2 fonts FreeType reads; Zstandard: the EPS files of Illustrator 24 and later (nitroai) | part of `NITROVEC` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
 | SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
+| draw.io's stencil libraries (Apache-2.0; not for use in Atlassian products) | the icons and symbols of draw.io diagrams (shape=mxgraph.…): the general-purpose libraries by default | part of `NITROVEC`; `DRAWIO_STENCILS=…` picks the libraries (see below) |
 | zlib-ng | zlib for the drawings in the Windows and the portable Linux build (macOS and Linux have one) | part of `NITROVEC` |
 | libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
 | stb_image, Wuffs | the decoder comparison in `bench/bench`; Wuffs also as the viewer's interlaced-PNG decoder | `WUFFS=1` |
@@ -41,6 +42,20 @@ are moved instead of copied, a damaged OLE header is refused) and `patches/libxm
 the hash tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in
 our forks, fetched by their pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and
 dav1d's x86 assembly.
+
+**draw.io stencils:** `scripts/gen-drawio-stencils.py` (run by `get-deps.sh`; python3) downloads draw.io's
+stencil bundle (`src/main/webapp/js/stencils.min.js` of a pinned draw.io commit, checked by its sha256) into
+`third_party/drawio/` and writes the libraries nitroview draws into `third_party/drawio/nitrodio_stencils.h`.
+By default these are the general-purpose ones: basic, arrows, flowchart, bpmn, lean_mapping, eip, floorplan,
+cabinets, networks, electrical, pid, mockup (about 1450 shapes, 100 KB). The cloud, vendor and brand icon sets
+(aws4, azure, gcp2, cisco19, office, …), signs, fluid_power and sitemap are left out: their shapes show as a
+frame. Another set: the bundle's file names up to their first `/` or `.xml`, comma-separated, or `all` for
+every library (9090 shapes, about 5.5 MB in the program), then rebuild:
+
+```
+DRAWIO_STENCILS=basic,flowchart,electrical,signs,aws4 scripts/get-deps.sh
+make
+```
 
 ## macOS
 
