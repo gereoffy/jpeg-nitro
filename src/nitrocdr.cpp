@@ -488,105 +488,14 @@ struct Page {
 
 // --- fonts -------------------------------------------------------------------
 
-bool ends_with(const std::string &s, const char *t) {
-    size_t n = strlen(t);
-    return s.size() >= n && !strcasecmp(s.c_str() + s.size() - n, t);
-}
-
-// Bitstream's names of old CorelDRAW fonts: "Futura Lt BT", "AvantGarde Bk BT", "Futura XBlkCnIt BT":
-// the family and the weight / italic of the abbreviations in its last word (width ones dropped)
-static bool bitstream_name(std::string &family, int &weight, bool &italic) {
-    if (!ends_with(family, " BT")) return false;
-    family.resize(family.size() - 3);
-    size_t sp = family.rfind(' ');
-    if (sp == std::string::npos) return true;
-    static const struct { const char *abbr; int weight; } abbrs[] = {   // weight -1: italic, 0: width
-        {"XBlk", 900}, {"Blk", 900}, {"XBd", 800}, {"Bd", 700}, {"Hv", 800}, {"It", -1}, {"XLt", 200}, {"Lt", 300},
-        {"Bk", 400}, {"Md", 500}, {"XCn", 0}, {"Cn", 0}, {"Ex", 0}};
-    int w = weight;
-    bool it = italic;
-    for (size_t i = sp + 1; i < family.size();) {
-        bool found = false;
-        for (const auto &a : abbrs) {
-            size_t n = strlen(a.abbr);
-            if (!family.compare(i, n, a.abbr)) {
-                if (a.weight > 0) w = std::max(a.weight, weight > 400 ? weight : 0);   // (bold stays bold)
-                if (a.weight < 0) it = true;
-                i += n;
-                found = true;
-                break;
-            }
-        }
-        if (!found) return true;   // (an ordinary word)
-    }
-    family.resize(sp);
-    weight = w;
-    italic = it;
-    return true;
-}
-
-// Families of old CorelDRAW drawings that macOS does not have, and Linux's stand-ins for the core
-// fonts: nitro_font's table
-static const char *substitute(const std::string &family) { return nf_substitute(family.c_str()); }
-
-// CorelDRAW font names: "Arial", "Arial CE" (Central European variants of old fonts),
-// "Times New Roman Bold", "Futura Lt BT" ... -> a face of the system fonts, falling back to
-// Arial / Helvetica (Linux: Liberation Sans / DejaVu Sans).
-plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic, std::string *familyOut = nullptr) {
-    std::string family = name;
-    int weight = bold ? 700 : 400;
-    bool bitstream = bitstream_name(family, weight, italic);
-    for (bool changed = true; changed;) {
-        changed = false;
-        static const char *const suffixes[] = {" CE", " Cyr", " Baltic", " Greek", " Tur"};
-        for (const char *sfx : suffixes)
-            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); changed = true; }
-        static const char *const bolds[] = {" Bold", " Black", " Heavy"};
-        for (const char *sfx : bolds)
-            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 700); changed = true; }
-        static const char *const semibolds[] = {" Semibold", " Demibold", " Semi Bold"};
-        for (const char *sfx : semibolds)
-            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 600); changed = true; }
-        static const char *const italics[] = {" Italic", " Oblique"};
-        for (const char *sfx : italics)
-            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); italic = changed = true; }
-        static const char *const lights[] = {" Light", " Semilight", " Semi Light"};   // ("Segoe UI Light": Visio's titles)
-        for (const char *sfx : lights)
-            if (ends_with(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::min(weight, 300); changed = true; }
-    }
-    if (familyOut) *familyOut = family;
-    const char *sub = substitute(family);
-    const char *sub2 = sub ? substitute(sub) : nullptr;   // (a substitute's own: Linux's Liberation one)
-    // a Bitstream font also under Linotype's name of the family ("Futura Lt BT": "Futura LT" Light)
-    std::string linotype = bitstream ? family + " LT" : family;
-    // the last resorts (from [5]): a light, medium or semibold weight from a family that has such
-    // faces (Arial has regular and bold only); a missing semibold as a medium, the nearer in width
-    // (Visio's Segoe UI Semibold labels fit their boxes in Arial Bold no more)
-    bool between = weight != 400 && weight != 700;
-    const char *tries[] = {name.c_str(), linotype.c_str(), family.c_str(), sub ? sub : family.c_str(), sub2 ? sub2 : family.c_str(),
-                           between ? "Helvetica Neue" : "Arial", "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"};
-    for (const char *t : tries) {
-        if (t == tries[5] && weight == 600) weight = 500;
-        // upright text: not from a family that has only italic faces (an installed "Futura Lt BT"
-        // Light Italic alone made every Futura text italic); the next candidate instead
-        if (!italic && t != tries[5] && t != tries[6] && t != tries[7] && t != tries[8] && t != tries[9] &&
-            !nf_has_style(t, false) && nf_has_style(t, true))
-            continue;
-        plutovg_font_face_t *f = nf_face(t, weight, italic);
-        if (f) return f;
-    }
-    return nullptr;   // (a family without that style gives its closest face)
-}
+// CorelDRAW's and Visio's font names ("Arial", "Arial CE", "Times New Roman Bold", "Futura Lt BT" ...): the
+// closest face of the system fonts, as nitro_font finds it (its names, substitutes and last resorts)
+plutovg_font_face_t *find_font(const std::string &name, bool bold, bool italic) { return nf_find_face(name.c_str(), bold ? 700 : 400, italic); }
 
 // A face for a character the font lacks (old Western fonts such as AvantGarde Bk BT have no ő / ű:
-// their "missing glyph" box showed): the family's substitute, then nitro_font's common fonts (the
-// CJK ones among them); null if none has it.
+// their "missing glyph" box showed): nitro_font's
 plutovg_font_face_t *fallback_font(const std::string &name, bool bold, bool italic, plutovg_codepoint_t cp) {
-    std::string family;
-    find_font(name, bold, italic, &family);
-    const char *sub = substitute(family);
-    const char *first[] = {sub ? sub : "", nullptr};
-    return nf_glyph_face(first, cp, bold ? 700 : 400, italic);
+    return nf_find_glyph_face(name.c_str(), bold ? 700 : 400, italic, cp);
 }
 
 // --- the painter -------------------------------------------------------------

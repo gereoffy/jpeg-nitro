@@ -422,37 +422,12 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
 // lock: plutovg's faces have no lock of their own (glyph caches)
 
 // A text style's font: TrueType by family ("Arial", from the style's extended data) or by file
-// name ("arialbd.ttf"); AutoCAD's own SHX stroke fonts (txt, simplex, romans, isocp ...) are
-// not here: a plain sans serif instead. Locked by the caller.
+// name ("arialbd.ttf"), as nitro_font finds it; AutoCAD's own SHX stroke fonts (txt, simplex, romans,
+// isocp ...) are not here: a plain sans serif instead. Locked by the caller.
 plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
-    std::string fam(trim(family));
-    std::string f(trim(file));
-    size_t slash = f.find_last_of("/\\");
-    if (slash != std::string::npos) f = f.substr(slash + 1);
-    std::string lower = f;
-    for (char &ch : lower) ch = (char)tolower((unsigned char)ch);
-    bool ttf = lower.size() > 4 && (lower.compare(lower.size() - 4, 4, ".ttf") == 0 || lower.compare(lower.size() - 4, 4, ".otf") == 0 ||
-                                    lower.compare(lower.size() - 4, 4, ".ttc") == 0);
-    if (fam.empty() && ttf) {
-        static const struct { const char *file, *family; bool bold, italic; } files[] = {
-            {"arial", "Arial", 0, 0},          {"arialbd", "Arial", 1, 0},      {"ariali", "Arial", 0, 1},
-            {"arialbi", "Arial", 1, 1},        {"arialn", "Arial Narrow", 0, 0}, {"arialnb", "Arial Narrow", 1, 0},
-            {"times", "Times New Roman", 0, 0}, {"timesbd", "Times New Roman", 1, 0}, {"timesi", "Times New Roman", 0, 1},
-            {"cour", "Courier New", 0, 0},     {"courbd", "Courier New", 1, 0}, {"verdana", "Verdana", 0, 0},
-            {"tahoma", "Tahoma", 0, 0},        {"calibri", "Calibri", 0, 0},    {"calibrib", "Calibri", 1, 0},
-            {"isocpeur", "ISOCPEUR", 0, 0},    {"isocteur", "ISOCTEUR", 0, 0},  {"swiss", "Swis721 BT", 0, 0},
-            {"simplex", "Arial", 0, 0},        {"gothic", "MS Gothic", 0, 0},   {"century", "Century", 0, 0}};
-        std::string stem = lower.substr(0, lower.size() - 4);
-        for (const auto &e : files)
-            if (stem == e.file) {
-                fam = e.family;
-                bold |= e.bold;
-                italic |= e.italic;
-            }
-        if (fam.empty()) fam = f.substr(0, f.size() - 4);
-    }
-    const char *tries[] = {fam.c_str(), "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", nullptr};
-    return nf_first_face(tries, bold ? 700 : 400, italic);
+    std::string name(trim(family));
+    if (name.empty()) name = std::string(trim(file));
+    return nf_find_face(name.c_str(), bold ? 700 : 400, italic);
 }
 
 // a face for a character the font lacks (nitro_font's common fonts); null if none has it (locked by the caller)

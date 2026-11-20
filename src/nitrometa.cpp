@@ -1190,22 +1190,10 @@ public:
     // --- text ---
     plutovg_font_face_t *face(const Font &f, bool &symbol) {
         symbol = f.charset == 2;
-        plutovg_font_face_t *fc = nullptr;
-        if (!f.face.empty()) fc = nf_face(f.face.c_str(), f.weight > 0 ? f.weight : 400, f.italic);
-        if (!fc) {
-            const char *generic = "sans-serif";
-            int family = f.family & 0xf0;
-            std::string lower = f.face;
-            for (char &ch : lower) ch = (char)tolower((unsigned char)ch);
-            if (family == 0x10 || lower.find("times") != std::string::npos || lower.find("georgia") != std::string::npos ||
-                lower.find("garamond") != std::string::npos || lower.find("book") != std::string::npos)
-                generic = "serif";
-            else if (family == 0x30 || lower.find("courier") != std::string::npos || lower.find("mono") != std::string::npos ||
-                     lower.find("consolas") != std::string::npos)
-                generic = "monospace";
-            fc = nf_css_face(generic, f.weight >= 600, f.italic);
-        }
-        return fc;
+        // (its kind by LOGFONT's pitch and family: FF_ROMAN serif, FF_MODERN fixed-width; else by its name, nitro_font's)
+        int family = f.family & 0xf0;
+        NfKind kind = family == 0x10 ? NF_SERIF : family == 0x30 ? NF_MONO : NF_ANY;
+        return nf_find_face(f.face.c_str(), f.weight > 0 ? f.weight : 400, f.italic, kind);
     }
     // text at a logical point (the alignment's reference), dx: the advances in logical units (none: the font's)
     void text(double x, double y, const std::vector<uint32_t> &cps, const std::vector<int32_t> &dx, uint32_t options, const double *rect) {

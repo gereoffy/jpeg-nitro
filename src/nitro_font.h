@@ -52,6 +52,25 @@ const char *nf_substitute(const char *family);
 // ... Mono, ... Code), "serif" (Times, Georgia, Garamond, ... Roman, ... Serif) or NULL (sans-serif or
 // not known).
 const char *nf_generic_of(const char *family);
+// What a format says of a font's kind (a WMF font's pitch and family, a PDF font's flags), for
+// nf_find_face: NF_ANY, nothing said.
+enum NfKind { NF_ANY = 0, NF_SANS, NF_SERIF, NF_MONO };
+// A font name as a drawing gives it, taken apart: its family, and the weight / slant the name adds to
+// weight / italic. It takes: a PDF subset tag ("ABCDEF+"), a PostScript name ("TimesNewRomanPS-BoldMT",
+// "Arial,Bold": "Times New Roman" bold), style words at its end ("Times New Roman Bold", "Segoe UI
+// Semibold", "Arial CE"), Bitstream's abbreviations ("Futura Lt BT": Futura light), and a font file's
+// name ("arialbd.ttf": Arial bold; an AutoCAD .shx stroke font: "", none).
+std::string nf_font_family(const char *name, int &weight, bool &italic);
+// The closest installed face for a font name as a drawing gives it (any format): the name itself, its
+// family (nf_font_family; Bitstream's also as Linotype's "... LT"), the family's substitute
+// (nf_substitute) and that one's; then, by kind (or, NF_ANY, by its name: nf_generic_of), a serif or
+// fixed-width core font; else the sans-serif ones (Arial, Helvetica, Liberation Sans, DejaVu Sans; a
+// light, medium or semibold weight from Helvetica Neue). Upright text not from a family that has only
+// italic faces. NULL only if no font at all. Caller holds nf_lock.
+plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind = NF_ANY);
+// A face that has a glyph for a character the font lacks: its family's substitute, then the common
+// fonts (nf_glyph_face). Caller holds nf_lock.
+plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint);
 
 // UTF-8: the next code point of s from i (invalid bytes as Latin-1), and a code point appended.
 uint32_t nf_utf8_next(const std::string &s, size_t &i);

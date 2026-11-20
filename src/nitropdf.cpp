@@ -1518,38 +1518,19 @@ void parseCMap(const std::string &data, Font &f, bool toUni) {
     }
 }
 
-// the stand-in for a font not embedded: its family by its name (the subset tag and the style cut
-// off), else by its descriptor's flags; its weight and slant by its name or descriptor
+// the stand-in for a font not embedded: nitro_font's closest face for its name (its subset tag, PostScript style
+// and marks taken apart there), its kind by its descriptor's flags (FixedPitch, Serif); its weight and slant by its
+// name, or its descriptor's FontWeight / ItalicAngle
 plutovg_font_face_t *standIn(pp::Doc &doc, Val desc, std::string name, Font &f) {
-    size_t plus = name.find('+');
-    if (plus == 6) name = name.substr(7);
-    std::string lower;
-    for (char c : name) lower.push_back((char)tolower((unsigned char)c));
-    auto has = [&](const char *w) { return lower.find(w) != std::string::npos; };
-    f.weight = has("black") || has("heavy") ? 900 : has("bold") ? 700 : has("semibold") || has("demi") ? 600 : has("light") ? 300 : 400;
+    f.weight = 400, f.italic = false;
+    nf_font_family(name.c_str(), f.weight, f.italic);
     Val fw = doc.get(desc, "FontWeight");
     if (fw.isNum() && fw.num() >= 100) f.weight = toInt(fw.num());
-    f.italic = has("italic") || has("oblique") || doc.get(desc, "ItalicAngle").num(0) != 0;
+    f.italic = f.italic || doc.get(desc, "ItalicAngle").num(0) != 0;
     int flags = toInt(doc.get(desc, "Flags").num(0));
-    std::string family = name.substr(0, name.find_first_of(",-"));
-    std::string spaced;   // ("TimesNewRoman" -> "Times New Roman")
-    for (size_t k = 0; k < family.size(); k++) {
-        if (k && isupper((unsigned char)family[k]) && islower((unsigned char)family[k - 1])) spaced.push_back(' ');
-        spaced.push_back(family[k]);
-    }
-    const char *serif[] = {"Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", nullptr};
-    const char *sans[] = {"Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", nullptr};
-    const char *mono[] = {"Courier New", "Courier", "Liberation Mono", "DejaVu Sans Mono", nullptr};
-    const char *own[] = {family.c_str(), spaced.c_str(), nullptr};
+    NfKind kind = flags & 1 ? NF_MONO : flags & 2 ? NF_SERIF : NF_ANY;
     std::lock_guard<std::mutex> g(nf_lock());
-    plutovg_font_face_t *face = nf_first_face(own, f.weight, f.italic);
-    if (!face) {
-        bool isMono = has("courier") || has("mono") || (flags & 1);
-        bool isSerif = !isMono && (has("times") || has("serif") || has("roman") || has("garamond") || has("georgia") || (flags & 2));
-        if (has("arial") || has("helvetica") || has("sans")) isSerif = false;
-        face = nf_first_face(isMono ? mono : isSerif ? serif : sans, f.weight, f.italic);
-    }
-    return face;
+    return nf_find_face(name.c_str(), f.weight, f.italic, kind);
 }
 
 std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth);
