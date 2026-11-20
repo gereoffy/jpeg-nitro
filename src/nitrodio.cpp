@@ -3174,7 +3174,7 @@ struct Builder {
         it.dash = dash;
         bool sketch = str(s, "sketch") == "1";
         const std::string &fs = str(s, "fillStyle");   // (auto, the default: solid when white or a gradient, else hachure)
-        bool pattern = fs.empty() || fs == "auto" ? !(it.fill2 >> 24) && (it.fill & 0xffffff) != 0xffffff : fs != "solid";
+        bool pattern = fs.empty() || fs == "auto" ? !it.fill2 && (it.fill & 0xffffff) != 0xffffff : fs != "solid";
         if (str(s, "sketchStyle") == "comic") pattern = false;   // (the comic style: wobbly lines, solid fills)
         // (a fill style of its own (hachure, cross-hatch ...) patterns the fill without sketch too: mxSvgCanvas2D.getFillPattern)
         if ((sketch || (!fs.empty() && fs != "auto" && fs != "solid")) && it.fill && pattern) {   // (rough.js: hachure lines,
@@ -6026,8 +6026,8 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         plutovg_canvas_stroke_path(c, h);
         plutovg_path_destroy(h);
         plutovg_canvas_restore(c);
-    } else if ((it.fill >> 24) || (it.fill2 >> 24)) {   // (a gradient from transparent: its other end still there)
-        if (it.fill2 >> 24) {
+    } else if ((it.fill >> 24) || it.fill2) {   // (a gradient from or to transparent: its other end still there)
+        if (it.fill2) {
             plutovg_gradient_stop_t stops[2] = {{0, {(it.fill >> 16 & 255) / 255.f, (it.fill >> 8 & 255) / 255.f, (it.fill & 255) / 255.f, (it.fill >> 24) / 255.f}},
                                                 {1, {(it.fill2 >> 16 & 255) / 255.f, (it.fill2 >> 8 & 255) / 255.f, (it.fill2 & 255) / 255.f, (it.fill2 >> 24) / 255.f}}};
             // (radial: the unit circle mapped onto the ellipse by its half axes; a flat one: no area, its end colour)
