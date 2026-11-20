@@ -5085,6 +5085,12 @@ struct Builder {
                     top["shadow"] = "0";
                     paint(p, nullptr, top, Box{}, true);
                 }
+            } else if (str(s, "flowAnimation") == "1" && str(s, "dashed") != "1" && str(s, "flowAnimationType") != "ring" &&
+                       str(s, "flowAnimationType") != "dot") {   // (Graph.addFlowAnimationToNode: an undashed line dashed by
+                Style f = s;                                     // dashPattern, 8 if none, in px unless a pattern without fixDash)
+                f["dashed"] = "1";
+                if (str(s, "dashPattern").empty()) f["dashPattern"] = "8", f["fixDash"] = "1";
+                paint(p, nullptr, f, Box{}, true);
             } else
                 paint(p, nullptr, s, Box{}, true);
             if (shape == "filledEdge" && sw >= 3 && inner) {   // (Shapes.js FilledEdge: the line and its markers again inside,
