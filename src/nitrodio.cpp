@@ -3109,7 +3109,9 @@ struct Builder {
         double l = sp + num(s, "spacingLeft", 0), r = sp + num(s, "spacingRight", 0), t = sp + num(s, "spacingTop", 0), bt = sp + num(s, "spacingBottom", 0);
         const std::string &va = str(s, "verticalAlign");   // (Graph.js: mxText's baseSpacingTop 5; its baseSpacingBottom: in layoutLabel)
         if (va == "top") t += 5;
-        return {b.x + l, b.y + t, std::max(0.0, b.w - l - r), std::max(0.0, b.h - t - bt)};
+        // (a box smaller than its spacing: negative, as mxCellRenderer's, so a right / bottom aligned label ends before its
+        // point; a 0 x 0 label cell's)
+        return {b.x + l, b.y + t, b.w - l - r, b.h - t - bt};
     }
 
     // an inline stencil (shape=stencil(base64 of the raw deflated, URL encoded <shape>), mxStencil): its background
@@ -5310,12 +5312,9 @@ struct Builder {
         Style s = lc.style;
         Box b{p.x - lc.w / 2, p.y - lc.h / 2, lc.w, lc.h};
         if (&lc == &edgeCell) b = {p.x, p.y, 0, 0};   // (its align / verticalAlign from the point: bottom, above it)
-        else if (lc.w <= 0) {   // (no box: centred on the point)
-            s["align"] = "center";
-            s["verticalAlign"] = "middle";
+        else if (lc.w <= 0)   // (no box: aligned to the point by its align / verticalAlign, as mxText for a 0 x 0 cell)
             b = {p.x, p.y, 0, 0};
-        }
-        Box inner = &lc == &edgeCell || lc.w <= 0 ? b : labelBox(s, b);
+        Box inner = &lc == &edgeCell ? b : labelBox(s, b);   // (a label cell: its box as a vertex's, a 0 x 0 one's too)
         // (an edge's own label: centred on its point, wrapped to the width its geometry gives, as mxCellRenderer)
         double width = &lc == &edgeCell ? lc.w : inner.w;
         double wrap = str(s, "whiteSpace") == "wrap" && width > 0 ? width : 0;
