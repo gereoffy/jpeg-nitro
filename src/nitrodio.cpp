@@ -3494,6 +3494,8 @@ struct Builder {
         Box lb = b;
         if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
         if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, str(s, "lifelineMirror") == "1" ? b.h / 2 : b.h);   // (in its head)
+        else if (shape == "document" && str(s, "boundedLbl") == "1")   // (DocumentShape.getLabelMargins: above its wave)
+            lb.h = std::max(0.0, lb.h - std::clamp(num(s, "size", 0.3), 0.0, 1.0) * b.h);
         else if (shape == "cylinder" && str(s, "boundedLbl") == "1") {   // (mxCylinder.getLabelMargins: below the lid)
             double top = std::min(40.0, b.h * 2 * num(s, "size", 0.15));
             lb.y += top, lb.h = std::max(0.0, lb.h - top);
