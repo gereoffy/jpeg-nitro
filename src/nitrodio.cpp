@@ -142,7 +142,12 @@ double num(const Style &s, const char *k, double def) {
 // a colour (0xAARRGGBB; 0: none): #rgb, #rrggbb, a few names, rgb(...), light-dark(a, b): a
 uint32_t parseColour(std::string v, uint32_t def) {
     if (v.empty()) return def;
-    if (v.compare(0, 11, "light-dark(") == 0) v = v.substr(11, v.find(',') - 11);
+    if (v.compare(0, 11, "light-dark(") == 0) {   // (up to the comma outside brackets: the light one may be rgb(r, g, b))
+        size_t e = 11;
+        for (int depth = 0; e < v.size() && (depth || (v[e] != ',' && v[e] != ')')); e++)
+            depth += v[e] == '(' ? 1 : v[e] == ')' ? -1 : 0;
+        v = v.substr(11, e - 11);
+    }
     while (!v.empty() && v[0] == ' ') v.erase(0, 1);
     if (v == "none" || v == "transparent") return 0;
     if (v == "default") return def;
