@@ -1648,7 +1648,9 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         } else {
             Style ts = s;
             ts["verticalAlign"] = "top";
-            std::shared_ptr<Label> l = layoutLabel(bk.html, ts, Box{x, cy, wide, 0}, wrap && avail > 0 ? avail : 0, false);
+            // (a block as wide as the room it is in (a table cell's), as a browser's: its text-align within that)
+            float room = wrap && avail > 0 ? std::max(wide, avail) : wide;
+            std::shared_ptr<Label> l = layoutLabel(bk.html, ts, Box{x, cy, room, 0}, wrap && avail > 0 ? avail : 0, false);
             if (l) f.runs = l->runs, f.rects = l->rects;   // (its text and its highlights / rules)
             f.h = laid[b].h;
         }
