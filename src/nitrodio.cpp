@@ -5035,6 +5035,7 @@ struct Builder {
         // (turned about its centre by its rotation (mxText's, from the style); labelAutoRotate=1: along the edge's segment
         // nearest to it, kept readable: one pointing left turned round (Graph.getLabelAutoRotation))
         double rot = num(s, "rotation", 0);
+        if (str(s, "horizontal") == "0") rot -= 90;   // (mxShape.getTextRotation: read upwards)
         if (str(s, "labelAutoRotate") == "1" && r.size() > 1) {
             double best = -1, ang = 0;
             for (size_t i = 1; i < r.size(); i++) {
