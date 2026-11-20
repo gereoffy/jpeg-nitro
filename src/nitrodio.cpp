@@ -5653,7 +5653,8 @@ struct Builder {
         }
         if (lc.hasOffset && (lc.relative || &lc == &edgeCell)) p.x += lc.offset.x, p.y += lc.offset.y;
         Style s = lc.style;
-        Box b{p.x - lc.w / 2, p.y - lc.h / 2, lc.w, lc.h};
+        // (a label cell of its own size: its box's top left at the point, as a shape on the edge (mxGraphView.updateVertexState))
+        Box b = lc.relative ? Box{p.x, p.y, lc.w, lc.h} : Box{p.x - lc.w / 2, p.y - lc.h / 2, lc.w, lc.h};
         if (&lc == &edgeCell) b = {p.x, p.y, 0, 0};   // (its align / verticalAlign from the point: bottom, above it)
         else if (lc.w <= 0)   // (no box: aligned to the point by its align / verticalAlign, as mxText for a 0 x 0 cell)
             b = {p.x, p.y, 0, 0};
