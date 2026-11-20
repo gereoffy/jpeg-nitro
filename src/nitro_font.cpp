@@ -8,6 +8,7 @@
 #include "nitro_font.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -46,6 +47,7 @@ struct Index {
     std::vector<Face> faces;
     std::unordered_map<std::string, std::vector<int>> families;   // lower-case name -> faces
     std::unordered_map<plutovg_font_face_t *, int> loaded;
+    std::unordered_map<std::string, std::vector<uint8_t>> fontData;   // shared by the faces of a collection
 };
 
 uint32_t u16(const uint8_t *p) { return (uint32_t)p[0] << 8 | p[1]; }
@@ -267,9 +269,23 @@ Index &index() {   // (built on first use; locked by the caller)
 plutovg_font_face_t *load(Index &ix, int k) {
     Face &f = ix.faces[k];
     if (!f.face && !f.failed) {
-        f.face = plutovg_font_face_load_from_file(f.file.c_str(), f.ttc);
+        auto [it, fresh] = ix.fontData.try_emplace(f.file);
+        auto &data = it->second;
+        if (fresh) {
+            if (FILE *file = fopen(f.file.c_str(), "rb")) {
+                long size = fseek(file, 0, SEEK_END) ? -1 : ftell(file);
+                if (size >= 12 && (unsigned long)size <= UINT_MAX && !read_at(file, 0, (size_t)size, data)) data.clear();
+                fclose(file);
+            }
+        }
+        // The index and its immutable font data live as long as every cached face.
+        if (!data.empty())
+            f.face = plutovg_font_face_load_from_data(data.data(), (unsigned int)data.size(), f.ttc, nullptr, nullptr);
         if (f.face) ix.loaded[f.face] = k;
-        else f.failed = true;
+        else {
+            if (fresh) ix.fontData.erase(it);
+            f.failed = true;
+        }
     }
     return f.face;
 }
