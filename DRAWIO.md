@@ -180,7 +180,7 @@ mintákban csak a mockup (3), a c4 (3) és az arrows2 (1) jelenik meg.
 események, átjárók/elágazások, adatobjektumok). A stencilkönyvtár csak a jelek kis részét adja; a
 feladat-, esemény- és átjáró-alakzatokat a draw.io kódból rajzolja (mxBPMN.js: `shape` a körvonalakkal és
 ~40 belső szimbólummal, `event`, `gateway2`, `task` a taskMarkerrel). Ebből az `event`, a `gateway2` és a `task`
-alapja megvan (lásd fent), a `shape` és a jelek többsége nincs.
+alapja megvan (lásd fent, az esemény összes jelével); a `shape` alakzat és a ~40 belső jele nincs.
 
 ## Hol vannak az alakzatok a kódban
 

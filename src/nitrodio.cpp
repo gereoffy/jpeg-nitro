@@ -3110,29 +3110,38 @@ struct Builder {
         else it.gx0 = x0, it.gy0 = y0, it.gx1 = x0, it.gy1 = y1;
     }
 
+    // a gradient's end colour, 0 for none; gradientColor=transparent: a gradient to nothing, its end transparent black
+    // (0x00000001: a colour, not none), as a browser fades to it
+    static uint32_t gradientEnd(const Style &s) { return str(s, "gradientColor") == "transparent" ? 1u : colour(s, "gradientColor", 0); }
+
+    // a stroke's dashes: dashed (or force), the pattern in stroke widths (fixDash: in px, mxShape.configureCanvas); none: empty
+    static std::vector<float> dashOf(const Style &s, float width, bool force) {
+        std::vector<float> dash;
+        if (str(s, "dashed") != "1" && !force) return dash;
+        float unit = str(s, "fixDash") == "1" ? 1.f : std::max(width, 1.f);
+        std::string pat = str(s, "dashPattern");
+        if (pat.empty()) pat = "3 3";
+        const char *c = pat.c_str();
+        char *end;
+        for (double d; (d = nn_strtod(c, &end)), end != c && dash.size() < 16; c = end)
+            if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * unit));
+        if (dash.size() % 2) {   // (an odd pattern twice: its own elements copied first, as insert takes no range of itself)
+            std::vector<float> once = dash;
+            dash.insert(dash.end(), once.begin(), once.end());
+        }
+        float total = 0;
+        for (float d : dash) total += d;
+        if (total <= 0) dash.clear();
+        return dash;
+    }
+
     // fill / stroke of a shape's path: its style's colours, opacity, gradient, dashes, shadow
     void paint(PathP path, PathP lines, const Style &s, const Box &b, bool edge) {
         double opacity = num(s, "opacity", 100);
         uint32_t fill = edge ? 0 : withOpacity(colour(s, "fillColor", 0xffffffff), opacity * num(s, "fillOpacity", 100) / 100);
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), opacity * num(s, "strokeOpacity", 100) / 100);
         float width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
-        std::vector<float> dash;
-        if (str(s, "dashed") == "1") {   // (the pattern in stroke widths; fixDash: in px, mxShape.configureCanvas)
-            float unit = str(s, "fixDash") == "1" ? 1.f : std::max(width, 1.f);
-            std::string pat = str(s, "dashPattern");
-            if (pat.empty()) pat = "3 3";
-            const char *c = pat.c_str();
-            char *end;
-            for (double d; (d = nn_strtod(c, &end)), end != c && dash.size() < 16; c = end)
-                if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * unit));
-            if (dash.size() % 2) {   // (an odd pattern twice: its own elements copied first, as insert takes no range of itself)
-                std::vector<float> once = dash;
-                dash.insert(dash.end(), once.begin(), once.end());
-            }
-            float total = 0;
-            for (float d : dash) total += d;
-            if (total <= 0) dash.clear();
-        }
+        std::vector<float> dash = dashOf(s, width, false);
         if (str(s, "shadow") == "1") {
             Item sh;
             plutovg_matrix_t m;
@@ -3468,12 +3477,11 @@ struct Builder {
         uint32_t fill = withOpacity(colour(s, "fillColor", 0xffffffff), op * num(s, "fillOpacity", 100) / 100);
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), op * num(s, "strokeOpacity", 100) / 100);
         float sw = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
-        auto emit = [&](PathP p, uint32_t f, uint32_t st, float w, bool dashed) {
+        auto emit = [&](PathP p, uint32_t f, uint32_t st, float w, bool dashed) {   // (dashed as the style says, or forced)
             Item it;
             it.path = p;
             it.fill = f;
-            if (w > 0) it.stroke = st, it.width = w;
-            if (dashed) it.dash = {3 * std::max(w, 1.f), 3 * std::max(w, 1.f)};
+            if (w > 0) it.stroke = st, it.width = w, it.dash = dashOf(s, w, dashed);
             add(std::move(it), w);
         };
         auto ellipse = [](double x, double y, double w, double h) {
@@ -3481,11 +3489,17 @@ struct Builder {
             plutovg_path_add_ellipse(p.get(), (float)(x + w / 2), (float)(y + h / 2), (float)(w / 2), (float)(h / 2));
             return p;
         };
-        if (outline == "standard" || outline == "eventInt" || outline == "eventNonint" || outline == "end")
-            emit(ellipse(e.x, e.y, e.w, e.h), fill, stroke, outline == "end" ? 3 * sw : sw, outline == "eventNonint");
-        else if (outline == "catching" || outline == "boundInt" || outline == "boundNonint" || outline == "throwing") {
+        // (the outer circle as any shape's: its gradient, shadow and dashes; end: 3 times as thick, ...Nonint: dashed)
+        bool outer = outline == "standard" || outline == "eventInt" || outline == "eventNonint" || outline == "end" || outline == "catching" ||
+                     outline == "boundInt" || outline == "boundNonint" || outline == "throwing";
+        if (outer) {
+            Style os = s;
+            if (outline == "end") os["strokeWidth"] = std::to_string(3 * sw);
+            if (outline == "eventNonint" || outline == "boundNonint") os["dashed"] = "1";
+            paint(ellipse(e.x, e.y, e.w, e.h), nullptr, os, e, false);
+        }
+        if (outline == "catching" || outline == "boundInt" || outline == "boundNonint" || outline == "throwing") {
             bool dashed = outline == "boundNonint";
-            emit(ellipse(e.x, e.y, e.w, e.h), fill, stroke, sw, dashed);
             if (outline == "throwing") emit(ellipse(e.x + 0.02 * e.w + 2, e.y + 0.02 * e.h + 2, 0.96 * e.w - 4, 0.96 * e.h - 4), 0, stroke, sw, false);
             else if (e.w > 4 && e.h > 4) emit(ellipse(e.x + 2, e.y + 2, e.w - 4, e.h - 4), 0, stroke, sw, dashed);
         }
