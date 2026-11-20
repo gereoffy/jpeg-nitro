@@ -4825,6 +4825,12 @@ void njxl_info_free(njxl_info *info) {
     if (info) { free(info->icc); memset(info, 0, sizeof(*info)); }
 }
 
+static void clear_canvas(const Output *o, const Meta *m) {
+    size_t bpp = o->format == NJXL_RGBA16 ? 8 : o->format == NJXL_SAMPLES16 ? (m->cspace == CS_GREY ? 2 : 6) : 4;
+    for (int y = 0; y < o->ch; y++)
+        memset(o->pixels + (size_t)y * o->pitch, 0, (size_t)o->cw * bpp);
+}
+
 // frames drawn on the canvas side by side (their rectangles do not overlap); freed
 // A frame that cannot be decoded (damaged: ERR_INVALID) leaves its rectangle as it was; *shown counts the others.
 static int decode_batch(Frame *fr, Output *out, int *ferr, int n, int threads, int *damaged, int *shown) {
@@ -4832,8 +4838,13 @@ static int decode_batch(Frame *fr, Output *out, int *ferr, int n, int threads, i
     else nitro_parallel_n((size_t)n, threads, ^(size_t i) { fr[i].threads = 1; ferr[i] = decode_frame(&fr[i], &out[i]); });
     int e = 0;
     for (int i = 0; i < n; i++) {
-        if (ferr[i] == ERR_INVALID) *damaged = 1;
-        else if (!e) e = ferr[i];
+        if (ferr[i] == ERR_INVALID) {
+            *damaged = 1;
+            // A full first frame skips the initial clear. Later rectangles need a defined background.
+            if (!*shown && !fr[i].h.is_last && out[i].ox <= 0 && out[i].oy <= 0 &&
+                (int64_t)out[i].ox + fr[i].h.w >= out[i].cw && (int64_t)out[i].oy + fr[i].h.h >= out[i].ch)
+                clear_canvas(&out[i], fr[i].m);
+        } else if (!e) e = ferr[i];
         *shown += !ferr[i];
         *damaged |= fr[i].damaged | fr[i].cut;
         frame_free(&fr[i]);
@@ -4920,9 +4931,7 @@ int njxl_decode(const uint8_t *data, size_t len, unsigned flags, int format, voi
             Output o = {format, pixels, pitch, -1, 0, h->x0, h->y0, m->width, m->height};
             for (int i = 0; i < m->num_ec; i++)
                 if (m->ec[i].type == EC_ALPHA) { o.alpha_ec = i; o.premul_in = m->ec[i].alpha_associated; break; }
-            if (!e && !full && !drawn)   // (the canvas outside the first frames: transparent black)
-                for (int y = 0; y < m->height; y++)
-                    memset((uint8_t *)pixels + (size_t)y * pitch, 0, (size_t)m->width * (format == NJXL_RGBA16 ? 8 : format == NJXL_SAMPLES16 ? 2 * (size_t)(m->cspace == CS_GREY ? 1 : 3) : 4));
+            if (!e && !full && !drawn) clear_canvas(&o, m);
             drawn = 1;
             for (int i = 0; i < 4; i++) if (slot[i] == 1) slot[i] = 2;
             if (!h->is_last && (h->duration == 0 || h->save_as_ref)) slot[h->save_as_ref & 3] = 1;
