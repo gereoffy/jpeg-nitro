@@ -290,7 +290,7 @@ A referencia-renderek MathJax-szal készülnek (`samples_drawio/reference-tools/
   `\in` ∈, `\subseteq` ⊆, `\infty` ∞, `\partial` ∂, `\nabla` ∇, `\sum` ∑, `\int` ∫ …), `\mathbb{R}` → ℝ.
 - **Index:** `^` és `_` HTML-címkében `<sup>` / `<sub>`, sima címkében `^x` / `_(xy)`.
 - **Tört, gyök, szöveg:** `\frac{a}{b}` és `a \over b` → a/b (összetettnél (a)/(b)), `\sqrt{x}` → √x, `\sqrt[3]{x}`
-  → ∛x (`[4]`: ∜, más index felső indexként a jel előtt), `\text{…}`
+  → ∛x (`[4]`: ∜, más index a jel előtt: HTML-címkében felső indexként, sima címkében `^n`), `\text{…}`
   és társai szó szerint.
 - **Ékezetek:** `\hat`, `\bar`, `\dot`, `\ddot`, `\tilde` latin betűn előre összerakott betűként (Ŵ, Ā, Ñ, Ż, Ä);
   máshol és a `\vec` kombináló ékezettel.
