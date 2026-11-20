@@ -56,7 +56,7 @@ typedef struct {
     uint8_t *icc;               // njxl_decode: the pixels are in this profile's colour space; NULL: sRGB
     size_t icc_len;             //   (owned: njxl_info_free)
     int damaged;                // njxl_decode: cut off or damaged; what could be read is shown (a VarDCT group's
-                                // damaged pass: its LF image; a lost LF group or Modular group: empty)
+                                // damaged pass: its earlier passes or LF image; a lost LF group or Modular group: empty)
 } njxl_info;
 
 enum { NJXL_SINGLE_THREAD = 1 };       // flags: decode on the calling thread only

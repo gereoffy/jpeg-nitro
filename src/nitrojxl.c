@@ -3332,9 +3332,7 @@ typedef struct {
     Pool *pool;              // (group buffers, render tiles)
     int pxw[3], pxh[3];      // (pxh: the rows kept: all, or a ring of them while the frame is rendered as it goes)
     int err;
-    // a damaged or cut-off frame: what can be read is shown. LfGlobal and HfGlobal must be whole; an LF
-    // group lost leaves its area empty, a group's pass lost or damaged leaves its earlier passes (VarDCT:
-    // a damaged pass, the LF image alone)
+    // Missing or damaged HF data leaves the last complete pass, or the LF image.
     uint8_t *missing;        // nsec: the section is cut off (NULL: all there)
     uint8_t *lflost;         // nlfgroups: the LF group could not be read (VarDCT: its groups are LF only)
     int cut, damaged;        // (cut: the data ends in this frame)
@@ -3900,7 +3898,8 @@ static inline __attribute__((always_inline)) int hf_coefficients(Frame *f, Br *b
     return e;
 }
 
-static int hf_pass(Frame *f, Br *br, int p, int gbx0, int gby0, int gbxs, int gbys, const int32_t *offs, GroupBuf *gb) {
+// Also used on the recovery path. Keep the coefficient decoder inline in the normal group loop.
+static inline __attribute__((always_inline)) int hf_pass(Frame *f, Br *br, int p, int gbx0, int gby0, int gbxs, int gbys, const int32_t *offs, GroupBuf *gb) {
     int ctxoff = (int)br_u(br, ceil_log2((uint64_t)f->nhist)) * f->nbctx * 495;
     if (ctxoff >= f->nhist * f->nbctx * 495) return ERR_INVALID;
     Sym s;
@@ -4330,10 +4329,19 @@ static int decode_group(Frame *f, int g) {
         int hfe = h->modular ? 0 : hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
         err = hfe ? hfe : modular_group(f, br, gx * h->gdim, gy * h->gdim, h->gdim, h->gdim, h->minshift[p], h->maxshift[p],
                                         1 + 3 * (uint32_t)h->nlfgroups + NUM_DQ + (uint32_t)(p * h->ngroups + g));
-        if (!err && br_overrun(br)) err = hfe = ERR_INVALID;
-        if (err == ERR_INVALID) {   // damaged: a VarDCT group's coefficients left out (its LF image shown)
-            if (hfe) for (int c = 0; c < 3; c++) memset(gb->coef[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys * 64);
+        if (!err && br_overrun(br)) err = ERR_INVALID;
+        if (err == ERR_INVALID) {
             err = 0; lost = 1;
+            if (hfe) {
+                // The failed pass may already have added coefficients. Replay only on damage.
+                for (int c = 0; c < 3; c++) memset(gb->coef[c], 0, sizeof(int32_t) * (size_t)gbxs * gbys * 64);
+                for (int prev = 0; prev < p && !err; prev++) {
+                    const Br *section = sec_pass(f, prev, g);
+                    Br replay;
+                    br_init(&replay, section->start, (size_t)(section->end - section->start));
+                    err = hf_pass(f, &replay, prev, gbx0, gby0, gbxs, gbys, offs, gb);
+                }
+            }
         }
     }
     if (lost) __atomic_store_n(&f->damaged, 1, __ATOMIC_RELAXED);
