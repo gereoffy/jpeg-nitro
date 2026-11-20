@@ -5040,8 +5040,19 @@ struct Builder {
         return best;
     }
 
+    // whether a cell (vertex or edge) is inside a cell on an edge (an ancestor of it a vertex whose parent is an edge)
+    bool onEdgeShape(Cell &v) {
+        size_t n = 0;
+        for (Cell *p = find(v.parent); p && p->vertex && n++ < 64; p = find(p->parent)) {
+            Cell *up = find(p->parent);
+            if (up && up->edge) return true;
+        }
+        return false;
+    }
+
     void edge(Cell &c) {
         const Style &s = c.style;
+        c.route.clear();   // (none if it cannot be routed now: not the one of an earlier try)
         Pt o = origin(c.parent);
         std::vector<Pt> hints;
         for (Pt p : c.points) hints.push_back({o.x + p.x, o.y + p.y});
@@ -5781,6 +5792,13 @@ struct Builder {
             const std::string &sh = str(lc.style, "shape");
             return lc.vertex && lc.w > 0 && lc.h > 0 && sh != "text" && !(str(lc.style, "strokeColor") == "none" && str(lc.style, "fillColor") == "none");
         };
+        // (a placed shape's children worked out again from its new box: their boxes of an earlier round not kept)
+        std::function<void(Cell &, int)> unplaceKids = [&](Cell &p, int depth) {
+            if (depth > 64) return;
+            for (size_t i : kidsOf(p.id))
+                if (cells[i].vertex && &cells[i] != &p && cells[i].state) cells[i].state = 0, unplaceKids(cells[i], depth + 1);
+        };
+        auto unplace = [&](Cell &p) { unplaceKids(p, 0); };
         auto place = [&](Cell &c, Cell &lc) {
             Pt q;
             if (lc.relative) q = along(c.route, lc.x, lc.y);
@@ -5792,58 +5810,84 @@ struct Builder {
             lc.box = {q.x, q.y, lc.w, lc.h};
             lc.org = {q.x, q.y};   // (its own children's origin too)
             lc.state = 2;
+            unplace(lc);
         };
         // (an edge whose shape on it another edge ends on: routed first, so that shape is in its place whatever the cells'
         // order; its items dropped, it is drawn in its turn. In the cells' order, again while a shape still moves (edges on
-        // shapes on edges: a chain), 8 rounds at most)
+        // shapes on edges: a chain))
+        // (an edge's ends, and the vertices they sit in: a port on a shape on an edge needs that edge first too)
         std::unordered_set<std::string> ends;
         for (Cell &c : cells)
-            if (c.edge) ends.insert(c.source), ends.insert(c.target), ends.insert(str(c.style, "sourcePort")), ends.insert(str(c.style, "targetPort"));
+            if (c.edge)
+                for (const std::string *id : {(const std::string *)&c.source, (const std::string *)&c.target, &str(c.style, "sourcePort"),
+                                              &str(c.style, "targetPort")}) {
+                    size_t n = 0;
+                    for (Cell *v = find(*id); v && v->vertex && n++ < 64 && ends.insert(v->id).second; v = find(v->parent)) {}
+                }
         std::vector<Cell *> first;
         for (Cell &c : cells) {
             auto f = c.edge ? children.find(c.id) : children.end();
             if (f == children.end() || !shown(c) || layer(c)) continue;
+            // (needed: an edge ends on a shape on it, or such a shape has cells of its own, which may come before the edge)
             bool needed = false;
-            for (size_t i : f->second) needed = needed || (drawnOnEdge(cells[i]) && ends.count(cells[i].id));
+            for (size_t i : f->second) needed = needed || ends.count(cells[i].id) || !kidsOf(cells[i].id).empty();
             if (needed) first.push_back(&c);
         }
-        for (int round = 0; round < 8 && !first.empty(); round++) {
+        // (a round moves a fix on at least one link of a chain: as many rounds as such edges, and one to see it settled)
+        for (size_t round = 0; round <= first.size() && round < 256; round++) {
             bool moved = false;
             for (Cell *e : first) {
                 size_t items = page.items.size(), left = budget;
                 edge(*e);
                 page.items.resize(items), budget = left;
-                if (e->route.size() < 2) continue;
-                for (size_t i : children[e->id])
-                    if (drawnOnEdge(cells[i])) {
-                        Box was = cells[i].box;
-                        bool placed = cells[i].state == 2;
-                        place(*e, cells[i]);
-                        moved = moved || !placed || was.x != cells[i].box.x || was.y != cells[i].box.y;
-                    }
+                if (e->route.size() < 2) {   // (not routed now: its shapes' places of an earlier round not kept)
+                    for (size_t i : children[e->id])
+                        if (cells[i].state) cells[i].state = 0, unplace(cells[i]), moved = true;
+                    continue;
+                }
+                for (size_t i : children[e->id]) {   // (shapes and label cells: the cells inside them are placed from them)
+                    Box was = cells[i].box;
+                    bool placed = cells[i].state == 2;
+                    place(*e, cells[i]);
+                    moved = moved || !placed || was.x != cells[i].box.x || was.y != cells[i].box.y;
+                }
             }
             if (!moved) break;
         }
+        // (an edge, then the cells on it: a shape, or a label cell; each with the cells inside it right after it, over it, in
+        // the tree's order whatever their place in the file, as draw.io draws a parent's children after it)
+        std::function<void(Cell &, int)> drawEdgeCell, drawInside;
+        drawInside = [&](Cell &p, int depth) {
+            if (depth > 64) return;
+            for (size_t i : kidsOf(p.id)) {
+                Cell &k = cells[i];
+                if (&k == &p || !shown(k)) continue;
+                if (k.vertex) vertex(k), drawInside(k, depth + 1);
+                else if (k.edge) drawEdgeCell(k, depth + 1);
+            }
+        };
+        drawEdgeCell = [&](Cell &c, int depth) {
+            edge(c);
+            auto f = children.find(c.id);
+            if (f == children.end() || c.route.size() < 2) return;   // (no route: nothing on it drawn either)
+            for (size_t i : f->second) {
+                Cell &lc = cells[i];
+                if (!shown(lc)) continue;
+                place(c, lc);
+                if (drawnOnEdge(lc)) vertex(lc);
+                else if (!lc.value.empty()) edgeLabel(lc, c, c.route);
+                drawInside(lc, depth + 1);
+            }
+        };
         for (Cell &c : cells) {
             if (!shown(c) || layer(c)) continue;
             if (c.vertex) {
                 Cell *p = find(c.parent);
-                if (p && p->edge) continue;   // (an edge's label: with the edge)
+                if (p && p->edge) continue;   // (on an edge: with the edge)
+                if (onEdgeShape(c)) continue;   // (inside a cell on an edge: after it)
                 vertex(c);
-            } else if (c.edge) {
-                edge(c);
-                auto f = children.find(c.id);   // (its label cells, after it)
-                if (f != children.end() && c.route.size() >= 2)
-                    for (size_t i : f->second) {
-                        Cell &lc = cells[i];
-                        if (!shown(lc)) continue;
-                        if (drawnOnEdge(lc)) {
-                            place(c, lc);
-                            vertex(lc);
-                        } else if (!lc.value.empty())
-                            edgeLabel(lc, c, c.route);
-                    }
-            }
+            } else if (c.edge && !onEdgeShape(c))
+                drawEdgeCell(c, 0);
         }
     }
 };
