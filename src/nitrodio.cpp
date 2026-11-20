@@ -4270,6 +4270,13 @@ struct Builder {
             return b;
         };
         Box sb0 = source ? bounds(source) : Box{}, tb0 = target ? bounds(target) : Box{};
+        // (to a tenth, as OrthConnector's scaleCellState / scalePointArray round them, half up: an entry 1.05 outside a side
+        // comes to 1.0, within the 1 it takes as on that side)
+        auto r10 = [](double v) { return std::floor(v * 10 + 0.5) / 10; };
+        sb0 = {r10(sb0.x), r10(sb0.y), r10(sb0.w), r10(sb0.h)}, tb0 = {r10(tb0.x), r10(tb0.y), r10(tb0.w), r10(tb0.h)};
+        Pt p0r = p0 ? Pt{r10(p0->x), r10(p0->y)} : Pt{}, per = pe ? Pt{r10(pe->x), r10(pe->y)} : Pt{};
+        if (p0) p0 = &p0r;
+        if (pe) pe = &per;
         // (a free end: a 1 x 1 box at its point, as OrthConnector takes it)
         double geo[2][4] = {{source ? sb0.x : p0->x, source ? sb0.y : p0->y, source ? sb0.w : 1, source ? sb0.h : 1},
                             {target ? tb0.x : pe->x, target ? tb0.y : pe->y, target ? tb0.w : 1, target ? tb0.h : 1}};
