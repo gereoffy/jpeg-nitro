@@ -351,6 +351,7 @@ struct Cell {
     Box box;
     Pt org;   // (where its children start: its box's corner, but a transparentBounds container's geometry)
     Pt turned;   // (how far its rotated parent moved its box: its relative children placed from where it was before)
+    size_t treePos = 0;   // (its place in draw.io's walk of the cell tree: a parent, then its children in order)
     bool transparent = false;   // (transparentBounds=1: drawn round its children, local: that box from its geometry's corner)
     int localState = 0;
     Box local;
@@ -5059,6 +5060,28 @@ struct Builder {
         }
         return false;
     }
+    // the edge with no route a vertex sits on (itself or an ancestor, through edges and shapes on them, all the way up), if
+    // any: such a shape is not drawn, its whole subtree left out (an edge to it may still end at its strandedBox)
+    Cell *unroutedCarrier(Cell &v) {
+        size_t n = 0;
+        for (Cell *p = find(v.parent); p && n++ < 64; p = find(p->parent)) {
+            if (p->edge && p->route.size() < 2) return p;
+            if (!p->vertex && !p->edge) return nullptr;
+        }
+        return nullptr;
+    }
+    bool onUnroutedEdge(Cell &v) { return unroutedCarrier(v) != nullptr; }
+    // where draw.io leaves such a shape, as the end of an edge that comes before its carrier in draw.io's walk of the cell
+    // tree (treePos; one after it is not drawn: by then draw.io has dropped the subtree's states): its state is made on demand, its point on the edge not
+    // found, so its own x / y count from the origin above the stranded cells, whatever the shapes between (their places,
+    // offsets, rotations, transparentBounds) and its own offset
+    Box strandedBox(Cell &v) {
+        size_t n = 0;
+        Cell *p = find(v.parent);
+        while (p && n++ < 64 && (p->edge || (p->vertex && onUnroutedEdge(*p)))) p = find(p->parent);
+        Pt o = p && p->vertex ? origin(p->id) : Pt{0, 0};
+        return {o.x + v.x, o.y + v.y, v.w, v.h};
+    }
 
     void edge(Cell &c) {
         const Style &s = c.style;
@@ -5077,9 +5100,11 @@ struct Builder {
             if (port && port->vertex && shown(*port)) dst = port;
         }
         if (dst && !dst->vertex) dst = nullptr;
+        Cell *srcOn = src ? unroutedCarrier(*src) : nullptr, *dstOn = dst ? unroutedCarrier(*dst) : nullptr;
+        if ((srcOn && srcOn->treePos < c.treePos) || (dstOn && dstOn->treePos < c.treePos)) return;   // (an end on a stranded shape: see strandedBox)
         Term st, tt;
-        if (src) st = term(absBox(*src), src->style);
-        if (dst) tt = term(absBox(*dst), dst->style);
+        if (src) st = term(srcOn ? strandedBox(*src) : absBox(*src), src->style);
+        if (dst) tt = term(dstOn ? strandedBox(*dst) : absBox(*dst), dst->style);
         const Term *source = src ? &st : nullptr, *target = dst ? (dst == src ? &st : &tt) : nullptr;   // (a loop: one terminal)
         if (!source && !c.hasSource) return;
         if (!target && !c.hasTarget) return;
@@ -5783,6 +5808,24 @@ struct Builder {
 
     void build() {
         transparentBounds();
+        {   // (treePos: from the cells with no parent cell, each parent before its children, in their order)
+            size_t pos = 0;
+            std::vector<char> seen(cells.size());
+            std::vector<size_t> todo;
+            for (size_t i = cells.size(); i-- > 0;)
+                if (!find(cells[i].parent)) todo.push_back(i);
+            while (!todo.empty()) {
+                size_t i = todo.back();
+                todo.pop_back();
+                if (seen[i]) continue;
+                seen[i] = 1, cells[i].treePos = pos++;
+                const std::vector<size_t> &k = kidsOf(cells[i].id);
+                for (size_t j = k.size(); j-- > 0;)
+                    if (!seen[k[j]]) todo.push_back(k[j]);
+            }
+            for (size_t i = 0; i < cells.size(); i++)
+                if (!seen[i]) cells[i].treePos = pos++;   // (in a cycle of parents: after the rest)
+        }
         for (Cell &c : cells) {   // (the colours naming others, the placeholders)
             for (const char *k : {"fillColor", "strokeColor", "fontColor", "gradientColor"}) {
                 auto f = c.style.find(k);
