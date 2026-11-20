@@ -237,6 +237,8 @@ struct Item {
     std::vector<float> dash;
     uint8_t cap = 0, join = 0;   // (plutovg's line cap / join: butt, miter unless a stencil says otherwise)
     float miterLimit = 10;
+    float reach = 0;   // (how far its stroke reaches past the path, its box's margin: 0, the stroke's width; a stencil's
+                       // own miterlimit: half the width times it)
     std::shared_ptr<Label> label;
     float hachure = 0, hachureAngle = -41, hachureWeight = 1;   // (sketch: the fill as lines hachure apart, at the angle)
     bool crossHatch = false;                                    // (and across them)
@@ -3274,6 +3276,7 @@ struct Builder {
             bool gradient;   // (the shape's gradient (mxShape.configureCanvas, across its box), till a <fillcolor>)
             uint8_t cap = PLUTOVG_LINE_CAP_BUTT, join = PLUTOVG_LINE_JOIN_MITER;   // (<linecap>, <linejoin>, <miterlimit>)
             float miterLimit = 10;
+            bool miterSet = false;   // (a <miterlimit> of its own: its miters may reach farther than a stroke width)
         };
         State st{colour(s, "fillColor", 0xffffffff), colour(s, "strokeColor", 0xff000000),
                  (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
@@ -3301,12 +3304,14 @@ struct Builder {
             }
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
             it.cap = st.cap, it.join = st.join, it.miterLimit = st.miterLimit;
+            if (it.stroke && st.miterSet && st.join == PLUTOVG_LINE_JOIN_MITER) it.reach = std::max(it.width, it.width * st.miterLimit / 2);
             if (stroke && st.dashed) {
                 it.dash = st.pattern.empty() ? std::vector<float>{3, 3} : st.pattern;
                 if (str(s, "fixDash") != "1")
                     for (float &d : it.dash) d *= std::max(st.width, 1.f);
             }
-            add(std::move(it), st.width);
+            float margin = it.reach > 0 ? it.reach : st.width;
+            add(std::move(it), margin);
             cur = nullptr;
         };
         size_t budget = 20000;   // (a damaged stencil's commands; at 0 the rest left out)
@@ -3357,7 +3362,7 @@ struct Builder {
             } else if (name == "linejoin") {   // (miter, round, bevel)
                 std::string v = attr(n, "join");
                 st.join = v == "round" ? PLUTOVG_LINE_JOIN_ROUND : v == "bevel" ? PLUTOVG_LINE_JOIN_BEVEL : PLUTOVG_LINE_JOIN_MITER;
-            } else if (name == "miterlimit") st.miterLimit = (float)std::clamp(attrNum(n, "limit", 10), 1.0, 100.0);
+            } else if (name == "miterlimit") st.miterLimit = (float)std::clamp(attrNum(n, "limit", 10), 1.0, 100.0), st.miterSet = true;
             else if (name == "dashpattern") {
                 st.pattern.clear();
                 std::string v = attr(n, "pattern");
@@ -4122,7 +4127,7 @@ struct Builder {
                     plutovg_matrix_multiply(&it.pm, &pm, &m);
                     it.turned = true;
                 }
-                nd::Box bb = nd::pathBox(t.get(), std::max(it.width, 1.f));
+                nd::Box bb = nd::pathBox(t.get(), std::max(it.reach > 0 ? it.reach : it.width, 1.f));
                 it.bx0 = bb.x0, it.by0 = bb.y0, it.bx1 = bb.x1, it.by1 = bb.y1;
                 if (it.fill2) {   // (a gradient's line turned with it)
                     plutovg_point_t g0{it.gx0, it.gy0}, g1{it.gx1, it.gy1}, g2{it.gx2, it.gy2};
