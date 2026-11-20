@@ -3156,7 +3156,7 @@ struct Builder {
         Item it;
         it.path = path;
         it.fill = fill;
-        uint32_t g = edge ? 0 : colour(s, "gradientColor", 0);
+        uint32_t g = edge ? 0 : gradientEnd(s);
         if (!edge && colour(s, "fillColor", 0xffffffff) && g) {   // (a fill faded to nothing: its gradient still has its other end)
             it.fill2 = withOpacity(g, opacity * num(s, "fillOpacity", 100) / 100);   // (both ends faded alike)
             gradientIn(it, str(s, "gradientDirection"), b);
@@ -3279,7 +3279,7 @@ struct Builder {
                  (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
                  (float)std::clamp(opacity / 100, 0.0, 1.0), false, (float)std::clamp(num(s, "fillOpacity", 100) / 100, 0.0, 1.0),
                  (float)std::clamp(num(s, "strokeOpacity", 100) / 100, 0.0, 1.0), {}, 11, 0xff000000, 0, "Helvetica",
-                 colour(s, "fillColor", 0xffffffff) && colour(s, "gradientColor", 0)};
+                 colour(s, "fillColor", 0xffffffff) && gradientEnd(s)};
         uint32_t shapeFill = st.fill, shapeStroke = st.stroke;
         std::vector<State> stack;
         PathP cur;
@@ -3296,7 +3296,7 @@ struct Builder {
             it.path = cur;
             if (fill) it.fill = alphaOf(st.fill, st.alpha * st.fillAlpha);
             if (fill && st.gradient) {
-                it.fill2 = alphaOf(colour(s, "gradientColor", 0), st.alpha * st.fillAlpha);
+                it.fill2 = alphaOf(gradientEnd(s), st.alpha * st.fillAlpha);
                 gradientIn(it, str(s, "gradientDirection"), b);
             }
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
