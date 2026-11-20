@@ -350,6 +350,7 @@ struct Cell {
     int shownState = 0;   // (0 not yet, 1 shown, 2 hidden, 3 being worked out)
     Box box;
     Pt org;   // (where its children start: its box's corner, but a transparentBounds container's geometry)
+    Pt turned;   // (how far its rotated parent moved its box: its relative children placed from where it was before)
     bool transparent = false;   // (transparentBounds=1: drawn round its children, local: that box from its geometry's corner)
     int localState = 0;
     Box local;
@@ -2957,12 +2958,21 @@ struct Builder {
             Cell *x = chain[i], *up = find(x->parent);
             bool have = up && up->vertex && up->state == 2;
             Box pb = have ? up->box : Box{};
+            if (have) pb.x -= up->turned.x, pb.y -= up->turned.y;
             Pt po = have ? up->org : Pt{0, 0};
+            x->turned = {0, 0};
             if (x->relative && have) x->box = {pb.x + x->x * pb.w, pb.y + x->y * pb.h, x->w, x->h};
             else x->box = {po.x + x->x, po.y + x->y, x->w, x->h};
             if (x->hasOffset && x->relative) x->box.x += x->offset.x, x->box.y += x->offset.y;
             x->org = {x->box.x, x->box.y};
             if (x->transparent) x->box = {x->org.x + x->local.x, x->org.y + x->local.y, x->local.w, x->local.h};
+            double turn = x->relative && have ? num(up->style, "rotation", 0) : 0;
+            if (turn != 0) {   // (mxGraphView.updateVertexState: a relative child's centre turned with its parent, about the
+                               // parent's centre; its origin for its own children not)
+                Pt c = rotated(x->box.centre(), turn, up->box.centre());
+                x->turned = {c.x - x->box.centre().x, c.y - x->box.centre().y};
+                x->box.x += x->turned.x, x->box.y += x->turned.y;
+            }
             x->state = 2;
         }
         return c.state == 2 ? c.box : Box{c.x, c.y, c.w, c.h};
