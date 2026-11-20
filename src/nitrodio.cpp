@@ -927,12 +927,20 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 lines.back().push_back({f, std::string(), 0, rgba, sz, sg.underline, sg.bg, sg.shift});
                 continue;
             }
-            size_t i = 0;   // (word by word: a word with its following spaces)
-            while (i < sg.text.size()) {
-                size_t e = sg.text.find(' ', i);
-                e = e == std::string::npos ? sg.text.size() : e + 1;
+            size_t i = 0;   // (word by word: a word with its following spaces, or up to a hyphen between letters or digits,
+            while (i < sg.text.size()) {   // where a browser breaks too: iracelog-|service-|manager)
+                size_t e = i;
+                for (; e < sg.text.size(); e++) {
+                    if (sg.text[e] == ' ') break;
+                    if (sg.text[e] == '-' && e > i && isalnum((unsigned char)sg.text[e - 1]) && e + 1 < sg.text.size() &&
+                        isalnum((unsigned char)sg.text[e + 1]))
+                        break;
+                }
+                e = e >= sg.text.size() ? sg.text.size() : e + 1;
                 std::string word = sg.text.substr(i, e - i);
-                bool glued = i == 0 && !lines.back().empty() && !lines.back().back().text.empty() && lines.back().back().text.back() != ' ';
+                const std::string *prev = lines.back().empty() ? nullptr : &lines.back().back().text;
+                bool glued = i == 0 && prev && !prev->empty() && prev->back() != ' ' &&
+                             !(prev->back() == '-' && prev->size() > 1 && isalnum((unsigned char)(*prev)[prev->size() - 2]));
                 i = e;
                 float w = textWidth(f, sz, word);
                 std::string bare = word;

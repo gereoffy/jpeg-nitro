@@ -41,7 +41,7 @@ lent felsoroltak is).
   (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`).
 - **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok.
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
-  `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`), `overflow`,
+  `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`; szóköznél és betűk közötti kötőjel után, mint a böngésző), `overflow`,
   `horizontal=0`, `textDirection` (vertical-lr / -rl), `labelBackgroundColor`, `labelBorderColor` /
   `labelBorderWidth`, `noLabel`, az alapvonal helye; él-címkék a `rotation`-jükkel elforgatva,
   `labelAutoRotate=1`: a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation).
