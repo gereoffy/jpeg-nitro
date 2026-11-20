@@ -5753,22 +5753,35 @@ struct Builder {
             lc.state = 2;
         };
         // (an edge whose shape on it another edge ends on: routed first, so that shape is in its place whatever the cells'
-        // order; its items dropped, it is drawn in its turn)
+        // order; its items dropped, it is drawn in its turn. In the cells' order, again while a shape still moves (edges on
+        // shapes on edges: a chain), 8 rounds at most)
         std::unordered_set<std::string> ends;
         for (Cell &c : cells)
             if (c.edge) ends.insert(c.source), ends.insert(c.target), ends.insert(str(c.style, "sourcePort")), ends.insert(str(c.style, "targetPort"));
-        for (auto &kv : children) {
-            Cell *e = find(kv.first);
-            if (!e || !shown(*e) || layer(*e)) continue;
+        std::vector<Cell *> first;
+        for (Cell &c : cells) {
+            auto f = c.edge ? children.find(c.id) : children.end();
+            if (f == children.end() || !shown(c) || layer(c)) continue;
             bool needed = false;
-            for (size_t i : kv.second) needed = needed || (drawnOnEdge(cells[i]) && ends.count(cells[i].id));
-            if (!needed) continue;
-            size_t items = page.items.size(), left = budget;
-            edge(*e);
-            page.items.resize(items), budget = left;
-            if (e->route.size() >= 2)
-                for (size_t i : kv.second)
-                    if (drawnOnEdge(cells[i])) place(*e, cells[i]);
+            for (size_t i : f->second) needed = needed || (drawnOnEdge(cells[i]) && ends.count(cells[i].id));
+            if (needed) first.push_back(&c);
+        }
+        for (int round = 0; round < 8 && !first.empty(); round++) {
+            bool moved = false;
+            for (Cell *e : first) {
+                size_t items = page.items.size(), left = budget;
+                edge(*e);
+                page.items.resize(items), budget = left;
+                if (e->route.size() < 2) continue;
+                for (size_t i : children[e->id])
+                    if (drawnOnEdge(cells[i])) {
+                        Box was = cells[i].box;
+                        bool placed = cells[i].state == 2;
+                        place(*e, cells[i]);
+                        moved = moved || !placed || was.x != cells[i].box.x || was.y != cells[i].box.y;
+                    }
+            }
+            if (!moved) break;
         }
         for (Cell &c : cells) {
             if (!shown(c) || layer(c)) continue;
