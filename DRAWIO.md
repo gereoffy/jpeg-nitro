@@ -211,7 +211,9 @@ A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.
   kiemelésként.
 - **Sortörés és blokkok:** `<br>` és a szövegbeli `\n` (a draw.io is `<br>`-ré alakítja); `<div>`, `<p>`,
   `<h1>`–`<h6>`, `<li>` új sort kezd; `<p>`, címsorok, listák margója a böngészőé szerint, `margin` /
-  `margin-top` / `margin-bottom` felülírja.
+  `margin-top` / `margin-bottom` felülírja. Az első blokk felső és az utolsó alsó margója is a címke magasságába
+  számít (a draw.io címkéje inline-block), így a `<p>`-be csomagolt felirat középen marad; levágott címkénél
+  (`overflow=hidden`) az utolsó alsó margó kimarad, ahogy a referencián.
 - **Igazítás:** `text-align` és `align` blokkonként, `margin-left` behúzás.
 - **Listák:** `<ul>` pöttyel, `<ol>` számozva, egymásba ágyazva is.
 - **`<hr>`:** vízszintes vonal.

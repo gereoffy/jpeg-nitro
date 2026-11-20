@@ -465,6 +465,7 @@ struct Para : std::vector<Seg> {   // (a line of the label, and the lines it wra
     std::string align;    // (its block's text-align: left / center / right; empty: the label's)
     float strut = 0;      // (its block's font size: a line with text at least 1.2 of it high, as a browser's strut; 0: the label's)
     float lineHeight = 0; // (CSS line-height: > 0 px, < 0 minus a factor of the line's font size; 0: normal, 1.2)
+    bool bottomMargin = false;   // (the last block's bottom margin: left out of a clipped label (overflow=hidden), as draw.io's)
 };
 
 void putEntity(std::string &o, const std::string &e) {
@@ -837,6 +838,14 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     for (Para &p : paras)   // (a line's trailing space)
         if (!p.empty() && !p.back().text.empty() && p.back().text.back() == ' ') p.back().text.pop_back();
     if (paras.size() > 1 && paras.back().empty()) paras.pop_back();   // (a last <br> or block end makes no line of its own)
+    if (gap > 0 && !(paras.size() == 1 && paras.back().empty())) {   // (the last block's bottom margin: within draw.io's label, an
+        Seg sp;                                                        // inline-block, as its first one's top margin is)
+        sp.size = gap / 1.2f;
+        Para gp;
+        gp.push_back(sp);
+        gp.bottomMargin = true;
+        paras.push_back(gp);
+    }
     return paras;
 }
 
@@ -882,7 +891,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     std::vector<float> widths, indents;   // (a line's width: its indent and its text)
     std::vector<std::string> markers, lineAligns;
     std::vector<float> struts, heights;   // (each line's block strut and line-height)
+    bool clipped = html && str(s, "overflow") == "hidden";
     for (const Para &p : paras) {
+        if (p.bottomMargin && clipped) continue;
         lines.emplace_back();
         struts.push_back(p.strut), heights.push_back(p.lineHeight);
         widths.push_back(p.indent);
