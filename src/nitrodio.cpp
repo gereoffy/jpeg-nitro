@@ -2789,7 +2789,7 @@ struct Builder {
                 }
             }
         }
-        if (c.value.empty()) return;
+        if (c.value.empty() || str(s, "noLabel") == "1") return;   // (mxGraph.getLabel: noLabel hides it)
         Box lb = b;
         if (c.hasOffset && !c.relative) lb.x += c.offset.x, lb.y += c.offset.y;   // (an absolute geometry's offset moves the label)
         if (shape == "umlLifeline") lb.h = std::clamp(num(s, "size", 40), 0.0, str(s, "lifelineMirror") == "1" ? b.h / 2 : b.h);   // (in its head)
@@ -4220,6 +4220,7 @@ struct Builder {
         return r.front();
     }
     void edgeLabel(Cell &lc, Cell &edgeCell, const std::vector<Pt> &r) {
+        if (str(lc.style, "noLabel") == "1") return;   // (mxGraph.getLabel: the label cell's own style)
         Pt p;
         if (&lc == &edgeCell) p = along(r, lc.relative ? lc.x : 0, lc.relative ? lc.y : 0);
         else if (lc.relative) p = along(r, lc.x, lc.y);
