@@ -82,10 +82,9 @@ static int box_read(const uint8_t *data, size_t len, size_t pos, Box *box) {
 
 // As box_read, for a file cut off at len (cut): a jxlc / jxlp box running past it is taken as far as it goes;
 // 1: stop here (another box cut off, or a header that is not all there).
-static int box_read_cut(const uint8_t *data, size_t len, size_t pos, Box *box, int cut, int *was_cut) {
+static int box_read_cut(const uint8_t *data, size_t len, size_t pos, Box *box, int cut) {
     if (!box_read(data, len, pos, box)) return 0;
     if (!cut) return NJXL_INVALID;
-    *was_cut = 1;
     if (len - pos < 8) return 1;
     uint64_t size = be32(data + pos);
     size_t header = size == 1 ? 16 : 8;
@@ -132,11 +131,11 @@ static int unwrap(const uint8_t *data, size_t len, njxl_stream *out, int cut) {
     size_t start = box.next, pos = start, total = 0;
     const uint8_t *single = NULL;
     unsigned boxes = 2, parts = 0;
-    int level = 5, have_level = 0, mode = 0, last = 0, was_cut = 0;
+    int level = 5, have_level = 0, mode = 0, last = 0;
     while (pos < len) {
         if (++boxes > BOX_LIMIT) return NJXL_LIMIT;
-        if (mode && len - pos < 8) { was_cut |= cut; break; }   // (the pad byte of a DICOM fragment; cut: a box's start)
-        int b = box_read_cut(data, len, pos, &box, cut, &was_cut);
+        if (mode && len - pos < 8) break;   // (the pad byte of a DICOM fragment; cut: a box's start)
+        int b = box_read_cut(data, len, pos, &box, cut);
         if (b > 0) break;
         if (b) return NJXL_INVALID;
         pos = box.next;
@@ -167,8 +166,8 @@ static int unwrap(const uint8_t *data, size_t len, njxl_stream *out, int cut) {
             break;  // Metadata is not needed to locate or decode the image.
         }
     }
-    // (cut: only a file that does end inside a box may lack its last jxlp; a whole file without it is wrong)
-    if (!mode || (mode == 2 && ((!last && !was_cut) || total < 2))) return NJXL_INVALID;
+    // Recovery accepts a contiguous fragment prefix, including EOF exactly between boxes.
+    if (!mode || (mode == 2 && ((!last && !cut) || total < 2))) return NJXL_INVALID;
     if (mode == 1) {
         out->data = single; out->len = total; out->level = level;
         return NJXL_OK;
@@ -181,7 +180,7 @@ static int unwrap(const uint8_t *data, size_t len, njxl_stream *out, int cut) {
     size_t written = 0;
     for (pos = start; pos < len; pos = box.next) {
         if (len - pos < 8) break;
-        int b = box_read_cut(data, len, pos, &box, cut, &was_cut);
+        int b = box_read_cut(data, len, pos, &box, cut);
         if (b > 0) break;
         if (b) { free(joined); return NJXL_INVALID; }
         if (box.type == TAG('j','x','l','p')) {
