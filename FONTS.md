@@ -142,5 +142,6 @@ kulcsként, amelyből a glyph ténylegesen származik, a kódponttal együtt. A 
 face-ű futamokat a címke tördelésénél alakítja ki. [DXF szövegstílus](src/nitrodxf.cpp) ·
 [draw.io szövegtördelés](src/nitrodio.cpp)
 
-A Plutovg glyph-index lekérdezése és a LunaSVG súly- és karakterfeloldó callbackjei patchekben
-vannak. A build a rögzített LunaSVG-forrás másolatára alkalmazza őket. [LunaSVG és Plutovg patchek](patches/lunasvg)
+A Plutovg glyph-index lekérdezése és a LunaSVG súly- és karakterfeloldó callbackjei a LunaSVG
+forkunkban vannak, egy-egy commitként; a `scripts/get-deps.sh` ezt a rögzített commitot tölti le.
+[LunaSVG fork](https://github.com/gereoffy/lunasvg)
