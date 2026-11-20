@@ -3275,6 +3275,18 @@ struct Builder {
             for (Label::Rect &q : l->rects) q.y += dy;
             l->y0 += dy, l->y1 += dy;
         }
+        // (the clip reaches as far as the text is moved: the box, and the box moved by the spacing as mxText.getSpacing
+        // moves the text (top: spacing + spacingTop + 5, middle: half the difference of top and bottom, bottom: up by the
+        // bottom one + 1; the same across), so a top-aligned label's last line may reach past the box by its spacing, and a
+        // label moved up by a negative spacingTop keeps its top line)
+        if (!asIs) {
+            double sp = num(s, "spacing", 2), L = sp + num(s, "spacingLeft", 0), R = sp + num(s, "spacingRight", 0);
+            double T = sp + num(s, "spacingTop", 0), B = sp + num(s, "spacingBottom", 0);
+            const std::string &al = str(s, "align"), &va = str(s, "verticalAlign");
+            double dx = al == "left" ? L : al == "right" ? -R : (L - R) / 2, dy = va == "top" ? T + 5 : va == "bottom" ? -B - 1 : (T - B) / 2;
+            if (std::isfinite(dx) && std::isfinite(dy))
+                cb = {cb.x + std::min(0.0, dx), cb.y + std::min(0.0, dy), cb.w + std::fabs(dx), cb.h + std::fabs(dy)};
+        }
         l->clip = true;
         l->clipX0 = (float)cb.x, l->clipY0 = (float)cb.y, l->clipX1 = (float)(cb.x + cb.w), l->clipY1 = (float)(cb.y + cb.h);
     }
