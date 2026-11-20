@@ -4400,7 +4400,7 @@ struct Builder {
             }
         } else if (ts) {
             bool fh = str(*ts, "flipH") == "1", fv = str(*ts, "flipV") == "1";
-            if (str(*ts, "shape").compare(0, 8, "stencil(") == 0)
+            if (str(*ts, "shape").compare(0, 8, "stencil(") == 0 || libraryStencil(str(*ts, "shape")))
                 fh = fh || str(*ts, "stencilFlipH") == "1", fv = fv || str(*ts, "stencilFlipV") == "1";
             if (quarter) std::swap(fh, fv);
             if (fh) p.x = 2 * c.x - p.x;
