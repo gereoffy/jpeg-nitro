@@ -2230,13 +2230,14 @@ struct Builder {
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), opacity * num(s, "strokeOpacity", 100) / 100);
         float width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
         std::vector<float> dash;
-        if (str(s, "dashed") == "1") {
+        if (str(s, "dashed") == "1") {   // (the pattern in stroke widths; fixDash: in px, mxShape.configureCanvas)
+            float unit = str(s, "fixDash") == "1" ? 1.f : std::max(width, 1.f);
             std::string pat = str(s, "dashPattern");
             if (pat.empty()) pat = "3 3";
             const char *c = pat.c_str();
             char *end;
             for (double d; (d = nn_strtod(c, &end)), end != c && dash.size() < 16; c = end)
-                if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * std::max(width, 1.f)));
+                if (std::isfinite(d) && d >= 0) dash.push_back((float)(d * unit));
             if (dash.size() % 2) {   // (an odd pattern twice: its own elements copied first, as insert takes no range of itself)
                 std::vector<float> once = dash;
                 dash.insert(dash.end(), once.begin(), once.end());
@@ -2393,7 +2394,8 @@ struct Builder {
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
             if (stroke && st.dashed) {
                 it.dash = st.pattern.empty() ? std::vector<float>{3, 3} : st.pattern;
-                for (float &d : it.dash) d *= std::max(st.width, 1.f);
+                if (str(s, "fixDash") != "1")
+                    for (float &d : it.dash) d *= std::max(st.width, 1.f);
             }
             add(std::move(it), st.width);
             cur = nullptr;
