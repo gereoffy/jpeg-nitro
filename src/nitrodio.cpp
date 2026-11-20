@@ -233,6 +233,8 @@ struct Item {
     float gx2 = 0, gy2 = 0;    // the ends of its two half axes)
     float width = 1;
     std::vector<float> dash;
+    uint8_t cap = 0, join = 0;   // (plutovg's line cap / join: butt, miter unless a stencil says otherwise)
+    float miterLimit = 10;
     std::shared_ptr<Label> label;
     float hachure = 0, hachureAngle = -41, hachureWeight = 1;   // (sketch: the fill as lines hachure apart, at the angle)
     bool crossHatch = false;                                    // (and across them)
@@ -3262,6 +3264,8 @@ struct Builder {
             int fontStyle;
             std::string fontFamily;
             bool gradient;   // (the shape's gradient (mxShape.configureCanvas, across its box), till a <fillcolor>)
+            uint8_t cap = PLUTOVG_LINE_CAP_BUTT, join = PLUTOVG_LINE_JOIN_MITER;   // (<linecap>, <linejoin>, <miterlimit>)
+            float miterLimit = 10;
         };
         State st{colour(s, "fillColor", 0xffffffff), colour(s, "strokeColor", 0xff000000),
                  (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
@@ -3288,6 +3292,7 @@ struct Builder {
                 gradientIn(it, str(s, "gradientDirection"), b);
             }
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
+            it.cap = st.cap, it.join = st.join, it.miterLimit = st.miterLimit;
             if (stroke && st.dashed) {
                 it.dash = st.pattern.empty() ? std::vector<float>{3, 3} : st.pattern;
                 if (str(s, "fixDash") != "1")
@@ -3312,7 +3317,8 @@ struct Builder {
                     else if (c == "line") plutovg_path_line_to(p, X(k, "x"), Y(k, "y"));
                     else if (c == "quad") plutovg_path_quad_to(p, X(k, "x1"), Y(k, "y1"), X(k, "x2"), Y(k, "y2"));
                     else if (c == "curve") plutovg_path_cubic_to(p, X(k, "x1"), Y(k, "y1"), X(k, "x2"), Y(k, "y2"), X(k, "x3"), Y(k, "y3"));
-                    else if (c == "arc")
+                    else if (c == "arc")   // (rx, ry scaled apart, the axes' angle as it is: mxStencil's arcTo, a slanted arc of an
+                                           // unevenly scaled stencil as draw.io draws it)
                         plutovg_path_arc_to(p, (float)(attrNum(k, "rx") * sx), (float)(attrNum(k, "ry") * sy), (float)(attrNum(k, "x-axis-rotation") * M_PI / 180),
                                             attrNum(k, "large-arc-flag") != 0, attrNum(k, "sweep-flag") != 0, X(k, "x"), Y(k, "y"));
                     else if (c == "close") plutovg_path_close(p);
@@ -3337,6 +3343,13 @@ struct Builder {
             else if (name == "fillalpha") st.fillAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "strokealpha") st.strokeAlpha = (float)std::clamp(attrNum(n, "alpha", 1), 0.0, 1.0);
             else if (name == "dashed") st.dashed = attr(n, "dashed") == "1";
+            else if (name == "linecap") {   // (flat, round, square)
+                std::string v = attr(n, "cap");
+                st.cap = v == "round" ? PLUTOVG_LINE_CAP_ROUND : v == "square" ? PLUTOVG_LINE_CAP_SQUARE : PLUTOVG_LINE_CAP_BUTT;
+            } else if (name == "linejoin") {   // (miter, round, bevel)
+                std::string v = attr(n, "join");
+                st.join = v == "round" ? PLUTOVG_LINE_JOIN_ROUND : v == "bevel" ? PLUTOVG_LINE_JOIN_BEVEL : PLUTOVG_LINE_JOIN_MITER;
+            } else if (name == "miterlimit") st.miterLimit = (float)std::clamp(attrNum(n, "limit", 10), 1.0, 100.0);
             else if (name == "dashpattern") {
                 st.pattern.clear();
                 std::string v = attr(n, "pattern");
@@ -6044,8 +6057,9 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
     if ((it.stroke >> 24) && dashOk) {
         nd::setRgba(c, it.stroke);
         plutovg_canvas_set_line_width(c, std::max(it.width, 1 / scale));   // (a pixel at least)
-        plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
-        plutovg_canvas_set_line_cap(c, PLUTOVG_LINE_CAP_BUTT);
+        plutovg_canvas_set_line_join(c, (plutovg_line_join_t)it.join);
+        plutovg_canvas_set_line_cap(c, (plutovg_line_cap_t)it.cap);
+        plutovg_canvas_set_miter_limit(c, it.miterLimit);
         if (!it.dash.empty()) plutovg_canvas_set_dash(c, 0, it.dash.data(), (int)it.dash.size());
         else plutovg_canvas_set_dash(c, 0, nullptr, 0);
         plutovg_canvas_stroke_path(c, it.path.get());
