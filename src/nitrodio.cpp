@@ -5617,9 +5617,9 @@ struct Builder {
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
         std::vector<Pt> full = r;   // (the labels along it, before the markers shorten it)
         if (stroke) {
-            auto unit = [](Pt a, Pt b) {
-                double dx = b.x - a.x, dy = b.y - a.y, l = std::hypot(dx, dy);
-                return l > 0 ? Pt{dx / l, dy / l} : Pt{1, 0};
+            auto unit = [](Pt a, Pt b) {   // (mxConnector.createMarker divides by max(1, length): a line shorter than a unit
+                double dx = b.x - a.x, dy = b.y - a.y, l = std::hypot(dx, dy);   // has its markers that much smaller)
+                return l > 0 ? Pt{dx / std::max(1.0, l), dy / std::max(1.0, l)} : Pt{1, 0};
             };
             // (mxConnector.createMarker: its direction from the first point that does not round to the end itself, in screen
             // pixels; a stub of less than a unit at an end (a rounding left over) left out, the marker along the line before it)
