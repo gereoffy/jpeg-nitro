@@ -5106,18 +5106,17 @@ struct Builder {
     static Pt along(const std::vector<Pt> &r, double gx, double gy) {
         double total = 0;
         for (size_t i = 1; i < r.size(); i++) total += std::hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
-        double dist = (std::clamp(gx, -1.0, 1.0) + 1) / 2 * total;
-        for (size_t i = 1; i < r.size(); i++) {
-            double dx = r[i].x - r[i - 1].x, dy = r[i].y - r[i - 1].y, l = std::hypot(dx, dy);
-            if (dist <= l || i + 1 == r.size()) {
-                double f = l > 0 ? std::min(dist / l, 1.0) : 0;
-                Pt p{r[i - 1].x + dx * f, r[i - 1].y + dy * f};
-                if (l > 0) p.x += dy / l * gy, p.y -= dx / l * gy;
-                return p;
-            }
-            dist -= l;
-        }
-        return r.front();
+        if (r.size() < 2 || !std::isfinite(gx) || !std::isfinite(gy)) return r.empty() ? Pt{} : r.front();
+        // (mxGraphView.getPoint: the distance rounded; a point at a segment's (rounded) end belongs to the next segment)
+        double dist = std::round((std::clamp(gx, -1e6, 1e6) / 2 + 0.5) * total), length = 0;
+        auto seg = [&](size_t i) { return std::hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y); };
+        size_t i = 1;
+        double l = seg(1);
+        while (dist >= std::round(length + l) && i < r.size() - 1) length += l, l = seg(++i);
+        double dx = r[i].x - r[i - 1].x, dy = r[i].y - r[i - 1].y, f = l > 0 ? (dist - length) / l : 0;
+        Pt p{r[i - 1].x + dx * f, r[i - 1].y + dy * f};
+        if (l > 0) p.x += dy / l * gy, p.y -= dx / l * gy;
+        return p;
     }
     void edgeLabel(Cell &lc, Cell &edgeCell, const std::vector<Pt> &r) {
         if (str(lc.style, "noLabel") == "1") return;   // (mxGraph.getLabel: the label cell's own style)
