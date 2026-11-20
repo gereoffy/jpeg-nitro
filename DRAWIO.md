@@ -35,16 +35,21 @@ lent felsoroltak is).
 
 - **Élvezetés** (`mxEdgeStyle`): OrthConnector, SegmentConnector, ElbowConnector (vertical / horizontal),
   EntityRelation, Loop. A SideToSide és a TopToBottom a Graph.js-ben felül van írva, ezeket onnan vettem át.
-  `curved=1`, `rounded=1`, `orthogonalLoop`, `portConstraint`, `jettySize`.
+  `curved=1`, `rounded=1`, `orthogonalLoop`, `portConstraint`, `jettySize`. Az OrthConnector bemenetét tizedre
+  kerekíti, mint a draw.io; a szabad végpont 1×1-es doboz; elforgatott terminálnál a forgatott befoglaló doboz
+  számít. A geometria számai milliomodra kerekítve (a draw.io lebegőpontos zaja miatt).
 - **Perimeterek** (`mxPerimeter`): rectangle, ellipse, rhombus, triangle, hexagon, hexagon2, trapezoid,
   parallelogram, step, center, orthogonal, lifeline, backbone, callout. Port- és constraint-pontok
   (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`).
-- **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok.
+- **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok. Az oval a vonal végére
+  középre kerül, `size` átmérővel; a vonal kitöltés nélküli markernél is a marker tövénél áll meg.
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
   `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`; szóköznél, betűk közötti kötőjel után és CJK írásjelek között (záró jel előtt és nyitó után nem), mint a böngésző), `overflow`,
   `horizontal=0`, `textDirection` (vertical-lr / -rl), `labelBackgroundColor`, `labelBorderColor` /
   `labelBorderWidth`, `noLabel`, az alapvonal helye; él-címkék a `rotation`-jükkel elforgatva,
-  `labelAutoRotate=1`: a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation).
+  `labelAutoRotate=1`: a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation), és
+  `horizontal=0`-val függőlegesen. Az él saját alakkal (kitöltés vagy körvonal) rendelkező gyerek-cellái teljes
+  csúcsként rajzolódnak, a bal felső sarkuk az él menti pont plusz az offset (mxGraphView.updateVertexState).
 - **mxShape**: `direction`, `flipH/V`, `rotation`, `shadow`, `glass` (téglalapon és a swimlane fejlécén), gradient
   (`gradientDirection` north/south/east/west/radial), `dashed` / `dashPattern` / `fixDash`, átlátszóságok,
   `arcSize` / `absoluteArcSize`.
@@ -53,6 +58,8 @@ lent felsoroltak is).
 - **mxLabel**: a draw.io alapértelmezett csúcs-alakzata (`default.xml`: shape=label), így az alakzat nélküli
   csúcsoké is: kép (`image`, `imageWidth/Height`, `imageAlign`, `imageVerticalAlign`) és indikátor
   (`indicatorShape`, `indicatorColor`, `indicatorGradientColor`, `indicatorImage`).
+- **mxCylinder**: a fedő magassága `size`-ból vagy a magasság ötödéből (legfeljebb 40); `boundedLbl=1`: a címke a
+  fedő alatt.
 - **A 16 alapalakzat**: rectangle, ellipse, doubleEllipse, rhombus, cylinder, actor, triangle, hexagon, cloud,
   line, arrow, arrowConnector, swimlane, image, label, connector.
 - **mxStencil**: a stencil-XML értelmezője (szöveg, dash, gradient a stencilben is), és az
@@ -82,7 +89,9 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **57 megvan**:
   component, datastore, dataStorage, delay, offPageConnector, umlActor, umlLifeline, umlFrame, umlDestroy,
   seqActorStick, table, tableRow, partialRectangle, singleArrow, crossbar, curlyBracket, cylinder3, isoCube,
   isoCube2, isoRectangle, lollipop, module, or, xor, plus, corner, startState, endState, dimension, message,
-  smileyFace, switch, waypoint, hexagon; 2026-11-20 óta callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal
+  smileyFace, switch, waypoint, hexagon. Címkedobozok: `cylinder3` és `document` `boundedLbl=1`-gyel a fedő alatt /
+  a hullám fölött, `process` a két sáv között; `curlyBracket` `rounded=1`-gyel ívelt sarkokkal (nyitott
+  töröttvonal, mint mxShape.addPoints). 2026-11-20 óta callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal
   együtt fordul), loopLimit, collate, umlBoundary, umlControl (az új projektmintákban 1-3 projekt használja őket).
 - **Élek:** flexArrow, link, wire, pipe, filledEdge, taperedArrow, mermaidSankeyLink.
 - **Extra markerek** (Shapes.js / Graph.js): async, openAsync, box, circle, circlePlus, cross, dash, halfCircle, doubleBlock, baseDash,
@@ -220,6 +229,11 @@ A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.
 - **`<hr>`:** vízszintes vonal.
 - **Entitások:** `&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`, a HTML 4 névtáblája (247 név: ékezetek, görög
   betűk, jelek), számos `&#…;` / `&#x…;`.
+- **Vastagság:** `font-weight` bold / bolder / 600 fölött félkövér; normal / lighter / 600 alatt visszavonja a
+  befoglaló (címsor) félkövérségét.
+- **Üres sor** (`<div><br></div>`): a blokk betűméretének magassága.
+- **Tördelés:** szóköznél, betűk közötti kötőjel után, CJK írásjelek között; a tördelt blokk legalább a leghosszabb
+  sor szélességű (flex-elem, `min-width: auto`), és az igazítás szerint áll.
 - **Sormagasság:** CSS `line-height`: szám (a sor betűméretének szorzója, így öröklődik), hossz vagy % (a tag
   saját betűméretéből, px-ként öröklődik), `normal` (1,2). A szöveges sorok kapják, a blokkmargók helye nem.
 - **Szóközök:** összevonva, mint a böngészőben.
