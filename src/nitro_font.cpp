@@ -366,26 +366,34 @@ const std::vector<int> *family_faces(Index &ix, const char *family) {
 
 std::mutex &nf_lock() { return g_lock; }
 
-plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
+static plutovg_font_face_t *match_face(const char *family, int weight, bool italic, bool uprightOnly) {
     Index &ix = index();
     const std::vector<int> *faces = family_faces(ix, family);
     if (!faces) return nullptr;
     weight = std::clamp(weight, 1, 1000);   // (a damaged file's)
-    int best = -1;
-    long bestScore = 0;
-    for (int k : *faces) {
-        const Face &f = ix.faces[k];
-        int diff = std::abs(f.weight - weight);
-        // the slant first, then a normal width, then the weight; of two equally close weights
-        // the one on the side of the request (a light weight: the lighter)
-        bool side = weight < 400 ? f.weight < weight : f.weight > weight;
-        long score = (f.italic != italic) * 100000L + f.narrow * 10000L + diff * 2 + !side;
-        if (best < 0 || score < bestScore) {
-            best = k;
-            bestScore = score;
+    for (;;) {
+        int best = -1;
+        long bestScore = 0;
+        for (int k : *faces) {
+            const Face &f = ix.faces[k];
+            if (f.failed || (uprightOnly && f.italic)) continue;
+            int diff = std::abs(f.weight - weight);
+            // the slant first, then a normal width, then the weight; of two equally close weights
+            // the one on the side of the request (a light weight: the lighter)
+            bool side = weight < 400 ? f.weight < weight : f.weight > weight;
+            long score = (f.italic != italic) * 100000L + f.narrow * 10000L + diff * 2 + !side;
+            if (best < 0 || score < bestScore) {
+                best = k;
+                bestScore = score;
+            }
         }
+        if (best < 0) return nullptr;
+        if (plutovg_font_face_t *f = load(ix, best)) return f;
     }
-    return best < 0 ? nullptr : load(ix, best);
+}
+
+plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
+    return match_face(family, weight, italic, false);
 }
 
 bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc) {
@@ -402,7 +410,7 @@ bool nf_has_style(const char *family, bool italic) {
     const std::vector<int> *faces = family_faces(ix, family);
     if (!faces) return false;
     for (int k : *faces)
-        if (ix.faces[k].italic == italic) return true;
+        if (!ix.faces[k].failed && ix.faces[k].italic == italic) return true;
     return false;
 }
 
@@ -624,8 +632,8 @@ plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfK
     // Italic alone made every Futura text italic)
     const char *own[] = {p.file ? "" : name ? name : "", p.raw.c_str(), linotype.c_str(), p.family.c_str(), sub ? sub : "", sub2 ? sub2 : ""};
     for (const char *t : own) {
-        if (!*t || (!italic && !nf_has_style(t, false) && nf_has_style(t, true))) continue;
-        if (plutovg_font_face_t *f = nf_face(t, weight, italic)) return f;
+        if (*t)
+            if (plutovg_font_face_t *f = match_face(t, weight, italic, !italic)) return f;
     }
     // then a core font of its kind: by what the format says, else by its name (an SHX stroke font: sans serif)
     const char *g = kind == NF_SERIF ? "serif" : kind == NF_MONO ? "monospace" : kind == NF_SANS || p.file ? nullptr : nf_generic_of(name);
