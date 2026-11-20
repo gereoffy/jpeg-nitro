@@ -282,9 +282,21 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 | Mi | Mit jelent | Megjegyzés |
 |---|---|---|
 | `<a>` linkek | a draw.io kéken, aláhúzva mutatja, nálunk sima szöveg | a CSV-importos org-chart mintákon látszik („Email”) |
-| `<img>` és beillesztett `<svg>` a címkében | kimarad | 4 fájl, 17 cella: webről bemásolt ikonok és kész MathJax-kimenet |
+| `<img>` és beillesztett `<svg>` a címkében | kimarad | lásd alább |
 | `white-space: pre` CSS-ként (`<pre>` nélkül), `letter-spacing` | nincs kezelve | |
 | jobbról balra írás (arab, héber) | nincs bidi-rendezés és arab betűalak-formálás | betűformáló könyvtár kellene hozzá |
+
+**Kép a címke szövegében (`<svg>`, `<img>`):** kevés rajz használja. A teljes mintakészletben 6 fájl tartalmaz
+beillesztett `<svg>`-t: weboldalról bemásolt ikonokat és egy kész MathJax-képletet (`TP.drawio`). `<img>` 3 fájlban
+van: kettőben webes URL, amit elvből nem töltünk le, egyben beágyazott `data:` PNG. Magát az SVG-t a nitrosvg ki
+tudná rajzolni (`svgPicture()`, mint a `data:image/svg+xml` képeket), de a címke szövegébe illeszteni bonyolult. A
+címkék elrendezése ma csak szöveget és hátteret ismer, a képhez kellene:
+- a mérete (`ex` egységben is);
+- a sorba illesztése a `vertical-align` szerint;
+- a forgatása és a vágása a címkével együtt.
+
+A beillesztett SVG szövegét a nitrosvg ráadásul a saját betűkezelésével rajzolná, a címke betűitől függetlenül.
+Ennyi fájlért nem éri meg; ha egy képlet kell, a draw.io `$$...$$`-ként menti, és azt kezeljük.
 
 ## Matematika (`math="1"`)
 
