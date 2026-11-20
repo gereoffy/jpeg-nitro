@@ -213,6 +213,8 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 - **Betűstílus:** `<b>` / `<strong>`, `<i>` / `<em>`, `<u>` / `<ins>`, `<s>` / `<strike>` / `<del>`; `<span>` /
   `<font>` style-jából `font-style: italic` és `text-decoration` (underline, line-through); a cella `fontStyle`-ja
   is.
+- **Betűtípus:** `<font face>` és `style="font-family: …"` (az első név), egymásba ágyazva; ha a gépen nincs meg, a
+  cella `fontFamily`-je.
 - **Vastagság:** `font-weight` bold / bolder / 600 fölött félkövér; normal / lighter / 600 alatt visszavonja a
   befoglaló (címsor) félkövérségét.
 - **Betűméret:** `style="font-size: …"` (px, pt, %, em), `<font size="1..7">`, `<small>` / `<big>`, `<sub>` /
@@ -247,7 +249,6 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 
 | Mi | Mit jelent | Megjegyzés |
 |---|---|---|
-| `font-family` a HTML-ben (`<font face>`, span `font-family`) | csak a cella `fontFamily`-je számít | egyszerű: a betűtípus-választás megvan |
 | `<a>` linkek | a draw.io kéken, aláhúzva mutatja, nálunk sima szöveg | a CSV-importos org-chart mintákon látszik („Email”) |
 | `<img>` és beillesztett `<svg>` a címkében | kimarad | 4 fájl, 17 cella: webről bemásolt ikonok és kész MathJax-kimenet |
 | `<pre>` / `white-space: pre`, `letter-spacing` | nincs kezelve | |

@@ -385,6 +385,7 @@ struct Seg {
     float size = 0;      // (an HTML label's own font size; 0: the label's)
     uint32_t bg = 0;     // (an HTML label's highlight: a span's background colour)
     float shift = 0;     // (<sub> / <sup>: its baseline lowered / raised by this)
+    std::string family;  // (an HTML label's own font family: <font face>, font-family; "": the label's)
 };
 
 // a block's margins (top, bottom) in px: a browser's defaults (em of the block's font size), style margin / margin-top /
@@ -534,6 +535,21 @@ double cssLength(const std::string &v, double whole, double em);
 // A label's text as paragraphs: plain (its line breaks), or HTML: <br> and the block elements
 // break lines, <b> <strong> <i> <em> (and the bold / italic of fontStyle) set the font, the
 // other tags are dropped, white space collapses
+// the font family an HTML tag sets: <font face="..."> or style="font-family: ..." (its first one, unquoted); "": none
+std::string tagFamily(const std::string &tag) {
+    std::string v = cssValue(tag, "font-family");
+    if (v.empty()) v = htmlAttr(tag, "face");
+    size_t comma = v.find(',');
+    if (comma != std::string::npos) v.resize(comma);
+    std::string o;
+    for (char ch : v)
+        if (ch != '"' && ch != '\'' && !(o.empty() && ch == ' ')) o += ch;
+    while (!o.empty() && o.back() == ' ') o.pop_back();
+    if (o.size() >= 6 && o.compare(0, 6, "&quot;") == 0) o.erase(0, 6);
+    if (o.size() >= 6 && o.compare(o.size() - 6, 6, "&quot;") == 0) o.resize(o.size() - 6);
+    return o.size() < 64 ? o : std::string();
+}
+
 std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool italic, int underline, float baseSize) {
     std::vector<Para> paras(1);
     std::vector<std::pair<std::string, uint32_t>> colours;   // (the open tags that set a colour: the last one's is the text's)
@@ -552,6 +568,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     };
     std::vector<Deco> decos;   // (the open blocks' text-decoration: underline / line-through)
     std::vector<std::pair<std::string, float>> shifts;   // (the open tags' baseline shifts, as the sizes)
+    std::vector<std::pair<std::string, std::string>> families;   // (the open tags' font families, as the colours)
     auto curSize = [&]() { return sizes.empty() || sizes.back().second <= 0 ? baseSize : sizes.back().second; };
     float gap = 0;   // (the block margins due before the next text: collapsed, the largest)
     auto add = [&](const std::string &t, bool b, bool i, int u) {
@@ -579,10 +596,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         float sz = sizes.empty() ? 0 : sizes.back().second;
         uint32_t bg = highlights.empty() ? 0 : highlights.back().second;
         float sh = shifts.empty() ? 0 : shifts.back().second;
+        const std::string &fam = families.empty() ? std::string() : families.back().second;
         if (!p.empty() && p.back().bold == b && p.back().italic == i && p.back().underline == u && p.back().rgba == rgba && p.back().size == sz &&
-            p.back().bg == bg && p.back().shift == sh)
+            p.back().bg == bg && p.back().shift == sh && p.back().family == fam)
             p.back().text += t;
-        else p.push_back({t, b, i, (uint8_t)u, rgba, sz, bg, sh});
+        else p.push_back({t, b, i, (uint8_t)u, rgba, sz, bg, sh, fam});
     };
     if (!html) {
         std::string cur;
@@ -635,6 +653,9 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 uint32_t col = tagColour(tag);
                 if (col) flush();
                 colours.push_back({name, col ? col : colours.empty() ? 0 : colours.back().second});
+                std::string fam = tagFamily(tag);
+                if (!fam.empty()) flush();
+                families.push_back({name, !fam.empty() ? fam : families.empty() ? std::string() : families.back().second});
                 bool block = name == "div" || name == "p" || name == "li" || name == "ul" || name == "ol" || name == "td" || name == "th" ||
                              name == "tr" || name == "table" || (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6');
                 if (block) {   // (its text-align: its lines', inside the label's block)
@@ -746,6 +767,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     if (colours[k].first == name) {
                         flush();
                         colours.erase(colours.begin() + (long)k);
+                        break;
+                    }
+                for (size_t k = families.size(); k-- > 0;)
+                    if (families[k].first == name) {
+                        families.erase(families.begin() + (long)k);
                         break;
                     }
                 for (size_t k = sizes.size(); k-- > 0;)   // (its style's size, then a heading's own one)
@@ -915,6 +941,13 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         if (!f) f = nf_css_face("sans-serif", b, i);
         return f;
     };
+    std::map<std::string, plutovg_font_face_t *> own;   // (an HTML tag's family: its face, else the label's)
+    auto ownFace = [&](const std::string &fam, bool b, bool i) {
+        plutovg_font_face_t *&f = own[fam + (b ? "|b" : "|") + (i ? "i" : "")];
+        if (!f) f = nf_css_face(fam.c_str(), b, i);
+        if (!f) f = face(b, i);
+        return f;
+    };
     struct LineRun {
         plutovg_font_face_t *face;
         std::string text;
@@ -941,7 +974,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         lineAligns.push_back(p.align);
         std::vector<std::pair<Seg, plutovg_font_face_t *>> pieces;   // (its text by faces: a character the font lacks (✓) from one that has it, as a browser's)
         for (const Seg &sg : p) {
-            plutovg_font_face_t *f = face(sg.bold, sg.italic);
+            plutovg_font_face_t *f = sg.family.empty() ? face(sg.bold, sg.italic) : ownFace(sg.family, sg.bold, sg.italic);
             size_t from = 0, i = 0;
             plutovg_font_face_t *cur = f;
             while (i < sg.text.size()) {
@@ -949,7 +982,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                 uint32_t cp = (unsigned char)sg.text[i] < 0x80 ? (unsigned char)sg.text[i++] : nf_utf8_next(sg.text, i);
                 plutovg_font_face_t *g = f;
                 if (cp >= 0x80 && f && !nf_has_glyph(f, cp)) {
-                    const char *first[] = {family.c_str(), nullptr};
+                    const char *first[] = {sg.family.empty() ? family.c_str() : sg.family.c_str(), nullptr};
                     plutovg_font_face_t *h = nf_glyph_face(first, cp, sg.bold ? 700 : 400, sg.italic);
                     if (h) g = h;
                 }
