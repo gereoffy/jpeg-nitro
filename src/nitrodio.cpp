@@ -1628,7 +1628,9 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
             snprintf(hex, sizeof hex, "#%06x", c & 0xffffff);
             d["fontColor"] = hex;
         }
-        if (float fs = tagSize(tag, (float)num(s, "fontSize", 12))) d["fontSize"] = std::to_string(fs);
+        // (a <pre>'s own size: not here, its tag is kept in its block and sets it there)
+        if (lowerName(tag) != "pre")
+            if (float fs = tagSize(tag, (float)num(s, "fontSize", 12))) d["fontSize"] = std::to_string(fs);
         std::string ta = cssValue(tag, "text-align");
         if (ta == "left" || ta == "center" || ta == "right") d["align"] = ta;
         return d;
