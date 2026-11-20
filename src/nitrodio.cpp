@@ -4129,7 +4129,8 @@ struct Builder {
             int pc = portConstraint(s, source, true);
             if (pc == DIR_W || pc == DIR_E) sl = pc == DIR_W;
         }
-        if (target && source) tl = (p0 ? p0->x : source->b.x + source->b.w) < (pe ? pe->x : target->b.x);
+        // (a free source point is a terminal by now in mxEdgeStyle.EntityRelation: the target's side from it too)
+        if (target && (source || p0)) tl = (p0 ? p0->x : source->b.x + source->b.w) < (pe ? pe->x : target->b.x);
         if (!pe && target) {
             int pc = portConstraint(s, target, false);
             if (pc == DIR_W || pc == DIR_E) tl = pc == DIR_W;
