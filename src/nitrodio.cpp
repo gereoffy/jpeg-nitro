@@ -2702,14 +2702,32 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
                 o += (simple(a) ? a : "(" + a + ")") + "/" + (simple(b) ? b : "(" + b + ")");
             } else if (cmd == "sqrt") {
                 while (i < t.size() && t[i] == ' ') i++;
-                if (i < t.size() && t[i] == '[') {   // (an index: its root's sign before it)
+                std::string index;   // (\sqrt[n]{x}: ∛ ∜, else its index raised before the sign)
+                if (i < t.size() && t[i] == '[') {
                     size_t e = t.find(']', i);
+                    index = t.substr(i + 1, (e == std::string::npos ? t.size() : e) - i - 1);
                     i = e == std::string::npos ? t.size() : e + 1;
+                    while (!index.empty() && index.back() == ' ') index.pop_back();
+                    while (!index.empty() && index[0] == ' ') index.erase(0, 1);
                 }
                 std::string a = texArg(t, html, i, depth);
-                nf_utf8_put(o, 0x221a);
-                size_t chars = 0;
-                for (unsigned char ch : a) chars += (ch & 0xc0) != 0x80;
+                if (index == "3") nf_utf8_put(o, 0x221b);
+                else if (index == "4") nf_utf8_put(o, 0x221c);
+                else {
+                    if (!index.empty()) {
+                        size_t k = 0;
+                        std::string n = texText(index, html, k, depth + 1, 0);
+                        o += html ? "<sup>" + n + "</sup>" : "^" + n;
+                    }
+                    nf_utf8_put(o, 0x221a);
+                }
+                size_t chars = 0;   // (its radicand's characters, its tags not counted: more than one in brackets)
+                bool inTag = false;
+                for (unsigned char ch : a) {
+                    if (html && ch == '<') inTag = true;
+                    else if (html && ch == '>') inTag = false;
+                    else if (!inTag) chars += (ch & 0xc0) != 0x80;
+                }
                 o += chars > 1 ? "(" + a + ")" : a;
             } else if (cmd == "mathbb") {   // (ℕ ℤ ℚ ℝ ℂ ...)
                 std::string a = texArg(t, html, i, depth);
