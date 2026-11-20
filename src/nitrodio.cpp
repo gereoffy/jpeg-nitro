@@ -4259,8 +4259,19 @@ struct Builder {
         }
         if ((!source && !p0) || (!target && !pe)) return;
         int pc[2] = {source ? portConstraint(s, source, true) : DIR_ALL, target ? portConstraint(s, target, false) : DIR_ALL};
-        double geo[2][4] = {{source ? source->b.x : p0->x, source ? source->b.y : p0->y, source ? source->b.w : 0, source ? source->b.h : 0},
-                            {target ? target->b.x : pe->x, target ? target->b.y : pe->y, target ? target->b.w : 0, target ? target->b.h : 0}};
+        // (a rotated terminal: its rotated box's bounds, as mxEdgeStyle.OrthConnector takes them: the side its fixed point is on)
+        auto bounds = [](const Term *t) {
+            Box b = t->b;
+            if (t->rotation != 0) {
+                double a = t->rotation * M_PI / 180, c = std::fabs(std::cos(a)), sn = std::fabs(std::sin(a));
+                double w = b.w * c + b.h * sn, h = b.w * sn + b.h * c;
+                b = {b.x + (b.w - w) / 2, b.y + (b.h - h) / 2, w, h};
+            }
+            return b;
+        };
+        Box sb0 = source ? bounds(source) : Box{}, tb0 = target ? bounds(target) : Box{};
+        double geo[2][4] = {{source ? sb0.x : p0->x, source ? sb0.y : p0->y, source ? sb0.w : 0, source ? sb0.h : 0},
+                            {target ? tb0.x : pe->x, target ? tb0.y : pe->y, target ? tb0.w : 0, target ? tb0.h : 0}};
         double buffer[2] = {sourceBuffer, targetBuffer};
         double limits[2][9] = {};
         for (int i = 0; i < 2; i++) {
