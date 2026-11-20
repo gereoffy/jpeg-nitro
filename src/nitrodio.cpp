@@ -2908,6 +2908,8 @@ std::string mathText(const std::string &v, bool html) {
             break;
         }
         std::string inner = v.substr(at + open, e - at - open);
+        // (an HTML label: MathJax reads the math's text, a tag in it (a <br>) a space)
+        for (size_t t; html && (t = inner.find('<')) != std::string::npos;) inner.replace(t, inner.find('>', t) - t + 1, " ");
         // (MathJax's TeX fonts: a serif face, scaled to the text's x-height: a serif's x-height is less than Helvetica's)
         if (html) o += "<font face=\"serif\" style=\"font-size: 117%\">";
         texUpright = 0;
