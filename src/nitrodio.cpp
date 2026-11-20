@@ -2546,6 +2546,134 @@ struct Builder {
         paint(newPath(), l, ls, b, false);
     }
 
+    // mxShape.paintGlassEffect: a white sheen over the top of b, 0.9 to 0.1 opaque, its lower edge bowed (rounded: its top
+    // corners by arc); m: b's frame mapped onto the page (a swimlane's header turned: its sheen turned with it)
+    void glass(const Style &s, const Box &b, double arc, const plutovg_matrix_t *m) {
+        double sw = std::ceil(std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0) / 2), x = b.x - sw, y = b.y - sw, x1 = b.x + b.w + sw;
+        bool round = str(s, "rounded") == "1";
+        arc += 2 * sw;
+        Item g;
+        PathP q0 = newPath();
+        plutovg_path_t *q = q0.get();
+        plutovg_path_move_to(q, (float)(round ? x + arc : x), (float)y);
+        if (round) plutovg_path_quad_to(q, (float)x, (float)y, (float)x, (float)(y + arc));
+        plutovg_path_line_to(q, (float)x, (float)(b.y + b.h * 0.4));
+        plutovg_path_quad_to(q, (float)(b.x + b.w / 2), (float)(b.y + b.h * 0.7), (float)x1, (float)(b.y + b.h * 0.4));
+        plutovg_path_line_to(q, (float)x1, (float)(round ? y + arc : y));
+        if (round) plutovg_path_quad_to(q, (float)x1, (float)y, (float)(x1 - arc), (float)y);
+        plutovg_path_close(q);
+        g.fill = withOpacity(0xe6ffffff, num(s, "opacity", 100)), g.fill2 = withOpacity(0x1affffff, num(s, "opacity", 100));
+        plutovg_point_t g0{(float)b.x, (float)b.y}, g1{(float)b.x, (float)(b.y + b.h * 0.6)};
+        if (m) {
+            g.path = newPath();
+            plutovg_path_add_path(g.path.get(), q, m);
+            plutovg_matrix_map_point(m, &g0, &g0), plutovg_matrix_map_point(m, &g1, &g1);
+        } else
+            g.path = q0;
+        g.gx0 = g0.x, g.gy0 = g0.y, g.gx1 = g1.x, g.gy1 = g1.y;
+        add(std::move(g), 0);
+    }
+
+    // mxSwimlane.paintVertexShape: the header (startSize; horizontal=0: down the left side) filled by the fill colour and
+    // outlined on its three outer sides (swimlaneHead=0: filled only), the body below it by swimlaneFillColor and outlined
+    // likewise (swimlaneBody=0: filled only), the divider between them (swimlaneLine=0: none); rounded: the outer corners
+    // curved; a footer (footerSize) at the far end in the header's colour; separatorColor: a dashed line; glass over the header
+    void swimlane(const Style &s, const Box &b) {
+        bool horiz = str(s, "horizontal") != "0";
+        double w = b.w, h = b.h, f = std::max(0.0, num(s, "startSize", 23));
+        if (f == 0 && str(s, "fixedHeader") == "0") return;
+        f = std::min(f, horiz ? h : w);
+        double g = 0;
+        bool rounded = str(s, "rounded") == "1";
+        if (rounded) {   // (getSwimlaneArcSize: absolute, half the arc size; else 3 x arcSize % of the header)
+            g = str(s, "absoluteArcSize") == "1" ? std::min(w / 2, std::min(h / 2, num(s, "arcSize", 20) / 2)) : f * num(s, "arcSize", 15) / 100 * 3;
+            g = std::max(0.0, std::min((horiz ? h : w) - f, std::min(f, g)));
+        }
+        const std::string &lf = str(s, "swimlaneFillColor");   // (default: the page's background, white)
+        const std::string laneColour = lf == "default" ? "#ffffff" : lf;
+        uint32_t lane = parseColour(laneColour, 0);
+        bool line = num(s, "swimlaneLine", 1) == 1, head = num(s, "swimlaneHead", 1) == 1, body = num(s, "swimlaneBody", 1) == 1;
+        bool shadow = str(s, "shadow") == "1";
+        auto path = [&](std::initializer_list<std::array<double, 4>> ops, bool close) {   // (x, y; a quad: control x, y first)
+            PathP p = newPath();
+            bool first = true;
+            for (const auto &o : ops) {
+                if (first) plutovg_path_move_to(p.get(), (float)(b.x + o[0]), (float)(b.y + o[1])), first = false;
+                else if (std::isnan(o[2])) plutovg_path_line_to(p.get(), (float)(b.x + o[0]), (float)(b.y + o[1]));
+                else plutovg_path_quad_to(p.get(), (float)(b.x + o[0]), (float)(b.y + o[1]), (float)(b.x + o[2]), (float)(b.y + o[3]));
+            }
+            if (close) plutovg_path_close(p.get());
+            return p;
+        };
+        const double N = NAN;
+        auto L = [&](double x, double y) { return std::array<double, 4>{x, y, N, N}; };
+        auto Q = [&](double cx, double cy, double x, double y) { return std::array<double, 4>{cx, cy, x, y}; };
+        auto painted = [&](PathP p, bool fill, bool stroke, const std::string *fillColour, const Box &gb, bool gradient, bool sh) {
+            Style st = s;
+            if (!fill) st["fillColor"] = "none";
+            else if (fillColour) st["fillColor"] = *fillColour;
+            if (!fill || !gradient) st["gradientColor"] = "none";
+            if (!stroke) st["strokeColor"] = "none";
+            st["shadow"] = sh ? "1" : "0";
+            paint(p, nullptr, st, gb, false);
+        };
+        double mw = std::min(w / 2, g), mh = std::min(h / 2, g);
+        Box hb = horiz ? Box{b.x, b.y, w, f} : Box{b.x, b.y, f, h};
+        PathP hp = horiz ? (rounded ? path({L(w, f), L(w, g), Q(w, 0, w - mw, 0), L(mw, 0), Q(0, 0, 0, g), L(0, f)}, false)
+                                    : path({L(0, f), L(0, 0), L(w, 0), L(w, f)}, false))
+                         : (rounded ? path({L(f, 0), L(g, 0), Q(0, 0, 0, mh), L(0, h - mh), Q(0, h, g, h), L(f, h)}, false)
+                                    : path({L(f, 0), L(0, 0), L(0, h), L(f, h)}, false));
+        painted(hp, true, head, nullptr, hb, true, shadow);
+        if (f < (horiz ? h : w) && (body || lane)) {
+            PathP bp = horiz ? (rounded ? path({L(0, f), L(0, h - g), Q(0, h, mw, h), L(w - mw, h), Q(w, h, w, h - g), L(w, f)}, false)
+                                        : path({L(0, f), L(0, h), L(w, h), L(w, f)}, false))
+                             : (rounded ? path({L(f, h), L(w - g, h), Q(w, h, w, h - mh), L(w, mh), Q(w, 0, w - g, 0), L(f, 0)}, false)
+                                        : path({L(f, 0), L(w, 0), L(w, h), L(f, h)}, false));
+            painted(bp, lane != 0, body, &laneColour, b, false, shadow);
+        }
+        if (line && f != 0) {   // (paintDivider: without the shadow when the body is filled)
+            if (lane) shadow = false;
+            painted(horiz ? path({L(0, f), L(w, f)}, false) : path({L(f, 0), L(f, h)}, false), false, true, nullptr, b, false, shadow);
+        }
+        double fs = std::min(std::max(0.0, num(s, "footerSize", 0)), (horiz ? h : w) - f);
+        if (fs > 0) {   // (paintFooter: in the header's fill, no gradient, no shadow; its corners as the body's)
+            shadow = false;
+            PathP fp;
+            if (horiz) {
+                double c = mw;
+                if (fs >= g) fp = path({L(0, h - fs), L(0, h - g), Q(0, h, c, h), L(w - c, h), Q(w, h, w, h - g), L(w, h - fs)}, true);
+                else {
+                    double t = 1 - std::sqrt(fs / g), k = c * t * t, q = t * c;
+                    fp = path({L(k, h - fs), Q(q, h, c, h), L(w - c, h), Q(w - q, h, w - k, h - fs)}, true);
+                }
+            } else {
+                double c = mh;
+                if (fs >= g) fp = path({L(w - fs, 0), L(w - g, 0), Q(w, 0, w, c), L(w, h - c), Q(w, h, w - g, h), L(w - fs, h)}, true);
+                else {
+                    double t = 1 - std::sqrt(fs / g), k = c * t * t, q = t * c;
+                    fp = path({L(w - fs, k), Q(w, q, w, c), L(w, h - c), Q(w, h - q, w - fs, h - k)}, true);
+                }
+            }
+            painted(fp, colour(s, "fillColor", 0xffffffff) != 0, true, nullptr, b, false, false);
+        }
+        const std::string &sep = str(s, "separatorColor");
+        if (parseColour(sep, 0)) {   // (paintSeparator: dashed in its own colour)
+            Style st = s;
+            st["strokeColor"] = sep;
+            st["fillColor"] = "none";
+            st["dashed"] = "1";
+            st["shadow"] = shadow ? "1" : "0";
+            paint(horiz ? path({L(w, f), L(w, h)}, false) : path({L(f, 0), L(w, 0)}, false), nullptr, st, b, false);
+        }
+        if (str(s, "glass") == "1") {   // (over the header; horizontal=0: turned down the left side)
+            if (horiz) glass(s, hb, g, nullptr);
+            else {
+                plutovg_matrix_t m{0, -1, 1, 0, (float)b.x, (float)(b.y + h)};
+                glass(s, Box{0, 0, h, f}, g, &m);
+            }
+        }
+    }
+
     void vertex(Cell &c) {
         Box b = absBox(c);
         std::string shape = str(c.style, "shape");
@@ -2560,38 +2688,8 @@ struct Builder {
         double rotation = num(s, "rotation", 0), turn = rotation;   // (turn: and a stencil's direction)
         bool text = shape == "text" || (str(s, "strokeColor") == "none" && str(s, "fillColor") == "none");
         size_t first = page.items.size();   // (the shape's items: turned together by its rotation at the end)
-        if (shape == "swimlane" && b.w > 0 && b.h > 0) {   // (its header filled, the body by swimlaneFillColor: the body first,
-                                                           // the header over it, the frame and the header's line over both)
-            bool across = str(s, "horizontal") == "0";
-            double ss = std::clamp(num(s, "startSize", 23), 0.0, across ? b.w : b.h);
-            const std::string &bodyFill = str(s, "swimlaneFillColor");
-            bool bodyShown = !bodyFill.empty() && parseColour(bodyFill, 0);
-            PathP lines, outline = newPath();
-            plutovg_path_add_rect(outline.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
-            if (bodyShown) {
-                Style body = s;
-                body["fillColor"] = bodyFill;
-                body["gradientColor"] = "none";
-                body["strokeColor"] = "none";
-                paint(outline, nullptr, body, b, false);
-            }
-            if (ss > 0) {
-                Box hb = across ? Box{b.x, b.y, ss, b.h} : Box{b.x, b.y, b.w, ss};
-                Style head = s;
-                head["strokeColor"] = "none";
-                if (bodyShown) head["shadow"] = "0";   // (the body's shadow is the swimlane's)
-                PathP hp = newPath();
-                plutovg_path_add_rect(hp.get(), (float)hb.x, (float)hb.y, (float)hb.w, (float)hb.h);
-                lines = newPath();
-                if (across) plutovg_path_move_to(lines.get(), (float)(b.x + ss), (float)b.y), plutovg_path_line_to(lines.get(), (float)(b.x + ss), (float)(b.y + b.h));
-                else plutovg_path_move_to(lines.get(), (float)b.x, (float)(b.y + ss)), plutovg_path_line_to(lines.get(), (float)(b.x + b.w), (float)(b.y + ss));
-                paint(hp, nullptr, head, hb, false);
-            }
-            Style frame = s;
-            frame["fillColor"] = "none";
-            frame["gradientColor"] = "none";
-            if (bodyShown) frame["shadow"] = "0";
-            paint(outline, lines, frame, b, false);
+        if (shape == "swimlane" && b.w > 0 && b.h > 0) {
+            swimlane(s, b);
         } else if (shape.compare(0, 8, "stencil(") == 0 && b.w > 0 && b.h > 0) {
             stencil(shape, s, stencilBox(s, b, turn));
         } else if (const std::string *lib = libraryStencil(shape); lib && b.w > 0 && b.h > 0) {
@@ -2712,25 +2810,11 @@ struct Builder {
                 add(std::move(g), 0);
             }
             if (str(s, "glass") == "1" && (shape == "rectangle" || shape == "label") && colour(s, "fillColor", 0xffffffff)) {
-                // (mxShape.paintGlassEffect: a white sheen over the top, 0.9 to 0.1 opaque, its lower edge bowed)
-                double sw = std::ceil(std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0) / 2), x = b.x - sw, y = b.y - sw, x1 = b.x + b.w + sw;
                 double arc = 0;
                 if (str(s, "rounded") == "1")
                     arc = std::clamp(str(s, "absoluteArcSize") == "1" ? num(s, "arcSize", 10) / 2 : std::min(b.w, b.h) * num(s, "arcSize", 15) / 100, 0.0,
-                                     std::min(b.w, b.h) / 2) + 2 * sw;
-                Item g;
-                g.path = newPath();
-                plutovg_path_t *q = g.path.get();
-                plutovg_path_move_to(q, (float)(x + arc), (float)y);
-                if (arc > 0) plutovg_path_quad_to(q, (float)x, (float)y, (float)x, (float)(y + arc));
-                plutovg_path_line_to(q, (float)x, (float)(b.y + b.h * 0.4));
-                plutovg_path_quad_to(q, (float)(b.x + b.w / 2), (float)(b.y + b.h * 0.7), (float)x1, (float)(b.y + b.h * 0.4));
-                plutovg_path_line_to(q, (float)x1, (float)(y + arc));
-                if (arc > 0) plutovg_path_quad_to(q, (float)x1, (float)y, (float)(x1 - arc), (float)y);
-                plutovg_path_close(q);
-                g.fill = withOpacity(0xe6ffffff, num(s, "opacity", 100)), g.fill2 = withOpacity(0x1affffff, num(s, "opacity", 100));
-                g.gx0 = g.gx1 = (float)b.x, g.gy0 = (float)b.y, g.gy1 = (float)(b.y + b.h * 0.6);
-                add(std::move(g), 0);
+                                     std::min(b.w, b.h) / 2);
+                glass(s, b, arc, nullptr);
             }
             if (shape == "cube" && str(s, "direction").empty()) {   // (CubeShape: its top and side darkened (darkOpacity, -2: white))
                 double d = std::clamp(num(s, "size", 20), 0.0, std::min(b.w, b.h));
