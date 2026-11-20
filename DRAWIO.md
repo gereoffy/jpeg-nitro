@@ -229,8 +229,9 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 - **Sormagasság:** CSS `line-height`: szám (a sor betűméretének szorzója, így öröklődik), hossz vagy % (a tag
   saját betűméretéből, px-ként öröklődik), `normal` (1,2).
 - **Tördelés:** szóköznél, betűk vagy számok közötti kötőjel után, és CJK írásjelek között (záró jel előtt és
-  nyitó után nem), mint a böngésző. A tördelt blokk legalább a leghosszabb sor szélességű (flex-elem,
-  `min-width: auto`), és az igazítás szerint áll.
+  nyitó után nem), mint a böngésző. A címke blokkja inline-block: olyan széles, mint a leghosszabb sora, ha az
+  elfér, különben a tördelési szélesség, de legalább a leghosszabb szó (flex-elem, `min-width: auto`); ezt a
+  blokkot helyezi el az igazítás, a sorok a blokkon belül a saját `text-align`-jük szerint állnak.
 - **Igazítás:** `text-align` és `align` blokkonként, `margin-left` behúzás.
 - **Listák:** `<ul>` pöttyel, `<ol>` számozva, egymásba ágyazva is.
 - **`<hr>`:** vízszintes vonal.

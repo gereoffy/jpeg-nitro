@@ -964,6 +964,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     std::vector<std::string> markers, lineAligns;
     std::vector<float> struts, heights;   // (each line's block strut and line-height)
     bool clipped = html && str(s, "overflow") == "hidden";
+    bool wrapped = false;   // (a line broken to the wrap width)
     for (const Para &p : paras) {
         if (p.bottomMargin && clipped) continue;
         lines.emplace_back();
@@ -1080,6 +1081,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                     }
                 }
                 if (wrapIt) {   // (wrapped)
+                    wrapped = true;
                     if (!lines.back().empty()) {
                         LineRun &last = lines.back().back();
                         while (!last.text.empty() && last.text.back() == ' ') last.text.pop_back();
@@ -1145,7 +1147,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     double y = top;
     // (the lines' block: as wide as its widest line (a wrapped one: the box), placed by align; a line in it by its own
     // block's text-align, else by align)
-    double blockW = wrapWidth > 0 || (html && str(s, "overflow") == "fill") ? box.w : textW;   // (overflow=fill: the box's width)
+    // (overflow=fill: the box's width; wrapped: the box's if a line had to break, else its widest line's, as draw.io's label
+    // is an inline-block, as wide as its text up to the box (mxSvgCanvas2D.createCss))
+    double blockW = (wrapWidth > 0 && wrapped) || (html && str(s, "overflow") == "fill") ? box.w : textW;
     // (wrapped, a word wider than the box: the block as wide as it, placed by align, as draw.io's flex item is never narrower
     // than its longest word (min-width: auto); its lines' own text-align within that)
     if (wrapWidth > 0 && textW > blockW) blockW = textW;
