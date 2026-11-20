@@ -606,6 +606,8 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     auto newLine = [&] {
         flush();
         paras.emplace_back();
+        // (its block's strut from the start: an empty line (a <div><br></div>) is as high as the block's font makes it)
+        if (!struts.empty()) paras.back().strut = struts.back().second;
         space = true;
     };
     for (size_t i = 0; i < v.size();) {
@@ -1078,6 +1080,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     std::vector<float> lineHeight(lines.size());       // (its height: 1.2 of that, or its CSS line-height)
     for (size_t l = 0; l < lines.size(); l++) {
         bool text = false;
+        if (lines[l].empty() && struts[l] > 0) lineSize[l] = struts[l];   // (an empty line: its block's strut)
         if (!lines[l].empty()) {
             lineSize[l] = 0;
             for (const LineRun &r : lines[l]) lineSize[l] = std::max(lineSize[l], r.size), text = text || !r.text.empty();
