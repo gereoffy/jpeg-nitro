@@ -4593,8 +4593,9 @@ struct Builder {
         }
         Item it;
         it.path = path;
+        // (the line stops at the marker's back, filled or not, as mxMarker shortens it: an outlined block or diamond has no line
+        // through it; a filled one's covers the line's end)
         if (fill) it.fill = colour, retreat = std::max(retreat - sw / 2, 0.0);
-        else retreat = t == "open" || t.compare(0, 2, "ER") == 0 ? retreat : 0;   // (an ER circle not filled: the line stops before it)
         retreat += std::hypot(p.x - tip.x, p.y - tip.y);
         it.stroke = colour;
         it.width = (float)sw;
