@@ -67,7 +67,8 @@ std::string nf_font_family(const char *name, int &weight, bool &italic);
 // fixed-width core font; else the sans-serif ones (Arial, Helvetica, Liberation Sans, DejaVu Sans; a
 // light, medium or semibold weight from Helvetica Neue). Upright text not from a family that has only
 // italic faces. NULL only if no font at all. Caller holds nf_lock.
-plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind = NF_ANY);
+// The optional file is tried before substitutes if the name has no installed match.
+plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind = NF_ANY, const char *file = nullptr);
 // A face that has a glyph for a character the font lacks: its family's substitute, then the common
 // fonts (nf_glyph_face). Caller holds nf_lock.
 plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint);

@@ -426,8 +426,8 @@ std::string decode(sv raw, Conv &conv, bool utf8, bool special) {
 // isocp ...) are not here: a plain sans serif instead. Locked by the caller.
 plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
     std::string name(trim(family));
-    if (name.empty()) name = std::string(trim(file));
-    return nf_find_face(name.c_str(), bold ? 700 : 400, italic);
+    std::string filename(trim(file));
+    return nf_find_face(name.c_str(), bold ? 700 : 400, italic, NF_ANY, filename.c_str());
 }
 
 // a face for a character the font lacks (nitro_font's common fonts); null if none has it (locked by the caller)

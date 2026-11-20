@@ -31,7 +31,7 @@ namespace {
 std::mutex g_lock;
 
 struct Face {
-    std::string family, file;
+    std::string file;
     uint32_t offset = 0;   // of the font in its file (a collection: one of several)
     int ttc = 0;           // its index in the collection
     int weight = 400;
@@ -43,9 +43,11 @@ struct Face {
     bool cmapRead = false;
 };
 
+using Names = std::unordered_map<std::string, std::vector<int>>;
+
 struct Index {
     std::vector<Face> faces;
-    std::unordered_map<std::string, std::vector<int>> families;   // lower-case name -> faces
+    Names families, faceNames, files;   // lower-case name -> faces
     std::unordered_map<plutovg_font_face_t *, int> loaded;
     std::unordered_map<std::string, std::vector<uint8_t>> fontData;   // shared by the faces of a collection
 };
@@ -105,44 +107,46 @@ const uint16_t MAC_ROMAN[128] = {
     0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
     0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7};
 
-// The font's family name (name id 1): a Unicode name (platform 0, or Windows' Unicode) if it has
-// one, else the Mac Roman one; as plutovg's own cache reads it.
-std::string family_name(const std::vector<uint8_t> &name) {
-    if (name.size() < 6) return "";
+// Name IDs 1 and 16 identify families; IDs 4 and 6 identify individual faces.
+void index_names(Index &ix, const std::vector<uint8_t> &name, int face) {
+    if (name.size() < 6) return;
     uint32_t count = u16(name.data() + 2), strings = u16(name.data() + 4);
-    const uint8_t *unicode = nullptr, *roman = nullptr;
-    size_t ulen = 0, rlen = 0;
     for (uint32_t i = 0; i < count; i++) {
         size_t loc = 6 + 12 * i;
         if (loc + 12 > name.size()) break;
         const uint8_t *r = name.data() + loc;
-        if (u16(r + 6) != 1) continue;
+        uint32_t id = u16(r + 6);
+        if (id != 1 && id != 4 && id != 6 && id != 16) continue;
         uint32_t platform = u16(r), encoding = u16(r + 2), len = u16(r + 8), off = u16(r + 10);
         if ((size_t)strings + off + len > name.size()) continue;
         const uint8_t *s = name.data() + strings + off;
+        std::string value;
         if (platform == 1 && encoding == 0) {
-            roman = s;
-            rlen = len;
+            for (size_t k = 0; k < len; k++) nf_utf8_put(value, s[k] < 0x80 ? s[k] : MAC_ROMAN[s[k] - 0x80]);
         } else if (platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10))) {
-            unicode = s;
-            ulen = len;
-            break;
-        }
-    }
-    std::string o;
-    if (unicode) {
-        for (size_t i = 0; i + 1 < ulen; i += 2) {
-            uint32_t c = u16(unicode + i);
-            if (c >= 0xd800 && c < 0xdc00 && i + 3 < ulen) {
-                c = ((c - 0xd800) << 10) + (u16(unicode + i + 2) - 0xdc00) + 0x10000;
-                i += 2;
+            for (size_t k = 0; k + 1 < len; k += 2) {
+                uint32_t c = u16(s + k);
+                if (c >= 0xd800 && c < 0xdc00 && k + 3 < len) {
+                    uint32_t trail = u16(s + k + 2);
+                    if (trail >= 0xdc00 && trail < 0xe000) {
+                        c = ((c - 0xd800) << 10) + (trail - 0xdc00) + 0x10000;
+                        k += 2;
+                    }
+                }
+                if (c >= 0xd800 && c < 0xe000) c = 0xfffd;
+                nf_utf8_put(value, c);
             }
-            nf_utf8_put(o, c);
         }
-    } else if (roman) {
-        for (size_t i = 0; i < rlen; i++) nf_utf8_put(o, roman[i] < 0x80 ? roman[i] : MAC_ROMAN[roman[i] - 0x80]);
+        if (value.empty() || value.find(char(0)) != std::string::npos) continue;
+        Names &names = id == 1 || id == 16 ? ix.families : ix.faceNames;
+        auto &faces = names[lower(value.c_str())];
+        if (faces.empty() || faces.back() != face) faces.push_back(face);
     }
-    return o;
+}
+
+const char *basename(const std::string &path) {
+    size_t slash = path.find_last_of("/\\");
+    return path.c_str() + (slash == std::string::npos ? 0 : slash + 1);
 }
 
 void index_file(Index &ix, const std::string &path) {
@@ -150,6 +154,7 @@ void index_file(Index &ix, const std::string &path) {
     if (!f) return;
     std::vector<uint8_t> head;
     std::vector<uint32_t> offsets;
+    std::string filename = lower(basename(path));
     if (read_at(f, 0, 12, head)) {
         if (u32(head.data()) == 0x74746366) {   // a collection (ttcf): its fonts
             uint32_t n = std::min(u32(head.data() + 8), 64u);
@@ -166,8 +171,6 @@ void index_file(Index &ix, const std::string &path) {
         std::vector<uint8_t> name, os2, hd;
         if (!read_at(f, t[0].off, t[0].len, name)) continue;
         Face face;
-        face.family = family_name(name);
-        if (face.family.empty()) continue;
         face.file = path;
         face.offset = offsets[i];
         face.ttc = (int)i;
@@ -183,7 +186,9 @@ void index_file(Index &ix, const std::string &path) {
             face.narrow = width != 5 && width != 0;
         } else
             face.weight = bold ? 700 : 400;
-        ix.families[lower(face.family.c_str())].push_back((int)ix.faces.size());
+        int k = (int)ix.faces.size();
+        index_names(ix, name, k);
+        ix.files[filename].push_back(k);
         ix.faces.push_back(std::move(face));
     }
     fclose(f);
@@ -373,18 +378,16 @@ void read_cmap(Face &f) {
 
 // --- the lookups -------------------------------------------------------------
 
-const std::vector<int> *family_faces(Index &ix, const char *family) {
-    auto it = ix.families.find(lower(family));
-    return it == ix.families.end() ? nullptr : &it->second;
+const std::vector<int> *named_faces(const Names &names, const char *name) {
+    auto it = names.find(lower(name));
+    return it == names.end() ? nullptr : &it->second;
 }
 
 } // namespace
 
 std::mutex &nf_lock() { return g_lock; }
 
-static plutovg_font_face_t *match_face(const char *family, int weight, bool italic, bool uprightOnly) {
-    Index &ix = index();
-    const std::vector<int> *faces = family_faces(ix, family);
+static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces, int weight, bool italic, bool uprightOnly = false) {
     if (!faces) return nullptr;
     weight = std::clamp(weight, 1, 1000);   // (a damaged file's)
     for (;;) {
@@ -408,8 +411,15 @@ static plutovg_font_face_t *match_face(const char *family, int weight, bool ital
     }
 }
 
+static plutovg_font_face_t *match_name(const char *name, int weight, bool italic, bool uprightOnly = false) {
+    Index &ix = index();
+    if (const auto *family = named_faces(ix.families, name))
+        return match_face(ix, family, weight, italic, uprightOnly);
+    return match_face(ix, named_faces(ix.faceNames, name), weight, italic);
+}
+
 plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
-    return match_face(family, weight, italic, false);
+    return match_name(family, weight, italic);
 }
 
 bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc) {
@@ -423,7 +433,7 @@ bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc) {
 
 bool nf_has_style(const char *family, bool italic) {
     Index &ix = index();
-    const std::vector<int> *faces = family_faces(ix, family);
+    const std::vector<int> *faces = named_faces(ix.families, family);
     if (!faces) return false;
     for (int k : *faces)
         if (!ix.faces[k].failed && ix.faces[k].italic == italic) return true;
@@ -536,6 +546,8 @@ bool bitstream_name(std::string &family, int &weight, bool &italic) {
 }
 
 struct FontName {
+    std::string original;   // (trimmed and without the PDF subset tag)
+    std::string filename;   // (a TrueType or OpenType file's basename)
     std::string raw;        // (the name less its subset tag and PostScript style)
     std::string family;     // (its family, its style words off)
     bool bitstream = false;
@@ -553,12 +565,13 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
     // a font file (DXF's text styles): Windows' core fonts by their file names, else the file's own name; an AutoCAD SHX
     // stroke font: none (a plain sans serif)
     std::string low = lower(s.c_str());
-    if (ends_with_ci(low, ".ttf") || ends_with_ci(low, ".otf") || ends_with_ci(low, ".ttc") || ends_with_ci(low, ".shx")) {
-        size_t slash = s.find_last_of("/\\");
-        std::string f = slash == std::string::npos ? s : s.substr(slash + 1), stem = lower(f.c_str());
+    p.original = s;
+    if (font_file(low) || ends_with_ci(low, ".shx")) {
+        std::string f = basename(s), stem = lower(f.c_str());
         stem.resize(stem.size() - 4);
         p.file = true;
         if (ends_with_ci(low, ".shx")) return p;
+        p.filename = f;
         static const struct { const char *file, *family; bool bold, italic; } files[] = {
             {"arial", "Arial", 0, 0},          {"arialbd", "Arial", 1, 0},      {"ariali", "Arial", 0, 1},
             {"arialbi", "Arial", 1, 1},        {"arialn", "Arial Narrow", 0, 0}, {"arialnb", "Arial Narrow", 1, 0},
@@ -639,18 +652,36 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
 
 std::string nf_font_family(const char *name, int &weight, bool &italic) { return parse_name(name, weight, italic).family; }
 
-plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind) {
-    FontName p = parse_name(name, weight, italic);
-    const char *sub = p.family.empty() ? nullptr : nf_substitute(p.family.c_str());
-    const char *sub2 = sub ? nf_substitute(sub) : nullptr;   // (a substitute's own: Linux's Liberation one)
-    std::string linotype = p.bitstream ? p.family + " LT" : std::string();   // (a Bitstream font under Linotype's name: "Futura LT")
-    // its own names first: upright text not from a family that has only italic faces (an installed "Futura Lt BT" Light
-    // Italic alone made every Futura text italic)
-    const char *own[] = {p.file ? "" : name ? name : "", p.raw.c_str(), linotype.c_str(), p.family.c_str(), sub ? sub : "", sub2 ? sub2 : ""};
-    for (const char *t : own) {
+static plutovg_font_face_t *find_own_face(const FontName &p, int weight, bool italic) {
+    Index &ix = index();
+    if (!p.filename.empty())
+        if (plutovg_font_face_t *f = match_face(ix, named_faces(ix.files, p.filename.c_str()), weight, italic)) return f;
+    std::string linotype = p.bitstream ? p.family + " LT" : std::string();
+    const char *own[] = {p.file ? "" : p.original.c_str(), p.raw.c_str(), linotype.c_str(), p.family.c_str()};
+    for (const char *t : own)
         if (*t)
-            if (plutovg_font_face_t *f = match_face(t, weight, italic, !italic)) return f;
+            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic)) return f;
+    return nullptr;
+}
+
+plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind, const char *file) {
+    int fileWeight = weight;
+    bool fileItalic = italic;
+    FontName p = parse_name(name, weight, italic);
+    if (plutovg_font_face_t *f = find_own_face(p, weight, italic)) return f;
+    FontName alt = parse_name(file, fileWeight, fileItalic);
+    if (alt.file)
+        if (plutovg_font_face_t *f = find_own_face(alt, fileWeight, fileItalic)) return f;
+    if (p.family.empty() && alt.file && !alt.family.empty()) {
+        p = std::move(alt);
+        weight = fileWeight;
+        italic = fileItalic;
     }
+    const char *sub = p.family.empty() ? nullptr : nf_substitute(p.family.c_str());
+    const char *sub2 = sub ? nf_substitute(sub) : nullptr;
+    for (const char *t : {sub, sub2})
+        if (t)
+            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic)) return f;
     // then a core font of its kind: by what the format says, else by its name (an SHX stroke font: sans serif)
     const char *g = kind == NF_SERIF ? "serif" : kind == NF_MONO ? "monospace" : kind == NF_SANS || p.file ? nullptr : nf_generic_of(name);
     if (!g && kind == NF_ANY && !p.file) g = nf_generic_of(p.family.c_str());
