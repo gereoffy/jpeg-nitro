@@ -24,14 +24,16 @@ struct nitrosvg {
     int background = 0;   // (nitrosvg_set_background)
 };
 
-// lunasvg asks nitro_font for every font (lunasvg_set_weighted_font_face_resolver, set at the first load),
-// and every lunasvg call runs under nitro_font's lock: the faces are shared with nitrodxf and
-// nitrocdr, and their glyph caches have no lock of their own
+// LunaSVG's font and glyph resolvers use the shared index under nf_lock().
 static plutovg_font_face_t *resolve_font(void *, const char *family, int weight, bool italic) { return nf_css_face_weight(family, weight, italic); }
+static plutovg_font_face_t *resolve_glyph(void *, const char *families, int weight, bool italic, uint32_t cp) {
+    return nf_css_face_list(families, weight, italic, cp);
+}
 static void set_resolver() {   // (locked by the caller)
     static bool done;
     if (!done) {
         lunasvg_set_weighted_font_face_resolver(resolve_font, nullptr);
+        lunasvg_set_glyph_face_resolver(resolve_glyph, nullptr);
         done = true;
     }
 }

@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -430,9 +431,6 @@ plutovg_font_face_t *find_font(sv family, sv file, bool bold, bool italic) {
     return nf_find_face(name.c_str(), bold ? 700 : 400, italic, NF_ANY, filename.c_str());
 }
 
-// a face for a character the font lacks (nitro_font's common fonts); null if none has it (locked by the caller)
-plutovg_font_face_t *fallback_font(uint32_t cp) { return nf_glyph_face(nullptr, cp, 400, false); }
-
 struct FaceInfo {
     float cap = 0.7f, descent = 0.21f;   // per em
 };
@@ -486,6 +484,7 @@ struct TStyle {
     double height = 0, width = 1, oblique = 0;
     std::string family, file;   // (resolved to face at the end of the tables)
     bool bold = false, italic = false;
+    std::unordered_map<uint32_t, uint32_t> fallbackGlyphs;
 };
 
 // Primitives of a block, in its own coordinates
@@ -703,20 +702,25 @@ struct Parser {
         }
         return faceInfo[f] = fi;
     }
-    // the glyph of a character in face f (or a fallback face): its index in doc->glyphs (locked)
-    uint32_t glyph(plutovg_font_face_t *f, uint32_t cp) {
-        uint64_t key = (uint64_t)(uintptr_t)f * 1000003u ^ cp;
+    // Outline cache keyed by the face that supplies the glyph.
+    uint32_t glyphPath(plutovg_font_face_t *face, uint32_t cp) {
+        uint64_t key = (uint64_t)(uintptr_t)face * 1000003u ^ cp;
         auto it = glyphIndex.find(key);
         if (it != glyphIndex.end()) return it->second;
-        plutovg_font_face_t *g = f;
-        if (g && cp > ' ' && !nf_has_glyph(g, cp)) {
-            plutovg_font_face_t *fb = fallback_font(cp);
-            if (fb) g = fb;
-        }
         Glyph gl{plutovg_path_create(), 0};
-        if (g) gl.advance = plutovg_font_face_get_glyph_path(g, 1, 0, 0, cp, gl.path);
+        if (face) gl.advance = plutovg_font_face_get_glyph_path(face, 1, 0, 0, cp, gl.path);
         doc->glyphs.push_back(gl);
         return glyphIndex[key] = (uint32_t)doc->glyphs.size() - 1;
+    }
+    uint32_t glyph(TStyle &style, uint32_t cp) {
+        auto *face = style.face;
+        if (!face || cp <= ' ' || nf_has_glyph(face, cp)) return glyphPath(face, cp);
+        auto [it, fresh] = style.fallbackGlyphs.try_emplace(cp);
+        if (fresh) {
+            auto *fallback = nf_find_glyph_face(style.family.c_str(), style.bold ? 700 : 400, style.italic, cp, style.file.c_str());
+            it->second = glyphPath(fallback ? fallback : face, cp);
+        }
+        return it->second;
     }
 
     // --- header and tables
@@ -1150,7 +1154,7 @@ struct Parser {
     // --- text
 
     // lays out a line of text (UTF-8) at x on the baseline y into t; returns its width
-    double run(TextData &t, plutovg_font_face_t *f, const std::string &s, double x, double y, double size, double sx, double skew,
+    double run(TextData &t, TStyle &font, const std::string &s, double x, double y, double size, double sx, double skew,
                uint32_t color, double tracking = 1) {
         GRun gr{color, (float)size, (float)sx, (float)skew, (uint32_t)t.glyphs.size(), 0};
         double x0 = x;
@@ -1158,7 +1162,7 @@ struct Parser {
             uint32_t c = nf_utf8_next(s, i);
             if (c == '\t') c = ' ';
             if (c < ' ') continue;
-            uint32_t gi = glyph(f, c);
+            uint32_t gi = glyph(font, c);
             t.glyphs.push_back({gi, (float)x, (float)y});
             x += doc->glyphs[gi].advance * size * sx * tracking;
         }
@@ -1184,7 +1188,7 @@ struct Parser {
         plutovg_font_face_t *f = face(st);
         const FaceInfo &fi = info(f);
         double size = h / fi.cap, skew = std::tan(obl * M_PI / 180);
-        double w = run(t, f, s, 0, 0, size, wf, skew, 0);
+        double w = run(t, st, s, 0, 0, size, wf, skew, 0);
         V2 at = hj == 0 && vj == 0 ? p10 : p11;
         M2 local;
         if (hj == 3 || hj == 5) {   // aligned / fit: between 10 and 11 (aligned: the height follows)
@@ -1233,22 +1237,29 @@ struct Parser {
         if (attach < 1 || attach > 9) attach = 1;
 
         struct St {
-            plutovg_font_face_t *face;
+            TStyle *font;
             double h, w, skew, track;
             uint32_t color;
+
+            bool operator==(const St &other) const {
+                return font == other.font && h == other.h && w == other.w && skew == other.skew &&
+                       track == other.track && color == other.color;
+            }
         };
         struct Ch {
             uint32_t cp;
             int st;
         };
         std::lock_guard<std::mutex> lock(nf_lock());
+        std::deque<TStyle> inlineFonts;
         std::vector<St> states;
-        St s0{face(st), h0, st.width > 0 ? st.width : 1, std::tan(st.oblique * M_PI / 180), 1, 0};
+        face(st);
+        St s0{&st, h0, st.width > 0 ? st.width : 1, std::tan(st.oblique * M_PI / 180), 1, 0};
         St cs = s0;
         std::vector<St> stack;
         std::vector<std::vector<Ch>> paras(1);
         auto state = [&]() {
-            if (states.empty() || memcmp(&states.back(), &cs, sizeof cs)) states.push_back(cs);
+            if (states.empty() || !(states.back() == cs)) states.push_back(cs);
             return (int)states.size() - 1;
         };
         auto param = [&](size_t &i) {   // up to ';'
@@ -1333,7 +1344,14 @@ struct Parser {
                     bool bold = v.find("|b1") != std::string::npos, italic = v.find("|i1") != std::string::npos;
                     bool file = k == 'F' || name.find('.') != std::string::npos;
                     plutovg_font_face_t *fc = file ? find_font("", name, bold, italic) : find_font(name, "", bold, italic);
-                    if (fc) cs.face = fc;
+                    if (fc) {
+                        TStyle &font = inlineFonts.emplace_back();
+                        font.face = fc;
+                        (file ? font.file : font.family) = std::move(name);
+                        font.bold = bold;
+                        font.italic = italic;
+                        cs.font = &font;
+                    }
                     continue;
                 }
                 case 'A':
@@ -1369,8 +1387,8 @@ struct Parser {
             double x = 0;
             for (const Ch &ch : para) {
                 const St &q = states[ch.st];
-                uint32_t gi = glyph(q.face, ch.cp);
-                double adv = doc->glyphs[gi].advance * q.h / info(q.face).cap * q.w * q.track;
+                uint32_t gi = glyph(*q.font, ch.cp);
+                double adv = doc->glyphs[gi].advance * q.h / info(q.font->face).cap * q.w * q.track;
                 LLine *L = &lines.back();
                 if (width > 0 && x + adv > width * 1.0001 && ch.cp != ' ' && !L->g.empty()) {
                     size_t sp = L->g.size();
@@ -1411,7 +1429,7 @@ struct Parser {
             for (const LGlyph &g : L.g) {
                 const St &q = states[g.st];
                 if (g.st != last) {
-                    t.runs.push_back({q.color, (float)(q.h / info(q.face).cap), (float)q.w, (float)q.skew, (uint32_t)t.glyphs.size(), 0});
+                    t.runs.push_back({q.color, (float)(q.h / info(q.font->face).cap), (float)q.w, (float)q.skew, (uint32_t)t.glyphs.size(), 0});
                     last = g.st;
                 }
                 t.glyphs.push_back({g.g, (float)(x0 + g.x), (float)y});

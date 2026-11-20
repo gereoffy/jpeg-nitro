@@ -1221,7 +1221,6 @@ public:
         // the glyphs along the baseline from 0, in a local y-down space of logical units
         plutovg_path_t *glyphs = plutovg_path_create();
         double pen = 0;
-        plutovg_font_face_t *fallback = nullptr;
         for (size_t i = 0; i < cps.size(); i++) {
             uint32_t cp = cps[i];
             plutovg_font_face_t *g = fc;
@@ -1230,8 +1229,8 @@ public:
                 else cp = symbolUnicode(cp);
             }
             if (!nf_has_glyph(g, cp)) {
-                if (!fallback) fallback = nf_css_face("", f.weight >= 600, f.italic);
-                if (fallback && nf_has_glyph(fallback, cp)) g = fallback;
+                if (plutovg_font_face_t *fallback = nf_find_glyph_face(f.face.c_str(), f.weight > 0 ? f.weight : 400, f.italic, cp))
+                    g = fallback;
             }
             float adv = plutovg_font_face_get_glyph_path(g, (float)em, (float)pen, 0, cp, glyphs);
             pen += i < dx.size() ? dx[i] : adv;

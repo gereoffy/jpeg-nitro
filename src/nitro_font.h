@@ -35,8 +35,7 @@ bool nf_has_glyph(plutovg_font_face_t *face, uint32_t codepoint);
 // NULL if none is.
 plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic);
 // A face that has a glyph for the character: of the families given first (NULL-terminated, or NULL),
-// then of the common fonts (Arial, Helvetica, Lucida Grande, Arial Unicode MS, Liberation Sans,
-// DejaVu Sans, then the CJK ones Noto Sans, PingFang SC, Hiragino Sans, MS Gothic, Noto Sans CJK JP);
+// then of the common fonts, including CJK and symbol fonts;
 // NULL if none has it. For a character the text's own font lacks.
 plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic);
 // A face for a CSS font-family: a family name, a generic one (sans-serif, serif, monospace,
@@ -45,6 +44,8 @@ plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint,
 // fixed-width or serif one by its name (nf_generic_of), the generic family's font; else NULL.
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic);
 plutovg_font_face_t *nf_css_face_weight(const char *family, int weight, bool italic);
+// Resolve a CSS family list. With a code point, try the listed families before common fonts.
+plutovg_font_face_t *nf_css_face_list(const char *families, int weight, bool italic, uint32_t codepoint = 0);
 // The family that stands in for one this machine may not have (case-insensitive): old CorelDRAW
 // families macOS lacks (AvantGarde: Avenir ...), and the Windows / macOS core fonts that Linux has as
 // their metric-compatible Liberation fonts (Arial: Liberation Sans ...); NULL if none.
@@ -70,9 +71,8 @@ std::string nf_font_family(const char *name, int &weight, bool &italic);
 // italic faces. NULL only if no font at all. Caller holds nf_lock.
 // The optional file is tried before substitutes if the name has no installed match.
 plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfKind kind = NF_ANY, const char *file = nullptr);
-// A face that has a glyph for a character the font lacks: its family's substitute, then the common
-// fonts (nf_glyph_face). Caller holds nf_lock.
-plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint);
+// A face containing the character, in the requested family, its substitutes or the common fonts.
+plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint, const char *file = nullptr);
 
 // UTF-8: the next code point of s from i (invalid bytes as Latin-1), and a code point appended.
 uint32_t nf_utf8_next(const std::string &s, size_t &i);

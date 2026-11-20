@@ -336,7 +336,7 @@ const std::vector<int> *named_faces(const Names &names, const char *name) {
 
 std::mutex &nf_lock() { return g_lock; }
 
-static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces, int weight, bool italic, bool uprightOnly = false, int width = 5) {
+static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces, int weight, bool italic, bool uprightOnly = false, int width = 5, uint32_t codepoint = 0) {
     if (!faces) return nullptr;
     weight = std::clamp(weight, 1, 1000);   // (a damaged file's)
     for (;;) {
@@ -345,6 +345,7 @@ static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces,
         for (int k : *faces) {
             const Face &f = ix.faces[k];
             if (f.failed || (uprightOnly && f.italic)) continue;
+            if (codepoint && f.face && !nf_has_glyph(f.face, codepoint)) continue;
             int diff = std::abs(f.weight - weight);
             // The slant first, then the requested width, then the weight. Of two equally close weights
             // the one on the side of the request (a light weight: the lighter)
@@ -356,15 +357,16 @@ static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces,
             }
         }
         if (best < 0) return nullptr;
-        if (plutovg_font_face_t *f = load(ix, best)) return f;
+        if (plutovg_font_face_t *f = load(ix, best))
+            if (!codepoint || nf_has_glyph(f, codepoint)) return f;
     }
 }
 
-static plutovg_font_face_t *match_name(const char *name, int weight, bool italic, bool uprightOnly = false, int width = 5) {
+static plutovg_font_face_t *match_name(const char *name, int weight, bool italic, bool uprightOnly = false, int width = 5, uint32_t codepoint = 0) {
     Index &ix = index();
     if (const auto *family = named_faces(ix.families, name))
-        return match_face(ix, family, weight, italic, uprightOnly, width);
-    return match_face(ix, named_faces(ix.faceNames, name), weight, italic, false, width);
+        return match_face(ix, family, weight, italic, uprightOnly, width, codepoint);
+    return match_face(ix, named_faces(ix.faceNames, name), weight, italic, false, width, codepoint);
 }
 
 plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
@@ -407,15 +409,24 @@ plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool
     return first_face(families, weight, italic, 5);
 }
 
-plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic) {
+static plutovg_font_face_t *glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic, int width) {
+    if (!codepoint) return nullptr;
     static const char *const common[] = {"Arial", "Helvetica", "Lucida Grande", "Arial Unicode MS", "Liberation Sans", "DejaVu Sans",
-                                         "Noto Sans", "PingFang SC", "Hiragino Sans", "MS Gothic", "Noto Sans CJK JP", nullptr};
-    for (const char *const *list : {first, common})
-        for (; list && *list; list++) {
-            plutovg_font_face_t *f = **list ? nf_face(*list, weight, italic) : nullptr;
-            if (f && nf_has_glyph(f, codepoint)) return f;
-        }
+                                         "Noto Sans", "PingFang SC", "Hiragino Sans", "MS Gothic", "Noto Sans CJK JP",
+                                         "Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Sans CJK KR",
+                                         "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", nullptr};
+    for (; first && *first; first++)
+        if (**first)
+            if (plutovg_font_face_t *f = match_name(*first, weight, italic, false, width, codepoint)) return f;
+    // A last-resort probe should not load every style of each large system collection.
+    for (const char *const *name = common; *name; name++)
+        if (plutovg_font_face_t *f = match_name(*name, weight, italic, false, width))
+            if (nf_has_glyph(f, codepoint)) return f;
     return nullptr;
+}
+
+plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic) {
+    return glyph_face(first, codepoint, weight, italic, 5);
 }
 
 // (Adobe Caslon Pro: Times New Roman's widths are closest, as a CD label's lettering moved one by one
@@ -620,15 +631,15 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
 
 std::string nf_font_family(const char *name, int &weight, bool &italic) { return parse_name(name, weight, italic).family; }
 
-static plutovg_font_face_t *find_own_face(const FontName &p, int weight, bool italic) {
+static plutovg_font_face_t *find_own_face(const FontName &p, int weight, bool italic, uint32_t codepoint = 0) {
     Index &ix = index();
     if (!p.filename.empty())
-        if (plutovg_font_face_t *f = match_face(ix, named_faces(ix.files, p.filename.c_str()), weight, italic, false, p.width)) return f;
+        if (plutovg_font_face_t *f = match_face(ix, named_faces(ix.files, p.filename.c_str()), weight, italic, false, p.width, codepoint)) return f;
     std::string linotype = p.bitstream ? p.family + " LT" : std::string();
     const char *own[] = {p.file ? "" : p.original.c_str(), p.raw.c_str(), linotype.c_str(), p.family.c_str()};
     for (const char *t : own)
         if (*t)
-            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic, p.width)) return f;
+            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic && !codepoint, p.width, codepoint)) return f;
     return nullptr;
 }
 
@@ -667,13 +678,26 @@ plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfK
     return first_face(sans, weight == 600 ? 500 : weight, italic, p.width);
 }
 
-plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint) {
-    int w = weight;
-    bool it = italic;
-    std::string family = nf_font_family(name, w, it);
-    const char *sub = family.empty() ? nullptr : nf_substitute(family.c_str());
-    const char *first[] = {sub ? sub : "", nullptr};
-    return nf_glyph_face(first, codepoint, weight, italic);
+plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint, const char *file) {
+    if (!codepoint) return nullptr;
+    int fileWeight = weight;
+    bool fileItalic = italic;
+    FontName p = parse_name(name, weight, italic);
+    if (plutovg_font_face_t *f = find_own_face(p, weight, italic, codepoint)) return f;
+    if (file && *file) {
+        FontName alt = parse_name(file, fileWeight, fileItalic);
+        if (alt.file)
+            if (plutovg_font_face_t *f = find_own_face(alt, fileWeight, fileItalic, codepoint)) return f;
+        if (p.family.empty() && alt.file) {
+            p = std::move(alt);
+            weight = fileWeight;
+            italic = fileItalic;
+        }
+    }
+    const char *sub = nf_substitute(p.family.c_str());
+    const char *sub2 = sub ? nf_substitute(sub) : nullptr;
+    const char *first[] = {sub ? sub : "", sub2 ? sub2 : "", nullptr};
+    return glyph_face(first, codepoint, weight, italic, p.width);
 }
 
 plutovg_font_face_t *nf_css_face_weight(const char *family, int weight, bool italic) {
@@ -716,6 +740,35 @@ plutovg_font_face_t *nf_css_face_weight(const char *family, int weight, bool ita
 
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
     return nf_css_face_weight(family, bold ? 700 : 400, italic);
+}
+
+plutovg_font_face_t *nf_css_face_list(const char *families, int weight, bool italic, uint32_t codepoint) {
+    const char *p = families;
+    while (*p) {
+        std::string family;
+        char quote = 0;
+        for (; *p; ++p) {
+            if (*p == '\\' && p[1]) family.push_back(*++p);
+            else if (quote && *p == quote) quote = 0;
+            else if (!quote && (*p == '\'' || *p == '"')) quote = *p;
+            else if (!quote && *p == ',') { ++p; break; }
+            else family.push_back(*p);
+        }
+        size_t first = family.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) continue;
+        family = family.substr(first, family.find_last_not_of(" \t\r\n") - first + 1);
+        const char *name = family.c_str();
+        if (codepoint) {
+            if (plutovg_font_face_t *f = match_name(name, weight, italic, false, 5, codepoint)) return f;
+            const char *sub = nf_substitute(name);
+            for (const char *t : {sub, sub ? nf_substitute(sub) : nullptr})
+                if (t)
+                    if (plutovg_font_face_t *f = match_name(t, weight, italic, false, 5, codepoint)) return f;
+            if (plutovg_font_face_t *f = nf_css_face_weight(name, weight, italic))
+                if (nf_has_glyph(f, codepoint)) return f;
+        } else if (plutovg_font_face_t *f = nf_css_face_weight(name, weight, italic)) return f;
+    }
+    return codepoint ? nf_glyph_face(nullptr, codepoint, weight, italic) : nf_css_face_weight("", weight, italic);
 }
 
 uint32_t nf_utf8_next(const std::string &s, size_t &i) {
