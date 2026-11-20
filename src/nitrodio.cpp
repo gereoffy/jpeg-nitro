@@ -1617,7 +1617,8 @@ PathP roughPath(const plutovg_path_t *path) {
 
 // a closed polygon in b (its points relative); arc > 0: its corners rounded as mxShape.addPoints rounds them (a quadratic
 // through each corner, from arc before it to arc after it, at most half a side)
-void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, double arc = 0) {
+// (sharp: the index of a corner left sharp, as mxShape.addPoints' exclude does: a callout's tip)
+void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, double arc = 0, int sharp = -1) {
     std::vector<Pt> pts(list);
     if (pts.empty()) return;
     auto at = [&](Pt q) { return plutovg_point_t{(float)(b.x + q.x), (float)(b.y + q.y)}; };
@@ -1641,6 +1642,12 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, do
         Pt c = pts[k % n];
         double dx = cur.x - c.x, dy = cur.y - c.y;
         if (dx == 0 && dy == 0) continue;
+        if ((int)k - 1 == sharp) {
+            plutovg_point_t cc = at(c);
+            plutovg_path_line_to(p, cc.x, cc.y);
+            cur = c;
+            continue;
+        }
         double d = std::sqrt(dx * dx + dy * dy);
         plutovg_point_t l = at({c.x + dx * std::min(arc, d / 2) / d, c.y + dy * std::min(arc, d / 2) / d});
         plutovg_path_line_to(p, l.x, l.y);
@@ -1695,7 +1702,7 @@ bool turnsByDirection(const std::string &shape) {
                                          "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
                                          "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
                                          "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
-                                         "mxgraph.mockup.markup.curlyBrace"};
+                                         "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -1985,6 +1992,23 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         line(0, 0, 0, h), line(w, 0, w, h), line(0, h / 2, w, h / 2);
     } else if (shape == "umlDestroy") {
         line(w, 0, 0, h), line(0, 0, w, h);
+    } else if (shape == "callout") {   // (CalloutShape: a box, its pointer size high below it, base wide from position, its tip at
+        double sz = std::clamp(num(s, "size", 30), 0.0, h);   // position2; rounded: all corners but the tip)
+        double dx = w * std::clamp(num(s, "position", 0.5), 0.0, 1.0), dx2 = w * std::clamp(num(s, "position2", 0.5), 0.0, 1.0);
+        double base = std::clamp(num(s, "base", 20), 0.0, w);
+        polygon(q, {{0, 0}, {w, 0}, {w, h - sz}, {std::min(w, dx + base), h - sz}, {dx2, h}, {std::max(0.0, dx), h - sz}, {0, h - sz}}, b, arc, 4);
+    } else if (shape == "loopLimit") {   // (LoopLimitShape: its top corners cut, size wide)
+        double sz = std::min(w / 2, std::min(h, num(s, "size", 20)));
+        polygon(q, {{sz, 0}, {w - sz, 0}, {w, sz * 0.8}, {w, h}, {0, h}, {0, sz * 0.8}}, b, arc);
+    } else if (shape == "collate") {   // (CollateShape: two triangles meeting at the centre)
+        polygon(q, {{0, 0}, {w, 0}, {w / 2, h / 2}}, b);
+        polygon(q, {{0, h}, {w, h}, {w / 2, h / 2}}, b);
+    } else if (shape == "umlBoundary") {   // (UmlBoundaryShape: a circle in the right 5/6, a T on its side at the left)
+        plutovg_path_add_ellipse(q, (float)(b.x + w * 7 / 12), (float)(b.y + h / 2), (float)(w * 5 / 12), (float)(h / 2));
+        line(0, h / 4, 0, h * 3 / 4), line(0, h / 2, w / 6, h / 2);
+    } else if (shape == "umlControl") {   // (UmlControlShape: a circle below an eighth of the height, an arrowhead on its top)
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h * 9 / 16), (float)(w / 2), (float)(h * 7 / 16));
+        line(w * 3 / 8, h / 8 * 1.1, w * 5 / 8, 0), line(w * 3 / 8, h / 8 * 1.1, w * 5 / 8, h / 4);
     } else if (shape == "lollipop") {   // (a circle of size on a stem down the middle)
         double sz = num(s, "size", 10);
         plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + sz / 2), (float)(sz / 2), (float)(sz / 2));
@@ -3380,6 +3404,18 @@ struct Builder {
             } else
                 lb.y += th, lb.h -= th;
         }
+        else if (shape == "callout") {   // (beside its pointer: the bottom margin turned with its direction, as mxShape.getLabelBounds)
+            const std::string &d = str(s, "direction");
+            bool across = d == "north" || d == "south";
+            double m = std::clamp(num(s, "size", 30), 0.0, across ? b.w : b.h);
+            if (d == "west") lb.y += m, lb.h -= m;
+            else if (d == "south") lb.x += m, lb.w -= m;
+            else if (d == "north") lb.w -= m;
+            else lb.h -= m;
+            lb.w = std::max(0.0, lb.w), lb.h = std::max(0.0, lb.h);
+        }
+        else if (shape == "umlBoundary") lb.x += b.w / 6, lb.w -= b.w / 6;   // (beside its T)
+        else if (shape == "umlControl") lb.y += b.h / 8, lb.h -= b.h / 8;   // (in its circle)
         else if (shape == "umlFrame") lb.w = std::min(b.w, std::max(10.0, num(s, "width", 60))), lb.h = std::min(b.h, std::max(15.0, num(s, "height", 30)));
         bool turned = false;
         if (shape == "swimlane") {   // (in its header)

@@ -76,26 +76,27 @@ kell foglalkozni: a geometria már a fájlban van.
 
 ## 2. Shapes.js (draw.io)
 
-A Shapes.js 99 alakzatot, élet és markert regisztrál. **52 megvan**:
+A Shapes.js 99 alakzatot, élet és markert regisztrál. **57 megvan**:
 
 - **Csúcsok:** process, note, note2, card, cube, tape, document, step, parallelogram, trapezoid, folder,
   component, datastore, dataStorage, delay, offPageConnector, umlActor, umlLifeline, umlFrame, umlDestroy,
   seqActorStick, table, tableRow, partialRectangle, singleArrow, crossbar, curlyBracket, cylinder3, isoCube,
   isoCube2, isoRectangle, lollipop, module, or, xor, plus, corner, startState, endState, dimension, message,
-  smileyFace, switch, waypoint, hexagon.
+  smileyFace, switch, waypoint, hexagon; 2026-11-20 óta callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal
+  együtt fordul), loopLimit, collate, umlBoundary, umlControl (az új projektmintákban 1-3 projekt használja őket).
 - **Élek:** flexArrow, link, wire, pipe, filledEdge, taperedArrow, mermaidSankeyLink.
 - **Extra markerek** (Shapes.js / Graph.js): async, openAsync, box, circle, circlePlus, cross, dash, halfCircle, doubleBlock, baseDash,
   ER-végek (ERone, ERmandOne, ERmany, ERoneToMany, ERzeroToMany, ERzeroToOne).
 - **Egyebek:** IsometricConnector élstílus, callout perimeter.
 
-**47 hiányzik**, de a mintákban szinte egyik sem fordul elő:
+**42 hiányzik**, de a mintákban szinte egyik sem fordul elő:
 
 | Alakzat | Fájl (mind draw.io-példa) |
 |---|---|
 | gitMergeCommit, gitTag | 2 |
 | ishikawaHead | 2 |
 | ext, requiredInterface, umlState | 1 |
-| a többi 41 (callout, wedgeCallout, manualInput, internalStorage, display, collate, sortShape, loopLimit, tapeData, process2, doubleArrow, cross, umlBoundary/Control/Entity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
+| a többi 36 (wedgeCallout, manualInput, internalStorage, display, sortShape, tapeData, process2, doubleArrow, cross, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
 
 A folyamatábrák gyakori alakzatai (manual input, display, collate…) a mintákban `mxgraph.flowchart.*` stencilként
 szerepelnek, és azok megvannak (lásd 3.).
