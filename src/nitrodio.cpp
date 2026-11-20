@@ -464,6 +464,7 @@ struct Para : std::vector<Seg> {   // (a line of the label, and the lines it wra
     std::string marker;   // (a list item's bullet or number, in the margin before it)
     std::string align;    // (its block's text-align: left / center / right; empty: the label's)
     float strut = 0;      // (its block's font size: a line with text at least 1.2 of it high, as a browser's strut; 0: the label's)
+    float lineHeight = 0; // (CSS line-height: > 0 px, < 0 minus a factor of the line's font size; 0: normal, 1.2)
 };
 
 void putEntity(std::string &o, const std::string &e) {
@@ -535,6 +536,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     std::vector<std::pair<std::string, std::string>> aligns;    // (the open blocks and their text-align, "" if none)
     std::vector<std::pair<std::string, float>> lefts;           // (the open blocks' margin-left: their text indented)
     std::vector<std::pair<std::string, float>> struts;          // (the open blocks' font sizes)
+    std::vector<std::pair<std::string, float>> heights;         // (the open tags' line-height, as Para's; their own or inherited)
     struct Deco {
         std::string name;
         int u, s;
@@ -557,6 +559,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
         if (p.empty() && p.marker.empty())
             for (const auto &lm : lefts) p.indent += lm.second;
         if (p.empty() && !struts.empty()) p.strut = struts.back().second;
+        if (p.empty() && !heights.empty()) p.lineHeight = heights.back().second;
         if (p.empty())
             for (size_t k = aligns.size(); k-- > 0;)
                 if (!aligns[k].second.empty()) {
@@ -664,6 +667,24 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 sizes.push_back({name, own ? own : sizes.empty() ? 0.f : sizes.back().second});
                 bool blk = h || name == "div" || name == "p" || name == "li" || name == "td" || name == "th";
                 if (blk) struts.push_back({name, own ? own : h ? around * heading[name[1] - '1'] : around});
+                // (line-height: a plain number a factor, inherited as one; a length or a % of the tag's own font size, inherited
+                // as that many px; normal: none)
+                float lh = heights.empty() ? 0.f : heights.back().second;
+                std::string lv = cssValue(tag, "line-height");
+                if (!lv.empty()) {
+                    float fs = own ? own : h ? around * heading[name[1] - '1'] : around;
+                    const char *q = lv.c_str();
+                    char *end = nullptr;
+                    double d = nn_strtod(q, &end);
+                    while (end && *end == ' ') end++;
+                    if (lv == "normal") lh = 0;
+                    else if (end != q && std::isfinite(d) && d > 0 && d < 100 && end && (!*end || *end == ';' || *end == '!')) lh = -(float)d;
+                    else {
+                        double px = cssLength(lv, fs, fs);
+                        if (px > 0 && px < 1e4) lh = (float)px;
+                    }
+                }
+                heights.push_back({name, lh});
             } else if (close) {
                 flush();   // (the text before it still in the tags it closes)
                 for (size_t k = shifts.size(); k-- > 0;)
@@ -674,6 +695,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 for (size_t k = struts.size(); k-- > 0;)
                     if (struts[k].first == name) {
                         struts.erase(struts.begin() + (long)k);
+                        break;
+                    }
+                for (size_t k = heights.size(); k-- > 0;)
+                    if (heights[k].first == name) {
+                        heights.erase(heights.begin() + (long)k);
                         break;
                     }
                 for (size_t k = lefts.size(); k-- > 0;)
@@ -855,10 +881,10 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     std::vector<std::vector<LineRun>> lines;
     std::vector<float> widths, indents;   // (a line's width: its indent and its text)
     std::vector<std::string> markers, lineAligns;
-    std::vector<float> struts;
+    std::vector<float> struts, heights;   // (each line's block strut and line-height)
     for (const Para &p : paras) {
         lines.emplace_back();
-        struts.push_back(p.strut);
+        struts.push_back(p.strut), heights.push_back(p.lineHeight);
         widths.push_back(p.indent);
         indents.push_back(p.indent);
         markers.push_back(p.marker);
@@ -953,7 +979,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
                     indents.push_back(p.indent);
                     markers.emplace_back();
                     lineAligns.push_back(p.align);
-                    struts.push_back(p.strut);
+                    struts.push_back(p.strut), heights.push_back(p.lineHeight);
                     for (const LineRun &r : carry) lines.back().push_back(r), widths.back() += r.width;
                 }
                 uint32_t col = sg.rgba ? withOpacity(sg.rgba, alpha) : rgba;
@@ -972,18 +998,23 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         std::reverse(markers.begin(), markers.end());
         std::reverse(lineAligns.begin(), lineAligns.end());
         std::reverse(struts.begin(), struts.end());
+        std::reverse(heights.begin(), heights.end());
     }
     auto label = std::make_shared<Label>();
     std::vector<float> lineSize(lines.size(), size);   // (a line as high as its largest text: 1.2 font sizes)
-    for (size_t l = 0; l < lines.size(); l++)
+    std::vector<float> lineHeight(lines.size());       // (its height: 1.2 of that, or its CSS line-height)
+    for (size_t l = 0; l < lines.size(); l++) {
+        bool text = false;
         if (!lines[l].empty()) {
             lineSize[l] = 0;
-            bool text = false;
             for (const LineRun &r : lines[l]) lineSize[l] = std::max(lineSize[l], r.size), text = text || !r.text.empty();
             if (text) lineSize[l] = std::max(lineSize[l], struts[l] > 0 ? struts[l] : size);   // (the block's strut)
         }
+        float lh = text || lines[l].empty() ? heights[l] : 0;   // (a margin's spacer line: its own height)
+        lineHeight[l] = lh > 0 ? lh : lh < 0 ? -lh * lineSize[l] : lineSize[l] * 1.2f;
+    }
     float textH = 0, textW = 0;
-    for (float z : lineSize) textH += z * 1.2f;
+    for (float z : lineHeight) textH += z;
     for (float w : widths) textW = std::max(textW, w);
     const std::string &va = html && str(s, "overflow") == "fill" ? std::string("top") : str(s, "verticalAlign"), &al = str(s, "align");   // (fill: from the top)
     // (draw.io's text, middle or bottom: lower by about a twelfth of the font size than its lines' height puts it, as
@@ -1005,7 +1036,7 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     for (size_t l = 0; l < lines.size(); l++) {
         const std::string &la = lineAligns[l].empty() ? al : lineAligns[l];
         double left = la == "left" ? blockX : la == "right" ? blockX + blockW - widths[l] : blockX + (blockW - widths[l]) / 2;
-        float k = lineSize[l] / size, lineH = lineSize[l] * 1.2f;
+        float k = lineSize[l] / size, lineH = lineHeight[l];
         float base = (float)(y + (lineH + (asc - desc) * k) / 2);
         y += lineH;
         float pen = (float)left;
