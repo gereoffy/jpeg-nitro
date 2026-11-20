@@ -1,5 +1,20 @@
 # nitrodio: mi van meg a draw.io-ból, és mi hiányzik
 
+## Mérce: helyes rajz, nem pixelpontos
+
+A draw.io fájl nem kész kép, mint a PDF vagy a CDR, hanem egy gráfmodell: blokkok, köztük kapcsolatok, rajtuk
+feliratok. A blokkok helye és mérete pontos adat, az élek viszont csak azt tárolják, mit kötnek össze, és legfeljebb
+néhány töréspontot. A vonalak útját a draw.io a megnyitáskor számolja ki. A feliratok tördelése a betűtípustól függ,
+ezért két gépen maga a draw.io is másképp rajzolhat.
+
+A nitrodio célja ezért a helyes rajz:
+- a diagram szerkezete jó;
+- a nyilak nem fordulnak meg, és oda mutatnak, ahova kell;
+- a feliratok ott vannak, ahova tartoznak.
+
+A vonalvezetésnek nincs más leírása, mint a draw.io kódja, ezért az útvonal-algoritmusokat a forrás alapján követjük.
+A néhány pixeles eltérést csak akkor javítjuk, ha ez kevés kódba kerül.
+
 A fájlszámok a mintakészletből jönnek (`samples_drawio/reference-tools/files.txt`, 1094 fájl), minden oldal minden
 cellastílusát összeszámolva. Ebből 785 fájl a draw.io saját példája vagy sablonja (`downloaded*/jgraph`, és a
 gallery-* SVG-k beágyazott rajzai), 309 fájl más forrásból jön. Ahol két szám szerepel, a második ez a 309-es,
