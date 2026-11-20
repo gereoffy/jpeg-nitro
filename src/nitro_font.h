@@ -44,6 +44,7 @@ plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint,
 // font resolver). A family not installed: its substitute (nf_substitute, and that one's), else, a
 // fixed-width or serif one by its name (nf_generic_of), the generic family's font; else NULL.
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic);
+plutovg_font_face_t *nf_css_face_weight(const char *family, int weight, bool italic);
 // The family that stands in for one this machine may not have (case-insensitive): old CorelDRAW
 // families macOS lacks (AvantGarde: Avenir ...), and the Windows / macOS core fonts that Linux has as
 // their metric-compatible Liberation fonts (Arial: Liberation Sans ...); NULL if none.

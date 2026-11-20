@@ -33,8 +33,8 @@ struct Face {
     std::string file;
     std::vector<std::string> postscript;
     int ttc = 0;           // its index in the collection
-    int weight = 400;
-    bool italic = false, narrow = false;
+    int weight = 400, width = 5;
+    bool italic = false;
     plutovg_font_face_t *face = nullptr;
     bool failed = false;          // (loading it failed: not tried again)
 };
@@ -109,8 +109,22 @@ const uint16_t MAC_ROMAN[128] = {
     0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
     0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7};
 
+bool ends_with_ci(const std::string &s, const char *t) {
+    size_t n = strlen(t);
+    return s.size() >= n && !strcasecmp(s.c_str() + s.size() - n, t);
+}
+
+// OS/2 width classes, with the more specific spellings before their suffixes.
+const struct { const char *name; const char *compact; int width; } widths[] = {
+    {" Ultra Condensed", "ultracondensed", 1}, {" Extra Condensed", "extracondensed", 2},
+    {" Semi Condensed", "semicondensed", 4}, {" Condensed", "condensed", 3},
+    {" Compressed", "compressed", 2}, {" Narrow", "narrow", 3},
+    {" Ultra Expanded", "ultraexpanded", 9}, {" Extra Expanded", "extraexpanded", 8},
+    {" Semi Expanded", "semiexpanded", 6}, {" Expanded", "expanded", 7},
+    {" Extended", "extended", 7}, {" Wide", "wide", 7}};
+
 // Name IDs 1 and 16 identify families; IDs 4 and 6 identify individual faces.
-void index_names(Index &ix, const std::vector<uint8_t> &name, int face, std::vector<std::string> &postscript) {
+void index_names(Index &ix, const std::vector<uint8_t> &name, int face, Face &font) {
     if (name.size() < 6) return;
     uint32_t count = u16(name.data() + 2), strings = u16(name.data() + 4);
     for (uint32_t i = 0; i < count; i++) {
@@ -140,11 +154,24 @@ void index_names(Index &ix, const std::vector<uint8_t> &name, int face, std::vec
             }
         }
         if (value.empty() || value.find(char(0)) != std::string::npos) continue;
-        Names &names = id == 1 || id == 16 ? ix.families : ix.faceNames;
-        auto &faces = names[lower(value.c_str())];
-        if (faces.empty() || faces.back() != face) faces.push_back(face);
-        if (id == 6 && std::find(postscript.begin(), postscript.end(), value) == postscript.end())
-            postscript.push_back(std::move(value));
+        bool family = id == 1 || id == 16;
+        Names &names = family ? ix.families : ix.faceNames;
+        auto bind = [&](const std::string &key) {
+            auto &faces = names[lower(key.c_str())];
+            if (faces.empty() || faces.back() != face) faces.push_back(face);
+        };
+        bind(value);
+        // Older fonts can give a width variant its own family, e.g. Arial Narrow.
+        // Also index the base family when the name agrees with its OS/2 width.
+        if (family && font.width != 5)
+            for (const auto &w : widths)
+                if (ends_with_ci(value, w.name)) {
+                    if ((font.width < 5) == (w.width < 5) && value.size() > strlen(w.name))
+                        bind(value.substr(0, value.size() - strlen(w.name)));
+                    break;
+                }
+        if (id == 6 && std::find(font.postscript.begin(), font.postscript.end(), value) == font.postscript.end())
+            font.postscript.push_back(std::move(value));
     }
 }
 
@@ -185,12 +212,12 @@ void index_file(Index &ix, const std::string &path) {
         }
         if (t[2].off && read_at(f, t[2].off, 8, os2)) {   // OS/2: usWeightClass, usWidthClass
             uint32_t weight = u16(os2.data() + 4), width = u16(os2.data() + 6);
-            face.weight = weight ? (int)weight : bold ? 700 : 400;
-            face.narrow = width != 5 && width != 0;
+            face.weight = weight && weight <= 1000 ? (int)weight : bold ? 700 : 400;
+            if (width >= 1 && width <= 9) face.width = (int)width;
         } else
             face.weight = bold ? 700 : 400;
         int k = (int)ix.faces.size();
-        index_names(ix, name, k, face.postscript);
+        index_names(ix, name, k, face);
         ix.files[filename].push_back(k);
         ix.faces.push_back(std::move(face));
     }
@@ -309,7 +336,7 @@ const std::vector<int> *named_faces(const Names &names, const char *name) {
 
 std::mutex &nf_lock() { return g_lock; }
 
-static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces, int weight, bool italic, bool uprightOnly = false) {
+static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces, int weight, bool italic, bool uprightOnly = false, int width = 5) {
     if (!faces) return nullptr;
     weight = std::clamp(weight, 1, 1000);   // (a damaged file's)
     for (;;) {
@@ -319,10 +346,10 @@ static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces,
             const Face &f = ix.faces[k];
             if (f.failed || (uprightOnly && f.italic)) continue;
             int diff = std::abs(f.weight - weight);
-            // the slant first, then a normal width, then the weight; of two equally close weights
+            // The slant first, then the requested width, then the weight. Of two equally close weights
             // the one on the side of the request (a light weight: the lighter)
             bool side = weight < 400 ? f.weight < weight : f.weight > weight;
-            long score = (f.italic != italic) * 100000L + f.narrow * 10000L + diff * 2 + !side;
+            long score = (f.italic != italic) * 100000L + std::abs(f.width - width) * 10000L + diff * 2 + !side;
             if (best < 0 || score < bestScore) {
                 best = k;
                 bestScore = score;
@@ -333,11 +360,11 @@ static plutovg_font_face_t *match_face(Index &ix, const std::vector<int> *faces,
     }
 }
 
-static plutovg_font_face_t *match_name(const char *name, int weight, bool italic, bool uprightOnly = false) {
+static plutovg_font_face_t *match_name(const char *name, int weight, bool italic, bool uprightOnly = false, int width = 5) {
     Index &ix = index();
     if (const auto *family = named_faces(ix.families, name))
-        return match_face(ix, family, weight, italic, uprightOnly);
-    return match_face(ix, named_faces(ix.faceNames, name), weight, italic);
+        return match_face(ix, family, weight, italic, uprightOnly, width);
+    return match_face(ix, named_faces(ix.faceNames, name), weight, italic, false, width);
 }
 
 plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
@@ -369,11 +396,15 @@ bool nf_has_glyph(plutovg_font_face_t *face, uint32_t codepoint) {
     return face && plutovg_font_face_get_glyph_index(face, codepoint) != 0;
 }
 
-plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic) {
+static plutovg_font_face_t *first_face(const char *const *families, int weight, bool italic, int width) {
     for (; *families; families++)
         if (**families)
-            if (plutovg_font_face_t *f = nf_face(*families, weight, italic)) return f;
+            if (plutovg_font_face_t *f = match_name(*families, weight, italic, false, width)) return f;
     return nullptr;
+}
+
+plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic) {
+    return first_face(families, weight, italic, 5);
 }
 
 plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic) {
@@ -428,22 +459,17 @@ const char *nf_generic_of(const char *family) {
 
 namespace {
 
-bool ends_with_ci(const std::string &s, const char *t) {
-    size_t n = strlen(t);
-    return s.size() >= n && !strcasecmp(s.c_str() + s.size() - n, t);
-}
-
 // Bitstream's names of old CorelDRAW fonts: "Futura Lt BT", "AvantGarde Bk BT", "Futura XBlkCnIt BT":
-// the family and the weight / italic of the abbreviations in its last word (width ones dropped)
-bool bitstream_name(std::string &family, int &weight, bool &italic) {
+// The last word encodes the face's weight, slant and width.
+bool bitstream_name(std::string &family, int &weight, bool &italic, int &width) {
     if (!ends_with_ci(family, " BT")) return false;
     family.resize(family.size() - 3);
     size_t sp = family.rfind(' ');
     if (sp == std::string::npos) return true;
-    static const struct { const char *abbr; int weight; } abbrs[] = {   // weight -1: italic, 0: width
+    static const struct { const char *abbr; int weight; int width = 0; } abbrs[] = {   // weight -1: italic, 0: width
         {"XBlk", 900}, {"Blk", 900}, {"XBd", 800}, {"Bd", 700}, {"Hv", 800}, {"It", -1}, {"XLt", 200}, {"Lt", 300},
-        {"Bk", 400}, {"Md", 500}, {"XCn", 0}, {"Cn", 0}, {"Ex", 0}};
-    int w = weight;
+        {"Bk", 400}, {"Md", 500}, {"XCn", 0, 2}, {"Cn", 0, 3}, {"Ex", 0, 7}};
+    int w = weight, wd = width;
     bool it = italic;
     for (size_t i = sp + 1; i < family.size();) {
         bool found = false;
@@ -452,6 +478,7 @@ bool bitstream_name(std::string &family, int &weight, bool &italic) {
             if (!family.compare(i, n, a.abbr)) {
                 if (a.weight > 0) w = std::max(a.weight, weight > 400 ? weight : 0);   // (bold stays bold)
                 if (a.weight < 0) it = true;
+                if (a.width) wd = a.width;
                 i += n;
                 found = true;
                 break;
@@ -462,6 +489,7 @@ bool bitstream_name(std::string &family, int &weight, bool &italic) {
     family.resize(sp);
     weight = w;
     italic = it;
+    width = wd;
     return true;
 }
 
@@ -470,6 +498,7 @@ struct FontName {
     std::string filename;   // (a TrueType or OpenType file's basename)
     std::string raw;        // (the name less its subset tag and PostScript style)
     std::string family;     // (its family, its style words off)
+    int width = 5;
     bool bitstream = false;
     bool file = false;      // (a font file's name: its family from the file, nothing else to try)
 };
@@ -515,12 +544,20 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
     size_t cut = s.find(',');
     if (cut == std::string::npos && s.find(' ') == std::string::npos) cut = s.find('-');
     if (cut != std::string::npos) style = lower(s.substr(cut + 1).c_str()), s.resize(cut);
+    style.erase(std::remove_if(style.begin(), style.end(), [](char c) { return c == ' ' || c == '-'; }), style.end());
     auto in = [&](const char *w) { return style.find(w) != std::string::npos; };
     if (in("black") || in("heavy")) weight = std::max(weight, 900);
+    else if (in("extrabold") || in("ultrabold")) weight = std::max(weight, 800);
     else if (in("semibold") || in("demi")) weight = std::max(weight, 600);
     else if (in("bold")) weight = std::max(weight, 700);
+    else if (in("medium")) weight = std::max(weight, 500);
+    else if (in("thin")) weight = std::min(weight, 100);
+    else if (in("extralight") || in("ultralight")) weight = std::min(weight, 200);
+    else if (in("semilight")) weight = std::min(weight, 350);
     else if (in("light")) weight = std::min(weight, 300);
     if (in("italic") || in("oblique")) italic = true;
+    for (const auto &styleWidth : widths)
+        if (in(styleWidth.compact)) { p.width = styleWidth.width; break; }
     p.raw = s;
     // a PostScript family in one word: its PS / MT marks off, its words spaced ("TimesNewRomanPSMT": "Times New Roman")
     std::string family = s;
@@ -537,7 +574,7 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
         }
         family = spaced;
     }
-    p.bitstream = bitstream_name(family, weight, italic);
+    p.bitstream = bitstream_name(family, weight, italic, p.width);
     // style words at its end (CorelDRAW's, Visio's): "Arial CE", "Times New Roman Bold", "Segoe UI Light"
     for (bool changed = true; changed;) {
         changed = false;
@@ -551,18 +588,29 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
             std::string last = lower(family.c_str() + sp + 1);
             if (last.find("-eur") != std::string::npos || last.find("mitteleurop") != std::string::npos) { family.resize(sp); changed = true; }
         }
-        static const char *const bolds[] = {" Bold", " Black", " Heavy"};
-        for (const char *sfx : bolds)
-            if (ends_with_ci(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 700); changed = true; }
-        static const char *const semibolds[] = {" Semibold", " Demibold", " Semi Bold"};
-        for (const char *sfx : semibolds)
-            if (ends_with_ci(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::max(weight, 600); changed = true; }
         static const char *const italics[] = {" Italic", " Oblique"};
         for (const char *sfx : italics)
             if (ends_with_ci(family, sfx)) { family.resize(family.size() - strlen(sfx)); italic = changed = true; }
-        static const char *const lights[] = {" Light", " Semilight", " Semi Light"};   // ("Segoe UI Light": Visio's titles)
-        for (const char *sfx : lights)
-            if (ends_with_ci(family, sfx)) { family.resize(family.size() - strlen(sfx)); weight = std::min(weight, 300); changed = true; }
+        static const struct { const char *suffix; int weight; } weights[] = {
+            {" Semi Bold", 600}, {" Demi Bold", 600}, {" Extra Bold", 800}, {" Ultra Bold", 800},
+            {" Semi Light", 350}, {" Extra Light", 200}, {" Ultra Light", 200},
+            {" Semibold", 600}, {" Demibold", 600}, {" Extrabold", 800}, {" Ultrabold", 800},
+            {" Semilight", 350}, {" Extralight", 200}, {" Ultralight", 200},
+            {" Bold", 700}, {" Black", 900}, {" Heavy", 900}, {" Medium", 500}, {" Light", 300}, {" Thin", 100}};
+        for (const auto &w : weights)
+            if (ends_with_ci(family, w.suffix)) {
+                family.resize(family.size() - strlen(w.suffix));
+                weight = w.weight < 400 ? std::min(weight, w.weight) : std::max(weight, w.weight);
+                changed = true;
+                break;
+            }
+        for (const auto &w : widths)
+            if (ends_with_ci(family, w.name)) {
+                family.resize(family.size() - strlen(w.name));
+                p.width = w.width;
+                changed = true;
+                break;
+            }
     }
     p.family = family;
     return p;
@@ -575,12 +623,12 @@ std::string nf_font_family(const char *name, int &weight, bool &italic) { return
 static plutovg_font_face_t *find_own_face(const FontName &p, int weight, bool italic) {
     Index &ix = index();
     if (!p.filename.empty())
-        if (plutovg_font_face_t *f = match_face(ix, named_faces(ix.files, p.filename.c_str()), weight, italic)) return f;
+        if (plutovg_font_face_t *f = match_face(ix, named_faces(ix.files, p.filename.c_str()), weight, italic, false, p.width)) return f;
     std::string linotype = p.bitstream ? p.family + " LT" : std::string();
     const char *own[] = {p.file ? "" : p.original.c_str(), p.raw.c_str(), linotype.c_str(), p.family.c_str()};
     for (const char *t : own)
         if (*t)
-            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic)) return f;
+            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic, p.width)) return f;
     return nullptr;
 }
 
@@ -601,22 +649,22 @@ plutovg_font_face_t *nf_find_face(const char *name, int weight, bool italic, NfK
     const char *sub2 = sub ? nf_substitute(sub) : nullptr;
     for (const char *t : {sub, sub2})
         if (t)
-            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic)) return f;
+            if (plutovg_font_face_t *f = match_name(t, weight, italic, !italic, p.width)) return f;
     // then a core font of its kind: by what the format says, else by its name (an SHX stroke font: sans serif)
     const char *g = kind == NF_SERIF ? "serif" : kind == NF_MONO ? "monospace" : kind == NF_SANS || p.file ? nullptr : nf_generic_of(name);
     if (!g && kind == NF_ANY && !p.file) g = nf_generic_of(p.family.c_str());
     static const char *const serif[] = {"Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", nullptr};
     static const char *const mono[] = {"Courier New", "Courier", "Liberation Mono", "DejaVu Sans Mono", nullptr};
     if (g)
-        if (plutovg_font_face_t *f = nf_first_face(!strcmp(g, "serif") ? serif : mono, weight, italic)) return f;
+        if (plutovg_font_face_t *f = first_face(!strcmp(g, "serif") ? serif : mono, weight, italic, p.width)) return f;
     // the last resorts: a light, medium or semibold weight from a family that has such faces (Arial has regular and bold
     // only); a missing semibold as a medium, the nearer in width (Visio's Segoe UI Semibold labels fit their boxes in
     // Arial Bold no more)
     bool between = weight != 400 && weight != 700;
     if (between)
-        if (plutovg_font_face_t *f = nf_face("Helvetica Neue", weight == 600 ? 500 : weight, italic)) return f;
+        if (plutovg_font_face_t *f = match_name("Helvetica Neue", weight == 600 ? 500 : weight, italic, false, p.width)) return f;
     static const char *const sans[] = {"Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", nullptr};
-    return nf_first_face(sans, between && weight == 600 ? 500 : weight, italic);
+    return first_face(sans, weight == 600 ? 500 : weight, italic, p.width);
 }
 
 plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool italic, uint32_t codepoint) {
@@ -628,8 +676,7 @@ plutovg_font_face_t *nf_find_glyph_face(const char *name, int weight, bool itali
     return nf_glyph_face(first, codepoint, weight, italic);
 }
 
-plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
-    int weight = bold ? 700 : 400;
+plutovg_font_face_t *nf_css_face_weight(const char *family, int weight, bool italic) {
     if (family && *family) {
         if (plutovg_font_face_t *f = nf_face(family, weight, italic)) return f;
         // (not installed: its substitute, that one's own (Linux's Liberation one), then by its name a fixed-width or serif
@@ -639,7 +686,7 @@ plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
             if (t)
                 if (plutovg_font_face_t *f = nf_face(t, weight, italic)) return f;
         if (const char *g = nf_generic_of(family))
-            if (strcmp(g, family) != 0) return nf_css_face(g, bold, italic);
+            if (strcmp(g, family) != 0) return nf_css_face_weight(g, weight, italic);
     }
     // Keep the platform's usual choices first, then try the other core families.
 #if defined(__linux__)
@@ -665,6 +712,10 @@ plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
             if (plutovg_font_face_t *f = load(ix, (int)i)) return f;
     }
     return nullptr;
+}
+
+plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
+    return nf_css_face_weight(family, bold ? 700 : 400, italic);
 }
 
 uint32_t nf_utf8_next(const std::string &s, size_t &i) {

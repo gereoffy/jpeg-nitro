@@ -1,0 +1,182 @@
+--- a/include/lunasvg.h
++++ b/include/lunasvg.h
+@@ -145,6 +145,10 @@
+ */
+ LUNASVG_API void lunasvg_set_font_face_resolver(lunasvg_font_face_resolver_t resolver, void* closure);
+
++/** A resolver that receives the CSS font weight (400 normal, 700 bold). */
++typedef plutovg_font_face_t* (*lunasvg_weighted_font_face_resolver_t)(void* closure, const char* family, int weight, bool italic);
++LUNASVG_API void lunasvg_set_weighted_font_face_resolver(lunasvg_weighted_font_face_resolver_t resolver, void* closure);
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/source/graphics.cpp
++++ b/source/graphics.cpp
+@@ -419,8 +419,12 @@
+     return !face.isNull();
+ }
+
+-FontFace FontFaceCache::getFontFace(const std::string& family, bool bold, bool italic) const
+-{
++FontFace FontFaceCache::getFontFace(const std::string& family, int weight, bool italic) const
++{
++    if(m_weightedResolver)
++        return FontFace(m_weightedResolver(m_closure, family.data(), weight, italic));
++
++    const auto bold = weight >= 600;
+     if(m_resolver) {
+         if(auto face = m_resolver(m_closure, family.data(), bold, italic))
+             return FontFace(face);
+--- a/source/graphics.h
++++ b/source/graphics.h
+@@ -1,6 +1,7 @@
+ #ifndef LUNASVG_GRAPHICS_H
+ #define LUNASVG_GRAPHICS_H
+
++#include <lunasvg.h>
+ #include <plutovg.h>
+
+ #include <cstdint>
+@@ -420,15 +420,17 @@
+ class FontFaceCache {
+ public:
+     bool addFontFace(const std::string& family, bool bold, bool italic, const FontFace& face);
+-    FontFace getFontFace(const std::string& family, bool bold, bool italic) const;
+-    void setResolver(plutovg_font_face_t* (*resolver)(void*, const char*, bool, bool), void* closure) { m_resolver = resolver; m_closure = closure; }
++    FontFace getFontFace(const std::string& family, int weight, bool italic) const;
++    void setResolver(lunasvg_font_face_resolver_t resolver, void* closure) { m_resolver = resolver; m_weightedResolver = nullptr; m_closure = closure; }
++    void setWeightedResolver(lunasvg_weighted_font_face_resolver_t resolver, void* closure) { m_weightedResolver = resolver; m_resolver = nullptr; m_closure = closure; }
+
+     ~FontFaceCache();
+
+ private:
+     FontFaceCache();
+     plutovg_font_face_cache_t* m_cache;
+-    plutovg_font_face_t* (*m_resolver)(void*, const char*, bool, bool) = nullptr;
++    lunasvg_font_face_resolver_t m_resolver = nullptr;
++    lunasvg_weighted_font_face_resolver_t m_weightedResolver = nullptr;
+     void* m_closure = nullptr;
+     friend FontFaceCache* fontFaceCache();
+ };
+--- a/source/lunasvg.cpp
++++ b/source/lunasvg.cpp
+@@ -29,6 +29,11 @@
+ void lunasvg_set_font_face_resolver(lunasvg_font_face_resolver_t resolver, void* closure)
+ {
+     lunasvg::fontFaceCache()->setResolver(resolver, closure);
++}
++
++void lunasvg_set_weighted_font_face_resolver(lunasvg_weighted_font_face_resolver_t resolver, void* closure)
++{
++    lunasvg::fontFaceCache()->setWeightedResolver(resolver, closure);
+ }
+
+ namespace lunasvg {
+--- a/source/svglayoutstate.cpp
++++ b/source/svglayoutstate.cpp
+@@ -228,25 +228,19 @@
+     return parseEnumValue(input, entries, PointerEvents::Auto);
+ }
+
+-static FontWeight parseFontWeight(std::string_view input)
+-{
+-    static const SVGEnumerationEntry<FontWeight> entries[] = {
+-        {FontWeight::Normal, "normal"},
+-        {FontWeight::Bold, "bold"},
+-        {FontWeight::Bold, "bolder"},
+-        {FontWeight::Normal, "lighter"},
+-        {FontWeight::Normal, "100"},
+-        {FontWeight::Normal, "200"},
+-        {FontWeight::Normal, "300"},
+-        {FontWeight::Normal, "400"},
+-        {FontWeight::Normal, "500"},
+-        {FontWeight::Bold, "600"},
+-        {FontWeight::Bold, "700"},
+-        {FontWeight::Bold, "800"},
+-        {FontWeight::Bold, "900"}
+-    };
+-
+-    return parseEnumValue(input, entries, FontWeight::Normal);
++static int parseFontWeight(std::string_view input, int inherited)
++{
++    if(input == "bold")
++        return 700;
++    if(input == "bolder")
++        return inherited < 350 ? 400 : inherited < 550 ? 700 : std::max(900, inherited);
++    if(input == "lighter")
++        return inherited < 550 ? std::min(100, inherited) : inherited < 750 ? 400 : 700;
++
++    float weight = 0.f;
++    if(parseNumber(input, weight) && input.empty() && weight >= 1.f && weight <= 1000.f)
++        return static_cast<int>(weight + .5f);
++    return 400;
+ }
+
+ static FontStyle parseFontStyle(std::string_view input)
+@@ -507,7 +501,7 @@
+             m_clip_rule = parseFillRule(input);
+             break;
+         case PropertyID::Font_Weight:
+-            m_font_weight = parseFontWeight(input);
++            m_font_weight = parseFontWeight(input, m_font_weight);
+             break;
+         case PropertyID::Font_Style:
+             m_font_style = parseFontStyle(input);
+@@ -574,7 +568,6 @@
+
+ Font SVGLayoutState::font() const
+ {
+-    auto bold = m_font_weight == FontWeight::Bold;
+     auto italic = m_font_style == FontStyle::Italic;
+
+     FontFace face;
+@@ -595,12 +588,12 @@
+
+         std::string font_family(family);
+         if(!font_family.empty()) {
+-            face = fontFaceCache()->getFontFace(font_family, bold, italic);
++            face = fontFaceCache()->getFontFace(font_family, m_font_weight, italic);
+         }
+     }
+
+     if(face.isNull())
+-        face = fontFaceCache()->getFontFace(emptyString, bold, italic);
++        face = fontFaceCache()->getFontFace(emptyString, m_font_weight, italic);
+     return Font(face, m_font_size);
+ }
+
+--- a/source/svglayoutstate.h
++++ b/source/svglayoutstate.h
+@@ -40,7 +40,7 @@
+     FillRule fill_rule() const { return m_fill_rule; }
+     FillRule clip_rule() const { return m_clip_rule; }
+
+-    FontWeight font_weight() const { return m_font_weight; }
++    int font_weight() const { return m_font_weight; }
+     FontStyle font_style() const { return m_font_style; }
+
+     AlignmentBaseline alignment_baseline() const { return m_alignment_baseline; }
+@@ -98,7 +98,7 @@
+     FillRule m_fill_rule = FillRule::NonZero;
+     FillRule m_clip_rule = FillRule::NonZero;
+
+-    FontWeight m_font_weight = FontWeight::Normal;
++    int m_font_weight = 400;
+     FontStyle m_font_style = FontStyle::Normal;
+
+     AlignmentBaseline m_alignment_baseline = AlignmentBaseline::Auto;
+--- a/source/svgproperty.h
++++ b/source/svgproperty.h
+@@ -180,11 +180,6 @@
+     Italic
+ };
+
+-enum class FontWeight : uint8_t {
+-    Normal,
+-    Bold
+-};
+-
+ enum class AlignmentBaseline : uint8_t {
+     Auto,
+     Baseline,
