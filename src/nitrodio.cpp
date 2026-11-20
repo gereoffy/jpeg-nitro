@@ -1872,7 +1872,9 @@ bool turnsByDirection(const std::string &shape) {
                                          "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
                                          "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
                                          "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl",
-                                         "mxgraph.electrical.logic_gates.logic_gate", "mxgraph.electrical.signal_sources.source"};
+                                         "mxgraph.electrical.logic_gates.logic_gate", "mxgraph.electrical.signal_sources.source",
+                                         "mxgraph.electrical.electro-mechanical.singleSwitch", "mxgraph.electrical.miscellaneous.batteryStack",
+                                         "mxgraph.electrical.abstract.mux2"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -2267,6 +2269,75 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
             line(0.5 * w - e, 0.05 * h + f, 0.5 * w + e, 0.05 * h + f), line(0.5 * w, 0.05 * h - e + f, 0.5 * w, 0.05 * h + e + f);
             line(0.5 * w - e, 0.95 * h - f, 0.5 * w + e, 0.95 * h - f);
         }
+    } else if (shape == "mxgraph.bpmn.event" || shape == "mxgraph.bpmn.gateway2") {   // (mxBPMN's event: its outline (a circle;
+        // catching / boundary: a second one 2 inside; throwing: 2 and 2 % inside; end: 3 times as thick, by vertex()); a gateway:
+        // a rhombus, an event-based one with an event's outline in its middle 0.6; their solid signs by bpmnSolid())
+        bool gw = shape == "mxgraph.bpmn.gateway2";
+        const std::string &outline = str(s, "outline");
+        Box e = b;
+        if (gw) {
+            polygon(q, {{w / 2, 0}, {w, h / 2}, {w / 2, h}, {0, h / 2}}, b);
+            e = {b.x + 0.2 * w, b.y + 0.2 * h, 0.6 * w, 0.6 * h};
+        }
+        bool ring = !gw || ((str(s, "gwType").empty() || str(s, "gwType") == "event") && !outline.empty() && outline != "none");
+        if (ring && !(outline.empty() || outline == "none")) {
+            plutovg_path_t *t = gw ? (lines ? lines.get() : (lines = newPath()).get()) : q;
+            plutovg_path_add_ellipse(t, (float)(e.x + e.w / 2), (float)(e.y + e.h / 2), (float)(e.w / 2), (float)(e.h / 2));
+            double in = outline == "catching" || outline == "boundInt" || outline == "boundNonint" ? 2 : 0;
+            Box r = outline == "throwing" ? Box{e.x + 0.02 * e.w + 2, e.y + 0.02 * e.h + 2, 0.96 * e.w - 4, 0.96 * e.h - 4}
+                                          : Box{e.x + in, e.y + in, e.w - 2 * in, e.h - 2 * in};
+            if ((in > 0 || outline == "throwing") && r.w > 0 && r.h > 0) {
+                if (!lines) lines = newPath();
+                plutovg_path_add_ellipse(lines.get(), (float)(r.x + r.w / 2), (float)(r.y + r.h / 2), (float)(r.w / 2), (float)(r.h / 2));
+            }
+            if (str(s, "symbol") == "message" && outline != "throwing" && outline != "end") {   // (an envelope, 0.7 x 0.4 of it)
+                Box m{e.x + 0.15 * e.w, e.y + 0.3 * e.h, 0.7 * e.w, 0.4 * e.h};
+                if (!lines) lines = newPath();
+                plutovg_path_add_rect(lines.get(), (float)m.x, (float)m.y, (float)m.w, (float)m.h);
+                plutovg_path_move_to(lines.get(), (float)m.x, (float)m.y);
+                plutovg_path_line_to(lines.get(), (float)(m.x + m.w / 2), (float)(m.y + m.h / 2));
+                plutovg_path_line_to(lines.get(), (float)(m.x + m.w), (float)m.y);
+            }
+        }
+    } else if (shape == "mxgraph.electrical.electro-mechanical.singleSwitch") {   // (mxElectrical's switch: its leads, its blade
+        line(0, 0.8 * h, 0.2 * w, 0.8 * h), line(0.8 * w, 0.8 * h, w, 0.8 * h);   // open (elSwitchState=off) or closed, two contacts)
+        if (str(s, "elSwitchState") == "off") line(0.28 * w, 0.75 * h, 0.76 * w, 0);
+        else line(0.2 * w, 0.8 * h, 0.8 * w, 0.8 * h);
+        plutovg_path_add_ellipse(q, (float)(b.x + 0.76 * w), (float)(b.y + 0.8 * h), (float)(0.04 * w), (float)(0.15 * h));
+        plutovg_path_add_ellipse(q, (float)(b.x + 0.24 * w), (float)(b.y + 0.8 * h), (float)(0.04 * w), (float)(0.15 * h));
+    } else if (shape == "mxgraph.electrical.miscellaneous.batteryStack") {   // (mxElectrical's battery: cells 0.3 high wide, each a
+        double d = 0.3 * h;                                                    // plate (solid, by solidSigns()) and a line)
+        int n = d > 0 ? (int)std::min(std::floor((w - 20) / d), 1000.0) : 0;
+        double m = 0.5 * (w - n * d);
+        if (n > 0) {
+            line(0, 0.5 * h, m + 0.2 * d, 0.5 * h), line(w - m - 0.2 * d, 0.5 * h, w, 0.5 * h);
+            for (int k = 0; k < n; k++) line(m + k * d + 0.8 * d, 0, m + k * d + 0.8 * d, h);
+        }
+    } else if (shape == "mxgraph.electrical.abstract.mux2") {   // (mxElectrical's mux / demux: a trapezoid 10 in from its sides, its
+        int d = std::clamp((int)num(s, "selectorPins", 1), 1, 6);   // inputs, outputs and selectors' leads; their numbers left out)
+        bool demux = str(s, "operation") == "demux";
+        if (demux) polygon(q, {{w - 10, 0}, {10, 0.1 * h}, {10, 0.9 * h - 10}, {w - 10, h - 10}}, b);
+        else polygon(q, {{10, 0}, {w - 10, 0.1 * h}, {w - 10, 0.9 * h - 10}, {10, h - 10}}, b);
+        int g = demux ? 1 : 1 << d, o = demux ? 1 << d : 1;
+        double k = (h - 16) / (demux ? o : g), l = 3 + 0.5 * k;
+        if (g == 1) line(0, 0.5 * (h - 10), 10, 0.5 * (h - 10));
+        else
+            for (int m = 0; m < g; m++, l += k) line(0, l, 10, l);
+        if (o == 1) line(w - 10, 0.5 * (h - 10), w, 0.5 * (h - 10));
+        else
+            for (int m = 0; m < o; m++, l += k) line(w - 10, l, w, l);
+        double k2 = (w - 20) / d, gx = 10 + 0.5 * k2;
+        for (int m = 0; m < d && w > 20; m++, gx += k2)
+            line(gx, h - 10 - (demux ? w - gx - 10 : gx - 10) / (w - 20) * h * 0.1, gx, h);
+    } else if (shape == "mxgraph.sysml.actFinal") {   // (mxSysML's activity final: a circle, a disc 5 inside it by solidSigns())
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
+    } else if (shape == "cross") {   // (Shapes.js CrossShape: a plus, its arms size (0.2) of the shorter side wide)
+        double m = std::min(w, h), sz = std::clamp(m * num(s, "size", 0.2), 0.0, m);
+        double t = (h - sz) / 2, bo = t + sz, l = (w - sz) / 2, r = l + sz;
+        polygon(q, {{0, t}, {l, t}, {l, 0}, {r, 0}, {r, t}, {w, t}, {w, bo}, {r, bo}, {r, h}, {l, h}, {l, bo}, {0, bo}}, b, arc);
+    } else if (shape == "mxgraph.bpmn.task") {   // (mxBPMN's task: mxgraph.basic.rect, its corners rounded by size if rectStyle=rounded)
+        double r = str(s, "rectStyle") == "rounded" ? std::clamp(num(s, "size", 10), 0.0, std::min(w, h) / 2) : 0;
+        plutovg_path_add_round_rect(q, x, y, (float)w, (float)h, (float)r, (float)r);
     } else if (shape == "mxgraph.sysml.x") {   // (mxSysML's X: the box's two diagonals, no fill)
         line(0, 0, w, h), line(0, h, w, 0);
     } else if (shape == "collate") {   // (CollateShape: two triangles meeting at the centre)
@@ -3351,6 +3422,69 @@ struct Builder {
     // a slightly rounded box filled by the style's fill colour (its gradient too), else the family's, outlined by its
     // stroke, the icon's name in it, wrapped, in black or white against the fill; false: not one (any other shape, a
     // group, a container)
+    // the solid signs code-drawn shapes fill in their stroke colour: mxBPMN's terminate event's disc (0.9 of it), a gateway's
+    // X / + / * (exclusive, parallel, complex); mxElectrical's battery's plates; mxSysML's activity final's disc. Drawn upright, turned by direction with the shape
+    void solidSigns(const std::string &shape, const Style &s, const Box &bx) {
+        bool battery = shape == "mxgraph.electrical.miscellaneous.batteryStack", final = shape == "mxgraph.sysml.actFinal";
+        if (shape != "mxgraph.bpmn.event" && shape != "mxgraph.bpmn.gateway2" && !battery && !final) return;
+        uint32_t ink = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
+        if (!(ink >> 24)) return;
+        const std::string &dir = str(s, "direction");
+        double deg = !turnsByDirection(shape) ? 0 : dir == "south" ? 90 : dir == "west" ? 180 : dir == "north" ? 270 : 0;
+        Pt c = bx.centre();
+        Box b = deg == 90 || deg == 270 ? Box{c.x - bx.h / 2, c.y - bx.w / 2, bx.h, bx.w} : bx;
+        Item it;
+        it.path = newPath();
+        plutovg_path_t *q = it.path.get();
+        double w = b.w, h = b.h;
+        if (final) {
+            if (w <= 10 || h <= 10) return;
+            plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2 - 5), (float)(h / 2 - 5));
+        } else if (battery) {
+            double d = 0.3 * h;
+            int n = d > 0 ? (int)std::min(std::floor((w - 20) / d), 1000.0) : 0;
+            double m = 0.5 * (w - n * d);
+            if (n <= 0) return;
+            for (int k = 0; k < n; k++)
+                plutovg_path_add_rect(q, (float)(b.x + m + k * d + 0.2 * d), (float)(b.y + 0.25 * h), (float)(0.2 * d), (float)(0.5 * h));
+        } else if (shape == "mxgraph.bpmn.event") {
+            if (str(s, "symbol") != "terminate" || str(s, "outline").empty() || str(s, "outline") == "none") return;
+            plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(0.45 * w), (float)(0.45 * h));
+        } else {
+            const std::string &t = str(s, "gwType");
+            double d = 0.5 * w, e = 0.5 * h;
+            if (t == "exclusive") {
+                d *= 0.76;
+                polygon(q, {{0.105 * d, 0}, {0.5 * d, 0.38 * e}, {0.895 * d, 0}, {d, 0.11 * e}, {0.6172 * d, 0.5 * e}, {d, 0.89 * e},
+                            {0.895 * d, e}, {0.5 * d, 0.62 * e}, {0.105 * d, e}, {0, 0.89 * e}, {0.3808 * d, 0.5 * e}, {0, 0.11 * e}},
+                        Box{b.x + 0.31 * w, b.y + 0.25 * h, d, e});
+            } else if (t == "parallel")
+                polygon(q, {{0.38 * d, 0}, {0.62 * d, 0}, {0.62 * d, 0.38 * e}, {d, 0.38 * e}, {d, 0.62 * e}, {0.62 * d, 0.62 * e},
+                            {0.62 * d, e}, {0.38 * d, e}, {0.38 * d, 0.62 * e}, {0, 0.62 * e}, {0, 0.38 * e}, {0.38 * d, 0.38 * e}},
+                        Box{b.x + 0.25 * w, b.y + 0.25 * h, d, e});
+            else if (t == "complex")
+                polygon(q, {{0, 0.44 * e}, {0.36 * d, 0.44 * e}, {0.1 * d, 0.18 * e}, {0.18 * d, 0.1 * e}, {0.44 * d, 0.36 * e}, {0.44 * d, 0},
+                            {0.56 * d, 0}, {0.56 * d, 0.36 * e}, {0.82 * d, 0.1 * e}, {0.9 * d, 0.18 * e}, {0.64 * d, 0.44 * e}, {d, 0.44 * e},
+                            {d, 0.56 * e}, {0.64 * d, 0.56 * e}, {0.9 * d, 0.82 * e}, {0.82 * d, 0.9 * e}, {0.56 * d, 0.64 * e}, {0.56 * d, e},
+                            {0.44 * d, e}, {0.44 * d, 0.64 * e}, {0.18 * d, 0.9 * e}, {0.1 * d, 0.82 * e}, {0.36 * d, 0.56 * e}, {0, 0.56 * e}},
+                        Box{b.x + 0.25 * w, b.y + 0.25 * h, d, e});
+            else return;
+        }
+        if (deg != 0) {
+            plutovg_matrix_t m;
+            plutovg_matrix_init_translate(&m, (float)c.x, (float)c.y);
+            plutovg_matrix_rotate(&m, (float)(deg * M_PI / 180));
+            plutovg_matrix_translate(&m, (float)-c.x, (float)-c.y);
+            PathP tp = newPath();
+            plutovg_path_add_path(tp.get(), it.path.get(), &m);
+            it.path = std::move(tp);
+        }
+        it.fill = ink;
+        it.stroke = ink;
+        it.width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+        add(std::move(it), 0);
+    }
+
     bool missingIcon(const Cell &c, const std::string &shape, const Box &b) {
         // (an icon is small: a larger one is a frame others sit on, a phone or a tablet of a wireframe say)
         if (!(b.w > 0 && b.h > 0) || std::max(b.w, b.h) > 200) return false;
@@ -3711,7 +3845,13 @@ struct Builder {
                 paint(shapePath(shape, s, b, lines), lines, f, b, false);
             } else {
                 PathP p = shapePath(shape, s, b, lines);
-                paint(p, lines, s, b, false);
+                if (shape == "mxgraph.bpmn.event" && str(s, "outline") == "end") {   // (an end event: its circle 3 times as thick)
+                    Style thick = s;
+                    thick["strokeWidth"] = std::to_string(3 * std::clamp(num(s, "strokeWidth", 1), 0.0, 300.0));
+                    paint(p, lines, thick, b, false);
+                } else
+                    paint(p, lines, s, b, false);
+                solidSigns(shape, s, b);
             }
             if (shape == "mxgraph.infographic.shadedCube") {   // (its right face 0.2 darker, its left one 0.2 lighter)
                 double d = std::min(b.w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), b.h / 2);

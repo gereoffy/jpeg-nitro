@@ -82,14 +82,14 @@ kell foglalkozni: a geometria már a fájlban van.
 
 ## 2. Shapes.js (draw.io)
 
-A Shapes.js 99 alakzatot, élet és markert regisztrál. **57 megvan**:
+A Shapes.js 99 alakzatot, élet és markert regisztrál. **58 megvan**:
 
 - **Csúcsok:** process (a címke a két sáv között), note, note2, card, cube, tape, document (`boundedLbl`: a
   hullám fölött), step, parallelogram, trapezoid, folder, component, datastore, dataStorage, delay,
   offPageConnector, umlActor, umlLifeline, umlFrame, umlDestroy, umlBoundary, umlControl, seqActorStick, table,
   tableRow, partialRectangle, singleArrow, crossbar, curlyBracket (`rounded=1`: ívelt sarkok, nyitott
   töröttvonalként, mint mxShape.addPoints), cylinder3 (`boundedLbl`: a fedő alatt), isoCube, isoCube2,
-  isoRectangle, lollipop, module, or, xor, plus, corner, startState, endState, dimension, message, smileyFace,
+  isoRectangle, lollipop, module, or, xor, plus, cross, corner, startState, endState, dimension, message, smileyFace,
   switch, waypoint, hexagon, callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal együtt fordul),
   loopLimit, collate.
 - **Élek:** flexArrow, link, wire, pipe, filledEdge, taperedArrow, mermaidSankeyLink.
@@ -97,14 +97,14 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **57 megvan**:
   doubleBlock, baseDash, ER-végek (ERone, ERmandOne, ERmany, ERoneToMany, ERzeroToMany, ERzeroToOne).
 - **Egyebek:** IsometricConnector élstílus, callout perimeter.
 
-**42 hiányzik**, de a mintákban szinte egyik sem fordul elő:
+**41 hiányzik**, de a mintákban szinte egyik sem fordul elő:
 
 | Alakzat | Fájl (mind draw.io-példa) |
 |---|---|
 | gitMergeCommit, gitTag | 2 |
 | ishikawaHead | 2 |
 | ext, requiredInterface, umlState | 1 |
-| a többi 36 (wedgeCallout, manualInput, internalStorage, display, sortShape, tapeData, process2, doubleArrow, cross, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
+| a többi 35 (wedgeCallout, manualInput, internalStorage, display, sortShape, tapeData, process2, doubleArrow, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
 
 A folyamatábrák gyakori alakzatai (manual input, display, collate…) a mintákban `mxgraph.flowchart.*` stencilként
 szerepelnek, és azok megvannak (lásd 3.).
@@ -127,10 +127,17 @@ szándékosan nincsenek benne.
 - infographic: cylinder, shadedCube, ribbonSimple;
 - gcp2.doubleRect;
 - mockup.markup.curlyBrace;
-- sysml.x (áthúzás: két átló, kitöltés nélkül);
+- sysml.x (áthúzás: két átló, kitöltés nélkül), sysml.actFinal (kör, benne 5-tel beljebb a körvonal színével
+  kitöltött kör);
+- bpmn.event (körvonal: standard, catching / boundInt / boundNonint dupla kör, throwing, end háromszoros vastagsággal;
+  jel: terminate kitöltött kör, message boríték a nem dobó eseményen), bpmn.gateway2 (rombusz; exclusive X,
+  parallel +, complex * a körvonal színével kitöltve; event-based: az esemény körvonala középen), bpmn.task
+  (`rectStyle=rounded` lekerekítve `size`-zal);
 - electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
 - electrical.signal_sources.source (áram- és feszültségforrás: kör, `elSourceType=dependent` esetén rombusz, benne az
-  `elSignalType` jele: ac, dc1 / dc2 / dc3, square, pulse, noise …);
+  `elSignalType` jele: ac, dc1 / dc2 / dc3, square, pulse, noise …), electro-mechanical.singleSwitch (`elSwitchState`
+  on / off), miscellaneous.batteryStack (cellák: kitöltött lemez és vonal; a cellák közti szaggatott rész nélkül),
+  abstract.mux2 (mux / demux trapéz a lábaival, `selectorPins`; a lábszámok nélkül);
 - aws4: group és resourceIcon keretként.
 
 **Hiányzó ikonok és képek helyett.** A be nem épített gyártói ikonok, az aws4 resource / product iconok és a
@@ -148,13 +155,13 @@ nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 | Család | Fájl (összes / külső) | Leggyakoribb hiányzók |
 |---|---|---|
 | mockup | 25 / 3 | forms.searchBox, graphics.iconGrid, graphics.simpleIcon, forms.comboBox, graphics.pieChart, containers.browserWindow |
-| bpmn | 24 / 0 | shape (15), event (8), gateway2 (8), task (5), data |
+| bpmn | 24 / 0 | shape (15), data; az event többi jele (timer, error, signal …), a task markerei (user, service …) |
 | ios7ui | 12 / 0 | horLines, phone, downloadBar, appBar |
 | basic | 11 / 0 | rect, obtuse_triangle, rectCallout, roundRectCallout, drop, polygon |
 | lean_mapping | 9 / 0 | outside_sources, electronic_info_flow_edge, inventory_box, physical_pull |
 | arrows2 | 8 / 1 | uTurnArrow, stylisedArrow, twoWayArrow, jumpInArrow |
 | infographic | 8 / 0 | bannerSingleFold, pyramidStep, circularCallout2, barCallout |
-| sysml | 8 / 0 | package (7), actFinal, … |
+| sysml | 8 / 0 | package (7), … |
 | rackGeneral | 7 / 0 | container, rackCabinet3, horCableDuct |
 | bootstrap | 6 / 0 | rrect, anchor, checkbox, topButton, radioButton |
 | networks | 6 / 0 | comm_link_edge, bus |
@@ -169,7 +176,8 @@ mintákban csak a mockup (3), a c4 (3) és az arrows2 (1) jelenik meg.
 **BPMN** = Business Process Model and Notation, az OMG szabványos jelölése üzleti folyamatokra (feladatok,
 események, átjárók/elágazások, adatobjektumok). A stencilkönyvtár csak a jelek kis részét adja; a
 feladat-, esemény- és átjáró-alakzatokat a draw.io kódból rajzolja (mxBPMN.js: `shape` a körvonalakkal és
-~40 belső szimbólummal, `event`, `gateway2`, `task` a taskMarkerrel).
+~40 belső szimbólummal, `event`, `gateway2`, `task` a taskMarkerrel). Ebből az `event`, a `gateway2` és a `task`
+alapja megvan (lásd fent), a `shape` és a jelek többsége nincs.
 
 ## Hol vannak az alakzatok a kódban
 
