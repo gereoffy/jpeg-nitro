@@ -32,6 +32,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -5649,6 +5650,43 @@ struct Builder {
             Cell *p = cells[i].vertex ? find(cells[i].parent) : nullptr;
             if (p && p->edge) children[p->id].push_back(i);
         }
+        // (a vertex on the edge with a shape of its own (a numbered circle on a sequence message): drawn as a vertex, its box's
+        // top left at the point along the edge plus its offset, as mxGraphView.updateVertexState places it; a text only: the
+        // edge's label)
+        auto drawnOnEdge = [&](Cell &lc) {
+            const std::string &sh = str(lc.style, "shape");
+            return lc.vertex && lc.w > 0 && lc.h > 0 && sh != "text" && !(str(lc.style, "strokeColor") == "none" && str(lc.style, "fillColor") == "none");
+        };
+        auto place = [&](Cell &c, Cell &lc) {
+            Pt q;
+            if (lc.relative) q = along(c.route, lc.x, lc.y);
+            else {
+                Pt o = origin(c.parent);
+                q = {o.x + lc.x, o.y + lc.y};
+            }
+            if (lc.hasOffset && lc.relative) q.x += lc.offset.x, q.y += lc.offset.y;
+            lc.box = {q.x, q.y, lc.w, lc.h};
+            lc.org = {q.x, q.y};   // (its own children's origin too)
+            lc.state = 2;
+        };
+        // (an edge whose shape on it another edge ends on: routed first, so that shape is in its place whatever the cells'
+        // order; its items dropped, it is drawn in its turn)
+        std::unordered_set<std::string> ends;
+        for (Cell &c : cells)
+            if (c.edge) ends.insert(c.source), ends.insert(c.target), ends.insert(str(c.style, "sourcePort")), ends.insert(str(c.style, "targetPort"));
+        for (auto &kv : children) {
+            Cell *e = find(kv.first);
+            if (!e || !shown(*e) || layer(*e)) continue;
+            bool needed = false;
+            for (size_t i : kv.second) needed = needed || (drawnOnEdge(cells[i]) && ends.count(cells[i].id));
+            if (!needed) continue;
+            size_t items = page.items.size(), left = budget;
+            edge(*e);
+            page.items.resize(items), budget = left;
+            if (e->route.size() >= 2)
+                for (size_t i : kv.second)
+                    if (drawnOnEdge(cells[i])) place(*e, cells[i]);
+        }
         for (Cell &c : cells) {
             if (!shown(c) || layer(c)) continue;
             if (c.vertex) {
@@ -5662,22 +5700,8 @@ struct Builder {
                     for (size_t i : f->second) {
                         Cell &lc = cells[i];
                         if (!shown(lc)) continue;
-                        // (a vertex on the edge with a shape of its own (a numbered circle on a sequence message): drawn as a
-                        // vertex, its box's top left at the point along the edge plus its offset, as mxGraphView.updateVertexState
-                        // places it; a text only: the edge's label)
-                        const std::string &sh = str(lc.style, "shape");
-                        bool drawn = lc.vertex && lc.w > 0 && lc.h > 0 && sh != "text" &&
-                                     !(str(lc.style, "strokeColor") == "none" && str(lc.style, "fillColor") == "none");
-                        if (drawn) {
-                            Pt q;
-                            if (lc.relative) q = along(c.route, lc.x, lc.y);
-                            else {
-                                Pt o = origin(c.parent);
-                                q = {o.x + lc.x, o.y + lc.y};
-                            }
-                            if (lc.hasOffset && lc.relative) q.x += lc.offset.x, q.y += lc.offset.y;
-                            lc.box = {q.x, q.y, lc.w, lc.h};
-                            lc.state = 2;
+                        if (drawnOnEdge(lc)) {
+                            place(c, lc);
                             vertex(lc);
                         } else if (!lc.value.empty())
                             edgeLabel(lc, c, c.route);
