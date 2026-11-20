@@ -173,6 +173,11 @@ uint32_t parseColour(std::string v, uint32_t def) {
     return f != names.end() ? 0xff000000u | f->second : def;
 }
 uint32_t colour(const Style &s, const char *k, uint32_t def) { return parseColour(str(s, k), def); }
+std::string hex6(uint32_t c) {   // (#rrggbb without the #)
+    char t[8];
+    snprintf(t, sizeof t, "%06x", (unsigned)(c & 0xffffff));
+    return t;
+}
 // (labelBackgroundColor=default: the page's background, white)
 uint32_t labelBackground(const Style &s) {
     const std::string &v = str(s, "labelBackgroundColor");
@@ -2045,6 +2050,48 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     return p;
 }
 
+// --- the stand-in for a missing icon ---------------------------------------------------
+// draw.io's vendor and icon sets are stencil libraries not built in (shape=mxgraph.<family>.<name>) or pictures its
+// web app serves (image=img/lib/<family>/...): drawn as a box of the family's colour with the icon's name in it
+
+// a family's colour (the vendor's own, a neutral grey for the generic sets); 0: not an icon family
+uint32_t iconFamilyColour(const std::string &family) {
+    static const std::map<std::string, uint32_t> colours = {
+        {"aws", 0xED7100}, {"aws2", 0xED7100}, {"aws3", 0xED7100}, {"aws4", 0xED7100},
+        {"azure", 0x0078D4}, {"azure2", 0x0078D4}, {"mscae", 0x0078D4}, {"active_directory", 0x0078D4}, {"office", 0xD83B01},
+        {"gcp", 0x4285F4}, {"gcp2", 0x4285F4}, {"cisco", 0x049FD9}, {"cisco19", 0x049FD9}, {"cisco_safe", 0x049FD9},
+        {"ibm", 0x0F62FE}, {"veeam", 0x00B336}, {"veeam2", 0x00B336}, {"citrix", 0x452170}, {"citrix2", 0x452170},
+        {"vvd", 0x607078}, {"salesforce", 0x00A1E0}, {"atlassian", 0x0052CC}, {"kubernetes", 0x326CE5},
+        {"alibaba_cloud", 0xFF6A00}, {"oracle", 0xC74634}, {"sap", 0x0070F2}, {"openstack", 0xED1944},
+        {"ios", 0x7A7A7A}, {"ios7", 0x7A7A7A}, {"android", 0x7A7A7A}, {"gmdl", 0x7A7A7A}, {"webicons", 0x7A7A7A},
+        {"weblogos", 0x7A7A7A}, {"signs", 0x7A7A7A}, {"rack", 0x7A7A7A}, {"clip_art", 0x7A7A7A},
+        {"cumulus", 0x7A7A7A}, {"allied_telesis", 0x7A7A7A}, {"networks2", 0x7A7A7A}, {"citrix_icons", 0x452170},
+    };
+    std::string f = family;
+    for (char &ch : f) ch = (char)tolower((unsigned char)ch);
+    auto i = colours.find(f);
+    return i != colours.end() ? 0xff000000u | i->second : 0;
+}
+
+// an icon's name to read: the last part of a stencil name or a picture's path, without its extension and a _128x128
+// size, its _ and - spaces (route_53 -> "route 53", Function_Apps.svg -> "Function Apps")
+std::string iconName(const std::string &n) {
+    size_t at = n.find_last_of("/.");
+    std::string v = n;
+    if (at != std::string::npos && n[at] == '.' && n.find('/') != std::string::npos) {   // (a path: its file, less its extension)
+        v = n.substr(0, at);
+        at = v.find_last_of('/');
+        v = at == std::string::npos ? v : v.substr(at + 1);
+    } else if (at != std::string::npos)
+        v = n.substr(at + 1);
+    size_t x = v.find_last_of('_');   // (_<w>x<h>: a picture's size)
+    if (x != std::string::npos && x + 1 < v.size() && v.find_first_not_of("0123456789x", x + 1) == std::string::npos && v.find('x', x + 1) != std::string::npos)
+        v.erase(x);
+    for (char &ch : v)
+        if (ch == '_' || ch == '-') ch = ' ';
+    return v;
+}
+
 // --- the diagram ---------------------------------------------------------------
 
 struct Builder {
@@ -2555,6 +2602,68 @@ struct Builder {
         paint(newPath(), l, ls, b, false);
     }
 
+    // a missing vendor icon (a stencil of a library not built in, aws4's resource / product icons, an img/lib/ picture),
+    // at most 200 px:
+    // a slightly rounded box filled by the style's fill colour (its gradient too), else the family's, outlined by its
+    // stroke, the icon's name in it, wrapped, in black or white against the fill; false: not one (any other shape, a
+    // group, a container)
+    bool missingIcon(const Cell &c, const std::string &shape, const Box &b) {
+        // (an icon is small: a larger one is a frame others sit on, a phone or a tablet of a wireframe say)
+        if (!(b.w > 0 && b.h > 0) || std::max(b.w, b.h) > 200) return false;
+        std::string family, name;
+        bool picture = false, glyph = false;   // (glyph: aws4's resource / product icon, its stroke the missing icon's colour)
+        if (shape.size() > 8 && strncasecmp(shape.c_str(), "mxgraph.", 8) == 0) {
+            size_t dot = shape.find('.', 8);
+            if (dot == std::string::npos) return false;
+            family = shape.substr(8, dot - 8);
+            std::string rest = shape.substr(dot + 1), low = rest;
+            for (char &ch : low) ch = (char)tolower((unsigned char)ch);
+            if ((family == "aws4" && (low == "group" || low == "groupcenter")) || (family == "aws" && low.compare(0, 7, "groups.") == 0))
+                return false;   // (frames round other shapes)
+            glyph = family == "aws4" && (low == "resourceicon" || low == "producticon");
+            name = !glyph ? rest : low == "resourceicon" ? str(c.style, "resIcon") : str(c.style, "prIcon");
+        } else {
+            const std::string &img = str(c.style, "image");
+            size_t at = img.compare(0, 8, "img/lib/") == 0 ? 8 : img.compare(0, 9, "/img/lib/") == 0 ? 9 : 0;
+            if (!at) return false;
+            size_t sl = img.find('/', at);
+            if (sl == std::string::npos) return false;
+            family = img.substr(at, sl - at);
+            name = img;
+            picture = true;
+        }
+        uint32_t fc = iconFamilyColour(family);
+        if (!fc || str(c.style, "container") == "1" || !kidsOf(c.id).empty()) return false;
+        Style st = c.style;
+        uint32_t own = picture ? 0 : colour(st, "fillColor", 0);
+        if (!own) st["fillColor"] = "#" + hex6(fc), st["gradientColor"] = "none";
+        if (picture || glyph) st["strokeColor"] = "none";   // (else its own outline, as draw.io's fallback box has)
+        st["rounded"] = "1", st["absoluteArcSize"] = "1";   // (slightly: corners of 6 px at most, an eighth of a small one)
+        st["arcSize"] = std::to_string(2 * std::min(6.0, std::min(b.w, b.h) / 8));
+        st["sketch"] = "0", st["fillStyle"] = "solid";   // (a stand-in: no hand-drawn hachure over it)
+        PathP lines, p = shapePath("rectangle", st, b, lines);
+        paint(p, nullptr, st, b, false);
+        std::string text = iconName(name);
+        if (text.empty()) return true;
+        uint32_t fill = own ? own : fc, g = own ? colour(st, "gradientColor", 0) : 0;
+        auto lum = [](uint32_t v) { return 0.299 * (v >> 16 & 255) + 0.587 * (v >> 8 & 255) + 0.114 * (v & 255); };
+        double l = g ? (lum(fill) + lum(g)) / 2 : lum(fill);
+        Style ts;
+        double size = std::clamp(std::min(b.w, b.h) / 4.5, 3.0, 11.0);
+        ts["fontSize"] = std::to_string(size), ts["fontColor"] = l < 150 ? "#ffffff" : "#333333", ts["fontFamily"] = "Helvetica";
+        ts["align"] = "center", ts["verticalAlign"] = "middle", ts["whiteSpace"] = "wrap", ts["html"] = "0";
+        double pad = std::min(2.0, b.w / 10);
+        Box inner{b.x + pad, b.y + pad, std::max(0.0, b.w - 2 * pad), std::max(0.0, b.h - 2 * pad)};
+        std::shared_ptr<Label> lab = layoutLabel(text, ts, inner, inner.w);
+        if (lab) {   // (inside its box only)
+            lab->clip = true;
+            lab->clipX0 = (float)b.x, lab->clipY0 = (float)b.y, lab->clipX1 = (float)(b.x + b.w), lab->clipY1 = (float)(b.y + b.h);
+            lab->background = lab->border = 0;
+            addLabel(lab);
+        }
+        return true;
+    }
+
     // a picture of the style's image in pb, stretched (mxLabel / mxSwimlane: c.image without aspect): a data: URI decoded
     // with the page, any other its frame (not in the file)
     void picture(const Style &s, const std::string &uri, const Box &pb) {
@@ -2834,13 +2943,15 @@ struct Builder {
                 paint(back, none, s, b, false);
             }
             PathP lines;
-            PathP p = shapePath(shape, s, b, lines);
-            if ((shape == "mxgraph.aws4.resourceIcon" || (shape == "mxgraph.aws4.group" && str(s, "grStroke") == "0"))) {
-                Style f = s;   // (mxAWS4: a resource icon's box filled only (its icon: a stencil), a group's outlined if grStroke)
+            if (missingIcon(c, shape, b)) {
+            } else if (shape == "mxgraph.aws4.group" && str(s, "grStroke") == "0") {   // (mxAWS4: a group outlined if grStroke)
+                Style f = s;
                 f["strokeColor"] = "none";
-                paint(p, lines, f, b, false);
-            } else
+                paint(shapePath(shape, s, b, lines), lines, f, b, false);
+            } else {
+                PathP p = shapePath(shape, s, b, lines);
                 paint(p, lines, s, b, false);
+            }
             if (shape == "mxgraph.infographic.shadedCube") {   // (its right face 0.2 darker, its left one 0.2 lighter)
                 double d = std::min(b.w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), b.h / 2);
                 for (int k = 0; k < 2; k++) {
@@ -2903,6 +3014,7 @@ struct Builder {
             it.aspect = str(s, "imageAspect") != "0";
             it.pictureAlpha = (float)std::clamp(num(s, "opacity", 100) / 100, 0.0, 1.0);
             add(std::move(it), 0);
+        } else if (shape == "image" && b.w > 0 && b.h > 0 && missingIcon(c, shape, b)) {   // (one of draw.io's img/lib/ pictures)
         } else if (shape == "image" && b.w > 0 && b.h > 0) {   // (the picture is not in the file: its frame)
             Item it;
             it.path = newPath();
