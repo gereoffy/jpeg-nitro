@@ -347,22 +347,25 @@ struct Cell {
     bool placeholders = false;                           // (its label's %name% replaced by them)
 };
 
+// a geometry's number, to a millionth: draw.io writes float noise (260.4999999999998 for 260.5), and two ends meant level
+// must be level for the orthogonal router
+double geoNum(xmlNode *n, const char *name) { return std::round(attrNum(n, name) * 1e6) / 1e6; }
 void readGeometry(Cell &c, xmlNode *g) {
-    c.x = attrNum(g, "x");
-    c.y = attrNum(g, "y");
-    c.w = attrNum(g, "width");
-    c.h = attrNum(g, "height");
+    c.x = geoNum(g, "x");
+    c.y = geoNum(g, "y");
+    c.w = geoNum(g, "width");
+    c.h = geoNum(g, "height");
     c.relative = attr(g, "relative") == "1";
     for (xmlNode *k = g->children; k; k = k->next) {
         if (is(k, "mxPoint")) {
-            Pt p{attrNum(k, "x"), attrNum(k, "y")};
+            Pt p{geoNum(k, "x"), geoNum(k, "y")};
             std::string as = attr(k, "as");
             if (as == "sourcePoint") c.sourcePoint = p, c.hasSource = true;
             else if (as == "targetPoint") c.targetPoint = p, c.hasTarget = true;
             else if (as == "offset") c.offset = p, c.hasOffset = true;
         } else if (is(k, "Array") && attr(k, "as") == "points") {
             for (xmlNode *q = k->children; q; q = q->next)
-                if (is(q, "mxPoint") && c.points.size() < 10000) c.points.push_back({attrNum(q, "x"), attrNum(q, "y")});
+                if (is(q, "mxPoint") && c.points.size() < 10000) c.points.push_back({geoNum(q, "x"), geoNum(q, "y")});
         }
     }
 }
