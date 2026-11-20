@@ -621,6 +621,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     };
     std::vector<Added> spans;   // (the bold, italic, underline a <span> / <font> added, taken back at its end)
     bool space = true;   // (white space collapsed: at a line's start, or after one)
+    int pre = 0;         // (inside a <pre>: white space kept)
     std::string cur;
     auto flush = [&] {
         add(cur, b > 0, it > 0, (un > 0 ? 1 : 0) | (st > 0 ? 2 : 0));
@@ -654,10 +655,11 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 if (col) flush();
                 colours.push_back({name, col ? col : colours.empty() ? 0 : colours.back().second});
                 std::string fam = tagFamily(tag);
+                if (fam.empty() && name == "pre") fam = "monospace";   // (a browser's <pre>: monospace, its white space kept)
                 if (!fam.empty()) flush();
                 families.push_back({name, !fam.empty() ? fam : families.empty() ? std::string() : families.back().second});
                 bool block = name == "div" || name == "p" || name == "li" || name == "ul" || name == "ol" || name == "td" || name == "th" ||
-                             name == "tr" || name == "table" || (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6');
+                             name == "tr" || name == "table" || name == "pre" || (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6');
                 if (block) {   // (its text-align: its lines', inside the label's block)
                     std::string ta = cssValue(tag, "text-align");
                     if (ta.empty()) ta = htmlAttr(tag, "align");
@@ -697,7 +699,7 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 }
                 if (own) flush();
                 sizes.push_back({name, own ? own : sizes.empty() ? 0.f : sizes.back().second});
-                bool blk = h || name == "div" || name == "p" || name == "li" || name == "td" || name == "th";
+                bool blk = h || name == "div" || name == "p" || name == "li" || name == "td" || name == "th" || name == "pre";
                 if (blk) struts.push_back({name, own ? own : h ? around * heading[name[1] - '1'] : around});
                 // (line-height: a plain number a factor, inherited as one; a length or a % of the tag's own font size, inherited
                 // as that many px; normal: none)
@@ -813,8 +815,10 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 paras.back().indent = 40.0f * (float)std::max<size_t>(lists.size(), 1);
                 paras.back().marker = n ? std::to_string(n++) + "." : std::string("\xe2\x80\xa2");
                 space = true;
-            } else if (name == "div" || name == "p" || name == "li" || name == "tr" || (name.size() == 2 && name[0] == 'h' && isdigit((unsigned char)name[1]))) {
+            } else if (name == "div" || name == "p" || name == "li" || name == "tr" || name == "pre" ||
+                       (name.size() == 2 && name[0] == 'h' && isdigit((unsigned char)name[1]))) {
                 if (!paras.back().empty() || !cur.empty()) newLine();
+                if (name == "pre") pre += close ? -1 : 1, pre = std::max(pre, 0);
             } else if (name == "b" || name == "strong") {
                 flush();
                 b += close ? -1 : 1;
@@ -871,7 +875,10 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                 piece = "&", i++;
         } else
             piece = c, i++;
-        if (piece == " " || piece == "\n" || piece == "\t" || piece == "\r") {
+        if (pre > 0 && (piece == " " || piece == "\t")) {   // (a <pre>'s: as it is, a tab 4 spaces)
+            cur += piece == "\t" ? "    " : " ";
+            space = false;
+        } else if (piece == " " || piece == "\n" || piece == "\t" || piece == "\r") {
             if (!space) cur += ' ';
             space = true;
         } else {
@@ -1296,7 +1303,7 @@ std::string lowerName(const std::string &tag) {
 bool hasTable(const std::string &v) {
     for (size_t at = 0; (at = v.find('<', at)) != std::string::npos; at++) {
         if (at + 6 <= v.size() && lowerName(v.substr(at + 1, 6)) == "table") return true;
-        if (at + 4 <= v.size() && lowerName(v.substr(at + 1, 4)) == "div") {
+        if (at + 4 <= v.size() && (lowerName(v.substr(at + 1, 4)) == "div" || lowerName(v.substr(at + 1, 4)) == "pre")) {
             size_t e = v.find('>', at);
             if (e != std::string::npos && v.find("background", at) < e && tagBackground(v.substr(at + 1, e - at - 1))) return true;
         }
@@ -1578,7 +1585,7 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         bool close = !tag.empty() && tag[0] == '/';
         std::string name = lowerName(close ? tag.substr(1) : tag);
         if (name == "div") divs += close ? -1 : 1;
-        bool table = !close && name == "table", box = !close && name == "div" && divs == 1 && tagBackground(tag);
+        bool table = !close && name == "table", box = !close && ((name == "div" && divs == 1) || (name == "pre" && divs == 0)) && tagBackground(tag);
         if (!table && !box) {
             i = e + 1;
             continue;
@@ -1599,6 +1606,11 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         }
         text(i);
         if (table) blocks.push_back({1, v.substr(i, end - i), ""});
+        else if (name == "pre") {   // (with its tag for its font and white space, less its background: the box's)
+            std::string t2 = tag;
+            for (size_t k = 0; (k = t2.find("background", k)) != std::string::npos; k += 11) t2.insert(k, "x");
+            blocks.push_back({2, "<" + t2 + ">" + v.substr(e + 1, inner - e - 1) + "</pre>", tag});
+        }
         else blocks.push_back({2, v.substr(e + 1, inner - e - 1), tag}), divs--;
         textFrom = i = end;
     }
@@ -1623,7 +1635,7 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         const Block &bk = blocks[b];
         if (bk.kind == 1) laid[b] = flowTable(bk.html, s, 0, 0, avail, availH, depth);
         else if (bk.kind == 2) {
-            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
+            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, tagSize(bk.tag, (float)num(s, "fontSize", 12)) > 0 ? tagSize(bk.tag, (float)num(s, "fontSize", 12)) : num(s, "fontSize", 12)));
             double cw = cssLength(cssValue(bk.tag, "width"), avail, 16);   // (a width of its own: px, or % of the room)
             float in = cw > 0 ? std::max(0.f, (float)cw - 2 * (float)p) : avail > 0 ? std::max(0.f, avail - 2 * (float)p) : 0;
             laid[b] = flowHtml(bk.html, divStyle(bk.tag), 0, 0, in, 0, wrap || cw > 0, depth + 1);
@@ -1643,7 +1655,7 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         Flow f;
         if (bk.kind == 1) f = flowTable(bk.html, s, x, cy, avail, availH, depth);
         else if (bk.kind == 2) {
-            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, num(s, "fontSize", 12)));
+            double p = std::max(0.0, cssLength(cssValue(bk.tag, "padding"), 0, tagSize(bk.tag, (float)num(s, "fontSize", 12)) > 0 ? tagSize(bk.tag, (float)num(s, "fontSize", 12)) : num(s, "fontSize", 12)));
             float bw = cssLength(cssValue(bk.tag, "width"), avail, 16) > 0 ? laid[b].w : wide;   // (its own width, else the block's)
             out.rects.push_back({x, cy, bw, laid[b].h, tagBackground(bk.tag)});
             bool own = cssLength(cssValue(bk.tag, "width"), avail, 16) > 0;

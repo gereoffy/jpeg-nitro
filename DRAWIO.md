@@ -240,12 +240,14 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
   betűk, jelek), számos `&#…;` / `&#x…;`.
 - **Szóközök:** összevonva, mint a böngészőben.
 
-**Blokkok (`flowHtml`, `flowTable`)**, ha a címkében `<table>` vagy háttérszínes `<div>` van:
+**Blokkok (`flowHtml`, `flowTable`)**, ha a címkében `<table>`, háttérszínes `<div>` vagy `<pre>` van:
 
 - **Táblázatok:** `colspan` / `rowspan`, `cellpadding` / `cellspacing`, `border-collapse`; cellánként `width` /
   `height` (px, %), `padding`, `text-align`, `vertical-align`; háttér (`background-color`, `background`,
   `bgcolor`) és keret (`border`); egymásba ágyazott táblák is, korláttal a futásidő miatt.
 - **Háttérszínes `<div>`:** saját doboz, `width`-tel és `padding`-dal.
+- **`<pre>`:** blokk, a szóközei megmaradnak (tab: 4 szóköz), alapból `monospace` betűvel; háttérrel saját doboz
+  `padding`-dal (az em a `<pre>` saját betűméretéből). A kerete és a margója nincs megrajzolva.
 
 **Hiányzik:**
 
@@ -253,7 +255,7 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 |---|---|---|
 | `<a>` linkek | a draw.io kéken, aláhúzva mutatja, nálunk sima szöveg | a CSV-importos org-chart mintákon látszik („Email”) |
 | `<img>` és beillesztett `<svg>` a címkében | kimarad | 4 fájl, 17 cella: webről bemásolt ikonok és kész MathJax-kimenet |
-| `<pre>` / `white-space: pre`, `letter-spacing` | nincs kezelve | |
+| `white-space: pre` CSS-ként (`<pre>` nélkül), `letter-spacing` | nincs kezelve | |
 | jobbról balra írás (arab, héber) | nincs bidi-rendezés és arab betűalak-formálás | betűformáló könyvtár kellene hozzá |
 
 ## Matematika (`math="1"`)
