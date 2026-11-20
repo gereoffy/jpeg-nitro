@@ -4270,8 +4270,9 @@ struct Builder {
             return b;
         };
         Box sb0 = source ? bounds(source) : Box{}, tb0 = target ? bounds(target) : Box{};
-        double geo[2][4] = {{source ? sb0.x : p0->x, source ? sb0.y : p0->y, source ? sb0.w : 0, source ? sb0.h : 0},
-                            {target ? tb0.x : pe->x, target ? tb0.y : pe->y, target ? tb0.w : 0, target ? tb0.h : 0}};
+        // (a free end: a 1 x 1 box at its point, as OrthConnector takes it)
+        double geo[2][4] = {{source ? sb0.x : p0->x, source ? sb0.y : p0->y, source ? sb0.w : 1, source ? sb0.h : 1},
+                            {target ? tb0.x : pe->x, target ? tb0.y : pe->y, target ? tb0.w : 1, target ? tb0.h : 1}};
         double buffer[2] = {sourceBuffer, targetBuffer};
         double limits[2][9] = {};
         for (int i = 0; i < 2; i++) {
@@ -4286,6 +4287,8 @@ struct Builder {
         else if (dy <= 0) quad = dx == 0 ? 2 : 3;
         int dir[2] = {0, 0};
         double constraint[2][2] = {{0.5, 0.5}, {0.5, 0.5}};
+        if (!source) constraint[0][0] = constraint[0][1] = 0;   // (a free end: its box's corner, its point)
+        if (!target) constraint[1][0] = constraint[1][1] = 0;
         for (int i = 0; i < 2; i++) {
             const Pt *term = i == 0 ? (source ? p0 : nullptr) : (target ? pe : nullptr);
             if (!term) continue;
