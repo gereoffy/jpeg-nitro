@@ -43,7 +43,8 @@ lent felsoroltak is).
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
   `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`), `overflow`,
   `horizontal=0`, `textDirection` (vertical-lr / -rl), `labelBackgroundColor`, `labelBorderColor` /
-  `labelBorderWidth`, `noLabel`, az alapvonal helye.
+  `labelBorderWidth`, `noLabel`, az alapvonal helye; él-címkék a `rotation`-jükkel elforgatva,
+  `labelAutoRotate=1`: a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation).
 - **mxShape**: `direction`, `flipH/V`, `rotation`, `shadow`, `glass` (téglalapon és a swimlane fejlécén), gradient
   (`gradientDirection` north/south/east/west/radial), `dashed` / `dashPattern` / `fixDash`, átlátszóságok,
   `arcSize` / `absoluteArcSize`.
@@ -111,7 +112,8 @@ A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
   pl. azure2, ibm, clip_art helyett) a `missingIcon()` egy enyhén lekerekített dobozt rajzol: a stílus
   `fillColor`-jával (gradienttel), ha nincs, a család színével (`iconFamilyColour()` táblája), a stílus
   körvonalával, benne az ikon olvashatóvá alakított nevével (`iconName()`: `route_53` → „route 53”,
-  `Function_Apps.svg` → „Function Apps”; aws4 resourceIcon / productIcon: a `resIcon` / `prIcon` kulcsból).
+  `Function_Apps.svg` → „Function Apps”; aws4 resourceIcon / productIcon: a `resIcon` / `prIcon` kulcsból,
+  networks2.icon: a `network2Icon`-ból).
   Csak ikonokra: legfeljebb 200 px (a wireframe telefon- és tabletkeretei nagyobbak), nem konténer, nem aws4
   group; a kódból rajzolt aws3d és a `world` térkép-körvonalai maradnak keretek.
 - **Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből csak egy
@@ -209,8 +211,10 @@ A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.
 - **Igazítás:** `text-align` és `align` blokkonként, `margin-left` behúzás.
 - **Listák:** `<ul>` pöttyel, `<ol>` számozva, egymásba ágyazva is.
 - **`<hr>`:** vízszintes vonal.
-- **Entitások:** `&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`, egy kb. 30 elemes névtábla (ékezetek, jelek),
-  számos `&#…;` / `&#x…;`.
+- **Entitások:** `&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`, a HTML 4 névtáblája (247 név: ékezetek, görög
+  betűk, jelek), számos `&#…;` / `&#x…;`.
+- **Sormagasság:** CSS `line-height`: szám (a sor betűméretének szorzója, így öröklődik), hossz vagy % (a tag
+  saját betűméretéből, px-ként öröklődik), `normal` (1,2). A szöveges sorok kapják, a blokkmargók helye nem.
 - **Szóközök:** összevonva, mint a böngészőben.
 
 **Blokkok (`flowHtml`, `flowTable`)**, ha a címkében `<table>` vagy háttérszínes `<div>` van:
