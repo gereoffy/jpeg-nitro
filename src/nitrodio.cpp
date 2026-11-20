@@ -3213,6 +3213,24 @@ struct Builder {
         }
     }
 
+    // overflow=hidden (mxText clipped): the label's box beside the shape as labelPosition puts it (lb), its spacing inside, or
+    // lb as it is (asIs: a turned label's, an edge's label cell's); a block taller than its box (inner) from the box's top
+    void clipHidden(std::shared_ptr<Label> &l, const Style &s, bool asIs, const Box &lb, const Box &inner) {
+        if (!l || str(s, "overflow") != "hidden") return;
+        Style ns = s;
+        ns["spacing"] = "0";
+        for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom", "verticalAlign"}) ns.erase(k);
+        Box cb = asIs ? lb : labelBox(ns, lb);
+        if (l->y1 - l->y0 > inner.h && l->y0 != (float)inner.y) {
+            float dy = (float)inner.y - l->y0;
+            for (Run &r : l->runs) r.y += dy;
+            for (Label::Rect &q : l->rects) q.y += dy;
+            l->y0 += dy, l->y1 += dy;
+        }
+        l->clip = true;
+        l->clipX0 = (float)cb.x, l->clipY0 = (float)cb.y, l->clipX1 = (float)(cb.x + cb.w), l->clipY1 = (float)(cb.y + cb.h);
+    }
+
     // the box a vertex's label is laid out in: beside the shape by labelPosition /
     // verticalLabelPosition, less the spacing
     Box labelBox(const Style &s, Box b) {
@@ -4107,20 +4125,7 @@ struct Builder {
         }
         double wrap = str(s, "whiteSpace") == "wrap" ? inner.w + (str(s, "html") == "1" ? 2 : 0) : 0;   // (an HTML label's div: 2 wider)
         std::shared_ptr<Label> l = layoutLabel(c.value, s, inner, wrap);
-        if (l && str(s, "overflow") == "hidden") {   // (mxText clipped: the label's box beside the shape as labelPosition puts it,
-            Style ns = s;                              // its spacing inside)
-            ns["spacing"] = "0";
-            for (const char *k : {"spacingLeft", "spacingRight", "spacingTop", "spacingBottom", "verticalAlign"}) ns.erase(k);
-            Box cb = turned ? lb : labelBox(ns, lb);
-            if (l->y1 - l->y0 > inner.h && l->y0 != (float)inner.y) {   // (taller than its box: the clipped block no taller, from its top)
-                float dy = (float)inner.y - l->y0;
-                for (Run &r : l->runs) r.y += dy;
-                for (Label::Rect &q : l->rects) q.y += dy;
-                l->y0 += dy, l->y1 += dy;
-            }
-            l->clip = true;
-            l->clipX0 = (float)cb.x, l->clipY0 = (float)cb.y, l->clipX1 = (float)(cb.x + cb.w), l->clipY1 = (float)(cb.y + cb.h);
-        }
+        clipHidden(l, s, turned, lb, inner);
         // (turned: its own quarter turn about its box's centre; the shape's rotation moves that centre round the shape's)
         auto place = [&](std::shared_ptr<Label> &lab, Box box) {
             if (!lab || (!turned && rotation == 0)) return;
@@ -4145,6 +4150,7 @@ struct Builder {
             fb.y = b.y + b.h - lb.h;
             Box fi = labelBox(s, fb);
             std::shared_ptr<Label> foot = layoutLabel(c.value, s, fi, str(s, "whiteSpace") == "wrap" ? fi.w + (str(s, "html") == "1" ? 2 : 0) : 0);
+            clipHidden(foot, s, false, fb, fi);
             place(foot, fb);
             addLabel(foot);
         }
@@ -5531,6 +5537,7 @@ struct Builder {
         double width = &lc == &edgeCell ? lc.w : inner.w;
         double wrap = str(s, "whiteSpace") == "wrap" && width > 0 ? width : 0;
         std::shared_ptr<Label> l = layoutLabel(lc.value, s, inner, wrap);
+        if (&lc != &edgeCell && lc.w > 0) clipHidden(l, s, false, b, inner);   // (a label cell of its own size: overflow=hidden too)
         // (turned about its centre by its rotation (mxText's, from the style); labelAutoRotate=1: along the edge's segment
         // nearest to it, kept readable: one pointing left turned round (Graph.getLabelAutoRotation))
         double rot = num(s, "rotation", 0);
