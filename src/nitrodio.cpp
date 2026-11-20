@@ -2062,6 +2062,12 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 8), (float)(w / 4), (float)(h / 8));
         line(w / 2, h / 4, w / 2, 2 * h / 3), line(w / 2, h / 3, 0, h / 3), line(w / 2, h / 3, w, h / 3);
         line(w / 2, 2 * h / 3, 0, h), line(w / 2, 2 * h / 3, w, h);
+    } else if (shape == "mxgraph.basic.diag_snip_rect") {   // (mxBasic.js: its top left and bottom right corners cut, 2 dx)
+        double d = std::min({0.5 * w, 0.5 * h, 2 * std::clamp(num(s, "dx", 6), 0.0, w)});
+        Pt pts[] = {{d, 0}, {w, 0}, {w, h - d}, {w - d, h}, {0, h}, {0, d}};
+        plutovg_path_move_to(q, (float)(b.x + pts[0].x), (float)(b.y + pts[0].y));
+        for (const Pt &p : pts) plutovg_path_line_to(q, (float)(b.x + p.x), (float)(b.y + p.y));
+        plutovg_path_close(q);
     } else if (shape == "mxgraph.basic.pie" || shape == "mxgraph.basic.partConcEllipse" || shape == "mxgraph.basic.arc") {
         // (mxBasic.js: angles 0..1 clockwise from the top; a pie's slice, a ring's part arcWidth wide, an open arc)
         double a0 = 2 * M_PI * std::clamp(num(s, "startAngle", 0.25), 0.0, 1.0), a1 = 2 * M_PI * std::clamp(num(s, "endAngle", 0.75), 0.0, 1.0);
