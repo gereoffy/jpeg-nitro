@@ -4446,9 +4446,9 @@ struct Builder {
             L({back.x - n.x * half, back.y - n.y * half});
             fill = false;
             retreat = sw / 2;
-        } else if (t == "oval") {
-            plutovg_path_add_circle(q, (float)(p.x - u.x * len / 2), (float)(p.y - u.y * len / 2), (float)(len / 2));
-            retreat = len / 2;
+        } else if (t == "oval") {   // (mxMarker's oval: size across, centred on the end itself; the line stops half of it short)
+            plutovg_path_add_circle(q, (float)p.x, (float)p.y, (float)(size / 2));
+            retreat = size / 2;
         } else if (t == "diamond") {
             Pt mid{p.x - u.x * len / 2, p.y - u.y * len / 2};
             M(p);
