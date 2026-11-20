@@ -31,6 +31,7 @@ std::mutex g_lock;
 
 struct Face {
     std::string file;
+    std::vector<std::string> postscript;
     int ttc = 0;           // its index in the collection
     int weight = 400;
     bool italic = false, narrow = false;
@@ -55,6 +56,12 @@ std::string lower(const char *s) {
     for (char &c : o)
         if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     return o;
+}
+
+const char *without_subset_tag(const char *name) {
+    if (strlen(name) > 7 && name[6] == '+' && std::all_of(name, name + 6, [](char c) { return c >= 'A' && c <= 'Z'; }))
+        return name + 7;
+    return name;
 }
 
 bool read_at(FILE *f, uint32_t off, size_t n, std::vector<uint8_t> &out) {
@@ -103,7 +110,7 @@ const uint16_t MAC_ROMAN[128] = {
     0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7};
 
 // Name IDs 1 and 16 identify families; IDs 4 and 6 identify individual faces.
-void index_names(Index &ix, const std::vector<uint8_t> &name, int face) {
+void index_names(Index &ix, const std::vector<uint8_t> &name, int face, std::vector<std::string> &postscript) {
     if (name.size() < 6) return;
     uint32_t count = u16(name.data() + 2), strings = u16(name.data() + 4);
     for (uint32_t i = 0; i < count; i++) {
@@ -136,6 +143,8 @@ void index_names(Index &ix, const std::vector<uint8_t> &name, int face) {
         Names &names = id == 1 || id == 16 ? ix.families : ix.faceNames;
         auto &faces = names[lower(value.c_str())];
         if (faces.empty() || faces.back() != face) faces.push_back(face);
+        if (id == 6 && std::find(postscript.begin(), postscript.end(), value) == postscript.end())
+            postscript.push_back(std::move(value));
     }
 }
 
@@ -181,7 +190,7 @@ void index_file(Index &ix, const std::string &path) {
         } else
             face.weight = bold ? 700 : 400;
         int k = (int)ix.faces.size();
-        index_names(ix, name, k);
+        index_names(ix, name, k, face.postscript);
         ix.files[filename].push_back(k);
         ix.faces.push_back(std::move(face));
     }
@@ -335,12 +344,15 @@ plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
     return match_name(family, weight, italic);
 }
 
-bool nf_face_file(plutovg_font_face_t *face, std::string &file, int &ttc) {
+bool nf_face_file(plutovg_font_face_t *face, const char *postscript, std::string &file, int &ttc) {
     Index &ix = index();
     auto it = ix.loaded.find(face);
     if (it == ix.loaded.end()) return false;
-    file = ix.faces[it->second].file;
-    ttc = ix.faces[it->second].ttc;
+    const Face &f = ix.faces[it->second];
+    const char *name = without_subset_tag(postscript);
+    if (std::find(f.postscript.begin(), f.postscript.end(), name) == f.postscript.end()) return false;
+    file = f.file;
+    ttc = f.ttc;
     return true;
 }
 
@@ -469,7 +481,7 @@ FontName parse_name(const char *name, int &weight, bool &italic) {
     size_t lead = s.find_first_not_of(" \t");
     s = lead == std::string::npos ? std::string() : s.substr(lead);
     // a PDF subset tag: six capitals and a +
-    if (s.size() > 7 && s[6] == '+' && std::all_of(s.begin(), s.begin() + 6, [](char c) { return c >= 'A' && c <= 'Z'; })) s.erase(0, 7);
+    s.erase(0, without_subset_tag(s.c_str()) - s.c_str());
     // a font file (DXF's text styles): Windows' core fonts by their file names, else the file's own name; an AutoCAD SHX
     // stroke font: none (a plain sans serif)
     std::string low = lower(s.c_str());

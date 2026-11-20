@@ -1654,15 +1654,16 @@ std::shared_ptr<Font> loadFontUncached(nitropdf &P, Val ref, int depth) {
                 f->cidIdentity = false;
                 for (size_t k = 0; k + 1 < dec.data.size(); k += 2) f->cidToGid.push_back((uint16_t)((uint8_t)dec.data[k] << 8 | (uint8_t)dec.data[k + 1]));
             }
-        if (!f->face) f->sub = standIn(doc, fd, std::string(doc.get(desc, "BaseFont").str()), *f);
-        // not embedded, its text by the TrueType font's glyph numbers alone (no /ToUnicode): the
-        // system font's own glyphs by those numbers (right where it is the same font, as readers do)
+        std::string baseFont(doc.get(desc, "BaseFont").str());
+        if (baseFont.empty()) baseFont = doc.get(fd, "FontName").str();
+        if (!f->face) f->sub = standIn(doc, fd, baseFont, *f);
+        // Without a character map, glyph numbers are usable only in the named TrueType face.
         std::string file;
         int ttc = 0;
         bool known = false;
         if (!f->face && f->sub && f->toUnicode.empty() && doc.get(desc, "Subtype").is("CIDFontType2")) {
             std::lock_guard<std::mutex> g(nf_lock());
-            known = nf_face_file(f->sub, file, ttc);
+            known = nf_face_file(f->sub, baseFont.c_str(), file, ttc);
         }
         if (known && (P.ft || !FT_Init_FreeType(&P.ft)) && !FT_New_Face(P.ft, file.c_str(), ttc, &f->face))
             FT_Set_Char_Size(f->face, 0, 1000 * 64, 72, 72);
