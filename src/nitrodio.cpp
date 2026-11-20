@@ -849,6 +849,26 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
     return paras;
 }
 
+// line breaks in CJK text, as a browser's (UAX #14, simplified): between any two characters where one is a CJK one, but not
+// before a closing mark (，。、）」 ...) nor after an opening one (（「 ...)
+bool cjkChar(uint32_t c) {
+    return (c >= 0x2e80 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) ||
+           (c >= 0xff00 && c <= 0xffef) || (c >= 0x20000 && c <= 0x2fa1f);
+}
+bool cjkClosing(uint32_t c) {
+    static const char32_t marks[] = U"、。，．：；？！）〕］｝〉》」』】〙〗〟ー゛゜ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ・…‥％,.:;?!)]}";
+    for (char32_t m : marks)
+        if (m && c == (uint32_t)m) return true;
+    return false;
+}
+bool cjkOpening(uint32_t c) {
+    static const char32_t marks[] = U"（〔［｛〈《「『【〘〖〝([{";
+    for (char32_t m : marks)
+        if (m && c == (uint32_t)m) return true;
+    return false;
+}
+bool cjkBreak(uint32_t a, uint32_t b) { return (cjkChar(a) || cjkChar(b)) && b != ' ' && !cjkClosing(b) && !cjkOpening(a); }
+
 float textWidth(plutovg_font_face_t *face, float size, const std::string &t) {
     return face ? plutovg_font_face_text_extents(face, size, t.data(), (int)t.size(), PLUTOVG_TEXT_ENCODING_UTF8, nullptr) : 0;
 }
@@ -941,17 +961,39 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
             size_t i = 0;   // (word by word: a word with its following spaces, or up to a hyphen between letters or digits,
             while (i < sg.text.size()) {   // where a browser breaks too: iracelog-|service-|manager)
                 size_t e = i;
+                bool cut = false;   // (e: the end of the word, before a CJK break)
                 for (; e < sg.text.size(); e++) {
                     if (sg.text[e] == ' ') break;
                     if (sg.text[e] == '-' && e > i && isalnum((unsigned char)sg.text[e - 1]) && e + 1 < sg.text.size() &&
                         isalnum((unsigned char)sg.text[e + 1]))
                         break;
+                    if ((unsigned char)sg.text[e] >= 0x80 || (e + 1 < sg.text.size() && (unsigned char)sg.text[e + 1] >= 0x80)) {
+                        size_t k = e;   // (this character and the next: a CJK break between them)
+                        uint32_t a = nf_utf8_next(sg.text, k);
+                        if (k < sg.text.size()) {
+                            size_t k2 = k;
+                            uint32_t b2 = nf_utf8_next(sg.text, k2);
+                            if (cjkBreak(a, b2)) {
+                                e = k, cut = true;
+                                break;
+                            }
+                        }
+                        e = k - 1;
+                    }
                 }
-                e = e >= sg.text.size() ? sg.text.size() : e + 1;
+                if (!cut) e = e >= sg.text.size() ? sg.text.size() : e + 1;
                 std::string word = sg.text.substr(i, e - i);
                 const std::string *prev = lines.back().empty() ? nullptr : &lines.back().back().text;
                 bool glued = i == 0 && prev && !prev->empty() && prev->back() != ' ' &&
                              !(prev->back() == '-' && prev->size() > 1 && isalnum((unsigned char)(*prev)[prev->size() - 2]));
+                if (glued) {   // (a CJK break between the run before and this one: not one word)
+                    size_t k = prev->size();
+                    while (k > 0 && ((unsigned char)(*prev)[k - 1] & 0xc0) == 0x80) k--;
+                    if (k > 0) k--;
+                    size_t k0 = 0;
+                    uint32_t a = nf_utf8_next(*prev, k), b2 = nf_utf8_next(word, k0);
+                    if (cjkBreak(a, b2)) glued = false;
+                }
                 i = e;
                 float w = textWidth(f, sz, word);
                 std::string bare = word;
