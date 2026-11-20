@@ -5117,7 +5117,11 @@ struct Builder {
         for (Pt p : mid)
             if (std::fabs(p.x - r.back().x) > 1e-6 || std::fabs(p.y - r.back().y) > 1e-6) r.push_back(p);
         if (std::fabs(tp.x - r.back().x) > 1e-6 || std::fabs(tp.y - r.back().y) > 1e-6) r.push_back(tp);
-        if (r.size() < 2) return;   // (no length: nothing drawn)
+        if (r.size() < 2) {   // (no length: no line, its point kept: its label and the shapes on it there, as mxGraphView keeps
+            c.route = {r[0], r[0]};   // the state)
+            if (!c.value.empty()) edgeLabel(c, c, c.route);
+            return;
+        }
         c.route = r;
         drawEdge(c, r);
     }
