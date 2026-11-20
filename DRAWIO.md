@@ -257,12 +257,18 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 ## Matematika (`math="1"`)
 
 Ha az oldal `mxGraphModel`-jén `math="1"` áll, a draw.io MathJax-szal szedi a címkék képleteit: `$$…$$` és
-`\(…\)` TeX, `` `…` `` AsciiMath. A mintákban 11 fájl, 19 oldal használ matematikát. A nitrodio nem szed képletet,
-hanem olvasható szöveggé írja át, mielőtt a címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`,
-hívja a `readModel()`).
+`\(…\)` TeX, `` `…` `` AsciiMath. A nitrodio nem szed képletet, hanem a MathJax kinézetéhez közeli HTML-szöveggé
+írja át, mielőtt a címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`, hívja a `readModel()`).
+A referencia-renderek MathJax-szal készülnek (`samples_drawio/reference-tools/math/`).
 
 **Megvan:**
 
+- **Betűk:** HTML-címkében talpas betűvel (`serif`), 117 %-ra nagyítva, mint a MathJax, ami a kisbetűk magasságát a
+  szövegéhez igazítja. A latin és a kisbetűs görög betűk dőltek; állók a számok, a `\text{…}`, `\mathrm`,
+  `\operatorname`, `\mathbf` (félkövér) tartalma és a függvénynevek (`\sin`, AsciiMath-ban `sin`, `log` …).
+  `\underline` aláhúz, `\color{c}` / `\textcolor{c}{…}` színez.
+- **Térközök:** a képletbeli szóköz elmarad, mint a TeX-ben; a műveleti jelek (+ − × ∪ …) és a relációk (= ≤ → …)
+  két oldalán nem törhető szóköz, a kezdő vagy műveleti jel utáni előjel nélküle. A képlet nem tördelődik.
 - **Jelek Unicode-ként:** görög betűk (`\alpha` → α, `\Omega` → Ω), nyilak (`\leftarrow` → ←, `\Rightarrow` → ⇒,
   `\mapsto` → ↦), műveleti és relációjelek (`\times` ×, `\cdot` ⋅, `\pm` ±, `\le` ≤, `\ne` ≠, `\approx` ≈,
   `\in` ∈, `\subseteq` ⊆, `\infty` ∞, `\partial` ∂, `\nabla` ∇, `\sum` ∑, `\int` ∫ …), `\mathbb{R}` → ℝ.
@@ -274,8 +280,8 @@ hívja a `readModel()`).
 - **Szerkezet:** `\\` sortörés, `&` (mátrix) szóköz, `\left` / `\right` / `\big`, `\hline` és a környezetnevek
   (`\begin{pmatrix}`, egy `array` oszlopleírása) eldobva, `\lgroup` / `\rgroup` zárójelként, `\&` és társai
   szó szerint, más parancs a nevével (`\sin`, `\log`, `\lim`).
-- **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `^` / `_` zárójeles
-  csoporttal.
+- **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `sqrt` → √, `text(…)`
+  szó szerint, a beírt TeX-parancsok (`\text{…}`) is; `^` / `_` zárójeles vagy `{…}` csoporttal.
 
 **Hiányzik:**
 
@@ -283,6 +289,8 @@ hívja a `readModel()`).
 |---|---|
 | valódi képletszedés: tört egymás alatt, gyökjel a kifejezés fölött, mátrix rácsban | TeX-motor kellene hozzá |
 | kombináló ékezet helyes elhelyezése (pl. f̂, \vec) | a betűrajzolás nem igazítja az ékezetet: magas betűn rácsúszik |
+| a MathJax saját (Computer Modern) betűi, az index kisebb mérete és helye | Times-szal, a HTML `<sub>` / `<sup>` méretével |
+| matematika sima (nem HTML) címkében | ott a képlet egyszerű szöveg marad, álló betűkkel |
 | a MathJax kész SVG-kimenete a címkében | lásd a HTML-részben az `<svg>`-t |
 
 ## Referencia és ellenőrzés

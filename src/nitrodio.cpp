@@ -2438,7 +2438,17 @@ const std::map<std::string, uint32_t> &texSymbols() {
     return m;
 }
 
-// the TeX inside $$ $$ / \( \) as text; html: the label's HTML (its sub / sup tags; the TeX's < > & escaped back)
+// the TeX inside $$ $$ / \( \) as text; html: the label's HTML (its sub / sup tags; the TeX's < > & escaped back), set as
+// MathJax sets it: in a serif face, the letters (Latin, lower case Greek) italic, but upright in \text, \mathrm, ...
+// (texUpright > 0) and the operator names (\sin, \log ...)
+thread_local int texUpright = 0;
+bool texItalicChar(uint32_t cp) { return (cp < 0x80 && isalpha((int)cp)) || (cp >= 0x3b1 && cp <= 0x3c9) || cp == 0x3d1 || cp == 0x3d5 || cp == 0x3d6 || cp == 0x3f1 || cp == 0x3f5; }
+void texPut(std::string &o, bool html, uint32_t cp) {
+    bool it = html && !texUpright && texItalicChar(cp);
+    if (it) o += "<i>";
+    nf_utf8_put(o, cp);
+    if (it) o += "</i>";
+}
 std::string texText(const std::string &t, bool html, size_t &i, int depth, char until);
 std::string texArg(const std::string &t, bool html, size_t &i, int depth) {   // ({...}, or one character or command)
     while (i < t.size() && t[i] == ' ') i++;
@@ -2451,6 +2461,11 @@ std::string texArg(const std::string &t, bool html, size_t &i, int depth) {   //
     if (t[i] == '\\') return texText(t, html, i, depth + 1, 1);   // (a command: its one item)
     i += (unsigned char)t[i] < 0x80 ? 1 : 1 + ((unsigned char)t[i] >= 0xe0) + ((unsigned char)t[i] >= 0xf0);
     std::string s = t.substr(a, i - a);
+    if (s.size() == 1 && isalpha((unsigned char)s[0])) {
+        std::string o;
+        texPut(o, html, (unsigned char)s[0]);
+        return o;
+    }
     if (html && s == "<") return "&lt;";
     if (html && s == ">") return "&gt;";
     if (html && s == "&") return "&amp;";
@@ -2474,6 +2489,59 @@ std::string texRaw(const std::string &t, bool html, size_t &i) {   // (\text{...
     }
     return o;
 }
+// a binary operator's or a relation's sign (TeX's spacing round it: a space either side, none for a sign that starts its
+// group or follows an operator, an opening bracket or a relation: unary)
+int texOpKind(uint32_t cp) {   // (1: binary operator, 2: relation, 0: neither)
+    static const uint32_t bin[] = {'+', '-', 0x2212, 0xd7, 0x22c5, 0xf7, 0xb1, 0x2213, 0x2217, 0x2218, 0x2219, 0x2295, 0x2296, 0x2297,
+                                   0x2299, 0x222a, 0x2229, 0x2216, 0x2227, 0x2228, 0x22c6};
+    static const uint32_t rel[] = {'=', ':', '<', '>', 0x2264, 0x2265, 0x2260, 0x2248, 0x2261, 0x223c, 0x2243, 0x2245, 0x221d, 0x226a, 0x226b,
+                                   0x227a, 0x227b, 0x2208, 0x2209, 0x220b, 0x2282, 0x2283, 0x2286, 0x2287, 0x2190, 0x2192, 0x2191, 0x2193,
+                                   0x2194, 0x2195, 0x21d0, 0x21d2, 0x21d1, 0x21d3, 0x21d4, 0x27f5, 0x27f6, 0x27f7, 0x27f8, 0x27f9, 0x27fa,
+                                   0x21a6, 0x27fc, 0x21aa, 0x21a9, 0x2197, 0x2198, 0x2199, 0x2196, 0x21cc, 0x22a2, 0x22a8, 0x2225, 0x2223,
+                                   0x22a5};
+    for (uint32_t b : bin)
+        if (b == cp) return 1;
+    for (uint32_t r : rel)
+        if (r == cp) return 2;
+    return 0;
+}
+// the last character written (its HTML tags and entities' ends skipped): what a sign follows
+uint32_t texLast(const std::string &o) {
+    size_t e = o.size();
+    while (e > 0 && o[e - 1] == '>') {
+        size_t lt = o.rfind('<', e - 1);
+        if (lt == std::string::npos) break;
+        e = lt;
+    }
+    if (e == 0) return 0;
+    size_t s = e - 1;
+    while (s > 0 && ((unsigned char)o[s] & 0xc0) == 0x80) s--;
+    size_t k = s;
+    return nf_utf8_next(o, k);
+}
+void texSign(std::string &o, bool html, uint32_t cp) {
+    int kind = texOpKind(cp);
+    uint32_t last = texLast(o);
+    bool after = last == ' ' || last == 0xa0;   // (a space already: what came before it decides)
+    if (after) {
+        std::string t = o;
+        while (!t.empty() && (texLast(t) == ' ' || texLast(t) == 0xa0)) t.resize(t.size() - (texLast(t) == ' ' ? 1 : 2));
+        last = texLast(t);
+    }
+    // (a binary operator first in its group, or after an operator, a relation or an opening bracket: unary, not spaced;
+    // a relation after a relation: one relation, := ≤= ...)
+    bool spaced = last && texOpKind(last) == 0 && last != '(' && last != '[' && last != '{' && (kind == 1 || kind == 2);
+    if (kind == 2 && !last) spaced = false;
+    if (kind == 2 && after && texOpKind(last) == 2)   // (:= : the space after the first sign taken back)
+        while (o.size() >= 2 && o.compare(o.size() - 2, 2, "\xc2\xa0") == 0) o.resize(o.size() - 2);
+    if (spaced && !after) o += "\xc2\xa0";   // (no break: MathJax keeps a formula on its line)
+    if (cp == '-') cp = 0x2212;   // (TeX's minus)
+    if (html && cp == '<') o += "&lt;";
+    else if (html && cp == '>') o += "&gt;";
+    else texPut(o, html, cp);
+    if (spaced) o += "\xc2\xa0";
+}
+
 // (until: the closing character, 0 to the end, 1: one item only)
 std::string texText(const std::string &t, bool html, size_t &i, int depth, char until) {
     std::string o;
@@ -2501,14 +2569,23 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
             o += script(c == '^', texArg(t, html, i, depth));
         } else if (c == '\\' && i + 1 < t.size()) {
             size_t j = i + 1;
-            while (j < t.size() && isalpha((unsigned char)t[j])) j++;
+            while (j < t.size() && (unsigned char)t[j] < 0x80 && isalpha((unsigned char)t[j])) j++;
             if (j == i + 1) j++;   // (\\, \{, \, ...: one character)
             if (html && j == i + 2 && t.compare(i + 1, 5, "&amp;") == 0) j = i + 6;   // (\& in an HTML label: \&amp;)
             std::string cmd = j == i + 6 && t[i + 1] == '&' ? std::string("&") : t.substr(i + 1, j - i - 1);
             i = j;
             auto sym = texSymbols().find(cmd);
-            if (sym != texSymbols().end()) nf_utf8_put(o, sym->second);
-            else if (cmd == "\\") o += html ? "<br>" : "\n";
+            if (sym != texSymbols().end()) {
+                if (texOpKind(sym->second)) texSign(o, html, sym->second);
+                else texPut(o, html, sym->second);
+            } else if (cmd == "\\") o += html ? "<br>" : "\n";
+            else if (cmd == "color" || cmd == "textcolor") {   // (\color{c}: the rest of its group in c; \textcolor{c}{x})
+                std::string col = texRaw(t, false, i);
+                std::string a = cmd == "color" ? texText(t, html, i, depth + 1, until > 1 ? until : 0) : texArg(t, html, i, depth);
+                bool ok = !col.empty() && col.find_first_of("\"<>&") == std::string::npos;
+                o += html && ok ? "<font color=\"" + col + "\">" + a + "</font>" : a;
+                if (cmd == "color") return o;   // (its group's end taken with it)
+            }
             else if (cmd == "," || cmd == ":" || cmd == ";" || cmd == " " || cmd == ">") o += ' ';
             else if (cmd == "!" || cmd == "left" || cmd == "right" || cmd == "big" || cmd == "Big" || cmd == "bigg" || cmd == "Bigg" ||
                      cmd == "bigl" || cmd == "bigr" || cmd == "Bigl" || cmd == "Bigr" || cmd == "displaystyle" || cmd == "textstyle" ||
@@ -2519,8 +2596,10 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
             } else if (cmd == "{" || cmd == "}" || cmd == "%" || cmd == "$" || cmd == "#" || cmd == "_") o += cmd;
             else if (cmd == "&") o += html ? "&amp;" : "&";
             else if (cmd == "text" || cmd == "textrm" || cmd == "textit" || cmd == "textbf" || cmd == "mbox" || cmd == "texttt" ||
-                     cmd == "textsf" || cmd == "hbox")
-                o += texRaw(t, html, i);
+                     cmd == "textsf" || cmd == "hbox") {
+                std::string a = texRaw(t, html, i);
+                o += html && cmd == "textit" ? "<i>" + a + "</i>" : html && cmd == "textbf" ? "<b>" + a + "</b>" : a;
+            }
             else if (cmd == "frac" || cmd == "dfrac" || cmd == "tfrac") {   // (a/b; (a)/(b) when either is more than a word)
                 std::string a = texArg(t, html, i, depth), b = texArg(t, html, i, depth);
                 auto simple = [](const std::string &x) { return x.find_first_of(" +-=<>&/") == std::string::npos; };
@@ -2564,15 +2643,25 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
                 std::string kind = cmd == "widehat" ? "hat" : cmd == "widetilde" ? "tilde" : cmd == "overline" ? "bar" : cmd;
                 auto pc = precomposed.find(kind);
                 const char *at = pc != precomposed.end() && a.size() == 1 ? strchr(pc->second.first, a[0]) : nullptr;
-                if (at && *at) nf_utf8_put(o, pc->second.second[(size_t)(at - pc->second.first)]);
+                if (at && *at) texPut(o, html, pc->second.second[(size_t)(at - pc->second.first)]);
                 else {
                     o += a;
                     uint32_t mark = cmd == "overline" || cmd == "bar" ? 0x305 : cmd == "hat" || cmd == "widehat" ? 0x302 : cmd == "vec" ? 0x20d7 :
                                     cmd == "dot" ? 0x307 : cmd == "ddot" ? 0x308 : 0x303;
                     if (!a.empty()) nf_utf8_put(o, mark);
                 }
-            } else if (cmd == "operatorname" || cmd == "mathrm" || cmd == "mathit" || cmd == "mathbf" || cmd == "mathsf" ||
-                       cmd == "mathtt" || cmd == "mathcal" || cmd == "boldsymbol" || cmd == "underline" || cmd == "mathfrak")
+            } else if (cmd == "operatorname" || cmd == "mathrm" || cmd == "mathbf" || cmd == "mathsf" || cmd == "mathtt") {   // (upright)
+                texUpright++;
+                std::string a = texArg(t, html, i, depth);
+                texUpright--;
+                o += html && cmd == "mathbf" ? "<b>" + a + "</b>" : a;
+            } else if (cmd == "underline") {
+                std::string a = texArg(t, html, i, depth);
+                o += html ? "<u>" + a + "</u>" : a;
+            } else if (cmd == "boldsymbol") {
+                std::string a = texArg(t, html, i, depth);
+                o += html ? "<b>" + a + "</b>" : a;
+            } else if (cmd == "mathit" || cmd == "mathcal" || cmd == "mathfrak")
                 o += texArg(t, html, i, depth);
             else if (cmd == "begin" || cmd == "end") {   // (\begin{cases} ...: the environment's name dropped, an array's columns too)
                 std::string env = texRaw(t, false, i);
@@ -2594,6 +2683,25 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
         } else if (c == '~') {
             o += html ? "&nbsp;" : "\xc2\xa0";
             i++;
+        } else if (html && c == '<' && i + 1 < t.size() && (isalpha((unsigned char)t[i + 1]) || t[i + 1] == '/') &&
+                   t.find('>', i) != std::string::npos) {   // (the label's own HTML tag (<br>, <font ...>): as it is)
+            size_t e = t.find('>', i);
+            o += t.substr(i, e + 1 - i);
+            i = e + 1;
+        } else if (html && !texUpright && (unsigned char)c < 0x80 && isalpha((unsigned char)c)) {
+            texPut(o, html, (unsigned char)c);
+            i++;
+        } else if (c == ' ' || c == '\n' || c == '\t') {   // (white space: none in math, TeX spaces it itself)
+            i++;
+        } else if (texOpKind((unsigned char)c) && c != '&') {
+            texSign(o, html, (unsigned char)c);
+            i++;
+        } else if (html && t.compare(i, 4, "&lt;") == 0) {
+            texSign(o, html, '<');
+            i += 4;
+        } else if (html && t.compare(i, 4, "&gt;") == 0) {
+            texSign(o, html, '>');
+            i += 4;
         } else {
             size_t n = (unsigned char)c < 0x80 ? 1 : 1 + ((unsigned char)c >= 0xe0) + ((unsigned char)c >= 0xf0);
             o += t.substr(i, n);
@@ -2615,25 +2723,42 @@ std::string asciiMathText(const std::string &t, bool html) {
         bool done = false;
         for (const auto &op : ops)
             if (t.compare(i, op.first.size(), op.first) == 0) {
-                nf_utf8_put(o, op.second);
+                if (texOpKind(op.second)) texSign(o, html, op.second);
+                else texPut(o, html, op.second);
                 i += op.first.size();
                 done = true;
                 break;
             }
         if (done) continue;
-        if (isalpha((unsigned char)t[i])) {   // (a word: a Greek letter's or an operator's name, else as it is)
-            size_t j = i;
-            while (j < t.size() && isalpha((unsigned char)t[j])) j++;
+        if (t[i] == '\\' && i + 1 < t.size()) {   // (a TeX command, as MathJax's AsciiMath takes some: \text{...})
+            o += texText(t, html, i, 1, 1);
+        } else if ((unsigned char)t[i] < 0x80 && isalpha((unsigned char)t[i])) {   // (a word: a Greek letter's or a function's name,
+            size_t j = i;                                                          // else its letters, italic)
+            while (j < t.size() && (unsigned char)t[j] < 0x80 && isalpha((unsigned char)t[j])) j++;
             std::string w = t.substr(i, j - i);
             auto sym = texSymbols().find(w);
-            if (sym != texSymbols().end() && w.size() > 2) nf_utf8_put(o, sym->second);
-            else o += w;
+            static const char *const fn[] = {"sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "log", "ln", "exp", "det",
+                                             "dim", "lim", "mod", "gcd", "lcm", "min", "max", "sup", "inf", "arcsin", "arccos", "arctan"};
+            bool func = false;
+            for (const char *f : fn) func = func || w == f;
+            if (w == "text" && j < t.size() && t[j] == '(') {   // (text(...): as it is)
+                size_t e = t.find(')', j);
+                if (e == std::string::npos) e = t.size();
+                o += t.substr(j + 1, e - j - 1);
+                j = std::min(t.size(), e + 1);
+            } else if (w == "sqrt") nf_utf8_put(o, 0x221a);   // (sqrt(x): √(x))
+            else if (sym != texSymbols().end() && w.size() > 2) texPut(o, html, sym->second);
+            else if (func) o += w;
+            else
+                for (char ch : w) texPut(o, html, (unsigned char)ch);
             i = j;
         } else if ((t[i] == '^' || t[i] == '_') && i + 1 < t.size()) {
             bool up = t[i] == '^';
             size_t j = i + 1, a = j;
             std::string x;
-            if (t[j] == '(') {
+            if (t[j] == '\\' || t[j] == '{') {   // (a TeX argument)
+                x = texArg(t, html, j, 1);
+            } else if (t[j] == '(') {
                 int level = 0;
                 for (; j < t.size(); j++) {
                     if (t[j] == '(') level++;
@@ -2641,12 +2766,17 @@ std::string asciiMathText(const std::string &t, bool html) {
                 }
                 x = t.substr(a + 1, j - a - 1), j++;
             } else {
-                while (j < t.size() && isalnum((unsigned char)t[j])) j++;
+                while (j < t.size() && (unsigned char)t[j] < 0x80 && isalnum((unsigned char)t[j])) j++;
                 if (j == a) j++;
-                x = t.substr(a, j - a);
+                for (size_t k = a; k < j; k++) texPut(x, html, (unsigned char)t[k]);
             }
             o += html ? std::string(up ? "<sup>" : "<sub>") + x + (up ? "</sup>" : "</sub>") : std::string(up ? "^" : "_") + x;
             i = j;
+        } else if (t[i] == ' ') {   // (white space: none, as in TeX)
+            i++;
+        } else if ((unsigned char)t[i] < 0x80 && texOpKind((unsigned char)t[i])) {
+            texSign(o, html, (unsigned char)t[i]);
+            i++;
         } else
             o += t[i++];
     }
@@ -2672,11 +2802,15 @@ std::string mathText(const std::string &v, bool html) {
             break;
         }
         std::string inner = v.substr(at + open, e - at - open);
+        // (MathJax's TeX fonts: a serif face, scaled to the text's x-height: a serif's x-height is less than Helvetica's)
+        if (html) o += "<font face=\"serif\" style=\"font-size: 117%\">";
+        texUpright = 0;
         if (at == c) o += asciiMathText(inner, html);
         else {
             size_t k = 0;
             o += texText(inner, html, k, 0, 0);
         }
+        if (html) o += "</font>";
         i = e + strlen(close);
     }
     return o;
