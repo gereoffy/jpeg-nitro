@@ -1,18 +1,19 @@
-# nitrodio: mi honnan jön a draw.io-ból
+# nitrodio: mi van meg a draw.io-ból, és mi hiányzik
 
-Állapot: 2026-11-20 (a db0bf9d commit után). A számok a `samples_drawio/reference-tools/files.txt` 1094 fájljából
-jönnek, minden oldal minden cellastílusát összeszámolva. Ebből 785 fájl a draw.io saját példája
-(`downloaded*/jgraph`, és a gallery-* SVG-k beágyazott rajzai), **309 fájl más forrásból** jön. Ahol két szám
-szerepel, a második ez a 309-es, „külső” rész.
+A fájlszámok a mintakészletből jönnek (`samples_drawio/reference-tools/files.txt`, 1094 fájl), minden oldal minden
+cellastílusát összeszámolva. Ebből 785 fájl a draw.io saját példája vagy sablonja (`downloaded*/jgraph`, és a
+gallery-* SVG-k beágyazott rajzai), 309 fájl más forrásból jön. Ahol két szám szerepel, a második ez a 309-es,
+„külső” rész. A `samples_drawio/project_docs/` 184 valódi projektmintája külön készlet, ugyanígy ellenőrizve.
 
 ## Felépítés
 
 A nitrodio nem futtatja és nem fordítja le az mxGraph-ot. A rajzolás lépéseit írja újra C++-ban, és a draw.io
-JS-forrásaiból azt portolja át, ami a képhez kell. Az egész egy fájl: `src/nitrodio.cpp` (~4800 sor).
+JS-forrásaiból azt portolja át, ami a képhez kell. Az egész egy fájl: `src/nitrodio.cpp`.
 
 1. **Beolvasás.** Az `<mxfile>` / `<diagram>` oldalak kicsomagolása (base64, raw deflate, URL-kódolás),
-   libxml2. Utána a cellák, a `mxGeometry` és a stílusstringek (`readCells`, `parseStyle`), a draw.io
-   `default.xml` stíluslapjának alapértékeivel (`applyNamed`).
+   libxml2. Utána a cellák, a `mxGeometry` (számai milliomodra kerekítve, a draw.io lebegőpontos zaja miatt) és a
+   stílusstringek (`readCells`, `parseStyle`), a draw.io `default.xml` stíluslapjának alapértékeivel
+   (`applyNamed`).
 2. **Builder.** Végigmegy a cellákon rajzolási sorrendben. A `vertex()` a csúcsokat, az `edge()` és a
    `drawEdge()` az éleket készíti el, közben számolja az abszolút koordinátákat, a rétegeket és a
    láthatóságot.
@@ -30,26 +31,26 @@ A draw.io három rétegből rajzol, és mindháromból van átvett rész:
 
 ## 1. Az mxGraph magja
 
-Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. **Az egész megvan** (2026-11-20 óta a
-lent felsoroltak is).
+Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egész megvan.
 
 - **Élvezetés** (`mxEdgeStyle`): OrthConnector, SegmentConnector, ElbowConnector (vertical / horizontal),
-  EntityRelation, Loop. A SideToSide és a TopToBottom a Graph.js-ben felül van írva, ezeket onnan vettem át.
-  `curved=1`, `rounded=1`, `orthogonalLoop`, `portConstraint`, `jettySize`. Az OrthConnector bemenetét tizedre
-  kerekíti, mint a draw.io; a szabad végpont 1×1-es doboz; elforgatott terminálnál a forgatott befoglaló doboz
-  számít. A geometria számai milliomodra kerekítve (a draw.io lebegőpontos zaja miatt).
+  EntityRelation, Loop. A SideToSide és a TopToBottom a Graph.js-ben felül van írva, ezek onnan jönnek.
+  `curved=1`, `rounded=1`, `orthogonalLoop`, `portConstraint`, `jettySize`. Az OrthConnector a draw.io-éval
+  egyezően tizedre kerekíti a bemenetét, a szabad végpontot 1×1-es doboznak veszi, és elforgatott terminálnál a
+  forgatott befoglaló dobozzal számol. Az EntityRelation a szabad induló pontot is terminálnak veszi.
 - **Perimeterek** (`mxPerimeter`): rectangle, ellipse, rhombus, triangle, hexagon, hexagon2, trapezoid,
   parallelogram, step, center, orthogonal, lifeline, backbone, callout. Port- és constraint-pontok
   (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`).
 - **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok. Az oval a vonal végére
-  középre kerül, `size` átmérővel; a vonal kitöltés nélküli markernél is a marker tövénél áll meg.
+  középre kerül, `size` átmérővel. A vonal kitöltött és kitöltés nélküli markernél is a marker tövénél áll meg.
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
-  `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`; szóköznél, betűk közötti kötőjel után és CJK írásjelek között (záró jel előtt és nyitó után nem), mint a böngésző), `overflow`,
+  `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`, lásd a HTML-részt), `overflow`,
   `horizontal=0`, `textDirection` (vertical-lr / -rl), `labelBackgroundColor`, `labelBorderColor` /
-  `labelBorderWidth`, `noLabel`, az alapvonal helye; él-címkék a `rotation`-jükkel elforgatva,
-  `labelAutoRotate=1`: a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation), és
-  `horizontal=0`-val függőlegesen. Az él saját alakkal (kitöltés vagy körvonal) rendelkező gyerek-cellái teljes
-  csúcsként rajzolódnak, a bal felső sarkuk az él menti pont plusz az offset (mxGraphView.updateVertexState).
+  `labelBorderWidth`, `noLabel`, az alapvonal helye.
+- **Él-címkék**: az él mentén a relatív helyükön, a `rotation`-jükkel elforgatva, `horizontal=0`-val függőlegesen,
+  `labelAutoRotate=1`-gyel a legközelebbi élszakasz irányába, olvasható állásban (Graph.getLabelAutoRotation).
+  Az él saját alakú (kitöltéssel vagy körvonallal rendelkező) gyerek-cellái teljes csúcsként rajzolódnak, a bal
+  felső sarkuk az él menti pont plusz az offset (mxGraphView.updateVertexState).
 - **mxShape**: `direction`, `flipH/V`, `rotation`, `shadow`, `glass` (téglalapon és a swimlane fejlécén), gradient
   (`gradientDirection` north/south/east/west/radial), `dashed` / `dashPattern` / `fixDash`, átlátszóságok,
   `arcSize` / `absoluteArcSize`.
@@ -65,18 +66,14 @@ lent felsoroltak is).
 - **mxStencil**: a stencil-XML értelmezője (szöveg, dash, gradient a stencilben is), és az
   `mxStencilRegistry` névképzése.
 
-A 2026-11-20-án pótolt elemek (fájlok száma: összes / külső): `labelBorderColor` (11 / 10), `noLabel=1` (16 / 1),
-`fixDash=1` (14 / 0), a swimlane a draw.io szerint (`rounded=1`: 25 / 0, `swimlaneHead/Body=0`: 14 / 0,
-`swimlaneLine=0`: 7 / 0), `gradientDirection=radial` (3 / 0), a `label` alakzat képe és indikátora. Ellenőrzés:
-a referenciarenderek ellen 0 romlás, egy saját tesztábra (minden elem) a draw.io-val egyezik.
-
-A draw.io rétegéből (Graph.js) hiányzik még:
+A draw.io rétegéből (Graph.js) hiányzik:
 
 | Mi | Mit csinál | Fájl |
 |---|---|---|
 | `jumpStyle` (arc / gap / sharp / line) | ívecske vagy rés, ahol két él keresztezi egymást | 35 / 6 (bonyolult, kihagyva) |
 | `sequenceEdgeStyle` | szekvenciadiagram üzenetélei (Shapes.js) | 4 / 0 |
 | `shadowColor`, `shadowBlur`, `shadowOffset*` | egyedi árnyék | 4 / 0 |
+| `comic=1` | régi kézirajz-stílus: kerek vonalvégek | ritka |
 
 A szerkesztőnek szóló kulcsokkal (`resizable`, `collapsible`, `container`, `childLayout`, `autosize`, …) nem
 kell foglalkozni: a geometria már a fájlban van.
@@ -85,17 +82,17 @@ kell foglalkozni: a geometria már a fájlban van.
 
 A Shapes.js 99 alakzatot, élet és markert regisztrál. **57 megvan**:
 
-- **Csúcsok:** process, note, note2, card, cube, tape, document, step, parallelogram, trapezoid, folder,
-  component, datastore, dataStorage, delay, offPageConnector, umlActor, umlLifeline, umlFrame, umlDestroy,
-  seqActorStick, table, tableRow, partialRectangle, singleArrow, crossbar, curlyBracket, cylinder3, isoCube,
-  isoCube2, isoRectangle, lollipop, module, or, xor, plus, corner, startState, endState, dimension, message,
-  smileyFace, switch, waypoint, hexagon. Címkedobozok: `cylinder3` és `document` `boundedLbl=1`-gyel a fedő alatt /
-  a hullám fölött, `process` a két sáv között; `curlyBracket` `rounded=1`-gyel ívelt sarkokkal (nyitott
-  töröttvonal, mint mxShape.addPoints). 2026-11-20 óta callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal
-  együtt fordul), loopLimit, collate, umlBoundary, umlControl (az új projektmintákban 1-3 projekt használja őket).
+- **Csúcsok:** process (a címke a két sáv között), note, note2, card, cube, tape, document (`boundedLbl`: a
+  hullám fölött), step, parallelogram, trapezoid, folder, component, datastore, dataStorage, delay,
+  offPageConnector, umlActor, umlLifeline, umlFrame, umlDestroy, umlBoundary, umlControl, seqActorStick, table,
+  tableRow, partialRectangle, singleArrow, crossbar, curlyBracket (`rounded=1`: ívelt sarkok, nyitott
+  töröttvonalként, mint mxShape.addPoints), cylinder3 (`boundedLbl`: a fedő alatt), isoCube, isoCube2,
+  isoRectangle, lollipop, module, or, xor, plus, corner, startState, endState, dimension, message, smileyFace,
+  switch, waypoint, hexagon, callout (a csúcsa kerekítés nélkül, a címkemargó az iránnyal együtt fordul),
+  loopLimit, collate.
 - **Élek:** flexArrow, link, wire, pipe, filledEdge, taperedArrow, mermaidSankeyLink.
-- **Extra markerek** (Shapes.js / Graph.js): async, openAsync, box, circle, circlePlus, cross, dash, halfCircle, doubleBlock, baseDash,
-  ER-végek (ERone, ERmandOne, ERmany, ERoneToMany, ERzeroToMany, ERzeroToOne).
+- **Extra markerek** (Shapes.js / Graph.js): async, openAsync, box, circle, circlePlus, cross, dash, halfCircle,
+  doubleBlock, baseDash, ER-végek (ERone, ERmandOne, ERmany, ERoneToMany, ERzeroToMany, ERzeroToOne).
 - **Egyebek:** IsometricConnector élstílus, callout perimeter.
 
 **42 hiányzik**, de a mintákban szinte egyik sem fordul elő:
@@ -112,33 +109,35 @@ szerepelnek, és azok megvannak (lásd 3.).
 
 ## 3. `mxgraph.*` családok
 
-A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
+A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek.
 
-- **Stencil-XML** (draw.io `js/stencils.min.js`). Beépítve a 12 általános célú könyvtár, 1455 alakzat:
-  basic, arrows, flowchart, bpmn, lean_mapping, eip, floorplan, cabinets, networks, electrical, pid, mockup.
-  A fejlécet a `scripts/get-deps.sh` generálja (`scripts/gen-drawio-stencils.py`), más készlet a
-  `DRAWIO_STENCILS=…` változóval állítható (BUILDING.md). A felhő- és gyártói ikonkészletek (gcp2, office,
-  aws4, azure, cisco, signs, ios7…) szándékosan maradtak ki. Helyettük (és a draw.io `img/lib/...` képei,
-  pl. azure2, ibm, clip_art helyett) a `missingIcon()` egy enyhén lekerekített dobozt rajzol: a stílus
-  `fillColor`-jával (gradienttel), ha nincs, a család színével (`iconFamilyColour()` táblája), a stílus
-  körvonalával, benne az ikon olvashatóvá alakított nevével (`iconName()`: `route_53` → „route 53”,
-  `Function_Apps.svg` → „Function Apps”; aws4 resourceIcon / productIcon: a `resIcon` / `prIcon` kulcsból,
-  networks2.icon: a `network2Icon`-ból).
-  Csak ikonokra: legfeljebb 200 px (a wireframe telefon- és tabletkeretei nagyobbak), nem konténer, nem aws4
-  group; a kódból rajzolt aws3d és a `world` térkép-körvonalai maradnak keretek. A fájlban nem tárolt többi kép
-  (webcím, más útvonal) helyén halványszürke keret, benne a fájl neve a címből (`pictureFrame()`:
-  `.../jira-icon-512x512-z7na7dot.png` → „jira icon 512x512 z7na7dot”).
-- **Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből csak egy
-  maroknyi van átírva:
-  - basic: arc, pie, partConcEllipse;
-  - floorplan: wall, wallCorner, wallU, room, doorLeft/Right/Double, window, stairs;
-  - arrows2.arrow;
-  - infographic: cylinder, shadedCube, ribbonSimple;
-  - gcp2.doubleRect;
-  - mockup.markup.curlyBrace;
-  - sysml.x (az áthúzás: két átló, kitöltés nélkül);
-  - electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
-  - aws4: group és resourceIcon csak keretként.
+**Stencil-XML** (draw.io `js/stencils.min.js`). Beépítve a 12 általános célú könyvtár, 1455 alakzat: basic, arrows,
+flowchart, bpmn, lean_mapping, eip, floorplan, cabinets, networks, electrical, pid, mockup. A fejlécet a
+`scripts/get-deps.sh` generálja (`scripts/gen-drawio-stencils.py`), más készlet a `DRAWIO_STENCILS=…` változóval
+állítható (BUILDING.md). A felhő- és gyártói ikonkészletek (gcp2, office, aws4, azure, cisco, signs, ios7…)
+szándékosan nincsenek benne.
+
+**Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből meg van írva:
+
+- basic: arc, pie, partConcEllipse;
+- floorplan: wall, wallCorner, wallU, room, doorLeft/Right/Double, window, stairs;
+- arrows2.arrow;
+- infographic: cylinder, shadedCube, ribbonSimple;
+- gcp2.doubleRect;
+- mockup.markup.curlyBrace;
+- sysml.x (áthúzás: két átló, kitöltés nélkül);
+- electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
+- aws4: group és resourceIcon keretként.
+
+**Hiányzó ikonok és képek helyett.** A be nem épített gyártói ikonok, az aws4 resource / product iconok és a
+draw.io `img/lib/...` képei (azure2, ibm, clip_art…) helyett a `missingIcon()` egy enyhén lekerekített dobozt
+rajzol: a stílus `fillColor`-jával (gradienttel), ha nincs, a család színével (`iconFamilyColour()` táblája), a
+stílus körvonalával, benne az ikon olvashatóvá alakított nevével (`iconName()`: `route_53` → „route 53”,
+`Function_Apps.svg` → „Function Apps”; a nevet aws4-nél a `resIcon` / `prIcon`, networks2.icon-nál a `network2Icon`
+adja). Csak ikonokra: legfeljebb 200 px (a wireframe telefon- és tabletkeretei nagyobbak), nem konténer, nem aws4
+group; a kódból rajzolt aws3d és a `world` térkép-körvonalai keretek maradnak. A fájlban nem tárolt többi kép
+(webcím, más fájl) helyén halványszürke keret, benne a fájl neve a címből (`pictureFrame()`). Külső képet a
+nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 
 ### A hiányzó kódból rajzolt családok
 
@@ -154,7 +153,7 @@ A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
 | sysml | 8 / 0 | package (7), actFinal, … |
 | rackGeneral | 7 / 0 | container, rackCabinet3, horCableDuct |
 | bootstrap | 6 / 0 | rrect, anchor, checkbox, topButton, radioButton |
-| electrical | 6 / 0 | logic_gates.logic_gate, signal_sources.source |
+| electrical | 2 / 0 | signal_sources.source |
 | networks | 6 / 0 | comm_link_edge, bus |
 | archimate3 / 4 | 5 / 0 | application, service, tech, actor, element |
 | c4 | 4 / 3 | person2, person |
@@ -176,10 +175,10 @@ mellett vannak ugyanazokban a függvényekben (`src/nitrodio.cpp`):
 
 | Hol | Mit dönt el |
 |---|---|
-| `shapePath()` | A legtöbb csúcs-alakzat körvonala és a ráhúzott belső vonalai egy `if (shape == "…") … else if` láncban (64 ág). Ismeretlen névre a keret. |
+| `shapePath()` | A legtöbb csúcs-alakzat körvonala és a ráhúzott belső vonalai egy `if (shape == "…") … else if` láncban. Ismeretlen névre a keret. Segédei: `polygon()` (zárt, kerekíthető sarkokkal), `openPolyline()` (nyitott). |
 | `turnsByDirection()` | Névlista: mely alakzatokat forgatja a `direction`. |
-| `vertex()` | Az elején a nem egyetlen path-ból álló alakzatok (swimlane / table, stencil, beépített stencil-könyvtár, partialRectangle, umlLifeline, umlFrame, waypoint, image); az általános ág után az alakzatfüggő rátétek (shadedCube lapjai, infographic.cylinder fénye, glass, cube sötétítése, a label képe); a végén a címke helye alakzatonként (cube, arrows2.arrow, folder, umlFrame, swimlane). |
-| `swimlane()`, `labelForeground()`, `glass()` | Az mxSwimlane, az mxLabel képe / indikátora és a glass-fény. |
+| `vertex()` | Az elején a nem egyetlen path-ból álló alakzatok (swimlane / table, stencil, beépített stencil-könyvtár, partialRectangle, umlLifeline, umlFrame, waypoint, image, hiányzó ikon); az általános ág után az alakzatfüggő rátétek (shadedCube lapjai, infographic.cylinder fénye, glass, cube sötétítése, a label képe); a végén a címke helye alakzatonként (cube, cylinder, cylinder3, document, process, callout, umlBoundary, umlControl, arrows2.arrow, folder, umlFrame, swimlane). |
+| `swimlane()`, `labelForeground()`, `glass()`, `missingIcon()`, `pictureFrame()` | Az mxSwimlane, az mxLabel képe / indikátora, a glass-fény, a hiányzó ikonok és képek helyettesítője. |
 | `drawEdge()` | Az él-alakzatok: flexArrow / link (`arrowConnector()`), taperedArrow, mermaidSankeyLink, wire / pipe, filledEdge. |
 | `marker()` | A nyílvégek, szintén if-lánccal. |
 | `libraryStencil()` | Az egyetlen valódi tábla: a beépített stencilek `unordered_map`-ben név szerint (adat, nem kód). |
@@ -194,48 +193,45 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 
 ## Saját megoldások (nem portok)
 
-- A HTML-címkék egyszerűsített böngészős táblázat-layoutja (`flowTable`, `flowHtml`).
+- A HTML-címkék egyszerűsített böngészős szöveg- és táblázat-layoutja (`parseLabel`, `layoutLabel`, `flowTable`,
+  `flowHtml`).
 - Betűtípus-fallback karakterenként (`nf_glyph_face`).
 - A `sketch=1` kézzel rajzolt kinézet: a rough.js mintájára, de saját véletlenszámokkal, így hasonló, de nem
-  pixelre azonos (`roughPath`, `fillStyle` hachure / cross-hatch).
+  pixelre azonos (`roughPath`, `fillStyle` hachure / cross-hatch). Ívelt alakzatokon (henger teteje, lekerekített
+  nyíl) és szaggatott vonalon kevésbé pontos.
 - A beágyazott PNG, JPEG és SVG képek dekódolása (stb_image, a projekt saját dekóderei).
-
-## Referencia és ellenőrzés
-
-A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.png`. Az összehasonlító eszközök a
-`samples_drawio/reference-tools/` mappában vannak (README.txt ott). Egy változtatás után `round.sh` az előző
-`scores.tsv` ellen, és minden romló oldalt meg kell nézni.
+- A matematikai képletek szöveggé írása (lásd lent).
 
 ## HTML a címkékben
 
 `html=1` címkéknél a nitrodio a böngésző egyszerűsített változatát utánozza, két rétegben.
 
-**Szöveg (`parseLabel`):**
+**Szöveg (`parseLabel`, `layoutLabel`):**
 
 - **Betűstílus:** `<b>` / `<strong>`, `<i>` / `<em>`, `<u>` / `<ins>`, `<s>` / `<strike>` / `<del>`; `<span>` /
-  `<font>` style-jából `font-weight: bold`, `font-style: italic`, `text-decoration` (underline, line-through); a
-  cella `fontStyle`-ja is.
+  `<font>` style-jából `font-style: italic` és `text-decoration` (underline, line-through); a cella `fontStyle`-ja
+  is.
+- **Vastagság:** `font-weight` bold / bolder / 600 fölött félkövér; normal / lighter / 600 alatt visszavonja a
+  befoglaló (címsor) félkövérségét.
 - **Betűméret:** `style="font-size: …"` (px, pt, %, em), `<font size="1..7">`, `<small>` / `<big>`, `<sub>` /
   `<sup>` (kisebb, lejjebb / feljebb tolva).
 - **Szín:** `<font color>`, `style="color: …"` egymásba ágyazva (a legbelső számít); inline `background-color`
   kiemelésként.
 - **Sortörés és blokkok:** `<br>` és a szövegbeli `\n` (a draw.io is `<br>`-ré alakítja); `<div>`, `<p>`,
-  `<h1>`–`<h6>`, `<li>` új sort kezd; `<p>`, címsorok, listák margója a böngészőé szerint, `margin` /
-  `margin-top` / `margin-bottom` felülírja. Az első blokk felső és az utolsó alsó margója is a címke magasságába
-  számít (a draw.io címkéje inline-block), így a `<p>`-be csomagolt felirat középen marad; levágott címkénél
-  (`overflow=hidden`) az utolsó alsó margó kimarad, ahogy a referencián.
+  `<h1>`–`<h6>`, `<li>` új sort kezd. Az üres sor (`<div><br></div>`) a blokk betűméretének magasságú.
+- **Margók:** `<p>`, címsorok, listák margója a böngészőé szerint, `margin` / `margin-top` / `margin-bottom`
+  felülírja. Az első blokk felső és az utolsó alsó margója is a címke magasságába számít (a draw.io címkéje
+  inline-block), levágott címkénél (`overflow=hidden`) az utolsó alsó margó nem.
+- **Sormagasság:** CSS `line-height`: szám (a sor betűméretének szorzója, így öröklődik), hossz vagy % (a tag
+  saját betűméretéből, px-ként öröklődik), `normal` (1,2).
+- **Tördelés:** szóköznél, betűk vagy számok közötti kötőjel után, és CJK írásjelek között (záró jel előtt és
+  nyitó után nem), mint a böngésző. A tördelt blokk legalább a leghosszabb sor szélességű (flex-elem,
+  `min-width: auto`), és az igazítás szerint áll.
 - **Igazítás:** `text-align` és `align` blokkonként, `margin-left` behúzás.
 - **Listák:** `<ul>` pöttyel, `<ol>` számozva, egymásba ágyazva is.
 - **`<hr>`:** vízszintes vonal.
 - **Entitások:** `&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`, a HTML 4 névtáblája (247 név: ékezetek, görög
   betűk, jelek), számos `&#…;` / `&#x…;`.
-- **Vastagság:** `font-weight` bold / bolder / 600 fölött félkövér; normal / lighter / 600 alatt visszavonja a
-  befoglaló (címsor) félkövérségét.
-- **Üres sor** (`<div><br></div>`): a blokk betűméretének magassága.
-- **Tördelés:** szóköznél, betűk közötti kötőjel után, CJK írásjelek között; a tördelt blokk legalább a leghosszabb
-  sor szélességű (flex-elem, `min-width: auto`), és az igazítás szerint áll.
-- **Sormagasság:** CSS `line-height`: szám (a sor betűméretének szorzója, így öröklődik), hossz vagy % (a tag
-  saját betűméretéből, px-ként öröklődik), `normal` (1,2). A szöveges sorok kapják, a blokkmargók helye nem.
 - **Szóközök:** összevonva, mint a böngészőben.
 
 **Blokkok (`flowHtml`, `flowTable`)**, ha a címkében `<table>` vagy háttérszínes `<div>` van:
@@ -251,27 +247,45 @@ A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.
 |---|---|---|
 | `font-family` a HTML-ben (`<font face>`, span `font-family`) | csak a cella `fontFamily`-je számít | egyszerű: a betűtípus-választás megvan |
 | `<a>` linkek | a draw.io kéken, aláhúzva mutatja, nálunk sima szöveg | a CSV-importos org-chart mintákon látszik („Email”) |
-| `<img>` és beillesztett `<svg>` a címkében | kimarad | a TP.drawio egyik sora a MathJax kész SVG-kimenete |
+| `<img>` és beillesztett `<svg>` a címkében | kimarad | 4 fájl, 17 cella: webről bemásolt ikonok és kész MathJax-kimenet |
 | `<pre>` / `white-space: pre`, `letter-spacing` | nincs kezelve | |
+| jobbról balra írás (arab, héber) | nincs bidi-rendezés és arab betűalak-formálás | betűformáló könyvtár kellene hozzá |
 
 ## Matematika (`math="1"`)
 
 Ha az oldal `mxGraphModel`-jén `math="1"` áll, a draw.io MathJax-szal szedi a címkék képleteit: `$$…$$` és
-`\(…\)` TeX, `` `…` `` AsciiMath. A nitrodio nem szed képletet, hanem olvasható szöveggé írja át, mielőtt a
-címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`, hívja a `readModel()`):
+`\(…\)` TeX, `` `…` `` AsciiMath. A mintákban 11 fájl, 19 oldal használ matematikát. A nitrodio nem szed képletet,
+hanem olvasható szöveggé írja át, mielőtt a címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`,
+hívja a `readModel()`).
+
+**Megvan:**
 
 - **Jelek Unicode-ként:** görög betűk (`\alpha` → α, `\Omega` → Ω), nyilak (`\leftarrow` → ←, `\Rightarrow` → ⇒,
   `\mapsto` → ↦), műveleti és relációjelek (`\times` ×, `\cdot` ⋅, `\pm` ±, `\le` ≤, `\ne` ≠, `\approx` ≈,
   `\in` ∈, `\subseteq` ⊆, `\infty` ∞, `\partial` ∂, `\nabla` ∇, `\sum` ∑, `\int` ∫ …), `\mathbb{R}` → ℝ.
 - **Index:** `^` és `_` HTML-címkében `<sup>` / `<sub>`, sima címkében `^x` / `_(xy)`.
-- **Egyebek:** `\frac{a}{b}` → a/b (összetettnél (a)/(b)), `\sqrt{x}` → √x, `\text{…}` és társai szó szerint,
-  `\hat`, `\bar`, `\dot`, `\ddot`, `\tilde` latin betűn előre összerakott betűként (Ŵ, Ā, Ñ, Ż, Ä), máshol és a `\vec`
-  kombináló ékezettel (az ékezetet a betűrajzolás nem igazítja: nagybetűn és magas kisbetűn rácsúszna a betűre),
-  `\\` sortörés, `&` (mátrix) szóköz,
-  `\left` / `\right` / `\big` és a környezetnevek (`\begin{pmatrix}`) eldobva, más parancs a nevével
-  (`\sin`, `\log`, `\lim`).
+- **Tört, gyök, szöveg:** `\frac{a}{b}` és `a \over b` → a/b (összetettnél (a)/(b)), `\sqrt{x}` → √x, `\text{…}`
+  és társai szó szerint.
+- **Ékezetek:** `\hat`, `\bar`, `\dot`, `\ddot`, `\tilde` latin betűn előre összerakott betűként (Ŵ, Ā, Ñ, Ż, Ä);
+  máshol és a `\vec` kombináló ékezettel.
+- **Szerkezet:** `\\` sortörés, `&` (mátrix) szóköz, `\left` / `\right` / `\big`, `\hline` és a környezetnevek
+  (`\begin{pmatrix}`, egy `array` oszlopleírása) eldobva, `\lgroup` / `\rgroup` zárójelként, `\&` és társai
+  szó szerint, más parancs a nevével (`\sin`, `\log`, `\lim`).
 - **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `^` / `_` zárójeles
   csoporttal.
 
-Valódi képletszedés (tört egymás alatt, gyökjel a kifejezés fölött, mátrix rácsban) nincs; a mintákban
-11 fájl, 19 oldal használ matematikát.
+**Hiányzik:**
+
+| Mi | Megjegyzés |
+|---|---|
+| valódi képletszedés: tört egymás alatt, gyökjel a kifejezés fölött, mátrix rácsban | TeX-motor kellene hozzá |
+| kombináló ékezet helyes elhelyezése (pl. f̂, \vec) | a betűrajzolás nem igazítja az ékezetet: magas betűn rácsúszik |
+| a MathJax kész SVG-kimenete a címkében | lásd a HTML-részben az `<svg>`-t |
+
+## Referencia és ellenőrzés
+
+A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.png` (a beágyazott rajzoké a
+`<forrás>.drawio` mellett). Az összehasonlító eszközök a `samples_drawio/reference-tools/` mappában vannak
+(README.txt ott). Egy változtatás után `round.sh` az előző `scores.tsv` ellen, és minden romló oldalt meg kell
+nézni. A referenciát a headless Chrome a hálózat elérésével készítette: webes képek ott látszhatnak, nálunk
+szándékosan nem.
