@@ -116,7 +116,9 @@ A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
   `Function_Apps.svg` → „Function Apps”; aws4 resourceIcon / productIcon: a `resIcon` / `prIcon` kulcsból,
   networks2.icon: a `network2Icon`-ból).
   Csak ikonokra: legfeljebb 200 px (a wireframe telefon- és tabletkeretei nagyobbak), nem konténer, nem aws4
-  group; a kódból rajzolt aws3d és a `world` térkép-körvonalai maradnak keretek.
+  group; a kódból rajzolt aws3d és a `world` térkép-körvonalai maradnak keretek. A fájlban nem tárolt többi kép
+  (webcím, más útvonal) helyén halványszürke keret, benne a fájl neve a címből (`pictureFrame()`:
+  `.../jira-icon-512x512-z7na7dot.png` → „jira icon 512x512 z7na7dot”).
 - **Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből csak egy
   maroknyi van átírva:
   - basic: arc, pie, partConcEllipse;

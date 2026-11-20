@@ -2987,9 +2987,16 @@ struct Builder {
         uint32_t fill = own ? own : fc, g = own ? colour(st, "gradientColor", 0) : 0;
         auto lum = [](uint32_t v) { return 0.299 * (v >> 16 & 255) + 0.587 * (v >> 8 & 255) + 0.114 * (v & 255); };
         double l = g ? (lum(fill) + lum(g)) / 2 : lum(fill);
+        nameIn(b, text, l < 150 ? "#ffffff" : "#333333");
+        return true;
+    }
+
+    // a missing icon's or picture's name in its box: small, centred, wrapped, kept inside it
+    void nameIn(const Box &b, const std::string &text, const char *colour) {
+        if (text.empty() || !(b.w > 0 && b.h > 0)) return;
         Style ts;
         double size = std::clamp(std::min(b.w, b.h) / 4.5, 3.0, 11.0);
-        ts["fontSize"] = std::to_string(size), ts["fontColor"] = l < 150 ? "#ffffff" : "#333333", ts["fontFamily"] = "Helvetica";
+        ts["fontSize"] = std::to_string(size), ts["fontColor"] = colour, ts["fontFamily"] = "Helvetica";
         ts["align"] = "center", ts["verticalAlign"] = "middle", ts["whiteSpace"] = "wrap", ts["html"] = "0";
         double pad = std::min(2.0, b.w / 10);
         Box inner{b.x + pad, b.y + pad, std::max(0.0, b.w - 2 * pad), std::max(0.0, b.h - 2 * pad)};
@@ -3000,7 +3007,19 @@ struct Builder {
             lab->background = lab->border = 0;
             addLabel(lab);
         }
-        return true;
+    }
+
+    // a picture not in the file (a web address, a path): its frame, its file's name in it
+    void pictureFrame(const Box &b, const std::string &uri) {
+        Item it;
+        it.path = newPath();
+        plutovg_path_add_rect(it.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
+        it.stroke = 0xffc0c0c0;
+        it.width = 1;
+        add(std::move(it), 1);
+        std::string f = uri.substr(0, uri.find_first_of("?#"));   // (without its query)
+        while (!f.empty() && f.back() == '/') f.pop_back();
+        if (f.compare(0, 5, "data:") != 0) nameIn(b, iconName(f), "#808080");
     }
 
     // a picture of the style's image in pb, stretched (mxLabel / mxSwimlane: c.image without aspect): a data: URI decoded
@@ -3016,11 +3035,8 @@ struct Builder {
             it.aspect = false;
             it.pictureAlpha = (float)std::clamp(num(s, "opacity", 100) / 100, 0.0, 1.0);
             add(std::move(it), 0);
-        } else {
-            it.stroke = 0xffc0c0c0;
-            it.width = 1;
-            add(std::move(it), 1);
-        }
+        } else
+            pictureFrame(pb, uri);
     }
 
     // mxLabel.paintForeground: its image (imageWidth x imageHeight, 24 by default) and its indicator (indicatorShape in
@@ -3355,12 +3371,7 @@ struct Builder {
             add(std::move(it), 0);
         } else if (shape == "image" && b.w > 0 && b.h > 0 && missingIcon(c, shape, b)) {   // (one of draw.io's img/lib/ pictures)
         } else if (shape == "image" && b.w > 0 && b.h > 0) {   // (the picture is not in the file: its frame)
-            Item it;
-            it.path = newPath();
-            plutovg_path_add_rect(it.path.get(), (float)b.x, (float)b.y, (float)b.w, (float)b.h);
-            it.stroke = 0xffc0c0c0;
-            it.width = 1;
-            add(std::move(it), 1);
+            pictureFrame(b, str(s, "image"));
         }
         // (draw.io's default vertex shape is label (default.xml): one without a shape too)
         if ((shape == "label" || str(s, "shape").empty()) && !table && b.w > 0 && b.h > 0) labelForeground(s, b);
