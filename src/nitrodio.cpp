@@ -2967,7 +2967,8 @@ struct Builder {
             if (x->hasOffset && x->relative) x->box.x += x->offset.x, x->box.y += x->offset.y;
             x->org = {x->box.x, x->box.y};
             if (x->transparent) x->box = {x->org.x + x->local.x, x->org.y + x->local.y, x->local.w, x->local.h};
-            double turn = x->relative && have ? num(up->style, "rotation", 0) : 0;
+            // (a transparentBounds group not: draw.io sets its box from its children afterwards, from the origin not turned)
+            double turn = x->relative && have && !x->transparent ? num(up->style, "rotation", 0) : 0;
             if (turn != 0) {   // (mxGraphView.updateVertexState: a relative child's centre turned with its parent, about the
                                // parent's centre; its origin for its own children not)
                 Pt c = rotated(x->box.centre(), turn, up->box.centre());
