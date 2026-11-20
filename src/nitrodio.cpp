@@ -200,6 +200,8 @@ struct Label {
     std::vector<Run> runs;
     std::vector<Rect> rects;   // (an HTML table's backgrounds and borders: under the text)
     uint32_t background = 0;   // (0: none) behind the text box
+    uint32_t border = 0;       // (0: none) round it (labelBorderColor), borderWidth wide
+    float borderWidth = 1;
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the text box
     bool turned = false;   // rotated about (cx, cy)
     float cx = 0, cy = 0, angle = 0;
@@ -233,6 +235,14 @@ struct Page {
     uint32_t background = 0;   // the diagram's own (0: none)
     std::vector<Item> items;
 };
+
+// labelBorderColor / labelBorderWidth (mxText: a border borderWidth wide round the label's box; 0 wide: none)
+void labelBorder(Label &l, const Style &s) {
+    double w = num(s, "labelBorderWidth", 1);
+    const std::string &v = str(s, "labelBorderColor");   // (default: the default stroke colour, black; Graph.replaceDefaultColor)
+    l.border = w > 0 ? (v == "default" ? 0xff000000u : parseColour(v, 0)) : 0;
+    l.borderWidth = (float)std::min(w, 1000.0);
+}
 
 // --- the file ------------------------------------------------------------------
 
@@ -1017,7 +1027,8 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     label->x0 = x0 - 2, label->x1 = x1 + 2;
     label->y0 = (float)top, label->y1 = (float)(top + textH);
     label->background = labelBackground(s);
-    if (textW <= 0) label->background = 0;
+    labelBorder(*label, s);
+    if (textW <= 0) label->background = label->border = 0;
     return label;
 }
 
@@ -1509,6 +1520,7 @@ std::shared_ptr<Label> layoutHtmlBlocks(const std::string &value, const Style &s
     label->rects = std::move(f.rects);
     label->x0 = left, label->x1 = left + f.w, label->y0 = top, label->y1 = top + f.h;
     label->background = labelBackground(s);
+    labelBorder(*label, s);
     return label;
 }
 
@@ -2206,7 +2218,8 @@ struct Builder {
             nd::Box b = nd::turnedBox(l->cx, l->cy, x0, y0, x1, y1, l->angle);
             x0 = b.x0, y0 = b.y0, x1 = b.x1, y1 = b.y1;
         }
-        it.bx0 = x0 - 2, it.by0 = y0 - 2, it.bx1 = x1 + 2, it.by1 = y1 + 2;
+        float m = 2 + (l->border >> 24 ? l->borderWidth : 0);
+        it.bx0 = x0 - m, it.by0 = y0 - m, it.bx1 = x1 + m, it.by1 = y1 + m;
         add(std::move(it), 0);
     }
 
@@ -4651,6 +4664,14 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         if (l.background >> 24) {
             nd::setRgba(c, l.background);
             plutovg_canvas_fill_rect(c, l.x0, l.y0, l.x1 - l.x0, l.y1 - l.y0);
+        }
+        if (l.border >> 24) {   // (a CSS border just outside the background's box)
+            nd::setRgba(c, l.border);
+            plutovg_canvas_set_line_width(c, std::max(l.borderWidth, 1 / scale));
+            plutovg_canvas_set_line_join(c, PLUTOVG_LINE_JOIN_MITER);
+            plutovg_canvas_set_dash(c, 0, nullptr, 0);
+            float o = 0.5f;
+            plutovg_canvas_stroke_rect(c, l.x0 - o, l.y0 - o, l.x1 - l.x0 + 2 * o, l.y1 - l.y0 + 2 * o);
         }
         for (const Label::Rect &q : l.rects) {
             nd::setRgba(c, q.rgba);
