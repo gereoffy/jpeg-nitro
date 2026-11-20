@@ -1781,7 +1781,8 @@ bool turnsByDirection(const std::string &shape) {
                                          "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
                                          "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
                                          "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
-                                         "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl"};
+                                         "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl",
+                                         "mxgraph.electrical.logic_gates.logic_gate"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -2082,6 +2083,47 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "loopLimit") {   // (LoopLimitShape: its top corners cut, size wide)
         double sz = std::min(w / 2, std::min(h, num(s, "size", 20)));
         polygon(q, {{sz, 0}, {w - sz, 0}, {w, sz * 0.8}, {w, h}, {0, h}, {0, sz * 0.8}}, b, arc);
+    } else if (shape == "mxgraph.electrical.logic_gates.logic_gate") {   // (mxElectrical's gate: and / or / xor, numInputs
+        std::string op = str(s, "operation");                                  // inputs, negating: a circle on the output)
+        if (op.empty()) op = "and";
+        int n = std::clamp((int)num(s, "numInputs", 2), 1, 1000);
+        double neg = 0;
+        if (str(s, "negating") == "1") {
+            double ns = num(s, "negSize", 0.13);
+            neg = str(s, "negSize").empty() ? std::min(0.04 * w, 0.07 * h) : std::min(w * ns * 0.5, h * ns);
+        }
+        line(0.8 * w + neg, 0.5 * h, w, 0.5 * h);   // (the output; under the circle draw.io's is covered by it)
+        double e = h / n, f = e / 2;
+        for (int k = 0; k < n; k++, f += e) line(0, f, op == "and" ? 0.2 * w : 0.23 * w, f);
+        auto P = [&](double px, double py) { return std::pair<float, float>{(float)(b.x + px), (float)(b.y + py)}; };
+        auto arc = [&](plutovg_path_t *pp, double rx, double ry, bool sweep, double px, double py) {
+            auto t = P(px, py);
+            plutovg_path_arc_to(pp, (float)rx, (float)ry, 0, false, sweep, t.first, t.second);
+        };
+        if (op == "xor") {   // (its extra back curve)
+            if (!lines) lines = newPath();
+            auto a0 = P(0.1 * w, 0);
+            plutovg_path_move_to(lines.get(), a0.first, a0.second);
+            arc(lines.get(), 0.6 * w, h, true, 0.1 * w, h);
+        }
+        if (op == "or" || op == "xor") {
+            auto a0 = P(0.4 * w, 0);
+            plutovg_path_move_to(q, a0.first, a0.second);
+            arc(q, 0.45 * w, 0.83 * h, true, 0.8 * w, 0.5 * h);
+            arc(q, 0.45 * w, 0.83 * h, true, 0.4 * w, h);
+            auto a1 = P(0.15 * w, h);
+            plutovg_path_line_to(q, a1.first, a1.second);
+            arc(q, 0.6 * w, h, false, 0.15 * w, 0);
+            plutovg_path_close(q);
+        } else {
+            auto a0 = P(0.2 * w, 0), a1 = P(0.5 * w, 0), a2 = P(0.2 * w, h);
+            plutovg_path_move_to(q, a0.first, a0.second);
+            plutovg_path_line_to(q, a1.first, a1.second);
+            arc(q, 0.3 * w, 0.5 * h, true, 0.5 * w, h);
+            plutovg_path_line_to(q, a2.first, a2.second);
+            plutovg_path_close(q);
+        }
+        if (neg > 0) plutovg_path_add_ellipse(q, (float)(b.x + 0.8 * w + neg / 2), (float)(b.y + 0.5 * h), (float)(neg / 2), (float)(neg / 2));
     } else if (shape == "mxgraph.sysml.x") {   // (mxSysML's X: the box's two diagonals, no fill)
         line(0, 0, w, h), line(0, h, w, 0);
     } else if (shape == "collate") {   // (CollateShape: two triangles meeting at the centre)

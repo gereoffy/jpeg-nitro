@@ -128,6 +128,7 @@ A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
   - gcp2.doubleRect;
   - mockup.markup.curlyBrace;
   - sysml.x (az áthúzás: két átló, kitöltés nélkül);
+  - electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
   - aws4: group és resourceIcon csak keretként.
 
 ### A hiányzó kódból rajzolt családok
