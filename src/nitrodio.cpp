@@ -2123,6 +2123,268 @@ std::string iconName(const std::string &n) {
     return v;
 }
 
+// --- math (math="1" pages) ---------------------------------------------------------------
+// draw.io typesets $$...$$ and \(...\) (TeX) and `...` (AsciiMath) with MathJax. Not typeset here: written as text to
+// read, its symbols Unicode (\leftarrow: ←, \alpha: α, \le: ≤ ...), ^ and _ superscript and subscript, \frac{a}{b} a/b,
+// \sqrt{x} √x, \text{...} as it is, the other commands their name
+
+const std::map<std::string, uint32_t> &texSymbols() {
+    static const std::map<std::string, uint32_t> m = {
+        {"alpha", 0x3b1}, {"beta", 0x3b2}, {"gamma", 0x3b3}, {"delta", 0x3b4}, {"epsilon", 0x3f5}, {"varepsilon", 0x3b5}, {"zeta", 0x3b6},
+        {"eta", 0x3b7}, {"theta", 0x3b8}, {"vartheta", 0x3d1}, {"iota", 0x3b9}, {"kappa", 0x3ba}, {"lambda", 0x3bb}, {"mu", 0x3bc}, {"nu", 0x3bd},
+        {"xi", 0x3be}, {"omicron", 0x3bf}, {"pi", 0x3c0}, {"varpi", 0x3d6}, {"rho", 0x3c1}, {"varrho", 0x3f1}, {"sigma", 0x3c3}, {"varsigma", 0x3c2},
+        {"tau", 0x3c4}, {"upsilon", 0x3c5}, {"phi", 0x3d5}, {"varphi", 0x3c6}, {"chi", 0x3c7}, {"psi", 0x3c8}, {"omega", 0x3c9},
+        {"Gamma", 0x393}, {"Delta", 0x394}, {"Theta", 0x398}, {"Lambda", 0x39b}, {"Xi", 0x39e}, {"Pi", 0x3a0}, {"Sigma", 0x3a3},
+        {"Upsilon", 0x3a5}, {"Phi", 0x3a6}, {"Psi", 0x3a8}, {"Omega", 0x3a9},
+        {"leftarrow", 0x2190}, {"gets", 0x2190}, {"rightarrow", 0x2192}, {"to", 0x2192}, {"uparrow", 0x2191}, {"downarrow", 0x2193},
+        {"leftrightarrow", 0x2194}, {"updownarrow", 0x2195}, {"Leftarrow", 0x21d0}, {"Rightarrow", 0x21d2}, {"Uparrow", 0x21d1},
+        {"Downarrow", 0x21d3}, {"Leftrightarrow", 0x21d4}, {"longleftarrow", 0x27f5}, {"longrightarrow", 0x27f6}, {"longleftrightarrow", 0x27f7},
+        {"Longleftarrow", 0x27f8}, {"Longrightarrow", 0x27f9}, {"Longleftrightarrow", 0x27fa}, {"implies", 0x27f9}, {"impliedby", 0x27f8},
+        {"iff", 0x27fa}, {"mapsto", 0x21a6}, {"longmapsto", 0x27fc}, {"hookrightarrow", 0x21aa}, {"hookleftarrow", 0x21a9},
+        {"nearrow", 0x2197}, {"searrow", 0x2198}, {"swarrow", 0x2199}, {"nwarrow", 0x2196}, {"rightleftharpoons", 0x21cc},
+        {"times", 0xd7}, {"cdot", 0x22c5}, {"cdotp", 0xb7}, {"div", 0xf7}, {"pm", 0xb1}, {"mp", 0x2213}, {"ast", 0x2217}, {"star", 0x22c6},
+        {"circ", 0x2218}, {"bullet", 0x2219}, {"oplus", 0x2295}, {"ominus", 0x2296}, {"otimes", 0x2297}, {"odot", 0x2299},
+        {"le", 0x2264}, {"leq", 0x2264}, {"ge", 0x2265}, {"geq", 0x2265}, {"ne", 0x2260}, {"neq", 0x2260}, {"approx", 0x2248}, {"equiv", 0x2261},
+        {"sim", 0x223c}, {"simeq", 0x2243}, {"cong", 0x2245}, {"propto", 0x221d}, {"ll", 0x226a}, {"gg", 0x226b}, {"prec", 0x227a}, {"succ", 0x227b},
+        {"in", 0x2208}, {"notin", 0x2209}, {"ni", 0x220b}, {"subset", 0x2282}, {"supset", 0x2283}, {"subseteq", 0x2286}, {"supseteq", 0x2287},
+        {"cup", 0x222a}, {"cap", 0x2229}, {"setminus", 0x2216}, {"emptyset", 0x2205}, {"varnothing", 0x2205}, {"forall", 0x2200}, {"exists", 0x2203},
+        {"nexists", 0x2204}, {"neg", 0xac}, {"lnot", 0xac}, {"land", 0x2227}, {"wedge", 0x2227}, {"lor", 0x2228}, {"vee", 0x2228}, {"top", 0x22a4},
+        {"bot", 0x22a5}, {"perp", 0x22a5}, {"parallel", 0x2225}, {"mid", 0x2223}, {"vdash", 0x22a2}, {"models", 0x22a8},
+        {"infty", 0x221e}, {"partial", 0x2202}, {"nabla", 0x2207}, {"sum", 0x2211}, {"prod", 0x220f}, {"coprod", 0x2210}, {"int", 0x222b},
+        {"iint", 0x222c}, {"oint", 0x222e}, {"bigcup", 0x22c3}, {"bigcap", 0x22c2}, {"bigoplus", 0x2a01}, {"bigotimes", 0x2a02},
+        {"ldots", 0x2026}, {"dots", 0x2026}, {"cdots", 0x22ef}, {"vdots", 0x22ee}, {"ddots", 0x22f1}, {"angle", 0x2220}, {"triangle", 0x25b3},
+        {"degree", 0xb0}, {"prime", 0x2032}, {"hbar", 0x210f}, {"ell", 0x2113}, {"Re", 0x211c}, {"Im", 0x2111}, {"aleph", 0x2135}, {"wp", 0x2118},
+        {"langle", 0x27e8}, {"rangle", 0x27e9}, {"lfloor", 0x230a}, {"rfloor", 0x230b}, {"lceil", 0x2308}, {"rceil", 0x2309}, {"vert", '|'},
+        {"lvert", '|'}, {"rvert", '|'}, {"Vert", 0x2016}, {"lVert", 0x2016}, {"rVert", 0x2016}, {"backslash", '\\'}, {"colon", ':'},
+        {"lbrace", '{'}, {"rbrace", '}'}, {"lgroup", '('}, {"rgroup", ')'}, {"lmoustache", '('}, {"rmoustache", ')'},
+        {"over", '/'}, {"surd", 0x221a}, {"checkmark", 0x2713}, {"dagger", 0x2020}, {"ddagger", 0x2021},
+        {"quad", 0x2003}, {"qquad", 0x2003}, {"enspace", 0x2002}, {"thinspace", 0x2009},
+    };
+    return m;
+}
+
+// the TeX inside $$ $$ / \( \) as text; html: the label's HTML (its sub / sup tags; the TeX's < > & escaped back)
+std::string texText(const std::string &t, bool html, size_t &i, int depth, char until);
+std::string texArg(const std::string &t, bool html, size_t &i, int depth) {   // ({...}, or one character or command)
+    while (i < t.size() && t[i] == ' ') i++;
+    if (i >= t.size()) return "";
+    if (t[i] == '{') {
+        i++;
+        return texText(t, html, i, depth + 1, '}');
+    }
+    size_t a = i;
+    if (t[i] == '\\') return texText(t, html, i, depth + 1, 1);   // (a command: its one item)
+    i += (unsigned char)t[i] < 0x80 ? 1 : 1 + ((unsigned char)t[i] >= 0xe0) + ((unsigned char)t[i] >= 0xf0);
+    std::string s = t.substr(a, i - a);
+    if (html && s == "<") return "&lt;";
+    if (html && s == ">") return "&gt;";
+    if (html && s == "&") return "&amp;";
+    return s;
+}
+std::string texRaw(const std::string &t, bool html, size_t &i) {   // (\text{...}: as it is, its braces balanced)
+    while (i < t.size() && t[i] == ' ') i++;
+    if (i >= t.size() || t[i] != '{') return "";
+    int level = 0;
+    std::string o;
+    for (i++; i < t.size(); i++) {
+        if (t[i] == '{') level++;
+        else if (t[i] == '}' && level-- == 0) {
+            i++;
+            break;
+        }
+        if (html && t[i] == '<') o += "&lt;";
+        else if (html && t[i] == '>') o += "&gt;";
+        else if (html && t[i] == '&') o += "&amp;";
+        else o += t[i];
+    }
+    return o;
+}
+// (until: the closing character, 0 to the end, 1: one item only)
+std::string texText(const std::string &t, bool html, size_t &i, int depth, char until) {
+    std::string o;
+    if (depth > 32) {
+        i = t.size();
+        return o;
+    }
+    auto script = [&](bool up, const std::string &x) {
+        if (html) return std::string(up ? "<sup>" : "<sub>") + x + (up ? "</sup>" : "</sub>");
+        return std::string(up ? "^" : "_") + (x.size() > 1 ? "(" + x + ")" : x);
+    };
+    while (i < t.size()) {
+        char c = t[i];
+        if (until > 1 && c == until) {
+            i++;
+            break;
+        }
+        if (c == '{') {
+            i++;
+            o += texText(t, html, i, depth + 1, '}');
+        } else if (c == '}') {
+            i++;
+        } else if (c == '^' || c == '_') {
+            i++;
+            o += script(c == '^', texArg(t, html, i, depth));
+        } else if (c == '\\' && i + 1 < t.size()) {
+            size_t j = i + 1;
+            while (j < t.size() && isalpha((unsigned char)t[j])) j++;
+            if (j == i + 1) j++;   // (\\, \{, \, ...: one character)
+            std::string cmd = t.substr(i + 1, j - i - 1);
+            i = j;
+            auto sym = texSymbols().find(cmd);
+            if (sym != texSymbols().end()) nf_utf8_put(o, sym->second);
+            else if (cmd == "\\") o += html ? "<br>" : "\n";
+            else if (cmd == "," || cmd == ":" || cmd == ";" || cmd == " " || cmd == ">") o += ' ';
+            else if (cmd == "!" || cmd == "left" || cmd == "right" || cmd == "big" || cmd == "Big" || cmd == "bigg" || cmd == "Bigg" ||
+                     cmd == "bigl" || cmd == "bigr" || cmd == "Bigl" || cmd == "Bigr" || cmd == "displaystyle" || cmd == "textstyle" ||
+                     cmd == "limits" || cmd == "nolimits" || cmd == "hline" || cmd == "hdashline" ||
+                     cmd == "scriptstyle" || cmd == "scriptscriptstyle") {
+            } else if (cmd == "cline") {   // (its columns dropped with it)
+                texRaw(t, false, i);
+            } else if (cmd == "{" || cmd == "}" || cmd == "%" || cmd == "$" || cmd == "#" || cmd == "_") o += cmd;
+            else if (cmd == "&") o += html ? "&amp;" : "&";
+            else if (cmd == "text" || cmd == "textrm" || cmd == "textit" || cmd == "textbf" || cmd == "mbox" || cmd == "texttt" ||
+                     cmd == "textsf" || cmd == "hbox")
+                o += texRaw(t, html, i);
+            else if (cmd == "frac" || cmd == "dfrac" || cmd == "tfrac") {   // (a/b; (a)/(b) when either is more than a word)
+                std::string a = texArg(t, html, i, depth), b = texArg(t, html, i, depth);
+                auto simple = [](const std::string &x) { return x.find_first_of(" +-=<>&/") == std::string::npos; };
+                o += (simple(a) ? a : "(" + a + ")") + "/" + (simple(b) ? b : "(" + b + ")");
+            } else if (cmd == "sqrt") {
+                while (i < t.size() && t[i] == ' ') i++;
+                if (i < t.size() && t[i] == '[') {   // (an index: its root's sign before it)
+                    size_t e = t.find(']', i);
+                    i = e == std::string::npos ? t.size() : e + 1;
+                }
+                std::string a = texArg(t, html, i, depth);
+                nf_utf8_put(o, 0x221a);
+                size_t chars = 0;
+                for (unsigned char ch : a) chars += (ch & 0xc0) != 0x80;
+                o += chars > 1 ? "(" + a + ")" : a;
+            } else if (cmd == "mathbb") {   // (ℕ ℤ ℚ ℝ ℂ ...)
+                std::string a = texArg(t, html, i, depth);
+                static const std::map<std::string, uint32_t> bb = {{"N", 0x2115}, {"Z", 0x2124}, {"Q", 0x211a}, {"R", 0x211d},
+                                                                   {"C", 0x2102}, {"P", 0x2119}, {"H", 0x210d}};
+                auto f = bb.find(a);
+                if (f != bb.end()) nf_utf8_put(o, f->second);
+                else o += a;
+            } else if (cmd == "overline" || cmd == "bar" || cmd == "hat" || cmd == "widehat" || cmd == "tilde" || cmd == "widetilde" ||
+                       cmd == "vec" || cmd == "dot" || cmd == "ddot") {   // (its combining mark after it)
+                std::string a = texArg(t, html, i, depth);
+                o += a;
+                uint32_t mark = cmd == "overline" || cmd == "bar" ? 0x305 : cmd == "hat" || cmd == "widehat" ? 0x302 : cmd == "vec" ? 0x20d7 :
+                                cmd == "dot" ? 0x307 : cmd == "ddot" ? 0x308 : 0x303;
+                if (!a.empty()) nf_utf8_put(o, mark);
+            } else if (cmd == "operatorname" || cmd == "mathrm" || cmd == "mathit" || cmd == "mathbf" || cmd == "mathsf" ||
+                       cmd == "mathtt" || cmd == "mathcal" || cmd == "boldsymbol" || cmd == "underline" || cmd == "mathfrak")
+                o += texArg(t, html, i, depth);
+            else if (cmd == "begin" || cmd == "end") {   // (\begin{cases} ...: the environment's name dropped, an array's columns too)
+                std::string env = texRaw(t, false, i);
+                if (cmd == "begin" && (env == "array" || env == "tabular")) texRaw(t, false, i);
+            }
+            else o += cmd;   // (an operator name, \sin \log \max ..., or one not known: its name)
+        } else if (c == '&') {   // (an alignment, or the label's HTML's &lt; &gt; &amp;)
+            size_t e = t.find(';', i);
+            if (html && e != std::string::npos && e - i < 8 && t.compare(i, 5, "&amp;") != 0) {
+                o += t.substr(i, e - i + 1);
+                i = e + 1;
+            } else if (html && t.compare(i, 5, "&amp;") == 0) {   // (&amp; in the HTML: TeX's &, an alignment)
+                o += ' ';
+                i += 5;
+            } else {
+                o += ' ';
+                i++;
+            }
+        } else if (c == '~') {
+            o += html ? "&nbsp;" : "\xc2\xa0";
+            i++;
+        } else {
+            size_t n = (unsigned char)c < 0x80 ? 1 : 1 + ((unsigned char)c >= 0xe0) + ((unsigned char)c >= 0xf0);
+            o += t.substr(i, n);
+            i += n;
+        }
+        if (until == 1) break;
+    }
+    return o;
+}
+
+// AsciiMath inside `...`: its words and arrows the same symbols (alpha, ->, <=, xx, ...), ^ and _ as in TeX
+std::string asciiMathText(const std::string &t, bool html) {
+    static const std::vector<std::pair<std::string, uint32_t>> ops = {
+        {"<=>", 0x21d4}, {"=>", 0x21d2}, {"->", 0x2192}, {"<-", 0x2190}, {"<=", 0x2264}, {">=", 0x2265}, {"!=", 0x2260}, {"~~", 0x2248},
+        {"-=", 0x2261}, {"+-", 0xb1}, {"**", 0x2217}, {"xx", 0xd7}, {"-:", 0xf7}, {"&lt;=&gt;", 0x21d4}, {"=&gt;", 0x21d2}, {"-&gt;", 0x2192},
+        {"&lt;-", 0x2190}, {"&lt;=", 0x2264}, {"&gt;=", 0x2265}};
+    std::string o;
+    for (size_t i = 0; i < t.size();) {
+        bool done = false;
+        for (const auto &op : ops)
+            if (t.compare(i, op.first.size(), op.first) == 0) {
+                nf_utf8_put(o, op.second);
+                i += op.first.size();
+                done = true;
+                break;
+            }
+        if (done) continue;
+        if (isalpha((unsigned char)t[i])) {   // (a word: a Greek letter's or an operator's name, else as it is)
+            size_t j = i;
+            while (j < t.size() && isalpha((unsigned char)t[j])) j++;
+            std::string w = t.substr(i, j - i);
+            auto sym = texSymbols().find(w);
+            if (sym != texSymbols().end() && w.size() > 2) nf_utf8_put(o, sym->second);
+            else o += w;
+            i = j;
+        } else if ((t[i] == '^' || t[i] == '_') && i + 1 < t.size()) {
+            bool up = t[i] == '^';
+            size_t j = i + 1, a = j;
+            std::string x;
+            if (t[j] == '(') {
+                int level = 0;
+                for (; j < t.size(); j++) {
+                    if (t[j] == '(') level++;
+                    else if (t[j] == ')' && --level == 0) break;
+                }
+                x = t.substr(a + 1, j - a - 1), j++;
+            } else {
+                while (j < t.size() && isalnum((unsigned char)t[j])) j++;
+                if (j == a) j++;
+                x = t.substr(a, j - a);
+            }
+            o += html ? std::string(up ? "<sup>" : "<sub>") + x + (up ? "</sup>" : "</sub>") : std::string(up ? "^" : "_") + x;
+            i = j;
+        } else
+            o += t[i++];
+    }
+    return o;
+}
+
+// a label's text with its math written as text: $$...$$ and \(...\) as TeX, `...` as AsciiMath
+std::string mathText(const std::string &v, bool html) {
+    if (v.find("$$") == std::string::npos && v.find("\\(") == std::string::npos && v.find('`') == std::string::npos) return v;
+    std::string o;
+    for (size_t i = 0; i < v.size();) {
+        size_t a = v.find("$$", i), b = v.find("\\(", i), c = v.find('`', i);
+        size_t at = std::min({a, b, c});
+        if (at == std::string::npos) {
+            o += v.substr(i);
+            break;
+        }
+        o += v.substr(i, at - i);
+        const char *close = at == a ? "$$" : at == b ? "\\)" : "`";
+        size_t open = at == c ? 1 : 2, e = v.find(close, at + open);
+        if (e == std::string::npos) {   // (not closed: as it is)
+            o += v.substr(at);
+            break;
+        }
+        std::string inner = v.substr(at + open, e - at - open);
+        if (at == c) o += asciiMathText(inner, html);
+        else {
+            size_t k = 0;
+            o += texText(inner, html, k, 0, 0);
+        }
+        i = e + strlen(close);
+    }
+    return o;
+}
+
 // --- the diagram ---------------------------------------------------------------
 
 struct Builder {
@@ -4732,6 +4994,8 @@ bool readModel(xmlNode *model, Page &page, size_t &budget) {
     if (!root) return false;
     Builder b(page, budget);
     readCells(root, b);
+    if (attr(model, "math") == "1")   // (its labels' math as text)
+        for (Cell &c : b.cells) c.value = mathText(c.value, str(c.style, "html") == "1");
     b.build();
     if (page.items.empty()) return false;
     nd::Union u;

@@ -230,5 +230,25 @@ A draw.io saját renderje minden minta mellett `<fájl>.png` / `<fájl>.page<N>.
 |---|---|---|
 | `font-family` a HTML-ben (`<font face>`, span `font-family`) | csak a cella `fontFamily`-je számít | egyszerű: a betűtípus-választás megvan |
 | `<a>` linkek | a draw.io kéken, aláhúzva mutatja, nálunk sima szöveg | a CSV-importos org-chart mintákon látszik („Email”) |
-| `<img>` a címkében | kimarad | |
-| `<pre>` / `white-space: pre`, `line-height`, `letter-spacing` | nincs kezelve | |
+| `<img>` és beillesztett `<svg>` a címkében | kimarad | a TP.drawio egyik sora a MathJax kész SVG-kimenete |
+| `<pre>` / `white-space: pre`, `letter-spacing` | nincs kezelve | |
+
+## Matematika (`math="1"`)
+
+Ha az oldal `mxGraphModel`-jén `math="1"` áll, a draw.io MathJax-szal szedi a címkék képleteit: `$$…$$` és
+`\(…\)` TeX, `` `…` `` AsciiMath. A nitrodio nem szed képletet, hanem olvasható szöveggé írja át, mielőtt a
+címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`, hívja a `readModel()`):
+
+- **Jelek Unicode-ként:** görög betűk (`\alpha` → α, `\Omega` → Ω), nyilak (`\leftarrow` → ←, `\Rightarrow` → ⇒,
+  `\mapsto` → ↦), műveleti és relációjelek (`\times` ×, `\cdot` ⋅, `\pm` ±, `\le` ≤, `\ne` ≠, `\approx` ≈,
+  `\in` ∈, `\subseteq` ⊆, `\infty` ∞, `\partial` ∂, `\nabla` ∇, `\sum` ∑, `\int` ∫ …), `\mathbb{R}` → ℝ.
+- **Index:** `^` és `_` HTML-címkében `<sup>` / `<sub>`, sima címkében `^x` / `_(xy)`.
+- **Egyebek:** `\frac{a}{b}` → a/b (összetettnél (a)/(b)), `\sqrt{x}` → √x, `\text{…}` és társai szó szerint,
+  `\hat`, `\bar`, `\vec`, `\dot`, `\tilde` kombináló ékezettel, `\\` sortörés, `&` (mátrix) szóköz,
+  `\left` / `\right` / `\big` és a környezetnevek (`\begin{pmatrix}`) eldobva, más parancs a nevével
+  (`\sin`, `\log`, `\lim`).
+- **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `^` / `_` zárójeles
+  csoporttal.
+
+Valódi képletszedés (tört egymás alatt, gyökjel a kifejezés fölött, mátrix rácsban) nincs; a mintákban
+11 fájl, 19 oldal használ matematikát.
