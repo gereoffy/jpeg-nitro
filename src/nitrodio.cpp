@@ -217,6 +217,7 @@ struct Label {
     float borderWidth = 1;
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the text box
     bool turned = false;   // rotated about (cx, cy)
+    bool anchored = false; // (cx, cy: its anchor, a stencil text's x / y, which moves with a turned or mirrored shape)
     float cx = 0, cy = 0, angle = 0;
     bool clip = false;     // (overflow=hidden: drawn only inside cx0, cy0 - cx1, cy1, in its own frame (before turning))
     float clipX0 = 0, clipY0 = 0, clipX1 = 0, clipY1 = 0;
@@ -3097,14 +3098,13 @@ struct Builder {
         }
         if (page.items.size() < (4u << 20) && budget) page.items.push_back(std::move(it)), budget--;
     }
-    void addLabel(std::shared_ptr<Label> l) {
-        if (!l) return;
-        Item it;
-        it.label = l;
+    // a label item's box (what shows of it, turned); false if nothing of it shows
+    static bool labelBounds(Item &it) {
+        const Label *l = it.label.get();
         float x0 = l->x0, y0 = l->y0, x1 = l->x1, y1 = l->y1;
         if (l->clip) {   // (what shows of it)
             x0 = std::max(x0, l->clipX0), y0 = std::max(y0, l->clipY0), x1 = std::min(x1, l->clipX1), y1 = std::min(y1, l->clipY1);
-            if (x1 <= x0 || y1 <= y0) return;
+            if (x1 <= x0 || y1 <= y0) return false;
         }
         if (l->turned) {   // (the box of the turned one: its corners turned)
             nd::Box b = nd::turnedBox(l->cx, l->cy, x0, y0, x1, y1, l->angle);
@@ -3112,7 +3112,13 @@ struct Builder {
         }
         float m = 2 + (l->border >> 24 ? l->borderWidth : 0);
         it.bx0 = x0 - m, it.by0 = y0 - m, it.bx1 = x1 + m, it.by1 = y1 + m;
-        add(std::move(it), 0);
+        return true;
+    }
+    void addLabel(std::shared_ptr<Label> l) {
+        if (!l) return;
+        Item it;
+        it.label = l;
+        if (labelBounds(it)) add(std::move(it), 0);
     }
 
     // a gradient's geometry in b by gradientDirection (mxSvgCanvas2D.createSvgGradient: south, the default, top to bottom;
@@ -3395,7 +3401,8 @@ struct Builder {
                     base += lh;
                 }
                 double turn = (attr(n, "vertical") == "1" ? -90 : 0) - attrNum(n, "rotation", 0);
-                if (turn != 0) label->turned = true, label->cx = x, label->cy = y, label->angle = (float)(turn * M_PI / 180);
+                label->anchored = true, label->cx = x, label->cy = y;
+                if (turn != 0) label->turned = true, label->angle = (float)(turn * M_PI / 180);
                 addLabel(label);
             }
             else if (name == "save") stack.push_back(st);
@@ -3974,7 +3981,22 @@ struct Builder {
             plutovg_matrix_translate(&m, (float)-(b.x + b.w / 2), (float)-(b.y + b.h / 2));
             for (size_t k = first; k < page.items.size(); k++) {
                 Item &it = page.items[k];
-                if (!it.path || it.label) continue;
+                if (it.label) {   // (a stencil's text, a name in a frame: its anchor (or centre) moved with the shape, the text
+                    Label &l = *it.label;   // turned with it but not mirrored, as mxSvgCanvas2D draws a stencil's text)
+                    plutovg_point_t a{l.anchored || l.turned ? l.cx : (l.x0 + l.x1) / 2, l.anchored || l.turned ? l.cy : (l.y0 + l.y1) / 2}, na;
+                    plutovg_matrix_map_point(&m, &a, &na);
+                    float dx = na.x - a.x, dy = na.y - a.y;
+                    for (Run &r : l.runs) r.x += dx, r.y += dy;
+                    for (Label::Rect &q : l.rects) q.x += dx, q.y += dy;
+                    l.x0 += dx, l.x1 += dx, l.y0 += dy, l.y1 += dy;
+                    l.clipX0 += dx, l.clipX1 += dx, l.clipY0 += dy, l.clipY1 += dy;
+                    l.cx = na.x, l.cy = na.y;
+                    l.angle += (float)(turn * M_PI / 180);
+                    l.turned = l.angle != 0;
+                    labelBounds(it);
+                    continue;
+                }
+                if (!it.path) continue;
                 PathP t = newPath();
                 plutovg_path_add_path(t.get(), it.path.get(), &m);
                 it.path = t;

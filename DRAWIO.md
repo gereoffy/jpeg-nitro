@@ -65,7 +65,8 @@ Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egés
   fedő alatt.
 - **A 16 alapalakzat**: rectangle, ellipse, doubleEllipse, rhombus, cylinder, actor, triangle, hexagon, cloud,
   line, arrow, arrowConnector, swimlane, image, label, connector.
-- **mxStencil**: a stencil-XML értelmezője (szöveg, dash, gradient a stencilben is), és az
+- **mxStencil**: a stencil-XML értelmezője (szöveg, dash, gradient, `linecap` / `linejoin` / `miterlimit` a stencilben
+  is; a saját szövege az alakzattal együtt fordul és tükröződik, tükörírás nélkül), és az
   `mxStencilRegistry` névképzése.
 
 A draw.io rétegéből (Graph.js) hiányzik:
