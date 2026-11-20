@@ -130,8 +130,10 @@ szándékosan nincsenek benne.
 - mockup.markup.curlyBrace;
 - sysml.x (áthúzás: két átló, kitöltés nélkül), sysml.actFinal (kör, benne 5-tel beljebb a körvonal színével
   kitöltött kör);
-- bpmn.event (körvonal: standard, catching / boundInt / boundNonint dupla kör, throwing, end háromszoros vastagsággal;
-  jel: terminate kitöltött kör, message boríték a nem dobó eseményen), bpmn.gateway2 (rombusz; exclusive X,
+- bpmn.event (körvonal: standard, eventNonint szaggatott, catching / boundInt / boundNonint dupla kör, throwing, end
+  háromszoros vastagsággal; mind a 13 jel: message, timer, escalation, conditional, link, error, cancel, compensation,
+  signal, multiple, parallelMultiple, terminate, star; dobó és záró eseménynél a jel a körvonal színével kitöltve),
+  bpmn.gateway2 (rombusz; exclusive X,
   parallel +, complex * a körvonal színével kitöltve; event-based: az esemény körvonala középen), bpmn.task
   (`rectStyle=rounded` lekerekítve `size`-zal);
 - electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
@@ -156,7 +158,7 @@ nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 | Család | Fájl (összes / külső) | Leggyakoribb hiányzók |
 |---|---|---|
 | mockup | 25 / 3 | forms.searchBox, graphics.iconGrid, graphics.simpleIcon, forms.comboBox, graphics.pieChart, containers.browserWindow |
-| bpmn | 24 / 0 | shape (15), data; az event többi jele (timer, error, signal …), a task markerei (user, service …) |
+| bpmn | 24 / 0 | shape (15), data; a task markerei (user, service …) |
 | ios7ui | 12 / 0 | horLines, phone, downloadBar, appBar |
 | basic | 11 / 0 | rect, obtuse_triangle, rectCallout, roundRectCallout, drop, polygon |
 | lean_mapping | 9 / 0 | outside_sources, electronic_info_flow_edge, inventory_box, physical_pull |

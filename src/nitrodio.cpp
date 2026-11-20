@@ -2280,36 +2280,10 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
             line(0.5 * w - e, 0.05 * h + f, 0.5 * w + e, 0.05 * h + f), line(0.5 * w, 0.05 * h - e + f, 0.5 * w, 0.05 * h + e + f);
             line(0.5 * w - e, 0.95 * h - f, 0.5 * w + e, 0.95 * h - f);
         }
-    } else if (shape == "mxgraph.bpmn.event" || shape == "mxgraph.bpmn.gateway2") {   // (mxBPMN's event: its outline (a circle;
-        // catching / boundary: a second one 2 inside; throwing: 2 and 2 % inside; end: 3 times as thick, by vertex()); a gateway:
-        // a rhombus, an event-based one with an event's outline in its middle 0.6; their solid signs by bpmnSolid())
-        bool gw = shape == "mxgraph.bpmn.gateway2";
-        const std::string &outline = str(s, "outline");
-        Box e = b;
-        if (gw) {
-            polygon(q, {{w / 2, 0}, {w, h / 2}, {w / 2, h}, {0, h / 2}}, b);
-            e = {b.x + 0.2 * w, b.y + 0.2 * h, 0.6 * w, 0.6 * h};
-        }
-        bool ring = !gw || ((str(s, "gwType").empty() || str(s, "gwType") == "event") && !outline.empty() && outline != "none");
-        if (ring && !(outline.empty() || outline == "none")) {
-            plutovg_path_t *t = gw ? (lines ? lines.get() : (lines = newPath()).get()) : q;
-            plutovg_path_add_ellipse(t, (float)(e.x + e.w / 2), (float)(e.y + e.h / 2), (float)(e.w / 2), (float)(e.h / 2));
-            double in = outline == "catching" || outline == "boundInt" || outline == "boundNonint" ? 2 : 0;
-            Box r = outline == "throwing" ? Box{e.x + 0.02 * e.w + 2, e.y + 0.02 * e.h + 2, 0.96 * e.w - 4, 0.96 * e.h - 4}
-                                          : Box{e.x + in, e.y + in, e.w - 2 * in, e.h - 2 * in};
-            if ((in > 0 || outline == "throwing") && r.w > 0 && r.h > 0) {
-                if (!lines) lines = newPath();
-                plutovg_path_add_ellipse(lines.get(), (float)(r.x + r.w / 2), (float)(r.y + r.h / 2), (float)(r.w / 2), (float)(r.h / 2));
-            }
-            if (str(s, "symbol") == "message" && outline != "throwing" && outline != "end") {   // (an envelope, 0.7 x 0.4 of it)
-                Box m{e.x + 0.15 * e.w, e.y + 0.3 * e.h, 0.7 * e.w, 0.4 * e.h};
-                if (!lines) lines = newPath();
-                plutovg_path_add_rect(lines.get(), (float)m.x, (float)m.y, (float)m.w, (float)m.h);
-                plutovg_path_move_to(lines.get(), (float)m.x, (float)m.y);
-                plutovg_path_line_to(lines.get(), (float)(m.x + m.w / 2), (float)(m.y + m.h / 2));
-                plutovg_path_line_to(lines.get(), (float)(m.x + m.w), (float)m.y);
-            }
-        }
+    } else if (shape == "mxgraph.bpmn.event") {   // (mxBPMN's event: a circle; its outlines and signs by bpmnEvent())
+        plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
+    } else if (shape == "mxgraph.bpmn.gateway2") {   // (a rhombus; its event outline by bpmnEvent(), its signs by solidSigns())
+        polygon(q, {{w / 2, 0}, {w, h / 2}, {w / 2, h}, {0, h / 2}}, b);
     } else if (shape == "mxgraph.electrical.electro-mechanical.singleSwitch") {   // (mxElectrical's switch: its leads, its blade
         line(0, 0.8 * h, 0.2 * w, 0.8 * h), line(0.8 * w, 0.8 * h, w, 0.8 * h);   // open (elSwitchState=off) or closed, two contacts)
         if (str(s, "elSwitchState") == "off") line(0.28 * w, 0.75 * h, 0.76 * w, 0);
@@ -3486,11 +3460,121 @@ struct Builder {
     // a slightly rounded box filled by the style's fill colour (its gradient too), else the family's, outlined by its
     // stroke, the icon's name in it, wrapped, in black or white against the fill; false: not one (any other shape, a
     // group, a container)
+    // mxBPMN's event (mxShapeBpmnEvent.strictDrawShape) in e: its outline (standard / eventInt: a circle; eventNonint dashed;
+    // catching / boundInt / boundNonint: a second one 2 inside; throwing: 2 and 2 % inside; end: 3 times as thick), then its
+    // symbol in its own part of the box; a throwing or end event's symbol filled in the stroke colour, outlined in the fill
+    void bpmnEvent(const Style &s, const Box &e, const std::string &outline, const std::string &symbol) {
+        double op = num(s, "opacity", 100);
+        uint32_t fill = withOpacity(colour(s, "fillColor", 0xffffffff), op * num(s, "fillOpacity", 100) / 100);
+        uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), op * num(s, "strokeOpacity", 100) / 100);
+        float sw = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+        auto emit = [&](PathP p, uint32_t f, uint32_t st, float w, bool dashed) {
+            Item it;
+            it.path = p;
+            it.fill = f;
+            if (w > 0) it.stroke = st, it.width = w;
+            if (dashed) it.dash = {3 * std::max(w, 1.f), 3 * std::max(w, 1.f)};
+            add(std::move(it), w);
+        };
+        auto ellipse = [](double x, double y, double w, double h) {
+            PathP p = newPath();
+            plutovg_path_add_ellipse(p.get(), (float)(x + w / 2), (float)(y + h / 2), (float)(w / 2), (float)(h / 2));
+            return p;
+        };
+        if (outline == "standard" || outline == "eventInt" || outline == "eventNonint" || outline == "end")
+            emit(ellipse(e.x, e.y, e.w, e.h), fill, stroke, outline == "end" ? 3 * sw : sw, outline == "eventNonint");
+        else if (outline == "catching" || outline == "boundInt" || outline == "boundNonint" || outline == "throwing") {
+            bool dashed = outline == "boundNonint";
+            emit(ellipse(e.x, e.y, e.w, e.h), fill, stroke, sw, dashed);
+            if (outline == "throwing") emit(ellipse(e.x + 0.02 * e.w + 2, e.y + 0.02 * e.h + 2, 0.96 * e.w - 4, 0.96 * e.h - 4), 0, stroke, sw, false);
+            else if (e.w > 4 && e.h > 4) emit(ellipse(e.x + 2, e.y + 2, e.w - 4, e.h - 4), 0, stroke, sw, dashed);
+        }
+        if (symbol.empty() || symbol == "general" || symbol == "standard") return;
+        // (the symbol's box: its part of the event's)
+        static const std::map<std::string, std::array<double, 4>> parts = {
+            {"message", {0.15, 0.3, 0.7, 0.4}},  {"timer", {0.11, 0.11, 0.78, 0.78}},      {"escalation", {0.19, 0.15, 0.62, 0.57}},
+            {"conditional", {0.3, 0.16, 0.4, 0.68}}, {"link", {0.27, 0.33, 0.46, 0.34}},   {"error", {0.212, 0.243, 0.58, 0.507}},
+            {"cancel", {0.22, 0.22, 0.56, 0.56}}, {"compensation", {0.28, 0.35, 0.44, 0.3}}, {"signal", {0.19, 0.15, 0.62, 0.57}},
+            {"multiple", {0.2, 0.19, 0.6, 0.565}}, {"parallelMultiple", {0.2, 0.2, 0.6, 0.6}}, {"terminate", {0.05, 0.05, 0.9, 0.9}},
+            {"star", {0, 0, 1, 1}}};
+        auto pt = parts.find(symbol);
+        if (pt == parts.end()) return;
+        double x = e.x + pt->second[0] * e.w, y = e.y + pt->second[1] * e.h, w = pt->second[2] * e.w, h = pt->second[3] * e.h;
+        bool filled = outline == "throwing" || outline == "end";   // (its colours swapped: filled in the stroke's)
+        uint32_t sf = filled ? stroke : fill, ss = filled ? fill : stroke;
+        if (symbol == "star") sf = stroke;
+        auto poly = [&](std::initializer_list<Pt> pts, bool close = true) {
+            PathP p = newPath();
+            bool firstPt = true;
+            for (const Pt &q : pts) {
+                if (firstPt) plutovg_path_move_to(p.get(), (float)(x + q.x * w), (float)(y + q.y * h));
+                else plutovg_path_line_to(p.get(), (float)(x + q.x * w), (float)(y + q.y * h));
+                firstPt = false;
+            }
+            if (close) plutovg_path_close(p.get());
+            return p;
+        };
+        auto shapeOnly = [&](PathP p) { emit(p, sf, ss, filled ? 0 : sw, false); };   // (f ? fill() : fillAndStroke())
+        if (symbol == "message") {
+            PathP r = newPath();
+            plutovg_path_add_rect(r.get(), (float)x, (float)y, (float)w, (float)h);
+            emit(r, sf, ss, sw, false);
+            uint32_t lineCol = !(fill >> 24) && filled ? 0xffffffffu : ss;
+            emit(poly({{0, 0}, {0.5, 0.5}, {1, 0}}, false), 0, lineCol, sw, false);
+        } else if (symbol == "timer") {
+            emit(ellipse(x, y, w, h), sf, ss, sw, false);
+            PathP t = newPath();
+            static const double ticks[][4] = {{.5, 0, .5, .0642}, {.7484, .0654, .7126, .1281}, {.93, .2471, .8673, .2854}, {1, .5, .9338, .5},
+                                              {.93, .7509, .8673, .7126}, {.7484, .9326, .7126, .8699}, {.5, .9338, .5, 1},
+                                              {.2496, .9325, .2854, .8699}, {.068, .7509, .1307, .7126}, {0, .5, .0642, .5},
+                                              {.068, .2471, .1307, .2854}, {.2496, .0654, .2854, .1281}};
+            for (const auto &k : ticks) {
+                plutovg_path_move_to(t.get(), (float)(x + k[0] * w), (float)(y + k[1] * h));
+                plutovg_path_line_to(t.get(), (float)(x + k[2] * w), (float)(y + k[3] * h));
+            }
+            plutovg_path_move_to(t.get(), (float)(x + .5246 * w), (float)(y + .0706 * h));   // (its hands)
+            plutovg_path_line_to(t.get(), (float)(x + .5 * w), (float)(y + .5 * h));
+            plutovg_path_line_to(t.get(), (float)(x + .7804 * w), (float)(y + .5118 * h));
+            emit(t, 0, ss, sw, false);
+        } else if (symbol == "conditional") {
+            PathP r = newPath();
+            plutovg_path_add_rect(r.get(), (float)x, (float)y, (float)w, (float)h);
+            emit(r, sf, ss, sw, false);
+            PathP t = newPath();
+            for (double ly : {.1027, .3669, .6311, .8953}) {
+                plutovg_path_move_to(t.get(), (float)x, (float)(y + ly * h));
+                plutovg_path_line_to(t.get(), (float)(x + .798 * w), (float)(y + ly * h));
+            }
+            emit(t, 0, ss, sw, false);
+        } else if (symbol == "terminate") emit(ellipse(x, y, w, h), sf, ss, sw, false);
+        else if (symbol == "escalation") shapeOnly(poly({{0, 1}, {.5, 0}, {1, 1}, {.5, .5}}));
+        else if (symbol == "link") shapeOnly(poly({{0, .76}, {0, .24}, {.63, .24}, {.63, 0}, {1, .5}, {.63, 1}, {.63, .76}}));
+        else if (symbol == "error") shapeOnly(poly({{0, 1}, {.3287, .123}, {.6194, .6342}, {1, 0}, {.6625, .939}, {.3717, .5064}}));
+        else if (symbol == "cancel")
+            shapeOnly(poly({{.1051, 0}, {.5, .3738}, {.8909, 0}, {1, .1054}, {.623, .5}, {1, .8926}, {.8909, 1}, {.5, .6242}, {.1051, 1}, {0, .8926},
+                            {.373, .5}, {0, .1054}}));
+        else if (symbol == "compensation") {
+            PathP p = poly({{0, .5}, {.5, 0}, {.5, 1}});
+            PathP q2 = poly({{.5, .5}, {1, 0}, {1, 1}});
+            plutovg_path_add_path(p.get(), q2.get(), nullptr);
+            shapeOnly(p);
+        } else if (symbol == "signal") shapeOnly(poly({{0, 1}, {.5, 0}, {1, 1}}));
+        else if (symbol == "multiple") shapeOnly(poly({{0, .39}, {.5, 0}, {1, .39}, {.815, 1}, {.185, 1}}));
+        else if (symbol == "parallelMultiple")
+            shapeOnly(poly({{.38, 0}, {.62, 0}, {.62, .38}, {1, .38}, {1, .62}, {.62, .62}, {.62, 1}, {.38, 1}, {.38, .62}, {0, .62}, {0, .38}, {.38, .38}}));
+        else if (symbol == "star") {   // (translated w/5, h/6, 0.6 x 2/3 of it)
+            x += w / 5, y += h / 6, w *= 0.6, h *= 2.0 / 3;
+            emit(poly({{0, .25}, {1. / 3, .25}, {.5, 0}, {2. / 3, .25}, {1, .25}, {5. / 6, .5}, {1, .75}, {2. / 3, .75}, {.5, 1}, {1. / 3, .75}, {0, .75},
+                       {1. / 6, .5}}),
+                 sf, ss, sw, false);
+        }
+    }
+
     // the solid signs code-drawn shapes fill in their stroke colour: mxBPMN's terminate event's disc (0.9 of it), a gateway's
     // X / + / * (exclusive, parallel, complex); mxElectrical's battery's plates; mxSysML's activity final's disc. Drawn upright, turned by direction with the shape
     void solidSigns(const std::string &shape, const Style &s, const Box &bx) {
         bool battery = shape == "mxgraph.electrical.miscellaneous.batteryStack", final = shape == "mxgraph.sysml.actFinal";
-        if (shape != "mxgraph.bpmn.event" && shape != "mxgraph.bpmn.gateway2" && !battery && !final) return;
+        if (shape != "mxgraph.bpmn.gateway2" && !battery && !final) return;
         uint32_t ink = withOpacity(colour(s, "strokeColor", 0xff000000), num(s, "opacity", 100) * num(s, "strokeOpacity", 100) / 100);
         if (!(ink >> 24)) return;
         const std::string &dir = str(s, "direction");
@@ -3511,9 +3595,6 @@ struct Builder {
             if (n <= 0) return;
             for (int k = 0; k < n; k++)
                 plutovg_path_add_rect(q, (float)(b.x + m + k * d + 0.2 * d), (float)(b.y + 0.25 * h), (float)(0.2 * d), (float)(0.5 * h));
-        } else if (shape == "mxgraph.bpmn.event") {
-            if (str(s, "symbol") != "terminate" || str(s, "outline").empty() || str(s, "outline") == "none") return;
-            plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(0.45 * w), (float)(0.45 * h));
         } else {
             const std::string &t = str(s, "gwType");
             double d = 0.5 * w, e = 0.5 * h;
@@ -3909,14 +3990,16 @@ struct Builder {
                 f["strokeColor"] = "none";
                 paint(shapePath(shape, s, b, lines), lines, f, b, false);
             } else {
-                PathP p = shapePath(shape, s, b, lines);
-                if (shape == "mxgraph.bpmn.event" && str(s, "outline") == "end") {   // (an end event: its circle 3 times as thick)
-                    Style thick = s;
-                    thick["strokeWidth"] = std::to_string(3 * std::clamp(num(s, "strokeWidth", 1), 0.0, 300.0));
-                    paint(p, lines, thick, b, false);
-                } else
+                if (shape == "mxgraph.bpmn.event") bpmnEvent(s, b, str(s, "outline"), str(s, "symbol"));
+                else {
+                    PathP p = shapePath(shape, s, b, lines);
                     paint(p, lines, s, b, false);
-                solidSigns(shape, s, b);
+                    const std::string &gw = str(s, "gwType");
+                    if (shape == "mxgraph.bpmn.gateway2" && (gw.empty() || gw == "event") && !str(s, "outline").empty() && str(s, "outline") != "none")
+                        bpmnEvent(s, Box{b.x + 0.2 * b.w, b.y + 0.2 * b.h, 0.6 * b.w, 0.6 * b.h}, str(s, "outline"),
+                                  str(s, "symbol").empty() ? "standard" : str(s, "symbol"));   // (an event-based gateway's event, 0.6 of it)
+                    solidSigns(shape, s, b);
+                }
             }
             if (shape == "mxgraph.infographic.shadedCube") {   // (its right face 0.2 darker, its left one 0.2 lighter)
                 double d = std::min(b.w * std::tan(std::clamp(num(s, "isoAngle", 15), 0.01, 94.0) * M_PI / 200), b.h / 2);
