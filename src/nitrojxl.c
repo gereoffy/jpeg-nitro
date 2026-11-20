@@ -3303,7 +3303,7 @@ typedef struct {
     FrameHeader h;
     int threads;
     Br *sec;                 // the sections in their logical order (one shared reader if single)
-    int nsec, single;
+    int nsec, single, single_lf_ready;
     // LfGlobal
     float mlf[3];
     int global_scale, quant_lf;
@@ -3397,7 +3397,11 @@ static int read_toc(Br *br, Frame *f) {
     }
     for (int64_t i = 0; i < n && !e; i++) {
         int64_t k = perm ? perm[i] : i;
-        if (offs[k + 1] > (uint64_t)(end - base)) { f->missing[i] = 1; br_init(&f->sec[i], end, 0); }
+        if (offs[k + 1] > (uint64_t)(end - base)) {
+            // The single shared section starts with LF. Its complete streams are still readable.
+            if (f->single) br_init(&f->sec[i], base, (size_t)(end - base));
+            else { f->missing[i] = 1; br_init(&f->sec[i], end, 0); }
+        }
         else br_init(&f->sec[i], base + offs[k], sizes[k]);
     }
     if (!e) br_init(br, f->cut ? end : base + offs[n], f->cut ? 0 : (size_t)(end - base - offs[n]));   // the next frame
@@ -3579,6 +3583,7 @@ static int lf_group(Frame *f, int lfg) {
             }
         }
         modular_free(&g);
+        if (f->single) f->single_lf_ready = 1;
     }
     TRY(modular_group(f, br, gx * h->gdim * 8, gy * h->gdim * 8, h->gdim * 8, h->gdim * 8, 3, 1000, 1 + nlf + (uint32_t)lfg));
     if (!h->modular) {   // HF metadata
@@ -4693,14 +4698,15 @@ static int decode_frame(Frame *f, const Output *o) {
     nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = sec_missing(f, sec_lfgroup(f, (int)i)) ? ERR_INVALID : lf_group(f, (int)i); });
     int e = 0;
     for (int i = 0; i < nlf && !e; i++) {
-        if (errs[i] != ERR_INVALID || f->single) { e = errs[i]; continue; }
+        if (errs[i] != ERR_INVALID || (f->single && !f->single_lf_ready)) { e = errs[i]; continue; }
         if (!f->lflost && !(f->lflost = xcalloc((size_t)nlf, 1))) { e = ERR_NOMEM; break; }
         f->lflost[i] = 1; f->damaged = 1;
         lf_lost(f, i);
     }
     if (!e && !h->modular && !h->skip_smooth) e = smooth_lf(f);
     if (!e && !h->modular) {
-        e = sec_missing(f, sec_hfglobal(f)) ? ERR_INVALID : hf_global(f, 0);
+        // A failed LF group in the shared section leaves no known start for HfGlobal.
+        e = (f->single && f->lflost) || sec_missing(f, sec_hfglobal(f)) ? ERR_INVALID : hf_global(f, 0);
         if (e == ERR_INVALID) {   // (what it read so far dropped: every group LF only)
             for (int i = 0; i < NUM_DQ; i++) { free(f->dqinv[i]); f->dqinv[i] = NULL; }
             for (int p = 0; p < MAX_PASSES; p++) {

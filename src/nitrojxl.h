@@ -10,8 +10,8 @@
 // Layers and tiles (frames that replace a rectangle of the image) are put together.
 // Not supported (NJXL_UNSUPPORTED): patches, splines, upsampling, LF frames, blended layers
 // (an animation gives its first frame), noise is left out.
-// A cut-off or damaged image decodes what can be read (njxl_info.damaged); the headers, the frame's
-// LfGlobal and HfGlobal sections must be whole.
+// A cut-off or damaged image decodes what can be read (njxl_info.damaged); the headers and the frame's
+// LfGlobal must be readable. VarDCT can display its LF image if later data is missing.
 #ifndef NITROJXL_H
 #define NITROJXL_H
 
