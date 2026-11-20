@@ -674,7 +674,8 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                     std::string ta = cssValue(tag, "text-align");
                     if (ta.empty()) ta = htmlAttr(tag, "align");
                     for (char &ch : ta) ch = (char)tolower((unsigned char)ch);
-                    aligns.push_back({name, ta == "left" || ta == "center" || ta == "right" ? ta : ta == "start" ? "left" : ta == "end" ? "right" : ""});
+                    // (justify: its lines from the left, as a browser sets a one-line or last line; the others not stretched)
+                    aligns.push_back({name, ta == "left" || ta == "center" || ta == "right" ? ta : ta == "start" || ta == "justify" ? "left" : ta == "end" ? "right" : ""});
                     if (name != "li" && name != "ul" && name != "ol") {
                         double ml = cssLength(cssValue(tag, "margin-left"), 0, curSize());
                         lefts.push_back({name, ml > 0 && ml < 1e4 ? (float)ml : 0.f});
@@ -1443,6 +1444,7 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
         if (al.empty()) al = htmlAttr(c.tag, "align");
         if (al.empty()) al = cssValue(tr, "text-align");
         if (al.empty()) al = htmlAttr(tr, "align");
+        if (al == "justify") al = "left";   // (its lines from the left, not stretched)
         if (al == "left" || al == "center" || al == "right") cs["align"] = al;
         cs["verticalAlign"] = "top";
         if (c.th) cs["fontStyle"] = std::to_string((int)num(s, "fontStyle", 0) | 1);
@@ -1650,7 +1652,7 @@ Flow flowHtml(const std::string &v, const Style &s, float x, float y, float avai
         if (lowerName(tag) != "pre")
             if (float fs = tagSize(tag, (float)num(s, "fontSize", 12))) d["fontSize"] = std::to_string(fs);
         std::string ta = cssValue(tag, "text-align");
-        if (ta == "left" || ta == "center" || ta == "right") d["align"] = ta;
+        if (ta == "left" || ta == "center" || ta == "right" || ta == "justify") d["align"] = ta == "justify" ? "left" : ta;
         return d;
     };
     // measured, then placed: the text's lines aligned in the widest block
