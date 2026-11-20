@@ -58,8 +58,11 @@ void applyNamed(Style &s, const std::string &name) {
         {"text", {{"fillColor", "none"}, {"gradientColor", "none"}, {"strokeColor", "none"}, {"align", "left"}, {"verticalAlign", "top"}}},
         {"edgeLabel", {{"fillColor", "none"}, {"gradientColor", "none"}, {"strokeColor", "none"}, {"align", "left"}, {"verticalAlign", "top"},
                        {"labelBackgroundColor", "#ffffff"}, {"fontSize", "11"}}},
-        {"label", {{"fontStyle", "1"}, {"align", "left"}, {"verticalAlign", "middle"}, {"spacing", "2"}, {"spacingLeft", "52"}}},
-        {"icon", {{"align", "center"}, {"verticalAlign", "top"}, {"verticalLabelPosition", "bottom"}}},
+        {"label", {{"fontStyle", "1"}, {"align", "left"}, {"verticalAlign", "middle"}, {"spacing", "2"}, {"spacingLeft", "52"},
+                   {"imageWidth", "42"}, {"imageHeight", "42"}, {"rounded", "1"}}},
+        {"icon", {{"fontStyle", "0"}, {"align", "center"}, {"verticalAlign", "top"}, {"spacing", "0"}, {"spacingLeft", "0"},   // (extends label)
+                  {"imageWidth", "48"}, {"imageHeight", "48"}, {"rounded", "1"}, {"imageAlign", "center"}, {"verticalLabelPosition", "bottom"},
+                  {"spacingTop", "6"}, {"labelBackgroundColor", "default"}}},
         {"swimlane", {{"shape", "swimlane"}, {"fontSize", "12"}, {"fontStyle", "1"}, {"startSize", "23"}}},
         {"group", {{"verticalAlign", "top"}, {"fillColor", "none"}, {"strokeColor", "none"}, {"gradientColor", "none"}}},
         {"ellipse", {{"shape", "ellipse"}, {"perimeter", "ellipsePerimeter"}}},
@@ -2552,6 +2555,51 @@ struct Builder {
         paint(newPath(), l, ls, b, false);
     }
 
+    // a picture of the style's image in pb, stretched (mxLabel / mxSwimlane: c.image without aspect): a data: URI decoded
+    // with the page, any other its frame (not in the file)
+    void picture(const Style &s, const std::string &uri, const Box &pb) {
+        if (uri.empty() || !(pb.w > 0 && pb.h > 0)) return;
+        Item it;
+        it.path = newPath();
+        plutovg_path_add_rect(it.path.get(), (float)pb.x, (float)pb.y, (float)pb.w, (float)pb.h);
+        if (uri.compare(0, 11, "data:image/") == 0) {
+            it.uri = uri;
+            it.ix0 = (float)pb.x, it.iy0 = (float)pb.y, it.ix1 = (float)(pb.x + pb.w), it.iy1 = (float)(pb.y + pb.h);
+            it.aspect = false;
+            it.pictureAlpha = (float)std::clamp(num(s, "opacity", 100) / 100, 0.0, 1.0);
+            add(std::move(it), 0);
+        } else {
+            it.stroke = 0xffc0c0c0;
+            it.width = 1;
+            add(std::move(it), 1);
+        }
+    }
+
+    // mxLabel.paintForeground: its image (imageWidth x imageHeight, 24 by default) and its indicator (indicatorShape in
+    // indicatorColor / indicatorStrokeColor / indicatorGradientColor, or indicatorImage; indicatorWidth x indicatorHeight, 10),
+    // each placed by imageAlign / imageVerticalAlign (left, middle by default) spacing + 5 from the sides
+    void labelForeground(const Style &s, const Box &b) {
+        const std::string &al = str(s, "imageAlign"), &va = str(s, "imageVerticalAlign");
+        auto place = [&](double w, double h, double k) {
+            double x = al == "center" ? b.x + (b.w - w) / 2 : al == "right" ? b.x + b.w - w - k : b.x + k;
+            double y = va == "top" ? b.y + k : va == "bottom" ? b.y + b.h - h - k : b.y + (b.h - h) / 2;
+            return Box{x, y, std::max(0.0, w), std::max(0.0, h)};
+        };
+        picture(s, str(s, "image"), place(num(s, "imageWidth", 24), num(s, "imageHeight", 24), num(s, "spacing", 2) + 5));
+        Box ib = place(num(s, "indicatorWidth", 10), num(s, "indicatorHeight", 10), 2 + 5);
+        const std::string &is = str(s, "indicatorShape");
+        if (!is.empty() && ib.w > 0 && ib.h > 0) {   // (a shape of its own: its colours only, the label's style not its)
+            Style ist;
+            ist["fillColor"] = str(s, "indicatorColor").empty() ? "none" : str(s, "indicatorColor");
+            ist["strokeColor"] = str(s, "indicatorStrokeColor").empty() ? "none" : str(s, "indicatorStrokeColor");
+            ist["gradientColor"] = str(s, "indicatorGradientColor");
+            ist["direction"] = str(s, "indicatorDirection");
+            PathP lines, p = shapePath(is, ist, ib, lines);
+            paint(p, lines, ist, ib, false);
+        } else
+            picture(s, str(s, "indicatorImage"), ib);
+    }
+
     // mxShape.paintGlassEffect: a white sheen over the top of b, 0.9 to 0.1 opaque, its lower edge bowed (rounded: its top
     // corners by arc); m: b's frame mapped onto the page (a swimlane's header turned: its sheen turned with it)
     void glass(const Style &s, const Box &b, double arc, const plutovg_matrix_t *m) {
@@ -2671,6 +2719,8 @@ struct Builder {
             st["shadow"] = shadow ? "1" : "0";
             paint(horiz ? path({L(w, f), L(w, h)}, false) : path({L(f, 0), L(w, 0)}, false), nullptr, st, b, false);
         }
+        if (!str(s, "image").empty())   // (its image, 16 x 16 at the header's top right; horizontal=0: top left)
+            picture(s, str(s, "image"), horiz ? Box{b.x + w - 16, b.y, 16, 16} : Box{b.x, b.y, 16, 16});
         if (str(s, "glass") == "1") {   // (over the header; horizontal=0: turned down the left side)
             if (horiz) glass(s, hb, g, nullptr);
             else {
@@ -2861,6 +2911,8 @@ struct Builder {
             it.width = 1;
             add(std::move(it), 1);
         }
+        // (draw.io's default vertex shape is label (default.xml): one without a shape too)
+        if ((shape == "label" || str(s, "shape").empty()) && !table && b.w > 0 && b.h > 0) labelForeground(s, b);
         if (table && b.w > 0 && b.h > 0) tableLines(c, b);
         bool flipH = str(s, "flipH") == "1", flipV = str(s, "flipV") == "1";
         if (shape.compare(0, 8, "stencil(") == 0 || libraryStencil(shape)) {   // (mxShape.apply: a stencil's own flips too; turned
