@@ -3969,7 +3969,15 @@ struct Builder {
         bool quarter = dir == "north" || dir == "south";
         if (quarter) e = {c.x - e.h / 2, c.y - e.w / 2, e.h, e.w};
         p = {e.x + fx * e.w + num(s, source ? "exitDx" : "entryDx", 0), e.y + fy * e.h + num(s, source ? "exitDy" : "entryDy", 0)};
-        if (ts) {
+        bool perimeter = str(s, source ? "exitPerimeter" : "entryPerimeter") != "0";
+        // (Graph.getLegacyConnectionPoint, draw.io's default until legacyAnchorPoints=0: a point projected on the
+        // perimeter is not flipped, only one fixed in the shape)
+        if (ts && perimeter && str(*ts, "legacyAnchorPoints") != "0") {
+            if (str(*ts, "anchorPointDirection") != "0") {
+                double turn = dir == "north" ? 270 : dir == "west" ? 180 : dir == "south" ? 90 : 0;
+                if (turn != 0) p = rotated(p, turn, c);
+            }
+        } else if (ts) {
             bool fh = str(*ts, "flipH") == "1", fv = str(*ts, "flipV") == "1";
             if (str(*ts, "shape").compare(0, 8, "stencil(") == 0)
                 fh = fh || str(*ts, "stencilFlipH") == "1", fv = fv || str(*ts, "stencilFlipV") == "1";
@@ -3981,7 +3989,7 @@ struct Builder {
                 if (turn != 0) p = rotated(p, turn, c);
             }
         }
-        if (str(s, source ? "exitPerimeter" : "entryPerimeter") != "0") p = uprightPoint(t, p, false);
+        if (perimeter) p = uprightPoint(t, p, false);
         if (t.rotation != 0) p = rotated(p, t.rotation, t.b.centre());   // (the point turns with its shape)
         return true;
     }

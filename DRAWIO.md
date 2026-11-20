@@ -40,7 +40,8 @@ Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egés
   forgatott befoglaló dobozzal számol. Az EntityRelation a szabad induló pontot is terminálnak veszi.
 - **Perimeterek** (`mxPerimeter`): rectangle, ellipse, rhombus, triangle, hexagon, hexagon2, trapezoid,
   parallelogram, step, center, orthogonal, lifeline, backbone, callout. Port- és constraint-pontok
-  (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`).
+  (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`). A tükrözött (`flipH` / `flipV`) alakzaton a draw.io
+  alapértelmezése szerint (`legacyAnchorPoints`) csak a kerületre nem vetített pont tükröződik.
 - **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok. Az oval a vonal végére
   középre kerül, `size` átmérővel. A vonal kitöltött és kitöltés nélküli markernél is a marker tövénél áll meg.
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
