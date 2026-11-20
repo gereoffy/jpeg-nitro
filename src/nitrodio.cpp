@@ -1741,6 +1741,40 @@ void polygon(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, do
     plutovg_path_close(p);
 }
 
+// mxShape.addPoints, not closed: a polyline through the points (relative to b), each inner corner, with arc > 0, a quadratic
+// from arc before it to arc after it (at most half a side; a point the same as the next skipped)
+void openPolyline(plutovg_path_t *p, std::initializer_list<Pt> list, const Box &b, double arc) {
+    std::vector<Pt> pts(list);
+    if (pts.size() < 2) return;
+    auto at = [&](Pt q) { return plutovg_point_t{(float)(b.x + q.x), (float)(b.y + q.y)}; };
+    size_t n = pts.size();
+    Pt cur = pts[0];
+    plutovg_point_t a0 = at(cur);
+    plutovg_path_move_to(p, a0.x, a0.y);
+    for (size_t i = 1; i < n - 1; i++) {
+        Pt c = pts[i];
+        double dx = cur.x - c.x, dy = cur.y - c.y;
+        if (arc > 0 && (dx != 0 || dy != 0)) {
+            double d = std::sqrt(dx * dx + dy * dy);
+            plutovg_point_t l = at({c.x + dx * std::min(arc, d / 2) / d, c.y + dy * std::min(arc, d / 2) / d});
+            plutovg_path_line_to(p, l.x, l.y);
+            Pt nx = pts[i + 1];
+            while (i < n - 2 && std::round(nx.x - c.x) == 0 && std::round(nx.y - c.y) == 0) nx = pts[i + 2], i++;
+            double ex = nx.x - c.x, ey = nx.y - c.y, e = std::max(1.0, std::sqrt(ex * ex + ey * ey));
+            Pt to{c.x + ex * std::min(arc, e / 2) / e, c.y + ey * std::min(arc, e / 2) / e};
+            plutovg_point_t cc = at(c), tt = at(to);
+            plutovg_path_quad_to(p, cc.x, cc.y, tt.x, tt.y);
+            cur = to;
+        } else {
+            plutovg_point_t cc = at(c);
+            plutovg_path_line_to(p, cc.x, cc.y);
+            cur = c;
+        }
+    }
+    plutovg_point_t e = at(pts[n - 1]);
+    plutovg_path_line_to(p, e.x, e.y);
+}
+
 // The outline of a vertex shape in its box (draw.io's built-in ones; the others: their frame).
 // Second path: the lines drawn over it (a process' bars, a note's fold, a cylinder's rim)
 // the shapes drawn turned by their direction as mxShape turns them: in the box turned upright (north / south: width
@@ -2059,9 +2093,11 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
             if (!lines) lines = newPath();
             plutovg_path_add_ellipse(lines.get(), (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
         }
-    } else if (shape == "curlyBracket") {   // (an open bracket, its point at size of the width)
-        double d = w * std::clamp(num(s, "size", 0.5), 0.0, 1.0);
-        line(w, 0, d, 0), line(d, 0, d, h), line(d, h / 2, 0, h / 2), line(d, h, w, h);
+    } else if (shape == "curlyBracket") {   // (CurlyBracketShape: an open bracket, its point at size of the width; rounded:
+        double d = w * std::clamp(num(s, "size", 0.5), 0.0, 1.0);   // its corners curved as mxShape.addPoints curves them)
+        if (!lines) lines = newPath();
+        openPolyline(lines.get(), {{w, 0}, {d, 0}, {d, h / 2}, {0, h / 2}, {d, h / 2}, {d, h}, {w, h}}, b,
+                     str(s, "rounded") == "1" ? num(s, "arcSize", 20) / 2 : 0);
     } else if (shape == "dimension") {   // (DimensionShape: a measure line with arrowheads between two bars)
         double sw = num(s, "strokeWidth", 1) / 2, al = 10 + 2 * sw, cy = h - al / 2;
         line(0, 0, 0, h), line(w, 0, w, h), line(sw, cy, w - sw, cy);
