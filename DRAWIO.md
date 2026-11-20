@@ -254,9 +254,10 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 
 **Blokkok (`flowHtml`, `flowTable`)**, ha a címkében `<table>`, háttérszínes `<div>` vagy `<pre>` van:
 
-- **Táblázatok:** `colspan` / `rowspan`, `cellpadding` / `cellspacing`, `border-collapse`; cellánként `width` /
-  `height` (px, %), `padding`, `text-align`, `vertical-align`; háttér (`background-color`, `background`,
-  `bgcolor`) és keret (`border`); egymásba ágyazott táblák is, korláttal a futásidő miatt.
+- **Táblázatok:** `colspan` / `rowspan`, `cellpadding` / `cellspacing`, `border-collapse`; cellánként `width`
+  (px, %) és `height` (px, a tartalomé, a padding hozzájön), soronként `height` (az egész soré), `padding`,
+  `text-align`, `vertical-align`; háttér (`background-color`, `background`, `bgcolor`) és keret (`border`);
+  egymásba ágyazott táblák is, korláttal a futásidő miatt.
 - **Háttérszínes `<div>`:** saját doboz, `width`-tel és `padding`-dal.
 - **`<pre>`:** blokk, a szóközei megmaradnak (tab: 4 szóköz), alapból `monospace` betűvel; háttérrel saját doboz
   `padding`-dal (az em a `<pre>` saját betűméretéből). A kerete és a margója nincs megrajzolva.

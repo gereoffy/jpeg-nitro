@@ -1414,6 +1414,7 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
         uint32_t bg, bc;
         std::string valign;
         double fixed;   // (a width the cell asks for; -1: none)
+        double minH;   // (a height it asks for (height: its content's, its padding and border added); -1: none)
     };
     std::vector<Look> looks(cells.size());
     for (size_t k = 0; k < cells.size(); k++) {
@@ -1463,6 +1464,9 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
         std::string cw = cssValue(c.tag, "width");
         if (cw.empty()) cw = htmlAttr(c.tag, "width");
         lk.fixed = cssLength(cw, tw > 0 ? tw : 0, em);
+        std::string ch = cssValue(c.tag, "height");
+        if (ch.empty()) ch = htmlAttr(c.tag, "height");
+        lk.minH = cssLength(ch, 0, em);
     }
     if (cols <= 0) return out;
     std::vector<double> colW(cols, 0);
@@ -1518,12 +1522,18 @@ Flow flowTable(const std::string &t, const Style &s, float x, float y, float ava
             for (char ch : cells[k].html) line = line || (ch != ' ' && ch != '\n' && ch != '\t' && ch != '\r');
             if (line) textH[k] = num(lk.style, "fontSize", 12) * 1.2;
         }
-        if (cells[k].rspan == 1) rowH[cells[k].row] = std::max(rowH[cells[k].row], textH[k] + 2 * lk.pad + lk.bw);
+        double need = std::max(textH[k], lk.minH) + 2 * lk.pad + lk.bw;   // (a cell's height: at least the one it asks for)
+        if (cells[k].rspan == 1) rowH[cells[k].row] = std::max(rowH[cells[k].row], need);
+    }
+    for (size_t r = 0; r < rows; r++) {   // (a row's height of its own: the whole row's, padding and borders in it)
+        std::string rh = cssValue(rowTags[r], "height");
+        if (rh.empty()) rh = htmlAttr(rowTags[r], "height");
+        rowH[r] = std::max(rowH[r], cssLength(rh, 0, em));
     }
     for (size_t k = 0; k < cells.size(); k++)   // (a cell over several rows: what they lack to the last of them)
         if (cells[k].rspan > 1) {
             size_t r0 = cells[k].row, r1 = r0 + (size_t)cells[k].rspan - 1;
-            double have = spacing * (double)(r1 - r0), need = textH[k] + 2 * looks[k].pad + looks[k].bw;
+            double have = spacing * (double)(r1 - r0), need = std::max(textH[k], looks[k].minH) + 2 * looks[k].pad + looks[k].bw;
             for (size_t r = r0; r <= r1; r++) have += rowH[r];
             if (have < need) rowH[r1] += need - have;
         }
