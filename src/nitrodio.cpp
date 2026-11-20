@@ -2036,8 +2036,8 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         };
         plutovg_path_move_to(q, x, (float)(y + h));
         C(0, 3 * h / 5, 0, 2 * h / 5, w / 2, 2 * h / 5);
-        C(w / 2 - w / 4, 2 * h / 5, w / 2 - w / 4, 0, w / 2, 0);
-        C(w / 2 + w / 4, 0, w / 2 + w / 4, 2 * h / 5, w / 2, 2 * h / 5);
+        C(w / 2 - w / 3, 2 * h / 5, w / 2 - w / 3, 0, w / 2, 0);   // (mxActor: the head's sides w / 3 out)
+        C(w / 2 + w / 3, 0, w / 2 + w / 3, 2 * h / 5, w / 2, 2 * h / 5);
         C(w, 2 * h / 5, w, 3 * h / 5, w, h);
         plutovg_path_close(q);
     } else if (shape == "cube") {   // (Shapes.js CubeShape: the front, its top and side folded back by size)
