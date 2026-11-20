@@ -947,6 +947,14 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     int fontStyle = (int)num(s, "fontStyle", 0);
     float size = (float)std::clamp(num(s, "fontSize", 12), 1.0, 1000.0);
     std::vector<Para> paras = parseLabel(value, html, fontStyle & 1, fontStyle & 2, (fontStyle & 4 ? 1 : 0) | (fontStyle & 8 ? 2 : 0), size);
+    // (shapeInside=1, as Graph.isShapeInsideEnabled takes it: draw.io lays the text out in the shape, its trailing empty
+    // lines (a last <div><br></div>) take no room, the text stays centred)
+    const std::string &ov = str(s, "overflow"), &lp = str(s, "labelPosition"), &vp = str(s, "verticalLabelPosition");
+    if (html && str(s, "shapeInside") == "1" && str(s, "whiteSpace") == "wrap" && str(s, "horizontal") != "0" && (ov.empty() || ov == "visible") &&
+        str(s, "labelWidth").empty() && (lp.empty() || lp == "center") && (vp.empty() || vp == "middle"))
+        while (paras.size() > 1 && paras.back().marker.empty() &&
+               std::all_of(paras.back().begin(), paras.back().end(), [](const Seg &g) { return g.text.empty(); }))
+            paras.pop_back();
     std::string family = str(s, "fontFamily");
     size_t comma = family.find(',');
     if (comma != std::string::npos) family.resize(comma);
