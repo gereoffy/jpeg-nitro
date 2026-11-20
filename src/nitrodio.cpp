@@ -3115,6 +3115,11 @@ struct Builder {
     // a gradient's end colour, 0 for none; gradientColor=transparent: a gradient to nothing, its end transparent black
     // (0x00000001: a colour, not none), as a browser fades to it
     static uint32_t gradientEnd(const Style &s) { return str(s, "gradientColor") == "transparent" ? 1u : colour(s, "gradientColor", 0); }
+    // a fill's colour, 0 for none; fillColor=transparent with a gradient: its start transparent black (0x00000001), the
+    // gradient fading in from nothing
+    static uint32_t fillStart(const Style &s) {
+        return str(s, "fillColor") == "transparent" && gradientEnd(s) ? 1u : colour(s, "fillColor", 0xffffffff);
+    }
 
     // a stroke's dashes: dashed (or force), the pattern in stroke widths (fixDash: in px, mxShape.configureCanvas); none: empty
     static std::vector<float> dashOf(const Style &s, float width, bool force) {
@@ -3140,7 +3145,7 @@ struct Builder {
     // fill / stroke of a shape's path: its style's colours, opacity, gradient, dashes, shadow
     void paint(PathP path, PathP lines, const Style &s, const Box &b, bool edge) {
         double opacity = num(s, "opacity", 100);
-        uint32_t fill = edge ? 0 : withOpacity(colour(s, "fillColor", 0xffffffff), opacity * num(s, "fillOpacity", 100) / 100);
+        uint32_t fill = edge ? 0 : withOpacity(fillStart(s), opacity * num(s, "fillOpacity", 100) / 100);
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), opacity * num(s, "strokeOpacity", 100) / 100);
         float width = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
         std::vector<float> dash = dashOf(s, width, false);
@@ -3159,7 +3164,7 @@ struct Builder {
         it.path = path;
         it.fill = fill;
         uint32_t g = edge ? 0 : gradientEnd(s);
-        if (!edge && colour(s, "fillColor", 0xffffffff) && g) {   // (a fill faded to nothing: its gradient still has its other end)
+        if (!edge && fillStart(s) && g) {   // (a fill faded to nothing: its gradient still has its other end)
             it.fill2 = withOpacity(g, opacity * num(s, "fillOpacity", 100) / 100);   // (both ends faded alike)
             gradientIn(it, str(s, "gradientDirection"), b);
         }
@@ -3278,11 +3283,11 @@ struct Builder {
             float miterLimit = 10;
             bool miterSet = false;   // (a <miterlimit> of its own: its miters may reach farther than a stroke width)
         };
-        State st{colour(s, "fillColor", 0xffffffff), colour(s, "strokeColor", 0xff000000),
+        State st{fillStart(s), colour(s, "strokeColor", 0xff000000),
                  (float)(sw == "inherit" ? num(s, "strokeWidth", 1) : (sw.empty() ? 1 : attrNum(root, "strokewidth", 1)) * minScale),
                  (float)std::clamp(opacity / 100, 0.0, 1.0), false, (float)std::clamp(num(s, "fillOpacity", 100) / 100, 0.0, 1.0),
                  (float)std::clamp(num(s, "strokeOpacity", 100) / 100, 0.0, 1.0), {}, 11, 0xff000000, 0, "Helvetica",
-                 colour(s, "fillColor", 0xffffffff) && gradientEnd(s)};
+                 fillStart(s) && gradientEnd(s)};
         uint32_t shapeFill = st.fill, shapeStroke = st.stroke;
         std::vector<State> stack;
         PathP cur;
