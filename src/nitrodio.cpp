@@ -2622,6 +2622,7 @@ struct Builder {
                 return false;   // (frames round other shapes)
             glyph = family == "aws4" && (low == "resourceicon" || low == "producticon");
             name = !glyph ? rest : low == "resourceicon" ? str(c.style, "resIcon") : str(c.style, "prIcon");
+            if (family == "networks2" && low == "icon" && !str(c.style, "network2Icon").empty()) name = str(c.style, "network2Icon");   // (mxNetworks2)
         } else {
             const std::string &img = str(c.style, "image");
             size_t at = img.compare(0, 8, "img/lib/") == 0 ? 8 : img.compare(0, 9, "/img/lib/") == 0 ? 9 : 0;
