@@ -2,9 +2,8 @@
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 // nitro_font: the fonts of the vector renderers. See nitro_font.h.
 //
-// The index reads only the tables it needs from each font file (the names, the OS/2 and head
-// tables; the cmap when a glyph is first asked for), not the glyphs: a system's 800 faces take
-// about 10 ms. A face itself is loaded with plutovg when first used, and kept.
+// The index reads the names and style tables from each font file. A face itself is loaded
+// with plutovg when first used, and kept.
 #include "nitro_font.h"
 
 #include <algorithm>
@@ -32,15 +31,11 @@ std::mutex g_lock;
 
 struct Face {
     std::string file;
-    uint32_t offset = 0;   // of the font in its file (a collection: one of several)
     int ttc = 0;           // its index in the collection
     int weight = 400;
     bool italic = false, narrow = false;
     plutovg_font_face_t *face = nullptr;
     bool failed = false;          // (loading it failed: not tried again)
-    std::vector<uint8_t> cmap;    // its cmap table, read when first asked for a glyph
-    uint32_t cmapTable = 0;       // the subtable used, offset in cmap (0: none)
-    bool cmapRead = false;
 };
 
 using Names = std::unordered_map<std::string, std::vector<int>>;
@@ -172,7 +167,6 @@ void index_file(Index &ix, const std::string &path) {
         if (!read_at(f, t[0].off, t[0].len, name)) continue;
         Face face;
         face.file = path;
-        face.offset = offsets[i];
         face.ttc = (int)i;
         bool bold = false;
         if (t[1].off && read_at(f, t[1].off, 46, hd)) {   // head: macStyle
@@ -295,87 +289,6 @@ plutovg_font_face_t *load(Index &ix, int k) {
     return f.face;
 }
 
-// --- glyphs: the cmap table ----------------------------------------------------
-
-// the subtable to look characters up in: Windows' full Unicode one, else its BMP one, else a
-// Unicode platform one (as stb_truetype chooses)
-uint32_t choose_cmap(const std::vector<uint8_t> &cmap) {
-    if (cmap.size() < 4) return 0;
-    uint32_t n = u16(cmap.data() + 2), best = 0;
-    int bestRank = 0;
-    for (uint32_t i = 0; i < n && 4 + 8 * i + 8 <= cmap.size(); i++) {
-        const uint8_t *r = cmap.data() + 4 + 8 * i;
-        uint32_t platform = u16(r), encoding = u16(r + 2), off = u32(r + 4);
-        int rank = platform == 3 && encoding == 10 ? 3 : platform == 3 && encoding == 1 ? 2 : platform == 0 ? 1 : 0;
-        if (rank > bestRank && off + 4 <= cmap.size()) {
-            best = off;
-            bestRank = rank;
-        }
-    }
-    return best;
-}
-
-bool has_glyph(const std::vector<uint8_t> &cmap, uint32_t table, uint32_t cp) {
-    const uint8_t *t = cmap.data() + table;
-    size_t avail = cmap.size() - table;
-    auto in = [&](size_t off, size_t n) { return off + n <= avail; };
-    switch (u16(t)) {
-    case 0:   // a byte a character
-        return cp < 256 && in(6 + cp, 1) && t[6 + cp] != 0;
-    case 4: {   // segments of the BMP
-        if (cp > 0xffff || !in(0, 14)) return false;
-        uint32_t segs = u16(t + 6) / 2;
-        if (!segs || !in(14, segs * 8 + 2)) return false;
-        const uint8_t *ends = t + 14, *starts = ends + segs * 2 + 2, *deltas = starts + segs * 2, *ranges = deltas + segs * 2;
-        uint32_t lo = 0, hi = segs;   // the first segment whose end is >= cp
-        while (lo < hi) {
-            uint32_t mid = (lo + hi) / 2;
-            if (u16(ends + mid * 2) < cp) lo = mid + 1;
-            else hi = mid;
-        }
-        if (lo == segs || u16(starts + lo * 2) > cp) return false;
-        uint32_t range = u16(ranges + lo * 2);
-        if (!range) return ((cp + u16(deltas + lo * 2)) & 0xffff) != 0;
-        size_t at = (ranges + lo * 2 - t) + range + (cp - u16(starts + lo * 2)) * 2;
-        if (!in(at, 2)) return false;
-        uint32_t g = u16(t + at);
-        return g && ((g + u16(deltas + lo * 2)) & 0xffff) != 0;
-    }
-    case 6: {   // one range
-        if (!in(0, 10)) return false;
-        uint32_t first = u16(t + 6), count = u16(t + 8);
-        return cp >= first && cp < first + count && in(10 + (cp - first) * 2, 2) && u16(t + 10 + (cp - first) * 2) != 0;
-    }
-    case 12: {   // groups of the whole range
-        if (!in(0, 16)) return false;
-        uint32_t groups = u32(t + 12);
-        if (!in(16, (size_t)groups * 12)) return false;
-        uint32_t lo = 0, hi = groups;
-        while (lo < hi) {
-            uint32_t mid = (lo + hi) / 2;
-            const uint8_t *g = t + 16 + mid * 12;
-            if (u32(g + 4) < cp) lo = mid + 1;
-            else hi = mid;
-        }
-        if (lo == groups) return false;
-        const uint8_t *g = t + 16 + lo * 12;
-        return u32(g) <= cp && u32(g + 8) + (cp - u32(g)) != 0;
-    }
-    default: return false;
-    }
-}
-
-void read_cmap(Face &f) {
-    f.cmapRead = true;
-    FILE *file = fopen(f.file.c_str(), "rb");
-    if (!file) return;
-    static const char *const tags[] = {"cmap"};
-    Table t;
-    if (tables(file, f.offset, tags, &t, 1) && t.off && t.len >= 4 && t.len <= 8u << 20 && read_at(file, t.off, t.len, f.cmap))
-        f.cmapTable = choose_cmap(f.cmap);
-    fclose(file);
-}
-
 // --- the lookups -------------------------------------------------------------
 
 const std::vector<int> *named_faces(const Names &names, const char *name) {
@@ -441,12 +354,7 @@ bool nf_has_style(const char *family, bool italic) {
 }
 
 bool nf_has_glyph(plutovg_font_face_t *face, uint32_t codepoint) {
-    Index &ix = index();
-    auto it = ix.loaded.find(face);
-    if (it == ix.loaded.end()) return true;   // (not a face of ours: taken as complete)
-    Face &f = ix.faces[it->second];
-    if (!f.cmapRead) read_cmap(f);
-    return f.cmapTable && has_glyph(f.cmap, f.cmapTable, codepoint);
+    return face && plutovg_font_face_get_glyph_index(face, codepoint) != 0;
 }
 
 plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool italic) {

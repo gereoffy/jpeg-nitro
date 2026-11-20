@@ -127,7 +127,9 @@ FLATPAK_REPO     := build/flatpak-repo
 FLATPAK_BUNDLE   := nitroview-gnome.flatpak
 
 WUFFS      ?= 0
-LUNA       := third_party/lunasvg
+LUNA_SOURCE := third_party/lunasvg
+LUNA_PATCHES := $(sort $(wildcard patches/lunasvg/*.patch))
+LUNA       := $(if $(LUNA_PATCHES),build/lunasvg-patched,$(LUNA_SOURCE))
 LIBCDR     := third_party/libcdr
 LIBREVENGE := third_party/librevenge
 LCMS       := third_party/lcms2
@@ -153,7 +155,7 @@ DAV1D_LIB  := $(DAV1D_DIR)/lib/libdav1d.a
 DAV1D_DEFS := -DNV_DAV1D -I$(DAV1D_DIR)/include
 # the vector drawings (libnitrovec.a): with all of lunasvg, libcdr, librevenge, lcms2, the boost headers,
 # libvisio and libxml2 from scripts/get-deps.sh, or without any
-NITROVEC   ?= $(if $(and $(wildcard $(LUNA)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h),$(wildcard $(FT)/include/ft2build.h),$(wildcard $(BROTLI)/c/include/brotli/decode.h),$(wildcard $(ZSTD)/lib/zstd.h)),1,0)
+NITROVEC   ?= $(if $(and $(wildcard $(LUNA_SOURCE)/include/lunasvg.h),$(wildcard $(LIBCDR)/inc/libcdr/libcdr.h),$(wildcard $(LIBREVENGE)/inc/librevenge/librevenge.h),$(wildcard $(LCMS)/include/lcms2.h),$(wildcard $(BOOST)/boost/optional.hpp),$(wildcard $(LIBVISIO)/inc/libvisio/libvisio.h),$(wildcard $(LIBXML2)/include/libxml/xmlreader.h),$(wildcard $(PDFP)/pdfparse3.h),$(wildcard $(FT)/include/ft2build.h),$(wildcard $(BROTLI)/c/include/brotli/decode.h),$(wildcard $(ZSTD)/lib/zstd.h)),1,0)
 # (non-empty with them; no comment on its line: the spaces before one would be part of the value)
 VEC        := $(filter 1,$(NITROVEC))
 MI         := third_party/mimalloc
@@ -360,8 +362,9 @@ LUNA_CXX  = $(wildcard $(LUNA)/source/*.cpp)
 LUNA_DEFS := -DLUNASVG_BUILD -DLUNASVG_BUILD_STATIC -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC \
              -DLUNASVG_DISABLE_EXTERNAL_RESOURCES -DLUNASVG_DISABLE_LOAD_SYSTEM_FONTS -I$(LUNA)/include -I$(LUNA)/source -I$(LUNA)/plutovg/include \
              -I$(LUNA)/plutovg/source
-LUNA_DEPS = $(LUNA_C) $(LUNA_CXX) $(wildcard $(LUNA)/include/*.h $(LUNA)/source/*.h $(LUNA)/plutovg/include/*.h $(LUNA)/plutovg/source/*.h) \
-            $(wildcard $(LUNA)/.stamp-*)
+LUNA_SOURCE_DEPS = $(wildcard $(LUNA_SOURCE)/include/*.h $(LUNA_SOURCE)/source/*.[ch] $(LUNA_SOURCE)/source/*.cpp \
+                             $(LUNA_SOURCE)/plutovg/include/*.h $(LUNA_SOURCE)/plutovg/source/*.[ch] $(LUNA_SOURCE)/.stamp-*)
+LUNA_DEPS = $(if $(LUNA_PATCHES),$(LUNA)/.patched,$(LUNA_SOURCE_DEPS))
 LCMS_C    = $(wildcard $(LCMS)/src/*.c)
 LCMS_DEPS = $(LCMS_C) $(wildcard $(LCMS)/src/*.h $(LCMS)/include/*.h) $(wildcard $(LCMS)/.version-*)
 XML_C     = $(addprefix $(LIBXML2)/,parser.c parserInternals.c SAX2.c tree.c xmlreader.c xmlIO.c xmlstring.c encoding.c entities.c \
@@ -417,6 +420,13 @@ define vec_objs
 	@$(if $(2),printf '%s\n' $(2) | xargs -n1 -P$(JOBS) sh -c '$(CXX) -std=c++17 $(TCPU) $(4) -c "$$0" -o $(@D)/$$(basename "$$0").o',true)
 	@touch $@
 endef
+# Apply the pending fork patches to a build copy of the pinned sources.
+ifneq ($(LUNA_PATCHES),)
+$(LUNA)/.patched: $(LUNA_SOURCE_DEPS) $(LUNA_PATCHES)
+	@rm -rf $(@D).tmp && mkdir -p $(@D).tmp && cp -R $(LUNA_SOURCE)/. $(@D).tmp/
+	@set -e; for p in $(LUNA_PATCHES); do patch -f -s -d $(@D).tmp -p1 < "$$p"; done
+	@rm -rf $(@D) && mv $(@D).tmp $(@D) && touch $@
+endif
 %/vec/lunasvg/.built: $(LUNA_DEPS)
 	$(call vec_objs,$(LUNA_C),$(LUNA_CXX),-O3 -w $(LUNA_DEFS),-fno-exceptions -fno-rtti -O3 -w $(LUNA_DEFS))
 %/vec/lcms2/.built: $(LCMS_DEPS)
@@ -446,7 +456,7 @@ endef
 	@rm -rf $(@D) && mkdir -p $(@D)
 	@cd $(@D) && $(AR) x $(abspath $(ZLIB))/lib/libz.a && for f in *; do b=$${f%.obj}; mv "$$f" "zng-$${b%.o}.o"; done
 	@touch $@
-%/vec/nitro/.built: $(NITRO_DEPS) $(wildcard $(LUNA)/include/*.h $(LUNA)/plutovg/include/*.h $(LIBCDR)/inc/libcdr/*.h $(LIBVISIO)/inc/libvisio/*.h \
+%/vec/nitro/.built: $(NITRO_DEPS) $(if $(VEC),$(LUNA_DEPS)) $(wildcard $(LIBCDR)/inc/libcdr/*.h $(LIBVISIO)/inc/libvisio/*.h \
                     $(LIBREVENGE)/inc/*/*.h $(PDFP)/*.h $(ZSTD)/lib/zstd.h) patches/freetype/ftoption.h build/.config-$(CONFIG)
 	@rm -rf $(@D) && mkdir -p $(@D)
 	@echo "compiling our readers into $(@D)/"
