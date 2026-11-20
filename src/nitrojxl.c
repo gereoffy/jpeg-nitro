@@ -3302,7 +3302,7 @@ typedef struct {
     FrameHeader h;
     int threads;
     Br *sec;                 // the sections in their logical order (one shared reader if single)
-    int nsec, single, single_lf_ready;
+    int nsec, single;
     // LfGlobal
     float mlf[3];
     int global_scale, quant_lf;
@@ -3335,6 +3335,7 @@ typedef struct {
     uint8_t *missing;        // nsec: the section is cut off (NULL: all there)
     uint8_t *lflost;         // nlfgroups: the LF group could not be read (VarDCT: its groups are LF only)
     int cut, damaged;        // (cut: the data ends in this frame)
+    int output_alpha;        // first displayed alpha channel, or -1
     int hflost;              // HfGlobal could not be read: VarDCT groups LF only
 } Frame;
 
@@ -3526,7 +3527,10 @@ static int modular_group(Frame *f, Br *br, int x0, int y0, int xs, int ys, int m
     return e;
 }
 
-static int lf_group(Frame *f, int lfg) {
+// An incomplete LF group: last usable data before the error.
+enum { LF_NOT_READ = 1, LF_COLOR_ONLY, LF_CHANNELS_READ };
+
+static int lf_group(Frame *f, int lfg, int *progress) {
     FrameHeader *h = &f->h;
     Br *br = sec_lfgroup(f, lfg);
     int gx = lfg % h->lfgx, gy = lfg / h->lfgx;
@@ -3580,9 +3584,10 @@ static int lf_group(Frame *f, int lfg) {
             }
         }
         modular_free(&g);
-        if (f->single) f->single_lf_ready = 1;
+        *progress = LF_COLOR_ONLY;
     }
     TRY(modular_group(f, br, gx * h->gdim * 8, gy * h->gdim * 8, h->gdim * 8, h->gdim * 8, 3, 1000, 1 + nlf + (uint32_t)lfg));
+    *progress = LF_CHANNELS_READ;
     if (!h->modular) {   // HF metadata
         uint32_t count = br_u(br, ceil_log2((uint64_t)bxs * bys)) + 1;
         Modular g;
@@ -4301,6 +4306,72 @@ typedef struct Output Output;
 typedef struct Render Render;
 static int render_rows(const Frame *f, const Output *o, int ry0, int ry1);
 
+// Only called for damaged VarDCT groups. Follow the availability of alpha's base samples
+// through the inverse Modular transforms. A missing squeeze residual still leaves a coarse alpha.
+static __attribute__((noinline)) int alpha_missing(const Frame *f, int g, int pass, int alpha) {
+    const Modular *m = &f->gm;
+    int lfg = ((g / f->h.gx) >> 3) * f->h.lfgx + ((g % f->h.gx) >> 3);
+    int lf = f->lflost ? f->lflost[lfg] : 0;
+    if (lf == LF_NOT_READ) return 0;   // No recovered color to reveal in this group.
+    uint8_t missing[4096];
+    int n = m->nchan;
+    for (int c = 0; c < n; c++) {
+        int shift = imin(m->ch[c].hshift, m->ch[c].vshift);
+        missing[c] = 0;
+        if (c < f->gm_begin) continue;
+        if (shift >= 3) missing[c] = lf == LF_COLOR_ONLY;
+        else for (int p = pass; p < f->h.npasses; p++)
+            if (shift >= f->h.minshift[p] && shift <= f->h.maxshift[p]) { missing[c] = 1; break; }
+    }
+    for (int i = m->ntr - 1; i >= 0; i--) {
+        const struct Transform *t = &m->tr[i];
+        int b = t->begin_c;
+        if (t->id == TR_PALETTE) {
+            // Remove the palette and replace its index by the channels it represents.
+            uint8_t index = missing[b + 1];
+            memmove(missing, missing + 1, (size_t)b);
+            memmove(missing + b + t->num_c, missing + b + 2, (size_t)(n - b - 2));
+            memset(missing + b, index, (size_t)t->num_c);
+            n += t->num_c - 2;
+        } else if (t->id == TR_SQUEEZE) {
+            int offset = t->in_place ? b + t->num_c : n - t->num_c;
+            n -= t->num_c;
+            memmove(missing + offset, missing + offset + t->num_c, (size_t)(n - offset));
+        } else {
+            int perm = t->rct_type / 7, type = t->rct_type % 7;
+            int a = missing[b], v = missing[b + 1], w = missing[b + 2];
+            if (type == 6) {
+                int green = a & w;
+                a = w = green & v;
+                v = green;
+            } else {
+                if (type & 1) w &= a;
+                if ((type >> 1) == 1) v &= a;
+                if ((type >> 1) == 2) v &= a & w;
+            }
+            missing[b + perm % 3] = a;
+            missing[b + (perm + 1 + perm / 3) % 3] = v;
+            missing[b + (perm + 2 - perm / 3) % 3] = w;
+        }
+    }
+    return missing[alpha];
+}
+
+static void fill_group_alpha(Frame *f, int g, int alpha) {
+    const ExtraChannel *ec = &f->m->ec[alpha];
+    int32_t opaque = ec->exp_bits ? ((1 << (ec->exp_bits - 1)) - 1) << (ec->bits - ec->exp_bits - 1)
+                                  : (int32_t)((1u << ec->bits) - 1);
+    Chan *ch = &f->gm.ch[alpha];   // VarDCT: only extra channels are in gm
+    int x0 = (g % f->h.gx) * f->h.gdim, y0 = (g / f->h.gx) * f->h.gdim;
+    int w = imin(f->h.gdim, ch->w - x0), h = imin(f->h.gdim, ch->h - y0);
+    for (int y = 0; y < h; y++) {
+        int32_t *row = ch->p + (size_t)(y0 + y) * ch->w + x0;
+        for (int x = 0; x < w; x++) row[x] = opaque;
+    }
+}
+
+enum { FILL_ALPHA_AFTER_INVERSE = 1 };
+
 // one group: its passes, then (VarDCT) its pixels
 static int decode_group(Frame *f, int g) {
     const FrameHeader *h = &f->h;
@@ -4322,7 +4393,8 @@ static int decode_group(Frame *f, int g) {
     }
     // (VarDCT: the group's blocks are not the coded ones when its LF group was lost)
     int lost = !h->modular && (f->hflost || (f->lflost && f->lflost[(gy >> 3) * h->lfgx + (gx >> 3)]));
-    for (int p = 0; p < h->npasses && !err && !lost; p++) {
+    int p = 0;
+    for (; p < h->npasses && !err && !lost; p++) {
         Br *br = sec_pass(f, p, g);
         if (sec_missing(f, br)) { lost = 1; break; }   // (cut off: the earlier passes are kept)
         int hfe = h->modular ? 0 : hf_pass(f, br, p, gbx0, gby0, gbxs, gbys, offs, gb);
@@ -4341,11 +4413,17 @@ static int decode_group(Frame *f, int g) {
                     err = hf_pass(f, &replay, prev, gbx0, gby0, gbxs, gbys, offs, gb);
                 }
             }
+            break;
         }
     }
     if (lost) __atomic_store_n(&f->damaged, 1, __ATOMIC_RELAXED);
     if (!err && !h->modular) hf_reconstruct(f, gbx0, gby0, gbxs, gbys, offs, gb);
     pool_put(f->pool, gb);
+    int alpha = f->output_alpha;
+    if (lost && !err && !h->modular && alpha >= 0 && alpha_missing(f, g, p, alpha)) {
+        if (f->gm.ntr) return FILL_ALPHA_AFTER_INVERSE;
+        fill_group_alpha(f, g, alpha);
+    }
     return err;
 }
 
@@ -4680,6 +4758,7 @@ static int decode_wave(Frame *f, const Output *o, int threads) {
 // Decodes the frame and, with o, renders it into the output. A VarDCT frame whose extra channels
 // need no transform at the end is rendered as it goes (decode_wave), its colour planes a ring of rows.
 static int decode_frame(Frame *f, const Output *o) {
+    f->output_alpha = o && o->format != NJXL_SAMPLES16 ? o->alpha_ec : -1;
     FrameHeader *h = &f->h;
     if (!(f->pool = xcalloc(1, sizeof(Pool)))) return ERR_NOMEM;
     TRY(lf_global(f));
@@ -4702,12 +4781,18 @@ static int decode_frame(Frame *f, const Output *o) {
     }
     int nlf = h->nlfgroups, *errs = xcalloc((size_t)imax(nlf, h->ngroups), sizeof(int));
     if (!errs) return ERR_NOMEM;
-    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) { errs[i] = sec_missing(f, sec_lfgroup(f, (int)i)) ? ERR_INVALID : lf_group(f, (int)i); });
+    nitro_parallel_n((size_t)nlf, threads, ^(size_t i) {
+        int progress = LF_NOT_READ;
+        int rc = sec_missing(f, sec_lfgroup(f, (int)i)) ? ERR_INVALID : lf_group(f, (int)i, &progress);
+        errs[i] = rc == ERR_INVALID ? progress : rc;
+    });
     int e = 0;
     for (int i = 0; i < nlf && !e; i++) {
-        if (errs[i] != ERR_INVALID || (f->single && !f->single_lf_ready)) { e = errs[i]; continue; }
+        if (errs[i] <= 0) { e = errs[i]; continue; }
+        if (f->single && (h->modular || errs[i] == LF_NOT_READ)) { e = ERR_INVALID; break; }
         if (!f->lflost && !(f->lflost = xcalloc((size_t)nlf, 1))) { e = ERR_NOMEM; break; }
-        f->lflost[i] = 1; f->damaged = 1;
+        f->lflost[i] = (uint8_t)errs[i];
+        f->damaged = 1;
         lf_lost(f, i);
     }
     if (!e && !h->modular && !h->skip_smooth) e = smooth_lf(f);
@@ -4724,15 +4809,22 @@ static int decode_frame(Frame *f, const Output *o) {
             e = hf_global(f, 1);
         }
     }
+    int fill_alpha = 0;
     if (!e && wave) {
         e = decode_wave(f, o, threads);
     } else if (!e) {
         nitro_parallel_n((size_t)h->ngroups, threads, ^(size_t i) { errs[i] = decode_group(f, (int)i); });
-        for (int i = 0; i < h->ngroups && !e; i++) e = errs[i];
+        for (int i = 0; i < h->ngroups && !e; i++) {
+            if (errs[i] == FILL_ALPHA_AFTER_INVERSE) fill_alpha = 1;
+            else e = errs[i];
+        }
     }
-    free(errs);
     if (!e && f->gm.nchan) e = modular_inverse(&f->gm);
     if (!e && f->gm.nchan != f->nb_color + f->m->num_ec) e = ERR_INVALID;
+    if (!e && fill_alpha)
+        for (int i = 0; i < h->ngroups; i++)
+            if (errs[i] == FILL_ALPHA_AFTER_INVERSE) fill_group_alpha(f, i, o->alpha_ec);
+    free(errs);
     if (!e && o && !wave) e = render_rows(f, o, 0, h->ch);
     return e;
 }
