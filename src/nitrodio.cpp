@@ -3121,6 +3121,13 @@ struct Builder {
         return str(s, "fillColor") == "transparent" && gradientEnd(s) ? 1u : colour(s, "fillColor", 0xffffffff);
     }
 
+    // the style less its shadow (draw.io's shapes turn it off after their outline)
+    static Style noShadow(const Style &s) {
+        Style t = s;
+        t["shadow"] = "0";
+        return t;
+    }
+
     // a stroke's dashes: dashed (or force), the pattern in stroke widths (fixDash: in px, mxShape.configureCanvas); none: empty
     static std::vector<float> dashOf(const Style &s, float width, bool force) {
         std::vector<float> dash;
@@ -4025,7 +4032,7 @@ struct Builder {
                     paint(p, lines, s, b, false);
                     const std::string &gw = str(s, "gwType");
                     if (shape == "mxgraph.bpmn.gateway2" && (gw.empty() || gw == "event") && !str(s, "outline").empty() && str(s, "outline") != "none")
-                        bpmnEvent(s, Box{b.x + 0.2 * b.w, b.y + 0.2 * b.h, 0.6 * b.w, 0.6 * b.h}, str(s, "outline"),
+                        bpmnEvent(noShadow(s), Box{b.x + 0.2 * b.w, b.y + 0.2 * b.h, 0.6 * b.w, 0.6 * b.h}, str(s, "outline"),
                                   str(s, "symbol").empty() ? "standard" : str(s, "symbol"));   // (an event-based gateway's event, 0.6 of it)
                     solidSigns(shape, s, b);
                 }
