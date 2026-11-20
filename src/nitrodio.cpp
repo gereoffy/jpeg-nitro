@@ -5077,8 +5077,29 @@ struct Builder {
                 edge(c);
                 auto f = children.find(c.id);   // (its label cells, after it)
                 if (f != children.end() && c.route.size() >= 2)
-                    for (size_t i : f->second)
-                        if (!cells[i].value.empty() && shown(cells[i])) edgeLabel(cells[i], c, c.route);
+                    for (size_t i : f->second) {
+                        Cell &lc = cells[i];
+                        if (!shown(lc)) continue;
+                        // (a vertex on the edge with a shape of its own (a numbered circle on a sequence message): drawn as a
+                        // vertex, its box's top left at the point along the edge plus its offset, as mxGraphView.updateVertexState
+                        // places it; a text only: the edge's label)
+                        const std::string &sh = str(lc.style, "shape");
+                        bool drawn = lc.vertex && lc.w > 0 && lc.h > 0 && sh != "text" &&
+                                     !(str(lc.style, "strokeColor") == "none" && str(lc.style, "fillColor") == "none");
+                        if (drawn) {
+                            Pt q;
+                            if (lc.relative) q = along(c.route, lc.x, lc.y);
+                            else {
+                                Pt o = origin(c.parent);
+                                q = {o.x + lc.x, o.y + lc.y};
+                            }
+                            if (lc.hasOffset && lc.relative) q.x += lc.offset.x, q.y += lc.offset.y;
+                            lc.box = {q.x, q.y, lc.w, lc.h};
+                            lc.state = 2;
+                            vertex(lc);
+                        } else if (!lc.value.empty())
+                            edgeLabel(lc, c, c.route);
+                    }
             }
         }
     }
