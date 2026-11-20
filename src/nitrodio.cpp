@@ -1993,7 +1993,10 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         plutovg_path_close(q);
     } else if (shape == "cylinder" || shape == "cylinder3" || shape == "datastore") {
         // (mxCylinder.getCylinderSize: size of the height if given, else a fifth of it rounded, 40 at most)
+        // (datastore (Shapes.js DataStoreShape): its lid an eighth of it rounded, plus the stroke width less one, half of
+        // it at most)
         double dy = shape == "cylinder3" ? std::min(num(s, "size", 15), h / 2)
+                    : shape == "datastore" ? std::max(0.0, std::min(h / 2, std::round(h / 8) + num(s, "strokeWidth", 1) - 1))
                     : !str(s, "size").empty() && shape == "cylinder" ? h * std::clamp(num(s, "size", 0.15), 0.0, 1.0)
                                                                       : std::min(40.0, std::round(h / 5));
         float rx = (float)(w / 2), ry = (float)dy;
@@ -2003,8 +2006,16 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         plutovg_path_arc_to(q, rx, ry, 0, false, true, x, (float)(y + h - dy));
         plutovg_path_close(q);
         if (!lines) lines = newPath();
-        plutovg_path_move_to(lines.get(), x, (float)(y + dy));
-        plutovg_path_arc_to(lines.get(), rx, ry, 0, false, false, (float)(x + w), (float)(y + dy));
+        if (shape == "datastore")   // (its disks: three arcs under the lid, half the lid apart, drawn as DataStoreShape draws them)
+            for (int k = 0; k < 3; k++) {
+                float o = (float)(y + dy + k * dy / 2);
+                plutovg_path_move_to(lines.get(), x, o);
+                plutovg_path_cubic_to(lines.get(), x, o + (float)dy, (float)(x + w), o + (float)dy, (float)(x + w), o);
+            }
+        else {
+            plutovg_path_move_to(lines.get(), x, (float)(y + dy));
+            plutovg_path_arc_to(lines.get(), rx, ry, 0, false, false, (float)(x + w), (float)(y + dy));
+        }
     } else if (shape == "cloud") {
         auto P = [&](double fx, double fy) { return Pt{b.x + fx * w, b.y + fy * h}; };
         auto C = [&](Pt a, Pt c, Pt d) { plutovg_path_cubic_to(q, (float)a.x, (float)a.y, (float)c.x, (float)c.y, (float)d.x, (float)d.y); };
@@ -4195,6 +4206,10 @@ struct Builder {
             lb.h = std::max(0.0, lb.h - std::clamp(num(s, "size", 0.3), 0.0, 1.0) * b.h);
         else if (shape == "cylinder" && str(s, "boundedLbl") == "1") {   // (mxCylinder.getLabelMargins: below the lid)
             double top = std::min(40.0, b.h * 2 * num(s, "size", 0.15));
+            lb.y += top, lb.h = std::max(0.0, lb.h - top);
+        }
+        else if (shape == "datastore") {   // (DataStoreShape.getLabelMargins: below its disks, boundedLbl or not)
+            double top = 2.5 * std::max(0.0, std::min(b.h / 2, std::round(b.h / 8) + num(s, "strokeWidth", 1) - 1));
             lb.y += top, lb.h = std::max(0.0, lb.h - top);
         }
         else if (shape == "cylinder3" && str(s, "boundedLbl") == "1") {   // (CylinderShape3: in its body, below the lid's ellipse)
