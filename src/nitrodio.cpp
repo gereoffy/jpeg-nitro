@@ -802,11 +802,20 @@ std::vector<Para> parseLabel(const std::string &v, bool html, bool bold, bool it
                         spans.pop_back();
                     }
                 } else {
-                    int sb = tag.find("font-weight") != std::string::npos && tag.find("bold") != std::string::npos;
+                    // (font-weight: bold, bolder or 600 and over adds bold; normal, lighter or under 600 takes back all the bold
+                    // it is in (a heading's too), until its end)
+                    std::string fw = cssValue(tag, "font-weight");
+                    for (char &ch : fw) ch = (char)tolower((unsigned char)ch);
+                    int sb = 0;
+                    if (!fw.empty()) {
+                        int n = isdigit((unsigned char)fw[0]) ? atoi(fw.c_str()) : fw.compare(0, 4, "bold") == 0 ? 700 : fw == "normal" || fw == "lighter" ? 400 : 0;
+                        if (n >= 600) sb = 1;
+                        else if (n > 0) sb = -std::max(b, 0);
+                    }
                     int si = tag.find("font-style") != std::string::npos && tag.find("italic") != std::string::npos;
                     int su = tag.find("text-decoration") != std::string::npos && tag.find("underline") != std::string::npos;
                     int ss = tag.find("text-decoration") != std::string::npos && tag.find("line-through") != std::string::npos;
-                    if (sb || si || su || ss) flush();
+                    if (sb || si || su || ss || !fw.empty()) flush();
                     b += sb, it += si, un += su, st += ss;
                     spans.push_back({sb, si, su, ss});   // (every one, however deep: its end takes back its own; at most a tag per 6 bytes)
                 }
