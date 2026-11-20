@@ -1816,7 +1816,7 @@ bool turnsByDirection(const std::string &shape) {
                                          "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
                                          "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
                                          "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl",
-                                         "mxgraph.electrical.logic_gates.logic_gate"};
+                                         "mxgraph.electrical.logic_gates.logic_gate", "mxgraph.electrical.signal_sources.source"};
     for (const char *t : turned)
         if (shape == t) return true;
     return shape.compare(0, 18, "mxgraph.floorplan.") == 0 || shape.compare(0, 14, "mxgraph.basic.") == 0;
@@ -2160,6 +2160,57 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
             plutovg_path_close(q);
         }
         if (neg > 0) plutovg_path_add_ellipse(q, (float)(b.x + 0.8 * w + neg / 2), (float)(b.y + 0.5 * h), (float)(neg / 2), (float)(neg / 2));
+    } else if (shape == "mxgraph.electrical.signal_sources.source") {   // (mxElectrical's source: a circle, or a rhombus if
+        if (str(s, "elSourceType") == "dependent")                       // dependent, its signal's symbol drawn inside)
+            polygon(q, {{0, h / 2}, {w / 2, 0}, {w, h / 2}, {w / 2, h}}, b);
+        else
+            plutovg_path_add_ellipse(q, (float)(b.x + w / 2), (float)(b.y + h / 2), (float)(w / 2), (float)(h / 2));
+        auto poly = [&](std::initializer_list<std::pair<double, double>> pts) {   // (fractions of the box)
+            if (!lines) lines = newPath();
+            bool first = true;
+            for (auto &pt : pts) {
+                float px = (float)(b.x + pt.first * w), py = (float)(b.y + pt.second * h);
+                if (first) plutovg_path_move_to(lines.get(), px, py);
+                else plutovg_path_line_to(lines.get(), px, py);
+                first = false;
+            }
+        };
+        const std::string &sig = str(s, "elSignalType");
+        if (sig == "ac") {
+            if (!lines) lines = newPath();
+            plutovg_path_t *l = lines.get();
+            auto X = [&](double f) { return (float)(b.x + f * w); };
+            auto Y = [&](double f) { return (float)(b.y + f * h); };
+            plutovg_path_move_to(l, X(0.3), Y(0.5));
+            plutovg_path_quad_to(l, X(0.34), Y(0.35), X(0.4), Y(0.35));
+            plutovg_path_quad_to(l, X(0.46), Y(0.35), X(0.5), Y(0.5));
+            plutovg_path_quad_to(l, X(0.53), Y(0.65), X(0.6), Y(0.65));
+            plutovg_path_quad_to(l, X(0.66), Y(0.65), X(0.7), Y(0.5));
+        } else if (sig == "square") poly({{0.3, 0.5}, {0.3, 0.35}, {0.5, 0.35}, {0.5, 0.65}, {0.7, 0.65}, {0.7, 0.5}});
+        else if (sig == "triangular") poly({{0.3, 0.65}, {0.4, 0.35}, {0.5, 0.65}, {0.6, 0.35}, {0.7, 0.65}});
+        else if (sig == "sawtooth") poly({{0.24, 0.65}, {0.42, 0.35}, {0.42, 0.65}, {0.58, 0.35}, {0.58, 0.65}, {0.76, 0.35}, {0.76, 0.65}});
+        else if (sig == "noise") {
+            poly({{0.5, 0.17}, {0.5, 0.5}}), poly({{0.18, 0.42}, {0.5, 0.5}}), poly({{0.32, 0.78}, {0.5, 0.5}});
+            poly({{0.82, 0.42}, {0.5, 0.5}}), poly({{0.68, 0.78}, {0.5, 0.5}});
+        } else if (sig == "ideal") poly({{0, 0.5}, {1, 0.5}});
+        else if (sig == "expSquib") {   // (two small rings joined by a zigzag, an arrowhead at its end)
+            if (!lines) lines = newPath();
+            plutovg_path_add_ellipse(lines.get(), (float)(b.x + 0.07 * w), (float)(b.y + 0.5 * h), (float)(0.07 * w), (float)(0.07 * h));
+            plutovg_path_add_ellipse(lines.get(), (float)(b.x + 0.93 * w), (float)(b.y + 0.5 * h), (float)(0.07 * w), (float)(0.07 * h));
+            poly({{0.83, 0.63}, {0.73, 0.73}, {0.27, 0.27}, {0.17, 0.37}});
+            poly({{0.2, 0.25}, {0.13, 0.4}, {0.28, 0.33}, {0.2, 0.25}});
+        } else if (sig == "pulse") poly({{0.3, 0.65}, {0.4, 0.65}, {0.4, 0.35}, {0.6, 0.35}, {0.6, 0.65}, {0.7, 0.65}});
+        else if (sig == "invPulse") poly({{0.3, 0.35}, {0.4, 0.35}, {0.4, 0.65}, {0.6, 0.65}, {0.6, 0.35}, {0.7, 0.35}});
+        else if (sig == "chopSquare") poly({{0.3, 0.5}, {0.33, 0.35}, {0.47, 0.35}, {0.53, 0.65}, {0.67, 0.65}, {0.7, 0.5}});
+        else if (sig == "stepOn") poly({{0.3, 0.65}, {0.5, 0.65}, {0.5, 0.35}, {0.7, 0.35}});
+        else if (sig == "stepOff") poly({{0.3, 0.35}, {0.5, 0.35}, {0.5, 0.65}, {0.7, 0.65}});
+        else if (sig == "dc1") poly({{0.17, 0.5}, {0.83, 0.5}}), poly({{0.67, 0.42}, {0.83, 0.5}, {0.67, 0.58}});
+        else if (sig == "dc2") poly({{0.5, 0.17}, {0.5, 0.83}}), poly({{0.42, 0.67}, {0.5, 0.83}, {0.58, 0.67}});
+        else if (sig == "dc3") {   // (a plus near the top, a minus near the bottom; absolute sizes)
+            double e = std::max(3.0, 0.05 * std::min(w, h)), f = str(s, "elSourceType") == "dependent" ? 6 : 3;
+            line(0.5 * w - e, 0.05 * h + f, 0.5 * w + e, 0.05 * h + f), line(0.5 * w, 0.05 * h - e + f, 0.5 * w, 0.05 * h + e + f);
+            line(0.5 * w - e, 0.95 * h - f, 0.5 * w + e, 0.95 * h - f);
+        }
     } else if (shape == "mxgraph.sysml.x") {   // (mxSysML's X: the box's two diagonals, no fill)
         line(0, 0, w, h), line(0, h, w, 0);
     } else if (shape == "collate") {   // (CollateShape: two triangles meeting at the centre)

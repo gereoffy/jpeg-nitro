@@ -128,6 +128,8 @@ szándékosan nincsenek benne.
 - mockup.markup.curlyBrace;
 - sysml.x (áthúzás: két átló, kitöltés nélkül);
 - electrical.logic_gates.logic_gate (AND / OR / XOR kapu, `numInputs` bemenet, `negating` kör a kimeneten);
+- electrical.signal_sources.source (áram- és feszültségforrás: kör, `elSourceType=dependent` esetén rombusz, benne az
+  `elSignalType` jele: ac, dc1 / dc2 / dc3, square, pulse, noise …);
 - aws4: group és resourceIcon keretként.
 
 **Hiányzó ikonok és képek helyett.** A be nem épített gyártói ikonok, az aws4 resource / product iconok és a
@@ -154,7 +156,6 @@ nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 | sysml | 8 / 0 | package (7), actFinal, … |
 | rackGeneral | 7 / 0 | container, rackCabinet3, horCableDuct |
 | bootstrap | 6 / 0 | rrect, anchor, checkbox, topButton, radioButton |
-| electrical | 2 / 0 | signal_sources.source |
 | networks | 6 / 0 | comm_link_edge, bus |
 | archimate3 / 4 | 5 / 0 | application, service, tech, actor, element |
 | c4 | 4 / 3 | person2, person |
