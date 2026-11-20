@@ -525,25 +525,9 @@ static bool bitstream_name(std::string &family, int &weight, bool &italic) {
     return true;
 }
 
-// Families of old CorelDRAW drawings that macOS does not have: the closest one it has; and the
-// Windows / macOS core fonts that Linux has only as their metric-compatible Liberation fonts.
-// (Adobe Caslon Pro: Times New Roman's widths are closest, as a CD label's lettering moved one
-// by one along its circle shows; with Arial it ran off the disc.)
-static const char *substitute(const std::string &family) {
-    static const char *const subst[][2] = {{"AvantGarde", "Avenir"}, {"Century Gothic", "Avenir"},
-                                           {"Adobe Caslon Pro", "Times New Roman"},
-                                           // Bitstream scripts: like ones macOS has, then Windows'
-                                           {"Lydian Csv", "Apple Chancery"}, {"CommercialScript", "Snell Roundhand"},
-                                           {"Apple Chancery", "Lucida Handwriting"}, {"Snell Roundhand", "Lucida Handwriting"},
-                                           // Microsoft's old name of Segoe UI (Visio 2007's posters)
-                                           {"Segoe", "Segoe UI"},
-                                           {"Arial", "Liberation Sans"}, {"Helvetica", "Liberation Sans"},
-                                           {"Times New Roman", "Liberation Serif"}, {"Times", "Liberation Serif"},
-                                           {"Courier New", "Liberation Mono"}, {"Courier", "Liberation Mono"}};
-    for (const auto &e : subst)
-        if (!strcasecmp(family.c_str(), e[0])) return e[1];
-    return nullptr;
-}
+// Families of old CorelDRAW drawings that macOS does not have, and Linux's stand-ins for the core
+// fonts: nitro_font's table
+static const char *substitute(const std::string &family) { return nf_substitute(family.c_str()); }
 
 // CorelDRAW font names: "Arial", "Arial CE" (Central European variants of old fonts),
 // "Times New Roman Bold", "Futura Lt BT" ... -> a face of the system fonts, falling back to

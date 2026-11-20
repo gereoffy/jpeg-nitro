@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <dirent.h>
 #include <iconv.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -432,10 +433,55 @@ plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint,
     return nullptr;
 }
 
+// (Adobe Caslon Pro: Times New Roman's widths are closest, as a CD label's lettering moved one by one
+// along its circle shows; with Arial it ran off the disc.)
+const char *nf_substitute(const char *family) {
+    static const char *const subst[][2] = {{"AvantGarde", "Avenir"}, {"Century Gothic", "Avenir"},
+                                           {"Adobe Caslon Pro", "Times New Roman"},
+                                           // Bitstream scripts: like ones macOS has, then Windows'
+                                           {"Lydian Csv", "Apple Chancery"}, {"CommercialScript", "Snell Roundhand"},
+                                           {"Apple Chancery", "Lucida Handwriting"}, {"Snell Roundhand", "Lucida Handwriting"},
+                                           // Microsoft's old name of Segoe UI (Visio 2007's posters)
+                                           {"Segoe", "Segoe UI"},
+                                           {"Arial", "Liberation Sans"}, {"Helvetica", "Liberation Sans"},
+                                           {"Times New Roman", "Liberation Serif"}, {"Times", "Liberation Serif"},
+                                           {"Courier New", "Liberation Mono"}, {"Courier", "Liberation Mono"}};
+    if (!family) return nullptr;
+    for (const auto &e : subst)
+        if (!strcasecmp(family, e[0])) return e[1];
+    return nullptr;
+}
+
+const char *nf_generic_of(const char *family) {
+    if (!family || !*family) return nullptr;
+    std::string l = lower(family);
+    auto has = [&](const char *w) { return l.find(w) != std::string::npos; };
+    static const char *const mono[] = {"mono", "courier", "consol", "menlo", "monaco", " code", "typewriter", "fixedsys",
+                                       "terminal", "inconsolata", "ocr-", "ocr "};
+    for (const char *w : mono)
+        if (has(w)) return "monospace";
+    if (has("sans")) return nullptr;
+    static const char *const serif[] = {"serif", "times", "georgia", "garamond", "roman", "caslon", "palatino", "cambria",
+                                        "baskerville", "bookman", "book antiqua", "century schoolbook", "didot", "bodoni",
+                                        "minion", "charter", "constantia"};
+    for (const char *w : serif)
+        if (has(w)) return "serif";
+    return nullptr;
+}
+
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
     int weight = bold ? 700 : 400;
-    if (family && *family)
+    if (family && *family) {
         if (plutovg_font_face_t *f = nf_face(family, weight, italic)) return f;
+        // (not installed: its substitute, that one's own (Linux's Liberation one), then by its name a fixed-width or serif
+        // one, so a monospaced label (Lucida Console, Consolas) stays monospaced)
+        const char *sub = nf_substitute(family), *sub2 = sub ? nf_substitute(sub) : nullptr;
+        for (const char *t : {sub, sub2})
+            if (t)
+                if (plutovg_font_face_t *f = nf_face(t, weight, italic)) return f;
+        if (const char *g = nf_generic_of(family))
+            if (strcmp(g, family) != 0) return nf_css_face(g, bold, italic);
+    }
     // the generic families (and the default font, sans-serif): the fonts lunasvg takes for them
     static const struct { const char *generic, *fallback; } generics[] = {
 #if defined(__linux__)

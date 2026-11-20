@@ -547,6 +547,8 @@ std::string tagFamily(const std::string &tag) {
     while (!o.empty() && o.back() == ' ') o.pop_back();
     if (o.size() >= 6 && o.compare(0, 6, "&quot;") == 0) o.erase(0, 6);
     if (o.size() >= 6 && o.compare(o.size() - 6, 6, "&quot;") == 0) o.resize(o.size() - 6);
+    // (a CSS variable, inherit ...: none of its own, as a browser without the variable takes it)
+    if (o.compare(0, 4, "var(") == 0 || o == "inherit" || o == "initial" || o == "unset") return std::string();
     return o.size() < 64 ? o : std::string();
 }
 
@@ -948,10 +950,13 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
         if (!f) f = nf_css_face("sans-serif", b, i);
         return f;
     };
-    std::map<std::string, plutovg_font_face_t *> own;   // (an HTML tag's family: its face, else the label's)
+    // (an HTML tag's family: its face (nitro_font's stand-in if not installed), else the default font, as a browser's: not the
+    // label's own)
+    std::map<std::string, plutovg_font_face_t *> own;
     auto ownFace = [&](const std::string &fam, bool b, bool i) {
         plutovg_font_face_t *&f = own[fam + (b ? "|b" : "|") + (i ? "i" : "")];
         if (!f) f = nf_css_face(fam.c_str(), b, i);
+        if (!f) f = nf_css_face("sans-serif", b, i);
         if (!f) f = face(b, i);
         return f;
     };

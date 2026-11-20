@@ -222,8 +222,9 @@ egy sor, és a mostaniak fokozatosan átkerülhetnek.
 - **Betűstílus:** `<b>` / `<strong>`, `<i>` / `<em>`, `<u>` / `<ins>`, `<s>` / `<strike>` / `<del>`; `<span>` /
   `<font>` style-jából `font-style: italic` és `text-decoration` (underline, line-through); a cella `fontStyle`-ja
   is.
-- **Betűtípus:** `<font face>` és `style="font-family: …"` (az első név), egymásba ágyazva; ha a gépen nincs meg, a
-  cella `fontFamily`-je.
+- **Betűtípus:** `<font face>` és `style="font-family: …"` (az első név; `var(…)` és `inherit` nem), egymásba
+  ágyazva. Ha a gépen nincs meg: a nitro_font helyettesítője (`nf_css_face`: a megfelelő család, vagy a neve
+  szerint fix szélességű / talpas betű, például Lucida Console, Fira Code → Courier New), különben az alapbetű.
 - **Vastagság:** `font-weight` bold / bolder / 600 fölött félkövér; normal / lighter / 600 alatt visszavonja a
   befoglaló (címsor) félkövérségét.
 - **Betűméret:** `style="font-size: …"` (px, pt, %, em), `<font size="1..7">`, `<small>` / `<big>`, `<sub>` /

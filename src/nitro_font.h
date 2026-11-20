@@ -41,8 +41,17 @@ plutovg_font_face_t *nf_first_face(const char *const *families, int weight, bool
 plutovg_font_face_t *nf_glyph_face(const char *const *first, uint32_t codepoint, int weight, bool italic);
 // A face for a CSS font-family: a family name, a generic one (sans-serif, serif, monospace,
 // cursive, fantasy) or "" for the default font; what lunasvg asks for (nitrosvg sets it as its
-// font resolver).
+// font resolver). A family not installed: its substitute (nf_substitute, and that one's), else, a
+// fixed-width or serif one by its name (nf_generic_of), the generic family's font; else NULL.
 plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic);
+// The family that stands in for one this machine may not have (case-insensitive): old CorelDRAW
+// families macOS lacks (AvantGarde: Avenir ...), and the Windows / macOS core fonts that Linux has as
+// their metric-compatible Liberation fonts (Arial: Liberation Sans ...); NULL if none.
+const char *nf_substitute(const char *family);
+// The generic family a family name says it is: "monospace" (Courier, Consolas, Lucida Console, Menlo,
+// ... Mono, ... Code), "serif" (Times, Georgia, Garamond, ... Roman, ... Serif) or NULL (sans-serif or
+// not known).
+const char *nf_generic_of(const char *family);
 
 // UTF-8: the next code point of s from i (invalid bytes as Latin-1), and a code point appended.
 uint32_t nf_utf8_next(const std::string &s, size_t &i);
