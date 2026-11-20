@@ -2294,10 +2294,31 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
             } else if (cmd == "overline" || cmd == "bar" || cmd == "hat" || cmd == "widehat" || cmd == "tilde" || cmd == "widetilde" ||
                        cmd == "vec" || cmd == "dot" || cmd == "ddot") {   // (its combining mark after it)
                 std::string a = texArg(t, html, i, depth);
-                o += a;
-                uint32_t mark = cmd == "overline" || cmd == "bar" ? 0x305 : cmd == "hat" || cmd == "widehat" ? 0x302 : cmd == "vec" ? 0x20d7 :
-                                cmd == "dot" ? 0x307 : cmd == "ddot" ? 0x308 : 0x303;
-                if (!a.empty()) nf_utf8_put(o, mark);
+                // (a Latin letter with an accent precomposed (Ŵ, Ā, Ñ, Ż, Ä ...): the font's combining mark is placed for a
+                // lower case letter, over a capital it lands on the letter, as no mark positioning is done)
+                static const std::map<std::string, std::pair<const char *, std::vector<uint32_t>>> precomposed = {
+                    {"hat", {"ACEGHIJOSUWYZaceghijosuwyz", {0xc2, 0x108, 0xca, 0x11c, 0x124, 0xce, 0x134, 0xd4, 0x15c, 0xdb, 0x174, 0x176, 0x1e90,
+                                                          0xe2, 0x109, 0xea, 0x11d, 0x125, 0xee, 0x135, 0xf4, 0x15d, 0xfb, 0x175, 0x177, 0x1e91}}},
+                    {"bar", {"AEGIOUYaegiouy", {0x100, 0x112, 0x1e20, 0x12a, 0x14c, 0x16a, 0x232, 0x101, 0x113, 0x1e21, 0x12b, 0x14d, 0x16b, 0x233}}},
+                    {"tilde", {"AEINOUVYaeinouvy", {0xc3, 0x1ebc, 0x128, 0xd1, 0xd5, 0x168, 0x1e7c, 0x1ef8, 0xe3, 0x1ebd, 0x129, 0xf1, 0xf5, 0x169,
+                                                    0x1e7d, 0x1ef9}}},
+                    {"dot", {"ABCDEFGHIMNOPRSTWXYZabcdefghmnoprstwxyz",
+                             {0x226, 0x1e02, 0x10a, 0x1e0a, 0x116, 0x1e1e, 0x120, 0x1e22, 0x130, 0x1e40, 0x1e44, 0x22e, 0x1e56, 0x1e58, 0x1e60, 0x1e6a,
+                              0x1e86, 0x1e8a, 0x1e8e, 0x17b, 0x227, 0x1e03, 0x10b, 0x1e0b, 0x117, 0x1e1f, 0x121, 0x1e23, 0x1e41, 0x1e45, 0x22f, 0x1e57,
+                              0x1e59, 0x1e61, 0x1e6b, 0x1e87, 0x1e8b, 0x1e8f, 0x17c}}},
+                    {"ddot", {"AEHIOUWXYaehiotuwxy", {0xc4, 0xcb, 0x1e26, 0xcf, 0xd6, 0xdc, 0x1e84, 0x1e8c, 0x178, 0xe4, 0xeb, 0x1e27, 0xef, 0xf6,
+                                                     0x1e97, 0xfc, 0x1e85, 0x1e8d, 0xff}}},
+                };
+                std::string kind = cmd == "widehat" ? "hat" : cmd == "widetilde" ? "tilde" : cmd == "overline" ? "bar" : cmd;
+                auto pc = precomposed.find(kind);
+                const char *at = pc != precomposed.end() && a.size() == 1 ? strchr(pc->second.first, a[0]) : nullptr;
+                if (at && *at) nf_utf8_put(o, pc->second.second[(size_t)(at - pc->second.first)]);
+                else {
+                    o += a;
+                    uint32_t mark = cmd == "overline" || cmd == "bar" ? 0x305 : cmd == "hat" || cmd == "widehat" ? 0x302 : cmd == "vec" ? 0x20d7 :
+                                    cmd == "dot" ? 0x307 : cmd == "ddot" ? 0x308 : 0x303;
+                    if (!a.empty()) nf_utf8_put(o, mark);
+                }
             } else if (cmd == "operatorname" || cmd == "mathrm" || cmd == "mathit" || cmd == "mathbf" || cmd == "mathsf" ||
                        cmd == "mathtt" || cmd == "mathcal" || cmd == "boldsymbol" || cmd == "underline" || cmd == "mathfrak")
                 o += texArg(t, html, i, depth);

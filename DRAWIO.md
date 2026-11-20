@@ -245,7 +245,9 @@ címke-layout megkapja (`mathText()`, `texText()`, `asciiMathText()`, hívja a `
   `\in` ∈, `\subseteq` ⊆, `\infty` ∞, `\partial` ∂, `\nabla` ∇, `\sum` ∑, `\int` ∫ …), `\mathbb{R}` → ℝ.
 - **Index:** `^` és `_` HTML-címkében `<sup>` / `<sub>`, sima címkében `^x` / `_(xy)`.
 - **Egyebek:** `\frac{a}{b}` → a/b (összetettnél (a)/(b)), `\sqrt{x}` → √x, `\text{…}` és társai szó szerint,
-  `\hat`, `\bar`, `\vec`, `\dot`, `\tilde` kombináló ékezettel, `\\` sortörés, `&` (mátrix) szóköz,
+  `\hat`, `\bar`, `\dot`, `\ddot`, `\tilde` latin betűn előre összerakott betűként (Ŵ, Ā, Ñ, Ż, Ä), máshol és a `\vec`
+  kombináló ékezettel (az ékezetet a betűrajzolás nem igazítja: nagybetűn és magas kisbetűn rácsúszna a betűre),
+  `\\` sortörés, `&` (mátrix) szóköz,
   `\left` / `\right` / `\big` és a környezetnevek (`\begin{pmatrix}`) eldobva, más parancs a nevével
   (`\sin`, `\log`, `\lim`).
 - **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `^` / `_` zárójeles
