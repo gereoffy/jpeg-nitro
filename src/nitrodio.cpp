@@ -3243,11 +3243,14 @@ struct Builder {
     }
 
     // the box a vertex's label is laid out in: beside the shape by labelPosition /
-    // verticalLabelPosition, less the spacing
+    // verticalLabelPosition, less the spacing; labelWidth: that wide, placed by its align (mxGraphView.updateVertexLabelOffset,
+    // mxCellRenderer.getLabelBounds), its side spacing not taken off its width but moving it
     Box labelBox(const Style &s, Box b) {
-        const std::string &lp = str(s, "labelPosition"), &vp = str(s, "verticalLabelPosition");
-        if (lp == "left") b.x -= b.w;
+        const std::string &lp = str(s, "labelPosition"), &vp = str(s, "verticalLabelPosition"), &al = str(s, "align");
+        double lw = str(s, "labelWidth").empty() ? -1 : std::max(0.0, num(s, "labelWidth", 0));
+        if (lp == "left") b.x -= lw >= 0 ? lw : b.w;
         else if (lp == "right") b.x += b.w;
+        else if (lw >= 0) b.x -= (lw - b.w) * (al == "left" ? 0 : al == "right" ? 1 : 0.5);
         if (vp == "top") b.y -= b.h;
         else if (vp == "bottom") b.y += b.h;
         double sp = num(s, "spacing", 2);
@@ -3256,6 +3259,7 @@ struct Builder {
         if (va == "top") t += 5;
         // (a box smaller than its spacing: negative, as mxCellRenderer's, so a right / bottom aligned label ends before its
         // point; a 0 x 0 label cell's)
+        if (lw >= 0) return {b.x + (al == "left" ? l : al == "right" ? -r : (l - r) / 2), b.y + t, lw, b.h - t - bt};
         return {b.x + l, b.y + t, b.w - l - r, b.h - t - bt};
     }
 

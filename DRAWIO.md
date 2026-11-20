@@ -45,7 +45,7 @@ Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egés
 - **Markerek** (`mxMarker`): classic, block, open, oval, diamond, és a `…Thin` változatok. Az oval a vonal végére
   középre kerül, `size` átmérővel. A vonal kitöltött és kitöltés nélküli markernél is a marker tövénél áll meg.
 - **Címkék** (`mxText`, `mxCellRenderer.getLabelBounds`, `mxSvgCanvas2D`): igazítás, `labelPosition` /
-  `verticalLabelPosition`, `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`, lásd a HTML-részt), `overflow`,
+  `verticalLabelPosition`, `labelWidth` (a címke szélessége, az `align` szerint elhelyezve), `spacing*`, 1,2-es sorköz, tördelés (`whiteSpace=wrap`, lásd a HTML-részt), `overflow`,
   `horizontal=0`, `textDirection` (vertical-lr / -rl), `labelBackgroundColor`, `labelBorderColor` /
   `labelBorderWidth`, `noLabel`, az alapvonal helye. A méret nélküli címkecella (például egy él végén) a pontjához
   igazodik az `align` / `verticalAlign` és a spacing szerint, mint a draw.io-ban (negatív szélességű dobozzal).
