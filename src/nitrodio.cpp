@@ -2252,7 +2252,8 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
             size_t j = i + 1;
             while (j < t.size() && isalpha((unsigned char)t[j])) j++;
             if (j == i + 1) j++;   // (\\, \{, \, ...: one character)
-            std::string cmd = t.substr(i + 1, j - i - 1);
+            if (html && j == i + 2 && t.compare(i + 1, 5, "&amp;") == 0) j = i + 6;   // (\& in an HTML label: \&amp;)
+            std::string cmd = j == i + 6 && t[i + 1] == '&' ? std::string("&") : t.substr(i + 1, j - i - 1);
             i = j;
             auto sym = texSymbols().find(cmd);
             if (sym != texSymbols().end()) nf_utf8_put(o, sym->second);
