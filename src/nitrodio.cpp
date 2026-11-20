@@ -4325,7 +4325,7 @@ struct Builder {
         if (t.style) {
             const Style &s = *t.style;
             fh = str(s, "flipH") == "1", fv = str(s, "flipV") == "1";
-            if (str(s, "shape").compare(0, 8, "stencil(") == 0) fh = fh || str(s, "stencilFlipH") == "1", fv = fv || str(s, "stencilFlipV") == "1";
+            if (str(s, "shape").compare(0, 8, "stencil(") == 0 || libraryStencil(str(s, "shape"))) fh = fh || str(s, "stencilFlipH") == "1", fv = fv || str(s, "stencilFlipV") == "1";
         }
         if (t.rotation != 0) next = rotated(next, -t.rotation, c);
         if (fh) next.x = 2 * c.x - next.x;
