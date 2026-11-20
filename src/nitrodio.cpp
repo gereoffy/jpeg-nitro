@@ -3125,7 +3125,8 @@ struct Builder {
     static std::vector<float> dashOf(const Style &s, float width, bool force) {
         std::vector<float> dash;
         if (str(s, "dashed") != "1" && !force) return dash;
-        float unit = str(s, "fixDash") == "1" ? 1.f : std::max(width, 1.f);
+        // (forced: mxSvgCanvas2D.setDashed(true) takes fixDash back, the pattern in stroke widths)
+        float unit = str(s, "fixDash") == "1" && !force ? 1.f : std::max(width, 1.f);
         std::string pat = str(s, "dashPattern");
         if (pat.empty()) pat = "3 3";
         const char *c = pat.c_str();
@@ -3487,11 +3488,15 @@ struct Builder {
         uint32_t fill = withOpacity(colour(s, "fillColor", 0xffffffff), op * num(s, "fillOpacity", 100) / 100);
         uint32_t stroke = withOpacity(colour(s, "strokeColor", 0xff000000), op * num(s, "strokeOpacity", 100) / 100);
         float sw = (float)std::clamp(num(s, "strokeWidth", 1), 0.0, 1000.0);
+        // (after a ...Nonint outline its fixDash is gone: mxSvgCanvas2D.setDashed(true) took it, setDashed(d) gives back only
+        // the dashed state)
+        Style ds = s;
+        if (outline == "eventNonint" || outline == "boundNonint") ds.erase("fixDash");
         auto emit = [&](PathP p, uint32_t f, uint32_t st, float w, bool dashed) {   // (dashed as the style says, or forced)
             Item it;
             it.path = p;
             it.fill = f;
-            if (w > 0) it.stroke = st, it.width = w, it.dash = dashOf(s, w, dashed);
+            if (w > 0) it.stroke = st, it.width = w, it.dash = dashOf(ds, w, dashed);
             add(std::move(it), w);
         };
         auto ellipse = [](double x, double y, double w, double h) {
@@ -3505,7 +3510,7 @@ struct Builder {
         if (outer) {
             Style os = s;
             if (outline == "end") os["strokeWidth"] = std::to_string(3 * sw);
-            if (outline == "eventNonint" || outline == "boundNonint") os["dashed"] = "1";
+            if (outline == "eventNonint" || outline == "boundNonint") os["dashed"] = "1", os.erase("fixDash");   // (setDashed(true): no fixDash)
             paint(ellipse(e.x, e.y, e.w, e.h), nullptr, os, e, false);
         }
         if (outline == "catching" || outline == "boundInt" || outline == "boundNonint" || outline == "throwing") {
