@@ -2748,8 +2748,14 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
                 };
                 std::string kind = cmd == "widehat" ? "hat" : cmd == "widetilde" ? "tilde" : cmd == "overline" ? "bar" : cmd;
                 auto pc = precomposed.find(kind);
-                const char *at = pc != precomposed.end() && a.size() == 1 ? strchr(pc->second.first, a[0]) : nullptr;
-                if (at && *at) texPut(o, html, pc->second.second[(size_t)(at - pc->second.first)]);
+                std::string bare = a.size() == 8 && a.compare(0, 3, "<i>") == 0 && a.compare(4, 4, "</i>") == 0 ? a.substr(3, 1) : a;   // (an italic letter: the letter)
+                const char *at = pc != precomposed.end() && bare.size() == 1 ? strchr(pc->second.first, bare[0]) : nullptr;
+                if (at && *at) {   // (italic as the letter itself would be)
+                    bool it = html && !texUpright;
+                    if (it) o += "<i>";
+                    nf_utf8_put(o, pc->second.second[(size_t)(at - pc->second.first)]);
+                    if (it) o += "</i>";
+                }
                 else {
                     o += a;
                     uint32_t mark = cmd == "overline" || cmd == "bar" ? 0x305 : cmd == "hat" || cmd == "widehat" ? 0x302 : cmd == "vec" ? 0x20d7 :
