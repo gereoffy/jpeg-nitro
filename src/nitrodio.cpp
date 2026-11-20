@@ -3458,6 +3458,15 @@ struct Builder {
             lb.w = std::max(0.0, lb.w), lb.h = std::max(0.0, lb.h);
         }
         else if (shape == "umlBoundary") lb.x += b.w / 6, lb.w -= b.w / 6;   // (beside its T)
+        else if (shape == "process" && (str(s, "horizontal") != "0") == (str(s, "direction").empty() || str(s, "direction") == "east" ||
+                                                                       str(s, "direction") == "west")) {   // (ProcessShape: between its bars)
+            double in = str(s, "fixedSize") == "1" ? std::clamp(num(s, "size", 0.1), 0.0, b.w) : b.w * std::clamp(num(s, "size", 0.1), 0.0, 1.0);
+            if (str(s, "fixedSize") != "1" && str(s, "rounded") == "1") {
+                double f = num(s, "arcSize", 15) / 100;
+                in = std::max(in, std::min(b.w * f, b.h * f));
+            }
+            lb.x += std::round(in), lb.w = std::max(0.0, lb.w - std::round(2 * in));
+        }
         else if (shape == "umlControl") lb.y += b.h / 8, lb.h -= b.h / 8;   // (in its circle)
         else if (shape == "umlFrame") lb.w = std::min(b.w, std::max(10.0, num(s, "width", 60))), lb.h = std::min(b.h, std::max(15.0, num(s, "height", 30)));
         bool turned = false;
