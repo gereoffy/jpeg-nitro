@@ -1093,6 +1093,9 @@ std::shared_ptr<Label> layoutLabel(const std::string &value, const Style &s, Box
     // (the lines' block: as wide as its widest line (a wrapped one: the box), placed by align; a line in it by its own
     // block's text-align, else by align)
     double blockW = wrapWidth > 0 || (html && str(s, "overflow") == "fill") ? box.w : textW;   // (overflow=fill: the box's width)
+    // (wrapped, a word wider than the box: the block as wide as it, placed by align, as draw.io's flex item is never narrower
+    // than its longest word (min-width: auto); its lines' own text-align within that)
+    if (wrapWidth > 0 && textW > blockW) blockW = textW;
     double blockX = al == "left" ? box.x : al == "right" ? box.x + box.w - blockW : box.x + (box.w - blockW) / 2;
     for (size_t l = 0; l < lines.size(); l++) {
         const std::string &la = lineAligns[l].empty() ? al : lineAligns[l];
