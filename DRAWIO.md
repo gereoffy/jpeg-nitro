@@ -127,6 +127,7 @@ A `shape=mxgraph.<család>.<név>` alakzatok két helyről jöhetnek:
   - infographic: cylinder, shadedCube, ribbonSimple;
   - gcp2.doubleRect;
   - mockup.markup.curlyBrace;
+  - sysml.x (az áthúzás: két átló, kitöltés nélkül);
   - aws4: group és resourceIcon csak keretként.
 
 ### A hiányzó kódból rajzolt családok

@@ -2000,6 +2000,8 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
     } else if (shape == "loopLimit") {   // (LoopLimitShape: its top corners cut, size wide)
         double sz = std::min(w / 2, std::min(h, num(s, "size", 20)));
         polygon(q, {{sz, 0}, {w - sz, 0}, {w, sz * 0.8}, {w, h}, {0, h}, {0, sz * 0.8}}, b, arc);
+    } else if (shape == "mxgraph.sysml.x") {   // (mxSysML's X: the box's two diagonals, no fill)
+        line(0, 0, w, h), line(0, h, w, 0);
     } else if (shape == "collate") {   // (CollateShape: two triangles meeting at the centre)
         polygon(q, {{0, 0}, {w, 0}, {w / 2, h / 2}}, b);
         polygon(q, {{0, h}, {w, h}, {w / 2, h / 2}}, b);
