@@ -216,6 +216,8 @@ struct Item {
     PathP path;
     uint32_t fill = 0, fill2 = 0, stroke = 0;   // fill2: a gradient's end (fill at gx0, gy0 to fill2 at gx1, gy1)
     float gx0 = 0, gy0 = 0, gx1 = 0, gy1 = 0;
+    bool radial = false;   // (a radial one: fill at the centre gx0, gy0 to fill2 on the ellipse through gx1, gy1 and gx2, gy2,
+    float gx2 = 0, gy2 = 0;    // the ends of its two half axes)
     float width = 1;
     std::vector<float> dash;
     std::shared_ptr<Label> label;
@@ -2223,6 +2225,20 @@ struct Builder {
         add(std::move(it), 0);
     }
 
+    // a gradient's geometry in b by gradientDirection (mxSvgCanvas2D.createSvgGradient: south, the default, top to bottom;
+    // radial: from the centre to the ellipse b's sides touch)
+    static void gradientIn(Item &it, const std::string &d, const Box &b) {
+        float x0 = (float)b.x, y0 = (float)b.y, x1 = (float)(b.x + b.w), y1 = (float)(b.y + b.h);
+        if (d == "radial") {
+            float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+            it.radial = true;
+            it.gx0 = cx, it.gy0 = cy, it.gx1 = x1, it.gy1 = cy, it.gx2 = cx, it.gy2 = y1;
+        } else if (d == "north") it.gx0 = x0, it.gy0 = y1, it.gx1 = x0, it.gy1 = y0;
+        else if (d == "east") it.gx0 = x0, it.gy0 = y0, it.gx1 = x1, it.gy1 = y0;
+        else if (d == "west") it.gx0 = x1, it.gy0 = y0, it.gx1 = x0, it.gy1 = y0;
+        else it.gx0 = x0, it.gy0 = y0, it.gx1 = x0, it.gy1 = y1;
+    }
+
     // fill / stroke of a shape's path: its style's colours, opacity, gradient, dashes, shadow
     void paint(PathP path, PathP lines, const Style &s, const Box &b, bool edge) {
         double opacity = num(s, "opacity", 100);
@@ -2263,12 +2279,7 @@ struct Builder {
         uint32_t g = edge ? 0 : colour(s, "gradientColor", 0);
         if (!edge && colour(s, "fillColor", 0xffffffff) && g) {   // (a fill faded to nothing: its gradient still has its other end)
             it.fill2 = withOpacity(g, opacity * num(s, "fillOpacity", 100) / 100);   // (both ends faded alike)
-            const std::string &d = str(s, "gradientDirection");
-            float x0 = (float)b.x, y0 = (float)b.y, x1 = (float)(b.x + b.w), y1 = (float)(b.y + b.h);
-            if (d == "north") it.gx0 = x0, it.gy0 = y1, it.gx1 = x0, it.gy1 = y0;
-            else if (d == "east") it.gx0 = x0, it.gy0 = y0, it.gx1 = x1, it.gy1 = y0;
-            else if (d == "west") it.gx0 = x1, it.gy0 = y0, it.gx1 = x0, it.gy1 = y0;
-            else it.gx0 = x0, it.gy0 = y0, it.gx1 = x0, it.gy1 = y1;
+            gradientIn(it, str(s, "gradientDirection"), b);
         }
         it.stroke = width > 0 ? stroke : 0;
         it.width = width;
@@ -2384,12 +2395,7 @@ struct Builder {
             if (fill) it.fill = alphaOf(st.fill, st.alpha * st.fillAlpha);
             if (fill && st.gradient) {
                 it.fill2 = alphaOf(colour(s, "gradientColor", 0), st.alpha * st.fillAlpha);
-                const std::string &d = str(s, "gradientDirection");
-                float gx0 = (float)b.x, gy0 = (float)b.y, gx1 = (float)(b.x + b.w), gy1 = (float)(b.y + b.h);
-                if (d == "north") it.gx0 = gx0, it.gy0 = gy1, it.gx1 = gx0, it.gy1 = gy0;
-                else if (d == "east") it.gx0 = gx0, it.gy0 = gy0, it.gx1 = gx1, it.gy1 = gy0;
-                else if (d == "west") it.gx0 = gx1, it.gy0 = gy0, it.gx1 = gx0, it.gy1 = gy0;
-                else it.gx0 = gx0, it.gy0 = gy0, it.gx1 = gx0, it.gy1 = gy1;
+                gradientIn(it, str(s, "gradientDirection"), b);
             }
             if (stroke && st.width > 0) it.stroke = alphaOf(st.stroke, st.alpha * st.strokeAlpha), it.width = st.width;
             if (stroke && st.dashed) {
@@ -2882,9 +2888,9 @@ struct Builder {
                 nd::Box bb = nd::pathBox(t.get(), std::max(it.width, 1.f));
                 it.bx0 = bb.x0, it.by0 = bb.y0, it.bx1 = bb.x1, it.by1 = bb.y1;
                 if (it.fill2) {   // (a gradient's line turned with it)
-                    plutovg_point_t g0{it.gx0, it.gy0}, g1{it.gx1, it.gy1};
-                    plutovg_matrix_map_point(&m, &g0, &g0), plutovg_matrix_map_point(&m, &g1, &g1);
-                    it.gx0 = g0.x, it.gy0 = g0.y, it.gx1 = g1.x, it.gy1 = g1.y;
+                    plutovg_point_t g0{it.gx0, it.gy0}, g1{it.gx1, it.gy1}, g2{it.gx2, it.gy2};
+                    plutovg_matrix_map_point(&m, &g0, &g0), plutovg_matrix_map_point(&m, &g1, &g1), plutovg_matrix_map_point(&m, &g2, &g2);
+                    it.gx0 = g0.x, it.gy0 = g0.y, it.gx1 = g1.x, it.gy1 = g1.y, it.gx2 = g2.x, it.gy2 = g2.y;
                 }
             }
         }
@@ -4830,7 +4836,12 @@ void drawItem(plutovg_canvas_t *c, const Item &it, float scale, bool dashOk) {
         if (it.fill2 >> 24) {
             plutovg_gradient_stop_t stops[2] = {{0, {(it.fill >> 16 & 255) / 255.f, (it.fill >> 8 & 255) / 255.f, (it.fill & 255) / 255.f, (it.fill >> 24) / 255.f}},
                                                 {1, {(it.fill2 >> 16 & 255) / 255.f, (it.fill2 >> 8 & 255) / 255.f, (it.fill2 & 255) / 255.f, (it.fill2 >> 24) / 255.f}}};
-            plutovg_canvas_set_linear_gradient(c, it.gx0, it.gy0, it.gx1, it.gy1, PLUTOVG_SPREAD_METHOD_PAD, stops, 2, nullptr);
+            // (radial: the unit circle mapped onto the ellipse by its half axes; a flat one: no area, its end colour)
+            plutovg_matrix_t m{it.gx1 - it.gx0, it.gy1 - it.gy0, it.gx2 - it.gx0, it.gy2 - it.gy0, it.gx0, it.gy0};
+            float det = m.a * m.d - m.b * m.c;
+            if (!it.radial) plutovg_canvas_set_linear_gradient(c, it.gx0, it.gy0, it.gx1, it.gy1, PLUTOVG_SPREAD_METHOD_PAD, stops, 2, nullptr);
+            else if (std::fabs(det) > 1e-6f) plutovg_canvas_set_radial_gradient(c, 0, 0, 1, 0, 0, 0, PLUTOVG_SPREAD_METHOD_PAD, stops, 2, &m);
+            else nd::setRgba(c, it.fill2);
         } else
             nd::setRgba(c, it.fill);
         plutovg_canvas_set_fill_rule(c, PLUTOVG_FILL_RULE_NON_ZERO);
