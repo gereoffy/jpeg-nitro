@@ -721,16 +721,29 @@ plutovg_font_face_t *nf_css_face(const char *family, bool bold, bool italic) {
         if (const char *g = nf_generic_of(family))
             if (strcmp(g, family) != 0) return nf_css_face(g, bold, italic);
     }
-    // the generic families (and the default font, sans-serif): the fonts lunasvg takes for them
-    static const struct { const char *generic, *fallback; } generics[] = {
+    // Keep the platform's usual choices first, then try the other core families.
 #if defined(__linux__)
-        {"sans-serif", "DejaVu Sans"}, {"serif", "DejaVu Serif"}, {"monospace", "DejaVu Sans Mono"},
+    static const char *const sans[] = {"DejaVu Sans", "Liberation Sans", "Noto Sans", "Arial", "Helvetica", nullptr};
+    static const char *const serif[] = {"DejaVu Serif", "Liberation Serif", "Noto Serif", "Times New Roman", "Times", nullptr};
+    static const char *const mono[] = {"DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Courier New", "Courier", nullptr};
 #else
-        {"sans-serif", "Arial"}, {"serif", "Times New Roman"}, {"monospace", "Courier New"},
+    static const char *const sans[] = {"Arial", "Helvetica", "Liberation Sans", "DejaVu Sans", "Noto Sans", nullptr};
+    static const char *const serif[] = {"Times New Roman", "Times", "Liberation Serif", "DejaVu Serif", "Noto Serif", nullptr};
+    static const char *const mono[] = {"Courier New", "Courier", "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", nullptr};
 #endif
-        {"cursive", "Comic Sans MS"}, {"fantasy", "Impact"}};
-    for (const auto &g : generics)
-        if (!family || !*family || !strcmp(g.generic, family)) return nf_face(g.fallback, weight, italic);
+    std::string generic = family ? lower(family) : "";
+    if (generic == "serif") return nf_first_face(serif, weight, italic);
+    if (generic == "monospace") return nf_first_face(mono, weight, italic);
+    if (generic == "cursive") return nf_face("Comic Sans MS", weight, italic);
+    if (generic == "fantasy") return nf_face("Impact", weight, italic);
+    if (generic.empty() || generic == "sans-serif") {
+        if (plutovg_font_face_t *f = nf_first_face(sans, weight, italic)) return f;
+        Index &ix = index();
+        for (const auto &entry : ix.families)
+            if (plutovg_font_face_t *f = match_face(ix, &entry.second, weight, italic)) return f;
+        for (size_t i = 0; i < ix.faces.size(); i++)
+            if (plutovg_font_face_t *f = load(ix, (int)i)) return f;
+    }
     return nullptr;
 }
 
