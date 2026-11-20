@@ -4510,7 +4510,28 @@ struct Builder {
         // (an edge's own label: centred on its point, wrapped to the width its geometry gives, as mxCellRenderer)
         double width = &lc == &edgeCell ? lc.w : inner.w;
         double wrap = str(s, "whiteSpace") == "wrap" && width > 0 ? width : 0;
-        addLabel(layoutLabel(lc.value, s, inner, wrap));
+        std::shared_ptr<Label> l = layoutLabel(lc.value, s, inner, wrap);
+        // (turned about its centre by its rotation (mxText's, from the style); labelAutoRotate=1: along the edge's segment
+        // nearest to it, kept readable: one pointing left turned round (Graph.getLabelAutoRotation))
+        double rot = num(s, "rotation", 0);
+        if (str(s, "labelAutoRotate") == "1" && r.size() > 1) {
+            double best = -1, ang = 0;
+            for (size_t i = 1; i < r.size(); i++) {
+                double dx = r[i].x - r[i - 1].x, dy = r[i].y - r[i - 1].y, len2 = dx * dx + dy * dy;
+                double t = len2 > 0 ? std::clamp(((p.x - r[i - 1].x) * dx + (p.y - r[i - 1].y) * dy) / len2, 0.0, 1.0) : 0;
+                double ex = p.x - (r[i - 1].x + t * dx), ey = p.y - (r[i - 1].y + t * dy), d = ex * ex + ey * ey;
+                if (best < 0 || d < best) best = d, ang = std::atan2(dy, dx) * 180 / M_PI;
+            }
+            ang = std::fmod(std::fmod(ang, 360) + 360, 360);
+            if (ang > 90 && ang < 270) ang -= 180;
+            rot = ang;
+        }
+        if (l && std::isfinite(rot) && std::fmod(rot, 360) != 0) {
+            l->turned = true;
+            l->cx = (l->x0 + l->x1) / 2, l->cy = (l->y0 + l->y1) / 2;
+            l->angle = (float)(rot * M_PI / 180);
+        }
+        addLabel(l);
     }
 
     // mxCellRenderer.resolveColor: a colour naming another (inherit / parentFillColor / parentStrokeColor: the
