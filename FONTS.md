@@ -8,33 +8,30 @@ szövegpozícióit. [Felület](src/nitro_font.h) · [Megvalósítás](src/nitro_
 
 ## A rendszerfontok indexe
 
-Az index az első kereséskor épül fel, és a folyamat végéig él. A szokásos rendszer- és felhasználói
-fontkönyvtárakban `.ttf`, `.otf`, `.ttc` és `.otc` fájlokat keres. macOS-en az első megtalált Office-app
-saját fontkönyvtárát is bejárja. A gyűjtemény minden indexelt face-e önálló jelölt.
+Az index az első fontkereséskor épül fel, és a folyamat végéig él. A feloldónak a család-, teljes
+és PostScript-nevek mellett a súlyra, szélességre, dőlésre, fájlútra és gyűjteményindexre van
+szüksége. Windows és Linux alatt ezeket lehetőleg a rendszer fontlistája adja, így az első
+kereséskor nem kell az összes telepített fontfájlt külön megnyitni. Ez főleg sok fontnál,
+lassabb háttértáron számít.
 
-Windows 10-től az index a DirectWrite rendszer-fontkészletéből (`GetSystemFontSet`) épül: a nevek, a
-súly, a szélesség, a dőlés, a fájl és a gyűjteményen belüli sorszám a Windows fontgyorsítótárából
-jön, fontfájl megnyitása nélkül. A szimulált félkövér és dőlt változatok és a nem helyi fontok
-kimaradnak. Ha a DirectWrite nem elérhető, a fontkönyvtárat olvassa be; a felhasználói fontkönyvtár
-mindig átnézésre kerül, az onnan már ismert fájlokat kihagyja. A sok fontos, lassú lemezű gépeken
-így az első keresés nem olvas be száz vagy ezer fájlt.
+| Platform | Az index forrása |
+| --- | --- |
+| Windows | A DirectWrite `GetSystemFontSet` hívása. A szimulált félkövér és dőlt face-ek, valamint a nem helyi fontok kimaradnak. Ha a rendszerlista lekérése sikertelen vagy üres, a Windows fontkönyvtára a tartalék. A felhasználói fontkönyvtárat mindig átnézi, a már indexelt fájlokat kihagyja. |
+| Linux | A fontconfig adja a listát és a konfigurált fontkönyvtárakat. A `libfontconfig.so.1` futásidőben töltődik (`dlopen`), így a hordozható build saját könyvtárbejárásra válthat, ha a lekérdezés nem használható vagy üres. |
+| macOS | A rendszer- és felhasználói fontkönyvtárakat, valamint az első elérhető Office-app saját fontkönyvtárát közvetlenül olvassa. A kipróbált CoreText-lista kevesebb adatot adott a lokalizált nevekről és a gyűjteményindexről, valamint kihagyta az Office-appok saját fontjait. |
 
-Linuxon a fontconfig listájából épül, ha a `libfontconfig.so.1` betölthető (`dlopen`, így a hordozható
-build nélküle is fut): minden család- és teljes név minden nyelven, a PostScript-név, az OpenType-súly,
-a szélesség, a dőlés, a fájl és a sorszám a fontconfig saját gyorsítótárából jön. Ha nincs fontconfig,
-a fontkönyvtárakat olvassa be. Mindkét rendszerlistából kimaradnak a változó fontok elnevezett
-példányai (Bahnschrift Light, Segoe UI Variable Semibold …): a Plutovg csak az alapértelmezett
-példányt rajzolja, ezért az ilyen fájl a saját tábláiból, egyetlen face-ként kerül az indexbe, ahogy
-a könyvtár beolvasásakor.
+Az indexelt fájlformátumok `.ttf`, `.otf`, `.ttc` és `.otc`. A gyűjtemény minden indexelt
+face-e önálló jelölt. A rendszerlistákban szereplő változó fontok elnevezett példányai kimaradnak.
+A Plutovg csak az alapértelmezett példányt rajzolja, ezért egy változó fontot tartalmazó fájl minden
+face-e az index felépítésekor a fájl saját tábláiból kerül be, egy-egy face-ként, ahogy a
+könyvtárbejáráskor. A rendszerlista egy face-hez esetleg nem adja meg minden PostScript-nevét (egy
+régi Mac-platformos változatot, például `Corbel-Light`): ahol pontos PostScript-egyezés kell (PDF, CID
+font `/ToUnicode` nélkül), a face saját `name` tábláját egyszer beolvassuk, ha a név nincs meg.
 
-macOS-en marad a könyvtárak beolvasása. A CoreText listája ott lassabb volt (kb. 50 ms a beolvasás
-20 ms-ával szemben), nem látja az Office-appok saját fontjait, a súlyt −1…1 közötti törtként, a
-neveket egy nyelven adja, és a gyűjteményen belüli sorszámot sem adja meg.
-
-- A `name` táblából a családnevek (ID 1 és 16), a teljes nevek (ID 4) és a PostScript-nevek (ID 6)
+- Fájlbeolvasáskor a `name` táblából a családnevek (ID 1 és 16), a teljes nevek (ID 4) és a PostScript-nevek (ID 6)
   kerülnek az indexbe, a beolvasható lokalizált változatokkal együtt. A keresés az ASCII betűknél
   figyelmen kívül hagyja a kis- és nagybetűt. A fájlnév külön keresőkulcs.
-- A súly és szélesség az `OS/2` táblából jön. A dőlést és a hiányzó súlyhoz a bold jelzőt a
+- A fájlban a súly és szélesség az `OS/2` táblából jön. A dőlést és a hiányzó súlyhoz a bold jelzőt a
   `head.macStyle` adja. Egy külön családként tárolt szélességváltozat, például az Arial Narrow,
   az alapcsaládhoz is bekerülhet, ha a név és a szélességosztály összhangban van.
 - Egy családon belül a dőlés egyezése számít először, aztán a kért szélességosztálytól, végül
@@ -87,8 +84,9 @@ akkor is, ha a konkrét glyph nem rajzolható meg.
 
 ## Gyorsítótár és szálak
 
-- **Index és fontadat.** A könyvtárbejáráskor a név- és stílustáblákat olvassuk. A font teljes
-  bájtsora az első sikeres face-betöltéskor marad a cache-ben, fájlútvonal szerint. Egy TTC/OTC
+- **Index és fontadat.** Az indexbe a neveket, a stílusadatokat és a fájlhivatkozást vesszük fel.
+  A Plutovg a face első használatakor kapja meg a teljes fájlt. Sikeres betöltéskor a bájtsor
+  fájlútvonal szerint a cache-ben marad. Egy TTC/OTC
   face-ei ugyanazt a bájtsort használják, saját gyűjteményindexszel. Sikertelen betöltés után
   a keresés a következő jelölttel folytatódik, a sikertelen face-t a folyamat megjegyzi.
 - **Tulajdonjog.** A feloldóktól kapott `plutovg_font_face_t *` kölcsönzött mutató. Egy dokumentum

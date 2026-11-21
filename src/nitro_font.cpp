@@ -39,6 +39,7 @@ struct Face {
     std::string file;
     std::vector<std::string> postscript;
     int ttc = 0;           // its index in the collection
+    bool namesRead = false;   // (all its name table's names indexed: read from the file, not a system list's)
     int weight = 400, width = 5;
     bool italic = false;
     plutovg_font_face_t *face = nullptr;
@@ -236,6 +237,7 @@ void index_file(Index &ix, const std::string &path) {
             face.weight = bold ? 700 : 400;
         int k = (int)ix.faces.size();
         index_names(ix, name, k, face);
+        face.namesRead = true;
         ix.files[filename].push_back(k);
         ix.faces.push_back(std::move(face));
     }
@@ -291,10 +293,12 @@ template <class T> struct Com {   // (a COM pointer, released at its end)
 std::string narrow(const WCHAR *w, UINT cp) {   // (UTF-16 to UTF-8 or the ANSI code page; "" if it does not fit)
     std::string out;
     BOOL lossy = FALSE;
-    int n = WideCharToMultiByte(cp, 0, w, -1, nullptr, 0, nullptr, cp == CP_UTF8 ? nullptr : &lossy);
+    // (WC_NO_BEST_FIT_CHARS: a character the code page lacks is no look-alike but the default one, so it is noticed)
+    DWORD flags = cp == CP_UTF8 ? 0 : WC_NO_BEST_FIT_CHARS;
+    int n = WideCharToMultiByte(cp, flags, w, -1, nullptr, 0, nullptr, cp == CP_UTF8 ? nullptr : &lossy);
     if (n <= 1 || lossy) return out;
     out.resize((size_t)n);
-    WideCharToMultiByte(cp, 0, w, -1, out.data(), n, nullptr, nullptr);
+    WideCharToMultiByte(cp, flags, w, -1, out.data(), n, nullptr, nullptr);
     out.resize((size_t)n - 1);
     return out;
 }
@@ -353,13 +357,16 @@ bool index_dwrite(Index &ix) {
         seen[lower(path.c_str()) + "#" + std::to_string(ttc)]++;
         entries.push_back({i, std::move(path), ttc});
     }
+    // (the file of a face listed more than once: every face of it read from its own tables, so a static face
+    // beside a variable one in a collection is not left out)
     std::vector<std::string> variable;
+    for (Entry &e : entries)
+        if (seen[lower(e.file.c_str()) + "#" + std::to_string(e.ttc)] > 1 &&
+            std::find(variable.begin(), variable.end(), e.file) == variable.end())
+            variable.push_back(e.file);
     for (Entry &e : entries) {
         UINT32 i = e.i;
-        if (seen[lower(e.file.c_str()) + "#" + std::to_string(e.ttc)] > 1) {
-            if (std::find(variable.begin(), variable.end(), e.file) == variable.end()) variable.push_back(e.file);
-            continue;
-        }
+        if (std::find(variable.begin(), variable.end(), e.file) != variable.end()) continue;
         Face face;
         face.file = std::move(e.file);
         face.ttc = e.ttc;
@@ -411,22 +418,32 @@ bool index_fontconfig(Index &ix) {
     }
     void *config = initLoad();   // (its own configuration: the cache read, not built, when it is up to date)
     void *pattern = patternCreate(), *objects = objectSetCreate();
+    bool fields = objects != nullptr;
     for (const char *o : {"file", "index", "family", "fullname", "postscriptname", "weight", "width", "slant", "variable"})
-        objectSetAdd(objects, o);
-    FcFontSet *set = config && pattern && objects ? fontList(config, pattern, objects) : nullptr;
+        fields = fields && objectSetAdd(objects, o);
+    FcFontSet *set = config && pattern && fields ? fontList(config, pattern, objects) : nullptr;
+    // (a file with a variable font in it (one listed as variable, its weight a range, or a named instance of it): read
+    // from its own tables, every face of it, as one face a font; plutovg draws only a variable font's default instance)
     std::vector<std::string> variable;
     for (int i = 0; set && i < set->nfont; i++) {
         void *p = set->fonts[i];
         const unsigned char *file = nullptr;
-        int index = 0, isVariable = 0, weight = 0, width = 100, slant = 0;
+        int index = 0, isVariable = 0, weight = 0;
         if (getString(p, "file", 0, &file) || !file || !font_file(basename(std::string((const char *)file)))) continue;
         getInteger(p, "index", 0, &index);
-        if (index >> 16) continue;   // (a variable font's named instance: plutovg draws only its default one)
-        // (the variable font itself, its weight or width a range: read from the file's own tables, as one face)
-        if ((!getBool(p, "variable", 0, &isVariable) && isVariable) || getInteger(p, "weight", 0, &weight)) {
-            if (std::find(variable.begin(), variable.end(), (const char *)file) == variable.end()) variable.push_back((const char *)file);
+        if (((index >> 16) || (!getBool(p, "variable", 0, &isVariable) && isVariable) || getInteger(p, "weight", 0, &weight)) &&
+            std::find(variable.begin(), variable.end(), (const char *)file) == variable.end())
+            variable.push_back((const char *)file);
+    }
+    for (int i = 0; set && i < set->nfont; i++) {
+        void *p = set->fonts[i];
+        const unsigned char *file = nullptr;
+        int index = 0, weight = 0, width = 100, slant = 0;
+        if (getString(p, "file", 0, &file) || !file || !font_file(basename(std::string((const char *)file))) ||
+            std::find(variable.begin(), variable.end(), (const char *)file) != variable.end())
             continue;
-        }
+        getInteger(p, "index", 0, &index);
+        getInteger(p, "weight", 0, &weight);
         getInteger(p, "width", 0, &width);
         getInteger(p, "slant", 0, &slant);
         Face face;
@@ -575,13 +592,35 @@ plutovg_font_face_t *nf_face(const char *family, int weight, bool italic) {
     return match_name(family, weight, italic);
 }
 
+// a face from a system list (DirectWrite, fontconfig) has the PostScript name it gives; its file may name it another way
+// too (a Mac platform record: "Corbel-Light" beside "CorbelLight"): its name table read once, when a name must match
+void read_names(Index &ix, int k) {
+    Face &f = ix.faces[k];
+    f.namesRead = true;
+    FILE *file = fopen(f.file.c_str(), "rb");
+    if (!file) return;
+    std::vector<uint8_t> head, name;
+    uint32_t off = 0;
+    if (read_at(file, 0, 12, head) && u32(head.data()) == 0x74746366) {   // (a collection: its face's offset)
+        std::vector<uint8_t> o;
+        off = (uint32_t)f.ttc < std::min(u32(head.data() + 8), 64u) && read_at(file, 12 + 4 * (uint32_t)f.ttc, 4, o) ? u32(o.data()) : 0;
+    }
+    static const char *const tags[] = {"name"};
+    Table t[1];
+    if ((off || f.ttc == 0) && tables(file, off, tags, t, 1) && t[0].off && t[0].len <= 65536 && read_at(file, t[0].off, t[0].len, name))
+        index_names(ix, name, k, f);
+    fclose(file);
+}
+
 bool nf_face_file(plutovg_font_face_t *face, const char *postscript, std::string &file, int &ttc) {
     Index &ix = index();
     auto it = ix.loaded.find(face);
     if (it == ix.loaded.end()) return false;
-    const Face &f = ix.faces[it->second];
+    Face &f = ix.faces[it->second];
     const char *name = without_subset_tag(postscript);
-    if (std::find(f.postscript.begin(), f.postscript.end(), name) == f.postscript.end()) return false;
+    auto named = [&] { return std::find(f.postscript.begin(), f.postscript.end(), name) != f.postscript.end(); };
+    if (!named() && !f.namesRead) read_names(ix, it->second);
+    if (!named()) return false;
     file = f.file;
     ttc = f.ttc;
     return true;
