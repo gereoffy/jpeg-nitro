@@ -16,6 +16,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dwrite_3.h>
+#include <functional>
 #else
 #include <cerrno>
 #include <dirent.h>
@@ -124,6 +126,29 @@ const struct { const char *name; const char *compact; int width; } widths[] = {
     {" Extended", "extended", 7}, {" Wide", "wide", 7}};
 
 // Name IDs 1 and 16 identify families; IDs 4 and 6 identify individual faces.
+void bind_name(Index &ix, uint32_t id, std::string value, int face, Face &font) {
+    if (value.empty() || value.find(char(0)) != std::string::npos) return;
+    bool family = id == 1 || id == 16;
+    Names &names = family ? ix.families : ix.faceNames;
+    auto bind = [&](const std::string &key) {
+        auto &faces = names[lower(key.c_str())];
+        if (faces.empty() || faces.back() != face) faces.push_back(face);
+    };
+    bind(value);
+    // Older fonts can give a width variant its own family, e.g. Arial Narrow.
+    // Also index the base family when the name agrees with its OS/2 width.
+    if (family && font.width != 5)
+        for (const auto &w : widths)
+            if (ends_with_ci(value, w.name)) {
+                if ((font.width < 5) == (w.width < 5) && value.size() > strlen(w.name))
+                    bind(value.substr(0, value.size() - strlen(w.name)));
+                break;
+            }
+    if (id == 6 && std::find(font.postscript.begin(), font.postscript.end(), value) == font.postscript.end())
+        font.postscript.push_back(std::move(value));
+}
+
+// the name table's names, each in bind_name
 void index_names(Index &ix, const std::vector<uint8_t> &name, int face, Face &font) {
     if (name.size() < 6) return;
     uint32_t count = u16(name.data() + 2), strings = u16(name.data() + 4);
@@ -153,25 +178,7 @@ void index_names(Index &ix, const std::vector<uint8_t> &name, int face, Face &fo
                 nf_utf8_put(value, c);
             }
         }
-        if (value.empty() || value.find(char(0)) != std::string::npos) continue;
-        bool family = id == 1 || id == 16;
-        Names &names = family ? ix.families : ix.faceNames;
-        auto bind = [&](const std::string &key) {
-            auto &faces = names[lower(key.c_str())];
-            if (faces.empty() || faces.back() != face) faces.push_back(face);
-        };
-        bind(value);
-        // Older fonts can give a width variant its own family, e.g. Arial Narrow.
-        // Also index the base family when the name agrees with its OS/2 width.
-        if (family && font.width != 5)
-            for (const auto &w : widths)
-                if (ends_with_ci(value, w.name)) {
-                    if ((font.width < 5) == (w.width < 5) && value.size() > strlen(w.name))
-                        bind(value.substr(0, value.size() - strlen(w.name)));
-                    break;
-                }
-        if (id == 6 && std::find(font.postscript.begin(), font.postscript.end(), value) == font.postscript.end())
-            font.postscript.push_back(std::move(value));
+        bind_name(ix, id, std::move(value), face, font);
     }
 }
 
@@ -181,11 +188,14 @@ const char *basename(const std::string &path) {
 }
 
 void index_file(Index &ix, const std::string &path) {
+    std::string filename = lower(basename(path));
+    if (auto known = ix.files.find(filename); known != ix.files.end())   // (indexed already, by the system's font list)
+        for (int k : known->second)
+            if (ix.faces[k].file == path) return;
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) return;
     std::vector<uint8_t> head;
     std::vector<uint32_t> offsets;
-    std::string filename = lower(basename(path));
     if (read_at(f, 0, 12, head)) {
         if (u32(head.data()) == 0x74746366) {   // a collection (ttcf): its fonts
             uint32_t n = std::min(u32(head.data() + 8), 64u);
@@ -259,12 +269,98 @@ void index_dir(Index &ix, const std::string &dir, int depth) {
 #endif
 }
 
+#ifdef _WIN32
+// Windows 10+: the installed fonts as DirectWrite's system font set lists them, from the Windows font cache
+// service's data: their names, weight, width, style, file and index in a collection, without opening a font
+// file. false where it is not there (an older Windows): the font directories are read instead.
+template <class T> struct Com {   // (a COM pointer, released at its end)
+    T *p = nullptr;
+    ~Com() { if (p) p->Release(); }
+    T *operator->() const { return p; }
+    T **operator&() { return &p; }
+};
+
+std::string narrow(const WCHAR *w, UINT cp) {   // (UTF-16 to UTF-8 or the ANSI code page; "" if it does not fit)
+    std::string out;
+    BOOL lossy = FALSE;
+    int n = WideCharToMultiByte(cp, 0, w, -1, nullptr, 0, nullptr, cp == CP_UTF8 ? nullptr : &lossy);
+    if (n <= 1 || lossy) return out;
+    out.resize((size_t)n);
+    WideCharToMultiByte(cp, 0, w, -1, out.data(), n, nullptr, nullptr);
+    out.resize((size_t)n - 1);
+    return out;
+}
+
+bool index_dwrite(Index &ix) {
+    Com<IDWriteFactory3> factory;
+    Com<IDWriteFontSet> set;
+    if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory3), (IUnknown **)&factory)) ||
+        FAILED(factory->GetSystemFontSet(&set)))
+        return false;
+    UINT32 count = set->GetFontCount();
+    std::vector<WCHAR> buf;
+    // (a property's strings, every language's; a weight, width or style: its first, a number)
+    auto strings = [&](UINT32 i, DWRITE_FONT_PROPERTY_ID id, const std::function<void(const WCHAR *)> &use) {
+        Com<IDWriteLocalizedStrings> values;
+        BOOL exists = FALSE;
+        if (FAILED(set->GetPropertyValues(i, id, &exists, &values)) || !exists || !values.p) return;
+        for (UINT32 k = 0, n = values->GetCount(); k < n; k++) {
+            UINT32 len = 0;
+            if (FAILED(values->GetStringLength(k, &len))) continue;
+            buf.resize(len + 1);
+            if (SUCCEEDED(values->GetString(k, buf.data(), len + 1))) use(buf.data());
+        }
+    };
+    auto number = [&](UINT32 i, DWRITE_FONT_PROPERTY_ID id, int def) {
+        int v = def;
+        bool got = false;
+        strings(i, id, [&](const WCHAR *s) { if (!got) v = (int)wcstol(s, nullptr, 10), got = true; });
+        return v;
+    };
+    for (UINT32 i = 0; i < count; i++) {
+        Com<IDWriteFontFaceReference> ref;
+        Com<IDWriteFontFile> file;
+        Com<IDWriteFontFileLoader> loader;
+        Com<IDWriteLocalFontFileLoader> local;
+        const void *key = nullptr;
+        UINT32 keySize = 0, pathLen = 0;
+        // (only a font file on this machine, not a simulated bold or oblique of another face)
+        if (FAILED(set->GetFontFaceReference(i, &ref)) || ref->GetSimulations() != DWRITE_FONT_SIMULATIONS_NONE ||
+            ref->GetLocality() != DWRITE_LOCALITY_LOCAL || FAILED(ref->GetFontFile(&file)) ||
+            FAILED(file->GetReferenceKey(&key, &keySize)) || FAILED(file->GetLoader(&loader)) ||
+            FAILED(loader->QueryInterface(__uuidof(IDWriteLocalFontFileLoader), (void **)&local)) ||
+            FAILED(local->GetFilePathLengthFromKey(key, keySize, &pathLen)))
+            continue;
+        std::vector<WCHAR> wpath(pathLen + 1);
+        if (FAILED(local->GetFilePathFromKey(key, keySize, wpath.data(), pathLen + 1))) continue;
+        Face face;
+        face.file = narrow(wpath.data(), CP_ACP);   // (opened with fopen, as a listed directory's files are)
+        if (face.file.empty() || !font_file(basename(face.file))) continue;
+        face.ttc = (int)ref->GetFontFaceIndex();
+        face.weight = std::clamp(number(i, DWRITE_FONT_PROPERTY_ID_WEIGHT, 400), 1, 1000);
+        int width = number(i, DWRITE_FONT_PROPERTY_ID_STRETCH, 5);
+        face.width = width >= 1 && width <= 9 ? width : 5;
+        face.italic = number(i, DWRITE_FONT_PROPERTY_ID_STYLE, 0) != DWRITE_FONT_STYLE_NORMAL;
+        int k = (int)ix.faces.size();
+        // (the name table's IDs: 1 the Win32 family, 16 the typographic one, 4 the full name, 6 the PostScript name)
+        static const struct { DWRITE_FONT_PROPERTY_ID property; uint32_t id; } names[] = {
+            {DWRITE_FONT_PROPERTY_ID_WIN32_FAMILY_NAME, 1}, {DWRITE_FONT_PROPERTY_ID_TYPOGRAPHIC_FAMILY_NAME, 16},
+            {DWRITE_FONT_PROPERTY_ID_FULL_NAME, 4}, {DWRITE_FONT_PROPERTY_ID_POSTSCRIPT_NAME, 6}};
+        for (const auto &n : names) strings(i, n.property, [&](const WCHAR *s) { bind_name(ix, n.id, narrow(s, CP_UTF8), k, face); });
+        ix.files[lower(basename(face.file))].push_back(k);
+        ix.faces.push_back(std::move(face));
+    }
+    return !ix.faces.empty();
+}
+#endif
+
 // the system's font directories and the user's (where Font Book, Windows 10+ and fontconfig
 // install a user's own fonts)
 void index_system(Index &ix) {
 #ifdef _WIN32
     const char *windir = getenv("WINDIR");
-    index_dir(ix, std::string(windir ? windir : "C:\\Windows") + "\\Fonts", 0);
+    if (!index_dwrite(ix)) index_dir(ix, std::string(windir ? windir : "C:\\Windows") + "\\Fonts", 0);
+    // (a user's own fonts: in the system font set since Windows 10 1809, read here for the ones before; listed ones skipped)
     if (const char *local = getenv("LOCALAPPDATA")) index_dir(ix, std::string(local) + "\\Microsoft\\Windows\\Fonts", 0);
 #elif defined(__APPLE__)
     index_dir(ix, "/Library/Fonts", 0);

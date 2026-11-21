@@ -12,6 +12,13 @@ Az index az első kereséskor épül fel, és a folyamat végéig él. A szokás
 fontkönyvtárakban `.ttf`, `.otf`, `.ttc` és `.otc` fájlokat keres. macOS-en az első megtalált Office-app
 saját fontkönyvtárát is bejárja. A gyűjtemény minden indexelt face-e önálló jelölt.
 
+Windows 10-től az index a DirectWrite rendszer-fontkészletéből (`GetSystemFontSet`) épül: a nevek, a
+súly, a szélesség, a dőlés, a fájl és a gyűjteményen belüli sorszám a Windows fontgyorsítótárából
+jön, fontfájl megnyitása nélkül. A szimulált félkövér és dőlt változatok és a nem helyi fontok
+kimaradnak. Ha a DirectWrite nem elérhető, a fontkönyvtárat olvassa be; a felhasználói fontkönyvtár
+mindig átnézésre kerül, az onnan már ismert fájlokat kihagyja. A sok fontos, lassú lemezű gépeken
+így az első keresés nem olvas be száz vagy ezer fájlt.
+
 - A `name` táblából a családnevek (ID 1 és 16), a teljes nevek (ID 4) és a PostScript-nevek (ID 6)
   kerülnek az indexbe, a beolvasható lokalizált változatokkal együtt. A keresés az ASCII betűknél
   figyelmen kívül hagyja a kis- és nagybetűt. A fájlnév külön keresőkulcs.

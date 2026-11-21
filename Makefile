@@ -707,8 +707,9 @@ bench/nbench.exe: bench/nbench.c build/win/libnitro.a $(LIB_HDR) $(WIN_STAMP)
 bench/psdverify.exe: bench/psdverify.c build/win/libnitro.a $(LIB_HDR) $(WIN_STAMP)
 	$(WINCC) $(WINFLAGS) -w -Isrc bench/psdverify.c build/win/libnitro.a -lpthread -o $@
 WINRES  ?= $(patsubst %clang,%windres,$(WINCC))
+# (dwrite: nitro_font's list of the installed fonts, DirectWrite's system font set)
 WINLIBS := -ld3d11 -ldxgi -ld3dcompiler -lwindowscodecs -lole32 -loleaut32 -lshlwapi -lshell32 -luser32 \
-           -lgdi32 -ladvapi32 -luuid -ldxguid -lwinmm -lpthread
+           -lgdi32 -ladvapi32 -luuid -ldxguid -lwinmm -ldwrite -lpthread
 build/nitroview_res.o: packaging/nitroview.rc packaging/nitroview.ico
 	@mkdir -p build
 	$(WINRES) -I packaging $< -O coff -o $@
