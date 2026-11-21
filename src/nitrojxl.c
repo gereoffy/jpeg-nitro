@@ -1768,31 +1768,32 @@ static inline __attribute__((always_inline)) int channel_pixels(Br *brp, Sym *sp
     return e;
 }
 
-// A tree that branches on property 9 only (within -512 .. 510), every leaf the gradient predictor (libjxl's
-// usual LF image): the leaf from a table of the clamped property, as libjxl's is_gradient_only path.
-enum { GRAD_RANGE = 512 };
-typedef struct { int32_t ctx, mult, offset; } GradLeaf;
-static int gradient_table(const Tree *t, const FNode *tn, int count, GradLeaf *lut) {
+// For trees using only the gradient property (9) or the weighted-predictor error (15),
+// bounded splits let us select the leaf by clamping that property to a small table.
+enum { PRED_RANGE = 512 };
+typedef struct { int32_t ctx, mult, offset; } PredLeaf;
+static int predictor_table(const Tree *t, const FNode *tn, int count, int prop, int pred, PredLeaf *lut) {
     for (int i = 0; i < count; i++) {
         const FNode *n = &tn[i];
-        if (n->prop0 < 0) { if (t->nodes[n->split0].pred != 5) return 0; continue; }
-        if (n->prop0 != 9 || n->split0 < -GRAD_RANGE || n->split0 >= GRAD_RANGE - 1) return 0;
+        if (n->prop0 < 0) { if (t->nodes[n->split0].pred != pred) return 0; continue; }
+        if (n->prop0 != prop || n->split0 < -PRED_RANGE || n->split0 >= PRED_RANGE - 1) return 0;
         for (int k = 0; k < 2; k++)   // (0, 0: a leaf child)
-            if ((n->prop1[k] || n->split1[k]) && (n->prop1[k] != 9 || n->split1[k] < -GRAD_RANGE || n->split1[k] >= GRAD_RANGE - 1)) return 0;
+            if ((n->prop1[k] || n->split1[k]) && (n->prop1[k] != prop || n->split1[k] < -PRED_RANGE || n->split1[k] >= PRED_RANGE - 1)) return 0;
     }
-    for (int v = -GRAD_RANGE; v < GRAD_RANGE; v++) {
+    for (int v = -PRED_RANGE; v < PRED_RANGE; v++) {
         const FNode *n = tn;
         while (n->prop0 >= 0) {
             int k = v <= n->split0;
-            n = tn + n->child + 2 * k + (n->prop1[k] == 9 ? v <= n->split1[k] : 0);
+            n = tn + n->child + 2 * k + (n->prop1[k] == prop ? v <= n->split1[k] : 0);
         }
         const Node *leaf = &t->nodes[n->split0];
-        lut[v + GRAD_RANGE] = (GradLeaf){leaf->val, leaf->mult, leaf->offset};
+        lut[v + PRED_RANGE] = (PredLeaf){leaf->val, leaf->mult, leaf->offset};
     }
     return 1;
 }
 
-static inline __attribute__((always_inline)) int channel_gradient(Br *brp, Sym *sp, int fast, const GradLeaf *lut, Chan *c) {
+static inline __attribute__((always_inline)) int channel_lut(Br *brp, Sym *sp, int fast, const PredLeaf *lut, const Modular *m, int ci, int weighted) {
+    const Chan *c = &m->ch[ci];
     int w = c->w, h = c->h;
     int32_t *p = c->p;
     const Code *code = sp->code;
@@ -1802,6 +1803,8 @@ static inline __attribute__((always_inline)) int channel_gradient(Br *brp, Sym *
     int la = code->log_alpha, bad = 0, e = 0;
     Br lbr = *brp, *br = fast ? &lbr : brp;
     uint32_t st = sp->state;
+    Wp wp;
+    if (weighted) TRY(wp_init(&wp, &m->wp, w));
     for (int y = 0; y < h && !e; y++) {
         int32_t *row = p + (size_t)y * w;
         const int32_t *prow = y ? row - w : NULL;
@@ -1809,13 +1812,26 @@ static inline __attribute__((always_inline)) int channel_gradient(Br *brp, Sym *
             int64_t left = x ? row[x - 1] : y ? prow[x] : 0;
             int64_t top = y ? prow[x] : left;
             int64_t topleft = x && y ? prow[x - 1] : left;
-            int32_t g = (int32_t)(left + top - topleft);   // (property 9: int32 as libjxl's)
-            const GradLeaf *lf = &lut[(g < -GRAD_RANGE ? -GRAD_RANGE : g > GRAD_RANGE - 1 ? GRAD_RANGE - 1 : g) + GRAD_RANGE];
+            int32_t prop;
+            int64_t pred;
+            if (weighted) {
+                int64_t maxerr;
+                int64_t ne = y && x + 1 < w ? prow[x + 1] : top;
+                int64_t nn = y > 1 ? prow[x - w] : top;
+                pred = wp_predict(&wp, x, y, top, left, ne, topleft, nn, &maxerr);
+                prop = (int32_t)maxerr;
+            } else {
+                pred = clamped_gradient(left, top, topleft);
+                prop = (int32_t)(left + top - topleft);
+            }
+            const PredLeaf *lf = &lut[imax(-PRED_RANGE, imin(prop, PRED_RANGE - 1)) + PRED_RANGE];
             uint32_t tok = fast ? ans_fast(br, map, alias, la, cfg, &st, &bad, lf->ctx) : sym_read(br, sp, lf->ctx);
-            row[x] = (int32_t)((int64_t)unpack_signed(tok) * lf->mult + lf->offset + clamped_gradient(left, top, topleft));
+            row[x] = (int32_t)((int64_t)unpack_signed(tok) * lf->mult + lf->offset + pred);
+            if (weighted) wp_update(&wp, row[x], x, y);
         }
         if (bad || sp->bad || ((y & 15) == 15 && br_overrun(br))) e = ERR_INVALID;
     }
+    if (weighted) wp_free(&wp);
     if (fast) { *brp = lbr; sp->state = st; sp->bad |= bad; }
     return e;
 }
@@ -1847,10 +1863,12 @@ static int decode_channel(Br *br, Sym *s, const Tree *t, const Modular *m, int c
         }
     }
     int fast = !s->code->use_prefix && !s->code->lz77;
-    GradLeaf *lut = !use_wp && max_prop <= 9 && count > 1 ? xmalloc(2 * GRAD_RANGE, sizeof(GradLeaf)) : NULL;
-    if (lut && gradient_table(t, tn, count, lut))
-        e = fast ? channel_gradient(br, s, 1, lut, &m->ch[ci]) : channel_gradient(br, s, 0, lut, &m->ch[ci]);
-    else
+    int prop = use_wp ? 15 : 9;
+    PredLeaf *lut = max_prop == prop && count > 1 ? xmalloc(2 * PRED_RANGE, sizeof(PredLeaf)) : NULL;
+    if (lut && predictor_table(t, tn, count, prop, use_wp ? 6 : 5, lut)) {
+        if (use_wp) e = fast ? channel_lut(br, s, 1, lut, m, ci, 1) : channel_lut(br, s, 0, lut, m, ci, 1);
+        else e = fast ? channel_lut(br, s, 1, lut, m, ci, 0) : channel_lut(br, s, 0, lut, m, ci, 0);
+    } else
         e = fast ? channel_pixels(br, s, 1, t, tn, m, ci, use_wp, max_prop, refs, nref)
                  : channel_pixels(br, s, 0, t, tn, m, ci, use_wp, max_prop, refs, nref);
     free(lut);
