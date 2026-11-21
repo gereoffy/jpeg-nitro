@@ -1555,13 +1555,21 @@ static inline int64_t wp_predict(Wp *s, int x, int y, int64_t N, int64_t W, int6
     size_t xs = (size_t)s->w;
     size_t cur = y & 1 ? 0 : xs + 2, prev = y & 1 ? xs + 2 : 0;
     size_t pN = prev + (size_t)x, pNE = (size_t)x < xs - 1 ? pN + 1 : pN, pNW = x > 0 ? pN - 1 : pN;
+    int64_t teW = x == 0 ? 0 : s->err[cur + (size_t)x - 1], teN = s->err[pN], teNW = s->err[pNW], teNE = s->err[pNE];
+    // All four predictions coincide here, and the final clamp pins the result to N.
+    // Keep the predictions for wp_update: the next residual can still be nonzero.
+    if (!((N ^ W) | (N ^ NE) | (N ^ NW) | (N ^ NN) | teW | teN | teNW | teNE)) {
+        *maxerr = 0;
+        s->pr = N * 8;
+        for (int i = 0; i < 4; i++) s->pred[i] = s->pr;
+        return N;
+    }
     uint32_t wt[4];
     for (int i = 0; i < 4; i++) {
         uint64_t e = (uint32_t)(s->perr[i][pN] + s->perr[i][pNE] + s->perr[i][pNW]);
         wt[i] = wp_error_weight(e, (uint32_t)s->h.w[i]);
     }
     N *= 8; W *= 8; NE *= 8; NW *= 8; NN *= 8;
-    int64_t teW = x == 0 ? 0 : s->err[cur + (size_t)x - 1], teN = s->err[pN], teNW = s->err[pNW], teNE = s->err[pNE];
     int64_t sumWN = teN + teW;
     int64_t p = teW;
     if (llabs(teN) > llabs(p)) p = teN;
