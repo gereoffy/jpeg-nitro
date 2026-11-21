@@ -70,7 +70,8 @@ PORTFLAGS  :=
 THREADLIBS :=
 else   # the decoders' loop bodies are blocks (see src/nitro_os.h): clang -fblocks
 PORTFLAGS  := -fblocks
-THREADLIBS := -lpthread
+# (dl: nitro_font loads libfontconfig when there; part of libc since glibc 2.34)
+THREADLIBS := -lpthread -ldl
 endif
 WARN       := -Wall -Wextra -Wno-unused-parameter
 CFLAGS     := -O3 $(CPUFLAGS) $(PORTFLAGS) $(WARN)

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +26,9 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if !defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 #endif
 
 namespace {
@@ -377,6 +381,84 @@ bool index_dwrite(Index &ix) {
 }
 #endif
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+// Linux and the BSDs: the installed fonts as fontconfig lists them, from its own cache: every family and full name
+// (all languages), the PostScript name, OpenType weight, width, slant, file and index in a collection, without
+// opening a font file. libfontconfig is loaded when there (a desktop's own), so the portable build runs without it;
+// false where it is not: the font directories are read instead.
+bool index_fontconfig(Index &ix) {
+    void *lib = dlopen("libfontconfig.so.1", RTLD_LAZY | RTLD_LOCAL);
+    if (!lib) return false;
+    struct FcFontSet { int nfont, sfont; void **fonts; };
+    auto sym = [&](const char *name) { return dlsym(lib, name); };
+    auto initLoad = (void *(*)())sym("FcInitLoadConfigAndFonts");
+    auto patternCreate = (void *(*)())sym("FcPatternCreate");
+    auto patternDestroy = (void (*)(void *))sym("FcPatternDestroy");
+    auto objectSetCreate = (void *(*)())sym("FcObjectSetCreate");
+    auto objectSetAdd = (int (*)(void *, const char *))sym("FcObjectSetAdd");
+    auto objectSetDestroy = (void (*)(void *))sym("FcObjectSetDestroy");
+    auto fontList = (FcFontSet *(*)(void *, void *, void *))sym("FcFontList");
+    auto fontSetDestroy = (void (*)(FcFontSet *))sym("FcFontSetDestroy");
+    auto getString = (int (*)(void *, const char *, int, const unsigned char **))sym("FcPatternGetString");
+    auto getInteger = (int (*)(void *, const char *, int, int *))sym("FcPatternGetInteger");
+    auto getBool = (int (*)(void *, const char *, int, int *))sym("FcPatternGetBool");
+    auto weightToOpenType = (int (*)(int))sym("FcWeightToOpenType");
+    auto configDestroy = (void (*)(void *))sym("FcConfigDestroy");
+    if (!initLoad || !patternCreate || !patternDestroy || !objectSetCreate || !objectSetAdd || !objectSetDestroy || !fontList ||
+        !fontSetDestroy || !getString || !getInteger || !getBool || !weightToOpenType || !configDestroy) {
+        dlclose(lib);
+        return false;
+    }
+    void *config = initLoad();   // (its own configuration: the cache read, not built, when it is up to date)
+    void *pattern = patternCreate(), *objects = objectSetCreate();
+    for (const char *o : {"file", "index", "family", "fullname", "postscriptname", "weight", "width", "slant", "variable"})
+        objectSetAdd(objects, o);
+    FcFontSet *set = config && pattern && objects ? fontList(config, pattern, objects) : nullptr;
+    std::vector<std::string> variable;
+    for (int i = 0; set && i < set->nfont; i++) {
+        void *p = set->fonts[i];
+        const unsigned char *file = nullptr;
+        int index = 0, isVariable = 0, weight = 0, width = 100, slant = 0;
+        if (getString(p, "file", 0, &file) || !file || !font_file(basename(std::string((const char *)file)))) continue;
+        getInteger(p, "index", 0, &index);
+        if (index >> 16) continue;   // (a variable font's named instance: plutovg draws only its default one)
+        // (the variable font itself, its weight or width a range: read from the file's own tables, as one face)
+        if ((!getBool(p, "variable", 0, &isVariable) && isVariable) || getInteger(p, "weight", 0, &weight)) {
+            if (std::find(variable.begin(), variable.end(), (const char *)file) == variable.end()) variable.push_back((const char *)file);
+            continue;
+        }
+        getInteger(p, "width", 0, &width);
+        getInteger(p, "slant", 0, &slant);
+        Face face;
+        face.file = (const char *)file;
+        face.ttc = index;
+        // (its weight scale and back: 250 comes back as 251; OpenType weights are multiples of 5)
+        face.weight = std::clamp((weightToOpenType(weight) + 2) / 5 * 5, 1, 1000);
+        // (fontconfig's width, % of normal (112.5 as 113): OS/2's usWidthClass 1-9, the nearest one)
+        static const double widths[] = {50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200};
+        face.width = 1;
+        for (int k = 1; k < 9; k++)
+            if (std::fabs(width - widths[k]) < std::fabs(width - widths[face.width - 1])) face.width = k + 1;
+        face.italic = slant != 0;   // (italic 100, oblique 110)
+        int k = (int)ix.faces.size();
+        // (the name table's IDs: 1 a family (fontconfig lists the typographic and the legacy ones), 4 the full name,
+        // 6 the PostScript name)
+        for (const auto &n : {std::make_pair("family", 1u), std::make_pair("fullname", 4u), std::make_pair("postscriptname", 6u)}) {
+            const unsigned char *v = nullptr;
+            for (int j = 0; !getString(p, n.first, j, &v) && v; j++) bind_name(ix, n.second, (const char *)v, k, face);
+        }
+        ix.files[lower(basename(face.file))].push_back(k);
+        ix.faces.push_back(std::move(face));
+    }
+    if (set) fontSetDestroy(set);
+    if (objects) objectSetDestroy(objects);
+    if (pattern) patternDestroy(pattern);
+    if (config) configDestroy(config);
+    for (const std::string &file : variable) index_file(ix, file);
+    return !ix.faces.empty();   // (the library stays loaded: dlclose of fontconfig is not safe everywhere)
+}
+#endif
+
 // the system's font directories and the user's (where Font Book, Windows 10+ and fontconfig
 // install a user's own fonts)
 void index_system(Index &ix) {
@@ -402,6 +484,7 @@ void index_system(Index &ix) {
             break;
         }
 #else
+    if (index_fontconfig(ix)) return;
     index_dir(ix, "/usr/share/fonts", 0);
     index_dir(ix, "/usr/local/share/fonts", 0);
     const char *home = getenv("HOME"), *data = getenv("XDG_DATA_HOME");

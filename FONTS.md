@@ -19,6 +19,18 @@ kimaradnak. Ha a DirectWrite nem elérhető, a fontkönyvtárat olvassa be; a fe
 mindig átnézésre kerül, az onnan már ismert fájlokat kihagyja. A sok fontos, lassú lemezű gépeken
 így az első keresés nem olvas be száz vagy ezer fájlt.
 
+Linuxon a fontconfig listájából épül, ha a `libfontconfig.so.1` betölthető (`dlopen`, így a hordozható
+build nélküle is fut): minden család- és teljes név minden nyelven, a PostScript-név, az OpenType-súly,
+a szélesség, a dőlés, a fájl és a sorszám a fontconfig saját gyorsítótárából jön. Ha nincs fontconfig,
+a fontkönyvtárakat olvassa be. Mindkét rendszerlistából kimaradnak a változó fontok elnevezett
+példányai (Bahnschrift Light, Segoe UI Variable Semibold …): a Plutovg csak az alapértelmezett
+példányt rajzolja, ezért az ilyen fájl a saját tábláiból, egyetlen face-ként kerül az indexbe, ahogy
+a könyvtár beolvasásakor.
+
+macOS-en marad a könyvtárak beolvasása. A CoreText listája ott lassabb volt (kb. 50 ms a beolvasás
+20 ms-ával szemben), nem látja az Office-appok saját fontjait, a súlyt −1…1 közötti törtként, a
+neveket egy nyelven adja, és a gyűjteményen belüli sorszámot sem adja meg.
+
 - A `name` táblából a családnevek (ID 1 és 16), a teljes nevek (ID 4) és a PostScript-nevek (ID 6)
   kerülnek az indexbe, a beolvasható lokalizált változatokkal együtt. A keresés az ASCII betűknél
   figyelmen kívül hagyja a kis- és nagybetűt. A fájlnév külön keresőkulcs.
