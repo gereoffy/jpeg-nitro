@@ -191,7 +191,11 @@ void index_file(Index &ix, const std::string &path) {
     std::string filename = lower(basename(path));
     if (auto known = ix.files.find(filename); known != ix.files.end())   // (indexed already, by the system's font list)
         for (int k : known->second)
+#ifdef _WIN32
+            if (lower(ix.faces[k].file.c_str()) == lower(path.c_str())) return;   // (Windows' paths: any case)
+#else
             if (ix.faces[k].file == path) return;
+#endif
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) return;
     std::vector<uint8_t> head;
@@ -317,6 +321,12 @@ bool index_dwrite(Index &ix) {
         strings(i, id, [&](const WCHAR *s) { if (!got) v = (int)wcstol(s, nullptr, 10), got = true; });
         return v;
     };
+    // (a variable font's named instances (Bahnschrift Light, Segoe UI Variable Semibold ...) are listed one by one, all
+    // with its file and index: plutovg draws only its default instance, so such a file is indexed from its own tables
+    // instead, as one face, as reading the directory does)
+    struct Entry { UINT32 i; std::string file; int ttc; };
+    std::vector<Entry> entries;
+    std::unordered_map<std::string, int> seen;   // (lower-case path # index -> how often listed)
     for (UINT32 i = 0; i < count; i++) {
         Com<IDWriteFontFaceReference> ref;
         Com<IDWriteFontFile> file;
@@ -333,10 +343,22 @@ bool index_dwrite(Index &ix) {
             continue;
         std::vector<WCHAR> wpath(pathLen + 1);
         if (FAILED(local->GetFilePathFromKey(key, keySize, wpath.data(), pathLen + 1))) continue;
+        std::string path = narrow(wpath.data(), CP_ACP);   // (opened with fopen, as a listed directory's files are)
+        if (path.empty() || !font_file(basename(path))) continue;
+        int ttc = (int)ref->GetFontFaceIndex();
+        seen[lower(path.c_str()) + "#" + std::to_string(ttc)]++;
+        entries.push_back({i, std::move(path), ttc});
+    }
+    std::vector<std::string> variable;
+    for (Entry &e : entries) {
+        UINT32 i = e.i;
+        if (seen[lower(e.file.c_str()) + "#" + std::to_string(e.ttc)] > 1) {
+            if (std::find(variable.begin(), variable.end(), e.file) == variable.end()) variable.push_back(e.file);
+            continue;
+        }
         Face face;
-        face.file = narrow(wpath.data(), CP_ACP);   // (opened with fopen, as a listed directory's files are)
-        if (face.file.empty() || !font_file(basename(face.file))) continue;
-        face.ttc = (int)ref->GetFontFaceIndex();
+        face.file = std::move(e.file);
+        face.ttc = e.ttc;
         face.weight = std::clamp(number(i, DWRITE_FONT_PROPERTY_ID_WEIGHT, 400), 1, 1000);
         int width = number(i, DWRITE_FONT_PROPERTY_ID_STRETCH, 5);
         face.width = width >= 1 && width <= 9 ? width : 5;
@@ -350,6 +372,7 @@ bool index_dwrite(Index &ix) {
         ix.files[lower(basename(face.file))].push_back(k);
         ix.faces.push_back(std::move(face));
     }
+    for (const std::string &file : variable) index_file(ix, file);
     return !ix.faces.empty();
 }
 #endif
