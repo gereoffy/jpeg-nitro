@@ -2668,6 +2668,10 @@ void texSign(std::string &o, bool html, uint32_t cp) {
     if (spaced) o += "\xc2\xa0";
 }
 
+std::string mathScript(bool up, const std::string &text) {
+    return std::string(up ? "<sup" : "<sub") + " style=\"font-size: 71%\">" + text + (up ? "</sup>" : "</sub>");
+}
+
 // (until: the closing character, 0 to the end, 1: one item only)
 std::string texText(const std::string &t, bool html, size_t &i, int depth, char until) {
     std::string o;
@@ -2676,7 +2680,7 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
         return o;
     }
     auto script = [&](bool up, const std::string &x) {
-        if (html) return std::string(up ? "<sup>" : "<sub>") + x + (up ? "</sup>" : "</sub>");
+        if (html) return mathScript(up, x);
         return std::string(up ? "^" : "_") + (x.size() > 1 ? "(" + x + ")" : x);
     };
     while (i < t.size()) {
@@ -2747,7 +2751,7 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
                     if (!index.empty()) {
                         size_t k = 0;
                         std::string n = texText(index, html, k, depth + 1, 0);
-                        o += html ? "<sup>" + n + "</sup>" : "^" + n;
+                        o += html ? mathScript(true, n) : "^" + n;
                     }
                     nf_utf8_put(o, 0x221a);
                 }
@@ -2920,7 +2924,7 @@ std::string asciiMathText(const std::string &t, bool html) {
                 if (j == a) j++;
                 for (size_t k = a; k < j; k++) texPut(x, html, (unsigned char)t[k]);
             }
-            o += html ? std::string(up ? "<sup>" : "<sub>") + x + (up ? "</sup>" : "</sub>") : std::string(up ? "^" : "_") + x;
+            o += html ? mathScript(up, x) : std::string(up ? "^" : "_") + x;
             i = j;
         } else if (t[i] == ' ') {   // (white space: none, as in TeX)
             i++;
@@ -2954,8 +2958,8 @@ std::string mathText(const std::string &v, bool html) {
         std::string inner = v.substr(at + open, e - at - open);
         // (an HTML label: MathJax reads the math's text, a tag in it (a <br>) a space)
         for (size_t t; html && (t = inner.find('<')) != std::string::npos;) inner.replace(t, inner.find('>', t) - t + 1, " ");
-        // (MathJax's TeX fonts: a serif face, scaled to the text's x-height: a serif's x-height is less than Helvetica's)
-        if (html) o += "<font face=\"serif\" style=\"font-size: 117%\">";
+        // (prefer a Computer Modern family for math, with the serif fallback scaled to the label's x-height)
+        if (html) o += "<font face=\"CMU Serif, STIX Two Text, STIX Two Math, serif\" style=\"font-size: 117%\">";
         texUpright = 0;
         if (at == c) o += asciiMathText(inner, html);
         else {
