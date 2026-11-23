@@ -53,6 +53,15 @@ Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egés
   `curved=1`, `rounded=1`, `orthogonalLoop`, `portConstraint`, `jettySize`. Az OrthConnector a draw.io-éval
   egyezően tizedre kerekíti a bemenetét, a szabad végpontot 1×1-es doboznak veszi, és elforgatott terminálnál a
   forgatott befoglaló dobozzal számol. Az EntityRelation a szabad induló pontot is terminálnak veszi.
+- **Élvégek** (`mxGraphView`): `sourcePort` / `targetPort` (a megnevezett port-cella veszi át a véget),
+  `perimeterSpacing`, `sourcePerimeterSpacing` / `targetPerimeterSpacing`, `fixedPointSpacing`. Rejtett vagy
+  összecsukott (`collapsed`) konténerben lévő terminál helyett a látható őse (getVisibleTerminal).
+- **Modell:** rétegek, `visible`, összecsukott konténerek (a tartalmuk nem látszik); `placeholders=1`: a címke
+  `%név%` helyőrzői a cella vagy az ősei `UserObject` / `object` adataiból (`%id%`, `%width%`, `%height%` is);
+  `transparentBounds=1` konténerek: a doboz a gyerekek köré számolva, `groupPadding`-gel.
+- **Színek:** `#rgb`, `#rrggbb`, `#rgba`, `#rrggbbaa`, `rgb()` / `rgba()`, a gyakori nevek, `none`, `default`,
+  `light-dark(a, b)` (a világos); más színre hivatkozók (mxCellRenderer.resolveColor): `inherit`,
+  `parentFillColor` / `parentStrokeColor`, `swimlane`, `fillColor` / `strokeColor`.
 - **Perimeterek** (`mxPerimeter`): rectangle, ellipse, rhombus, triangle, hexagon, hexagon2, trapezoid,
   parallelogram, step, center, orthogonal, lifeline, backbone, callout. Port- és constraint-pontok
   (`entryX/exitX…`, `getConnectionPoint`, `getPerimeterPoint`). A tükrözött (`flipH` / `flipV`) alakzaton a draw.io
@@ -79,7 +88,8 @@ Ez nem csak „az alapdolgok”: a nehéz rész nagyobbik fele itt van. Az egés
 - **mxCylinder**: a fedő magassága `size`-ból vagy a magasság ötödéből (legfeljebb 40); `boundedLbl=1`: a címke a
   fedő alatt.
 - **A 16 alapalakzat**: rectangle, ellipse, doubleEllipse, rhombus, cylinder, actor, triangle, hexagon, cloud,
-  line, arrow, arrowConnector, swimlane, image, label, connector.
+  line, arrow, arrowConnector, swimlane, image, label, connector. Az arrowConnector a draw.io `flexArrow` és `link`
+  nevén van meg; a ritka `shape=arrowConnector` név sima vonalként rajzolódik.
 - **mxStencil**: a stencil-XML értelmezője (szöveg, dash, gradient, `linecap` / `linejoin` / `miterlimit` a stencilben
   is; a saját szövege az alakzattal együtt fordul és tükröződik, tükörírás nélkül), és az
   `mxStencilRegistry` névképzése.
@@ -111,7 +121,8 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **58 megvan**:
 - **Élek:** flexArrow, link, wire, pipe, filledEdge, taperedArrow, mermaidSankeyLink.
 - **Extra markerek** (Shapes.js / Graph.js): async, openAsync, box, circle, circlePlus, cross, dash, halfCircle,
   doubleBlock, baseDash, ER-végek (ERone, ERmandOne, ERmany, ERoneToMany, ERzeroToMany, ERzeroToOne).
-- **Egyebek:** IsometricConnector élstílus, callout perimeter.
+- **Egyebek:** IsometricConnector élstílus, callout perimeter; `flowAnimation=1`: a folytonos vonal szaggatottan,
+  állóképként (Graph.addFlowAnimationToNode mintázata).
 
 **41 hiányzik**, de a mintákban szinte egyik sem fordul elő:
 
@@ -122,7 +133,7 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **58 megvan**:
 | ext, requiredInterface, umlState | 1 |
 | a többi 35 (wedgeCallout, manualInput, internalStorage, display, sortShape, tapeData, process2, doubleArrow, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
 
-A folyamatábrák gyakori alakzatai (manual input, display, collate…) a mintákban `mxgraph.flowchart.*` stencilként
+A folyamatábrák gyakori alakzatai (manual input, display, internal storage…) a mintákban `mxgraph.flowchart.*` stencilként
 szerepelnek, és azok megvannak (lásd 3.).
 
 ## 3. `mxgraph.*` családok
@@ -137,7 +148,7 @@ szándékosan nincsenek benne.
 
 **Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből meg van írva:
 
-- basic: arc, pie, partConcEllipse;
+- basic: arc, pie, partConcEllipse, diag_snip_rect;
 - floorplan: wall, wallCorner, wallU, room, doorLeft/Right/Double, window, stairs;
 - arrows2.arrow;
 - infographic: cylinder, shadedCube, ribbonSimple;
