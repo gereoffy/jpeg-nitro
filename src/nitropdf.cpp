@@ -2272,6 +2272,11 @@ struct Interp {
         s->type = type;
         for (size_t k = 0; k < 6 && k < co.size(); k++) s->c[k] = co[k];
         if (type == 3 && (s->c[2] < 0 || s->c[5] < 0)) return nullptr;
+        if (type == 3) {   // (one circle touching the other from inside, a start point on the end circle's edge: plutovg's
+                           // radial gradient has no such case and draws nothing; the start moved a thousandth towards the end's centre)
+            float dx = s->c[3] - s->c[0], dy = s->c[4] - s->c[1], d = hypotf(dx, dy), dr = fabsf(s->c[5] - s->c[2]);
+            if (d > 0 && fabsf(d - dr) <= 1e-4f * std::max(s->c[2], s->c[5])) s->c[0] += dx * 1e-3f, s->c[1] += dy * 1e-3f;
+        }
         auto dom = nums(doc, doc.get(sh, "Domain"));
         float t0 = dom.size() >= 2 ? dom[0] : 0, t1 = dom.size() >= 2 ? dom[1] : 1;
         Val ext = doc.resolve(doc.get(sh, "Extend"));
