@@ -2898,6 +2898,13 @@ std::string asciiMathText(const std::string &t, bool html) {
             auto sym = texSymbols().find(w);
             static const char *const fn[] = {"sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "log", "ln", "exp", "det",
                                              "dim", "lim", "mod", "gcd", "lcm", "min", "max", "sup", "inf", "arcsin", "arccos", "arctan"};
+            // (AsciiMath's own words, and the two-letter ones it shares with TeX; TeX's other two-letter names (ll, gg, ni ...)
+            // are letters here)
+            static const std::map<std::string, uint32_t> own = {
+                {"oo", 0x221e}, {"pi", 0x3c0}, {"mu", 0x3bc}, {"nu", 0x3bd}, {"xi", 0x3be}, {"Pi", 0x3a0}, {"Xi", 0x39e}, {"in", 0x2208},
+                {"to", 0x2192}, {"le", 0x2264}, {"ge", 0x2265}, {"ne", 0x2260}, {"pm", 0xb1}, {"uu", 0x222a}, {"nn", 0x2229}, {"vv", 0x2228},
+                {"AA", 0x2200}, {"EE", 0x2203}, {"RR", 0x211d}, {"NN", 0x2115}, {"ZZ", 0x2124}, {"QQ", 0x211a}, {"CC", 0x2102},
+                {"del", 0x2202}, {"grad", 0x2207}, {"sub", 0x2282}, {"sube", 0x2286}, {"supe", 0x2287}, {"prop", 0x221d}};
             bool func = false;
             for (const char *f : fn) func = func || w == f;
             if (w == "text" && j < t.size() && t[j] == '(') {   // (text(...): as it is)
@@ -2906,7 +2913,10 @@ std::string asciiMathText(const std::string &t, bool html) {
                 o += t.substr(j + 1, e - j - 1);
                 j = std::min(t.size(), e + 1);
             } else if (w == "sqrt") nf_utf8_put(o, 0x221a);   // (sqrt(x): √(x))
-            else if (sym != texSymbols().end() && w.size() > 2) texPut(o, html, sym->second);
+            else if (uint32_t cp = own.count(w) ? own.at(w) : sym != texSymbols().end() && w.size() > 2 ? sym->second : 0) {
+                if (texOpKind(cp)) texSign(o, html, cp);   // (a word for an operator or a relation: spaced as its sign)
+                else texPut(o, html, cp);
+            }
             else if (func) o += w;
             else
                 for (char ch : w) texPut(o, html, (unsigned char)ch);

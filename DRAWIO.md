@@ -325,8 +325,11 @@ A referencia-renderek MathJax-szal készülnek (`samples_drawio/reference-tools/
 - **Szerkezet:** `\\` sortörés, `&` (mátrix) szóköz, `\left` / `\right` / `\big`, `\hline` és a környezetnevek
   (`\begin{pmatrix}`, egy `array` oszlopleírása) eldobva, `\lgroup` / `\rgroup` zárójelként, `\&` és társai
   szó szerint, más parancs a nevével (`\sin`, `\log`, `\lim`).
-- **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; `sqrt` → √, `text(…)`
-  szó szerint, a beírt TeX-parancsok (`\text{…}`) is; `^` / `_` zárójeles vagy `{…}` csoporttal.
+- **AsciiMath:** ugyanazok a szavak (alpha, sum …) és `->`, `=>`, `<=`, `!=`, `xx`, `+-`; a saját szavai is
+  (`oo` ∞, `pi`, `mu`, `in` ∈, `le`, `ge`, `ne`, `to`, `uu` ∪, `nn` ∩, `AA` ∀, `EE` ∃, `RR` ℝ, `del` ∂ …), a
+  műveletet vagy relációt jelentő szó a jelével azonos térközzel; `sqrt` → √, `text(…)` szó szerint, a beírt
+  TeX-parancsok (`\text{…}`) is; `^` / `_` zárójeles vagy `{…}` csoporttal. A szó egész betűsorozat: `2 pi r` → 2πr,
+  de `2pir` betűk marad (az AsciiMath ott is felismerné).
 
 **Hiányzik:**
 
