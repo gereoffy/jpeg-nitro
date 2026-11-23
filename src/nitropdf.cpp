@@ -2042,10 +2042,12 @@ struct Interp {
         if (!clipBox(b, clip)) return;
         int elements = plutovg_path_get_elements(run, nullptr);
         plutovg_matrix_t inv;
-        bool tiled = gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv);
-        if (!out->empty() && gs.fillA >= 1 && !tiled) {
+        // (filled by a pattern: its shading or its cell, as a path is)
+        bool shaded = gs.fillPattern && gs.fillShade && plutovg_matrix_invert(&m, &inv);
+        bool tiled = !shaded && gs.fillPattern && gs.fillTile && plutovg_matrix_invert(&m, &inv);
+        if (!out->empty() && gs.fillA >= 1 && !tiled && !shaded) {
             Item &l = out->back();
-            if (l.kind == Item::FILL && l.text && !l.tile && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
+            if (l.kind == Item::FILL && l.text && !l.tile && !l.shade && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.rgb == gs.fillRgb && l.alpha >= 1 && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= 4 * (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, run, nullptr);
                 l.segments += elements;
@@ -2060,10 +2062,9 @@ struct Interp {
         it.clip = clip;
         it.rgb = gs.fillRgb, it.alpha = gs.fillA;
         it.m = m;
-        if (tiled) {
-            it.tile = gs.fillTile;
-            mul(it.shadeM, gs.fillShadeM, inv);
-        }
+        if (shaded) it.shade = gs.fillShade;
+        if (tiled) it.tile = gs.fillTile;
+        if (shaded || tiled) mul(it.shadeM, gs.fillShadeM, inv);
         it.box = b;
         plutovg_path_t *own = plutovg_path_create();
         plutovg_path_add_path(own, run, nullptr);
