@@ -1793,6 +1793,9 @@ struct GState {
     std::shared_ptr<Shade> fillShade;   // (a shading pattern's: fills by it)
     std::shared_ptr<Tiling> fillTile;   // (a tiling pattern's)
     plutovg_matrix_t fillShadeM;        // (their space -> the page's display coordinates)
+    std::shared_ptr<Shade> strokeShade;   // (the same for strokes: an axial or radial shading's, not a mesh's)
+    std::shared_ptr<Tiling> strokeTile;
+    plutovg_matrix_t strokeShadeM;
     std::shared_ptr<SoftMask> smask;   // (the soft mask set: what is painted is drawn through it)
     uint8_t blend = 0;                 // (the blend mode: BLEND_NAMES' index)
     float width = 1, miter = 10, dashOffset = 0;
@@ -2210,10 +2213,14 @@ struct Interp {
         int elements = plutovg_path_get_elements(path, nullptr);
         plutovg_rect_t unused;
         float length = gs.dash ? plutovg_path_extents(path, &unused, false) : 0;
+        // a stroke by a pattern: its shading (an axial or radial one: a mesh is drawn as a fill only) or its cell
+        plutovg_matrix_t inv;
+        bool shaded = gs.strokePattern && gs.strokeShade && !gs.strokeShade->mesh, tiled = gs.strokePattern && gs.strokeTile && !shaded;
+        if ((shaded || tiled) && !plutovg_matrix_invert(&m, &inv)) shaded = tiled = false;
         // the same stroke as the last item, opaque: one path (a CAD plot's "m l S" lines)
-        if (!out->empty() && gs.strokeA >= 1 && !shared) {
+        if (!out->empty() && gs.strokeA >= 1 && !shared && !shaded && !tiled) {
             Item &l = out->back();
-            if (l.kind == Item::STROKE && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
+            if (l.kind == Item::STROKE && !l.shade && !l.tile && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
                 l.join == gs.join && l.miter == gs.miter && l.dash == gs.dash && l.dashOffset == gs.dashOffset && !memcmp(&l.m, &m, sizeof m) &&
                 l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1) {
                 plutovg_path_add_path(l.path->p, path, nullptr);
@@ -2233,6 +2240,9 @@ struct Interp {
         it.width = gs.width, it.cap = gs.cap, it.join = gs.join, it.miter = gs.miter;
         it.dash = gs.dash, it.dashOffset = gs.dashOffset;
         it.m = m;
+        if (shaded) it.shade = gs.strokeShade;
+        if (tiled) it.tile = gs.strokeTile;
+        if (shaded || tiled) mul(it.shadeM, gs.strokeShadeM, inv);
         it.box = b;
         if (shared) it.path = shared;
         else {   // (its own copy: later strokes may be merged into it)
@@ -2609,10 +2619,13 @@ struct Interp {
         bool &pat = fill ? gs.fillPattern : gs.strokePattern;
         uint32_t &rgb = fill ? gs.fillRgb : gs.strokeRgb;
         bool &none = fill ? gs.fillNone : gs.strokeNone;
-        if (fill) gs.fillShade.reset(), gs.fillTile.reset();
+        std::shared_ptr<Shade> &shade = fill ? gs.fillShade : gs.strokeShade;
+        std::shared_ptr<Tiling> &tile = fill ? gs.fillTile : gs.strokeTile;
+        plutovg_matrix_t &shadeM = fill ? gs.fillShadeM : gs.strokeShadeM;
+        shade.reset(), tile.reset();
         if (cs->k == CS::PATTERN) {
-            // a pattern: a shading pattern fills by its shading, a tiling one by its cell; what they
-            // cannot (a stroke) with the shading's middle colour, grey, an uncoloured pattern's colour
+            // a pattern: a shading pattern paints by its shading, a tiling one by its cell; what they
+            // cannot (a mesh on a stroke or a text) with the shading's middle colour, grey, an uncoloured pattern's colour
             pat = true;
             none = false;
             rgb = 0x808080;
@@ -2638,7 +2651,7 @@ struct Interp {
                         scs->toRGB(out, col);
                         rgb = packRgb(col);
                     }
-                    if (fill && (gs.fillShade = loadShade(shRef.t == pp::REF ? shRef : sh, res))) mul(gs.fillShadeM, pmat, patBase);
+                    if ((shade = loadShade(shRef.t == pp::REF ? shRef : sh, res))) mul(shadeM, pmat, patBase);
                 } else {
                     if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
                         float cc[32] = {0};   // (fewer numbers than its space has components: the others 0)
@@ -2647,7 +2660,7 @@ struct Interp {
                         cs->base->toRGB(cc, col);
                         rgb = packRgb(col);
                     }
-                    if (fill && (gs.fillTile = loadTiling(pref, res))) mul(gs.fillShadeM, pmat, patBase);
+                    if ((tile = loadTiling(pref, res))) mul(shadeM, pmat, patBase);
                 }
             }
             return;
@@ -2664,6 +2677,7 @@ struct Interp {
         auto cs = loadCS(P, name, res, 0);
         if (!cs) cs = deviceCS(CS::GRAY);
         if (fill) gs.fillShade.reset(), gs.fillTile.reset();
+        else gs.strokeShade.reset(), gs.strokeTile.reset();
         (fill ? gs.fillCS : gs.strokeCS) = cs;
         float *c = fill ? gs.fillC : gs.strokeC;
         cs->initial(c);
@@ -3392,17 +3406,17 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
 
 const int MAX_TILE_PIXELS = 4 << 20, MIN_TILE = 16, MAX_TILE_COPIES = 4096;
 
-// A fill by a tiling pattern: its cell drawn into a tile at the canvas's resolution (nx x ny cells
+// A tiling pattern as the canvas's paint, for a fill or a stroke: its cell drawn into a tile at the canvas's resolution (nx x ny cells
 // of a small pattern in one tile, at least MIN_TILE pixels across; coarser if more than
 // MAX_TILE_PIXELS), with the neighbouring cells' parts reaching into it (a BBox larger than the
-// steps), filling the path as a repeated texture. An uncoloured one: the tile in its colour.
-void tileFill(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, TileCache &tc, const nd::Cancel &cancel,
-              int &rc) {
+// steps), set as a repeated texture at alpha. An uncoloured one: the tile in its colour. False: no tile (nothing to paint).
+bool tilePaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, float alpha, TileCache &tc,
+               const nd::Cancel &cancel, int &rc) {
     const Tiling &T = *it.tile;
     plutovg_matrix_t pd;   // (the pattern's space -> the canvas)
     plutovg_matrix_multiply(&pd, &it.shadeM, &m);
     double ux = hypot(pd.a, pd.b), uy = hypot(pd.c, pd.d), w = T.xs * ux, h = T.ys * uy;
-    if (!(w > 1e-4 && h > 1e-4 && w < 1e9 && h < 1e9)) return;
+    if (!(w > 1e-4 && h > 1e-4 && w < 1e9 && h < 1e9)) return false;
     int nx = std::min(64, std::max(1, (int)ceil(MIN_TILE / w))), ny = std::min(64, std::max(1, (int)ceil(MIN_TILE / h)));
     double W = w * nx, H = h * ny;
     if (W * H > MAX_TILE_PIXELS) {
@@ -3418,11 +3432,11 @@ void tileFill(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_ma
             s = x.s;
     float kx = (float)(iw / (T.xs * nx)), ky = (float)(ih / (T.ys * ny));   // (tile pixels per pattern unit)
     if (!s) {
-        if (!(s = plutovg_surface_create(iw, ih))) return;
+        if (!(s = plutovg_surface_create(iw, ih))) return false;
         plutovg_canvas_t *tcv = plutovg_canvas_create(s);
         if (!tcv) {
             plutovg_surface_destroy(s);
-            return;
+            return false;
         }
         // the cells whose box reaches into the tile's nx x ny of them
         float X = T.xs * nx, Y = T.ys * ny;
@@ -3464,9 +3478,8 @@ void tileFill(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_ma
     plutovg_matrix_t sc, tm;   // (the tile's pixels -> the pattern's space -> the path's)
     plutovg_matrix_init_scale(&sc, 1 / kx, 1 / ky);
     plutovg_matrix_multiply(&tm, &sc, &it.shadeM);
-    plutovg_canvas_set_texture(c, s, PLUTOVG_TEXTURE_TYPE_TILED, it.alpha, &tm);
-    plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
-    plutovg_canvas_fill_path(c, it.path->p);
+    plutovg_canvas_set_texture(c, s, PLUTOVG_TEXTURE_TYPE_TILED, alpha, &tm);
+    return true;
 }
 
 // --- transparency: blend modes (11.3.5), soft masks (11.6.5), groups (11.4.7) --------------------
@@ -3651,6 +3664,17 @@ void composeItem(nitropdf &P, plutovg_canvas_t *c, const Item &it, const std::ve
     plutovg_surface_destroy(layer);
 }
 
+// An axial or radial shading as the canvas's paint, for a fill or a stroke: plutovg's gradient at alpha, m its space -> the path's
+void shadePaint(plutovg_canvas_t *c, const Shade &s, float alpha, const plutovg_matrix_t &m) {
+    std::vector<plutovg_gradient_stop_t> stops = s.stops;
+    for (auto &st : stops) st.color.a = alpha;
+    if (s.type == 2)
+        plutovg_canvas_set_linear_gradient(c, s.c[0], s.c[1], s.c[2], s.c[3], PLUTOVG_SPREAD_METHOD_PAD, stops.data(), (int)stops.size(), &m);
+    else   // (SVG's terms: the start circle its focal one)
+        plutovg_canvas_set_radial_gradient(c, s.c[3], s.c[4], s.c[5], s.c[0], s.c[1], s.c[2], PLUTOVG_SPREAD_METHOD_PAD, stops.data(),
+                                           (int)stops.size(), &m);
+}
+
 void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vector<Clip> &clips, plutovg_canvas_t *c,
                const plutovg_matrix_t &view, const double vb[4], double scale, const nd::Cancel &cancel, int &rc, TileCache *tc,
                bool plain) {
@@ -3694,20 +3718,15 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
         if (it.kind == Item::FILL && it.shade && it.shade->mesh) {
             meshFill(c, it, m, view);
         } else if (it.kind == Item::FILL && it.tile) {
-            tileFill(P, c, it, m, *tc, cancel, rc);
+            bool painted = tilePaint(P, c, it, m, it.alpha, *tc, cancel, rc);
             if (rc) break;
+            if (painted) {
+                plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
+                plutovg_canvas_fill_path(c, it.path->p);
+            }
         } else if (it.kind == Item::FILL) {
-            if (it.shade) {
-                const Shade &s = *it.shade;
-                std::vector<plutovg_gradient_stop_t> stops = s.stops;
-                for (auto &st : stops) st.color.a = it.alpha;
-                if (s.type == 2)
-                    plutovg_canvas_set_linear_gradient(c, s.c[0], s.c[1], s.c[2], s.c[3], PLUTOVG_SPREAD_METHOD_PAD, stops.data(),
-                                                       (int)stops.size(), &it.shadeM);
-                else   // (SVG's terms: the start circle its focal one)
-                    plutovg_canvas_set_radial_gradient(c, s.c[3], s.c[4], s.c[5], s.c[0], s.c[1], s.c[2], PLUTOVG_SPREAD_METHOD_PAD,
-                                                       stops.data(), (int)stops.size(), &it.shadeM);
-            } else nd::setRgb(c, it.rgb, it.alpha);
+            if (it.shade) shadePaint(c, *it.shade, it.alpha, it.shadeM);
+            else nd::setRgb(c, it.rgb, it.alpha);
             plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
             plutovg_canvas_fill_path(c, it.path->p);
         } else if (it.kind == Item::STROKE) {
@@ -3730,7 +3749,13 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
                 dashed = period * k2 >= 0.5f && it.length / period * perPeriod <= MAX_DASHES;
                 if (!dashed) alpha *= clampf(on / period, 0, 1);
             }
-            nd::setRgb(c, it.rgb, alpha);
+            // (its paint: its colour, or its pattern's axial / radial shading or cell)
+            if (it.shade) shadePaint(c, *it.shade, alpha, it.shadeM);
+            else if (it.tile) {
+                bool painted = tilePaint(P, c, it, m, alpha, *tc, cancel, rc);
+                if (rc) break;
+                if (!painted) continue;
+            } else nd::setRgb(c, it.rgb, alpha);
             // (2 pixels wide at most: round caps and joins drawn square and bevelled, half a pixel apart
             // at most; the stroker's arcs took most of the time of a CAD plot's round-capped hairlines)
             bool thin = w * k2 <= 2;
