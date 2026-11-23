@@ -1,0 +1,264 @@
+PARKED PATCH - not applied by the build, not in the lunasvg fork (github.com/gereoffy/lunasvg).
+For third_party/lunasvg (plutovg/source/plutovg-ft-raster.c), made against the fork's 4c7ed7a on 2026-11-23.
+
+Why it was made
+---------------
+A review of nitropdf drew a page of 50 000 long lines one across the other, each its own "m l S". nitropdf merged a
+thousand of them into one path (as it merges a CAD plot's lines), and the page took 12 s at 900 pixels where the same
+lines drawn one by one took 0.7 s. A profile had 93 % of the time in gray_find_cell.
+
+plutovg's rasteriser keeps the cells of a row of pixels in a list sorted by x. Since the fork's fa64290 a cell is looked
+up from the cell the row used last, forwards or backwards: that is the next cell for an edge that follows the last one
+(a contour, a hatching's lines in their order, an isometric grid), which is what fa64290 was made for. It does not help
+when the lines of one path cross each other in any order: every line's cell in a row is somewhere else than the last
+line's, so the search walks about a third of the row for each of them, and the time grows with the square of the lines
+in a row again.
+
+What it does
+------------
+A search that has walked 16 cells (PVG_FT_FAR_STEPS) starts again from the cell such a search found last in the same
+thirty-second of the row's width (PVG_FT_ROW_BUCKETS), or in the nearest part before it that has one. A row's table of
+those 32 cells is taken from the cells' pool at the row's first far search, so a row without one costs nothing, and only
+outlines of 1024 points or more (PVG_FT_BUCKET_POINTS) have the rows' table pointers at all. Cells found within a few
+steps are found exactly as before, small outlines (a glyph, a single line) are rasterised exactly as before, and the
+spans that come out are the same in every case: only where the search starts changes, not what it finds.
+
+Measured (nitropdf without its own merge limit, the 50 000 lines):  900 px 12.3 s -> 2.9 s,  3000 px 53.6 s -> 9.4 s.
+One path of the file's own with 20 000 crossing lines ("m l m l ... S"):  900 px 6.1 s -> 0.6 s,  3000 px 97 s -> 5.1 s;
+with 2000 lines:  900 px 0.56 s -> 0.09 s,  3000 px 4.1 s -> 0.5 s.
+
+Why it is not used
+------------------
+No real drawing needs it. Of about 3500 sample drawings (1031 PDF, 1386 draw.io, 1126 DXF / DWG / CorelDRAW / SVG /
+WMF / Visio) none renders measurably faster with it (the 1126: 138.6 s without, 138.0 s with), because none has a path
+of many long lines crossing in any order. The case the review found is handled in nitropdf itself since d9b030a
+(strokes are merged only while they cross a row of pixels 16 times on average: that page takes 1.3 s, with or without
+this patch). What is left is a single path that a file itself gives with thousands of crossing lines (a wireframe, a
+scribble): synthetic so far. 79 lines in the rasteriser's hottest function are not worth carrying in the fork for that.
+
+When to take it out again: a real drawing that spends its render time in gray_find_cell / gray_record_cell (a long
+render of one or a few large paths; sample it with a profiler). Then apply this, measure that file, and repeat the
+checks below before it goes into the fork.
+
+How it was checked (the tools are in samples_pdf-test/raster-far-cells/, which is not in git: README.txt there)
+-----------------------------------------------------------------------------------------------------------------
+- rtest.c, 8 seeds x 150 random paths (crossing lines, short lines, hatchings, polygons, with and without a clip,
+  canvases of 7 to 6000 pixels): the same pixels as the unpatched rasteriser; clean under ASan + UBSan.
+- The render hashes of the 3500 sample drawings above: identical with and without it.
+- Speed on real drawings: within 1-2 % either way (the noise of the measurement). Two earlier forms were slower by
+  5-7 % on large CAD drawings (a table of starting points written at every cell; one cleared for every row before the
+  band is drawn), which is why the table is taken only when a row first needs it.
+- Both rasteriser objects were compiled with one command line (the Makefile's flags) and linked before
+  build/libnitrovec.a, so that only this file differed between the two programs compared.
+
+To apply: cd third_party/lunasvg && patch -p1 < ../../patches/parked/plutovg-raster-far-cells.patch
+(or git apply; not git am: this text comes before the mail header). The fork commit it was, 655bafd, follows as made.
+
+From 655bafde6a68fda2791c1dabcca4dee07740b845 Mon Sep 17 00:00:00 2001
+From: A'rpi <arpi.git@interoot.hu>
+Date: Mon, 23 Nov 2026 19:04:50 +0100
+Subject: [PATCH] plutovg: a scanline's cell far from the one used last looked
+ up from its part of the row
+
+A row's cells are a list sorted by x, a cell looked up from the one the row used last. That is
+the next cell for an edge that follows the last one, but not for lines drawn across each other
+in any order: every line's cell in a row is somewhere else than the last line's, and a path of
+a thousand such lines walked a third of the row for each of them (50 000 long lines on a page,
+merged a thousand to a stroke: 12 s at 900 pixels, 54 s at 3000).
+
+A search that has walked 16 cells now starts again from the cell such a search found last in
+the same thirty-second of the row's width, or in the nearest part before it that has one. A
+row's table of those 32 cells is taken from the cells' pool at its first far search, so a row
+without one costs nothing, and only outlines of 1024 points or more have the tables' pointers
+at all: the cells found within a few steps, and small outlines, are rasterized as before. The
+page above takes 2.9 s and 9.4 s.
+
+The spans are the same as before (1200 random outlines against the old code, strokes, fills,
+hatchings, with and without a clip, also under ASan and UBSan; 3500 PDF, draw.io, DXF, DWG,
+CorelDRAW, SVG, WMF and Visio drawings rendered in full: identical). Their time is unchanged
+(138.6 s and 138.0 s for the 1126 drawings other than PDF).
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ plutovg/source/plutovg-ft-raster.c | 86 +++++++++++++++++++++++++++---
+ 1 file changed, 79 insertions(+), 7 deletions(-)
+
+diff --git a/plutovg/source/plutovg-ft-raster.c b/plutovg/source/plutovg-ft-raster.c
+index 491b590..740a84b 100644
+--- a/plutovg/source/plutovg-ft-raster.c
++++ b/plutovg/source/plutovg-ft-raster.c
+@@ -148,6 +148,22 @@ PVG_FT_END_STMNT
+   /* maximal number of gray spans in a call to the span callback */
+ #define PVG_FT_MAX_GRAY_SPANS  256
+ 
++  /* A row's cells are a list sorted by x, a cell looked for from the one  */
++  /* used last in the row. That is the next one for an edge that follows   */
++  /* the last (a contour, a hatching's lines in their order), but far away */
++  /* for lines drawn across each other in any order: a thousand of them in */
++  /* one path walked a third of the row for each of their cells. So in an  */
++  /* outline of at least PVG_FT_BUCKET_POINTS points a search that has     */
++  /* walked PVG_FT_FAR_STEPS cells starts again, from the cell such a      */
++  /* search found last in the same part of the row's width (or the nearest */
++  /* part before it that has one); a row has PVG_FT_ROW_BUCKETS parts, its */
++  /* table taken from the cells' pool at its first such search. The cells  */
++  /* found within a few steps are found as before, a row with no far cell  */
++  /* has no table, and a small outline (a glyph, a line) none at all.      */
++#define PVG_FT_ROW_BUCKETS     32
++#define PVG_FT_BUCKET_POINTS   1024
++#define PVG_FT_FAR_STEPS       16
++
+ 
+   typedef struct TCell_*  PCell;
+ 
+@@ -202,6 +218,11 @@ PVG_FT_END_STMNT
+ 
+     PCell*     ycells;
+     PCell*     yhints;   /* each row's cell used last */
++    PCell**    ybuckets; /* and, for an outline of many points, each row's     */
++                         /* table of a cell in each of its PVG_FT_ROW_BUCKETS  */
++                         /* parts (see there), NULL until the row needs one    */
++    int        buckets;  /* PVG_FT_ROW_BUCKETS, or 0: no tables                */
++    int        xshift;   /* a cell's part: ( x + 1 ) >> xshift                 */
+     TPos       ycount;
+   } TWorker, *PWorker;
+ 
+@@ -219,6 +240,7 @@ PVG_FT_END_STMNT
+ 
+     ras.ycells      = (PCell*) buffer;
+     ras.yhints      = NULL;
++    ras.ybuckets    = NULL;
+     ras.cells       = NULL;
+     ras.max_cells   = 0;
+     ras.num_cells   = 0;
+@@ -281,6 +303,7 @@ PVG_FT_END_STMNT
+   {
+     PCell  cell, prev, hint;
+     TPos    x = ras.ex;
++    int     steps = 0, far = 0;
+ 
+ 
+     if ( x > ras.count_ex )
+@@ -291,6 +314,8 @@ PVG_FT_END_STMNT
+     /* each other, and searching from the row's start took the square of */
+     /* the cells in a row (long lines, dense hatchings and grids)        */
+     hint = ras.yhints[ras.ey];
++
++  Search:
+     if ( hint && hint->x > x )
+     {
+       cell = hint;
+@@ -299,6 +324,8 @@ PVG_FT_END_STMNT
+       {
+         cell = prev;
+         prev = prev->prev;
++        if ( ++steps == PVG_FT_FAR_STEPS && ras.buckets && !far )
++          goto Far;
+       }
+       if ( prev && prev->x == x )
+       {
+@@ -314,6 +341,8 @@ PVG_FT_END_STMNT
+       {
+         prev = cell;
+         cell = cell->next;
++        if ( ++steps == PVG_FT_FAR_STEPS && ras.buckets && !far )
++          goto Far;
+       }
+       if ( cell && cell->x == x )
+         goto Exit;
+@@ -344,7 +373,39 @@ PVG_FT_END_STMNT
+ 
+   Exit:
+     ras.yhints[ras.ey] = cell;
++    if ( far && ras.ybuckets[ras.ey] )
++      ras.ybuckets[ras.ey][( x + 1 ) >> ras.xshift] = cell;
+     return cell;
++
++  Far:
++    /* far from the row's last cell: from its part's cell, any cell of the */
++    /* row a right place to start from (none there: from the last again)   */
++    {
++      const int  block = (int)( ( PVG_FT_ROW_BUCKETS * sizeof ( PCell ) + sizeof ( TCell ) - 1 ) / sizeof ( TCell ) );
++      PCell*     row   = ras.ybuckets[ras.ey];
++      int        b     = (int)( ( x + 1 ) >> ras.xshift );
++
++
++      if ( !row && ras.num_cells + block <= ras.max_cells )
++      {
++        /* (the row's table: as many cells of the pool as it takes) */
++        row = (PCell*)( ras.cells + ras.num_cells );
++        ras.num_cells += block;
++        for ( b = 0; b < PVG_FT_ROW_BUCKETS; b++ )
++          row[b] = NULL;
++        ras.ybuckets[ras.ey] = row;
++        b = (int)( ( x + 1 ) >> ras.xshift );
++      }
++      if ( row )
++      {
++        while ( b > 0 && !row[b] )
++          b--;
++        if ( row[b] )
++          hint = row[b];
++      }
++      far = 1;
++      goto Search;
++    }
+   }
+ 
+ 
+@@ -1767,6 +1828,11 @@ void PVG_FT_Outline_Get_CBox(const PVG_FT_Outline* outline, PVG_FT_BBox* acbox)
+     ras.count_ex = ras.max_ex - ras.min_ex;
+     ras.count_ey = ras.max_ey - ras.min_ey;
+ 
++    ras.buckets = ras.outline.n_points >= PVG_FT_BUCKET_POINTS ? PVG_FT_ROW_BUCKETS : 0;
++    ras.xshift  = 0;
++    while ( ( ( ras.count_ex + 1 ) >> ras.xshift ) >= PVG_FT_ROW_BUCKETS )
++      ras.xshift++;
++
+     /* set up vertical bands */
+     num_bands = (int)( ( ras.max_ey - ras.min_ey ) / ras.band_size );
+     if ( num_bands == 0 )
+@@ -1800,11 +1866,12 @@ void PVG_FT_Outline_Get_CBox(const PVG_FT_Outline* outline, PVG_FT_BBox* acbox)
+           int    cell_start, cell_end, cell_mod;
+ 
+ 
+-          ras.ycells = (PCell*)ras.buffer;
+-          ras.ycount = band->max - band->min;
+-          ras.yhints = ras.ycells + ras.ycount;
++          ras.ycells   = (PCell*)ras.buffer;
++          ras.ycount   = band->max - band->min;
++          ras.yhints   = ras.ycells + ras.ycount;
++          ras.ybuckets = (PCell**)( ras.yhints + ras.ycount );
+ 
+-          cell_start = 2 * sizeof ( PCell ) * ras.ycount;
++          cell_start = ( ras.buckets ? 3 : 2 ) * sizeof ( PCell ) * ras.ycount;
+           cell_mod   = cell_start % sizeof ( TCell );
+           if ( cell_mod > 0 )
+             cell_start += sizeof ( TCell ) - cell_mod;
+@@ -1821,8 +1888,8 @@ void PVG_FT_Outline_Get_CBox(const PVG_FT_Outline* outline, PVG_FT_BBox* acbox)
+           if ( ras.max_cells < 2 )
+             goto ReduceBands;
+ 
+-          for ( yindex = 0; yindex < 2 * ras.ycount; yindex++ )
+-            ras.ycells[yindex] = NULL;   /* (and the hints) */
++          for ( yindex = 0; yindex < ( ras.buckets ? 3 : 2 ) * ras.ycount; yindex++ )
++            ras.ycells[yindex] = NULL;   /* (and the hints, the rows' tables) */
+         }
+ 
+         ras.num_cells = 0;
+@@ -1993,7 +2060,12 @@ void PVG_FT_Outline_Get_CBox(const PVG_FT_Outline* outline, PVG_FT_BBox* acbox)
+     if ( cells > area )
+       cells = area;
+     cells += (double)( ymax - ymin );   /* (those left of the clip box, one a row) */
+-    return (size_t)fmin( cells * sizeof ( TCell ) + 2.0 * sizeof ( PCell ) * (double)( ymax - ymin + 2 ) + 4096,
++    /* (an outline of many points: a row's table of starting points may be */
++    /* taken from the pool, for a row with PVG_FT_FAR_STEPS cells at least) */
++    if ( outline->n_points >= PVG_FT_BUCKET_POINTS )
++      cells += fmin( (double)( ymax - ymin ), cells / PVG_FT_FAR_STEPS ) *
++               ( ( PVG_FT_ROW_BUCKETS * sizeof ( PCell ) + sizeof ( TCell ) - 1 ) / sizeof ( TCell ) );
++    return (size_t)fmin( cells * sizeof ( TCell ) + 3.0 * sizeof ( PCell ) * (double)( ymax - ymin + 2 ) + 4096,
+                          (double)PVG_FT_MAXIMUM_POOL_SIZE );
+   }
+ 
+-- 
+2.39.5 (Apple Git-154)
+
