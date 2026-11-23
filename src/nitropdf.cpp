@@ -2281,8 +2281,9 @@ struct Interp {
         }
         const int N = 64;   // (the function sampled: stitched ones change slope at their bounds)
         for (int k = 0; k < N; k++) {
-            float t = t0 + (t1 - t0) * k / (N - 1), out[MAX_COMPS] = {0}, col[3];
-            fn->eval(&t, out);
+            // (t in an array of 8: a function may read as many inputs as its /Domain has, the others 0)
+            float in[8] = {t0 + (t1 - t0) * k / (N - 1)}, out[MAX_COMPS] = {0}, col[3];
+            fn->eval(in, out);
             cs->toRGB(out, col);
             plutovg_gradient_stop_t st;
             st.offset = (float)k / (N - 1);
@@ -2362,8 +2363,8 @@ struct Interp {
             if (fn) {   // t's colours: the function at 256 points of the Decode range
                 M.lut.resize(256);
                 for (int k = 0; k < 256; k++) {
-                    float t = dec[4] + (dec[5] - dec[4]) * k / 255.f, out[MAX_COMPS] = {0}, c[3];
-                    fn->eval(&t, out);
+                    float in[8] = {dec[4] + (dec[5] - dec[4]) * k / 255.f}, out[MAX_COMPS] = {0}, c[3];   // (8: as readShade's)
+                    fn->eval(in, out);
                     rgbOf(out, c);
                     M.lut[k] = 0xff000000u | (uint32_t)lrintf(c[0] * 255) << 16 | (uint32_t)lrintf(c[1] * 255) << 8 | (uint32_t)lrintf(c[2] * 255);
                 }
@@ -2725,8 +2726,8 @@ struct Interp {
         Val tr = doc.get(d, "TR");
         auto fn = tr.t == pp::NAME ? nullptr : loadFunc(P, d.get("TR"), 0);
         for (int k = 0; k < 256; k++) {
-            float in = k / 255.f, o[MAX_COMPS] = {in};
-            if (fn) fn->eval(&in, o);
+            float in[8] = {k / 255.f}, o[MAX_COMPS] = {in[0]};   // (8: as readShade's)
+            if (fn) fn->eval(in, o);
             sm->tr[k] = (uint8_t)lrintf(clampf(o[0], 0, 1) * 255);
         }
         std::vector<Item> *savedOut = out;
