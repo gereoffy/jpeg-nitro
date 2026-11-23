@@ -140,7 +140,7 @@ double num(const Style &s, const char *k, double def) {
     return end != v.c_str() && std::isfinite(d) && std::fabs(d) < 1e7 ? d : def;   // (a damaged file's huge numbers: the default)
 }
 
-// a colour (0xAARRGGBB; 0: none): #rgb, #rrggbb, a few names, rgb(...), light-dark(a, b): a
+// a colour (0xAARRGGBB; 0: none): #rgb, #rrggbb, #rgba, #rrggbbaa, a few names, rgb(...), light-dark(a, b): a
 uint32_t parseColour(std::string v, uint32_t def) {
     if (v.empty()) return def;
     if (v.compare(0, 11, "light-dark(") == 0) {   // (up to the comma outside brackets: the light one may be rgb(r, g, b))
@@ -154,6 +154,11 @@ uint32_t parseColour(std::string v, uint32_t def) {
     if (v == "default") return def;
     if (v[0] == '#') {
         unsigned long n = strtoul(v.c_str() + 1, nullptr, 16);
+        if (v.size() == 5) n = (n & 0xf000) * 0x11000 | (n & 0xf00) * 0x1100 | (n & 0xf0) * 0x110 | (n & 0xf) * 0x11;   // (#rgba)
+        if (v.size() == 5 || v.size() == 9) {   // (#rrggbbaa: its alpha last; fully transparent: 0x00000001, as rgba()'s)
+            uint32_t c = (uint32_t)(n & 0xff) << 24 | (uint32_t)(n >> 8 & 0xffffff);
+            return c ? c : 1;
+        }
         if (v.size() == 4) n = (n & 0xf00) * 0x1100 | (n & 0xf0) * 0x110 | (n & 0xf) * 0x11;
         return 0xff000000u | (uint32_t)(n & 0xffffff);
     }
