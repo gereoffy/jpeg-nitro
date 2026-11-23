@@ -2633,7 +2633,7 @@ struct Interp {
                     if (fill && (gs.fillShade = loadShade(sh, res))) mul(gs.fillShadeM, pmat, patBase);
                 } else {
                     if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
-                        float cc[32];
+                        float cc[32] = {0};   // (fewer numbers than its space has components: the others 0)
                         for (size_t k = 0; k + 1 < n && k < 32; k++) cc[k] = (float)args[k].num();
                         float col[3];
                         cs->base->toRGB(cc, col);
