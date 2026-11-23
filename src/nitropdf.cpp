@@ -3268,8 +3268,9 @@ void rasterMesh(const Mesh &M, const plutovg_matrix_t &d, plutovg_surface_t *s) 
         float fx0 = std::min({x[0], x[1], x[2]}), fx1 = std::max({x[0], x[1], x[2]});
         float fy0 = std::min({y[0], y[1], y[2]}), fy1 = std::max({y[0], y[1], y[2]});
         if (!(fx1 >= 0 && fy1 >= 0 && fx0 < w && fy0 < h)) continue;
-        int ix0 = std::max(0, (int)floorf(fx0)), ix1 = std::min(w - 1, (int)ceilf(fx1));
-        int iy0 = std::max(0, (int)floorf(fy0)), iy1 = std::min(h - 1, (int)ceilf(fy1));
+        // (toInt: a coordinate beyond an int is the nearest one, the triangle still covers what it covers)
+        int ix0 = std::max(0, toInt(floorf(fx0))), ix1 = std::min(w - 1, toInt(ceilf(fx1)));
+        int iy0 = std::max(0, toInt(floorf(fy0))), iy1 = std::min(h - 1, toInt(ceilf(fy1)));
         // the edge functions (e_k: of the edge opposite vertex k, positive inside), each edge moved out by a
         // quarter pixel: two meshes meant to meet but a hair apart (their coordinates rounded each its own
         // way) leave no row of pixels between them
@@ -3320,8 +3321,8 @@ void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, co
         plutovg_matrix_map_point(&view, &p, &q);
         x0 = std::min(x0, q.x), x1 = std::max(x1, q.x), y0 = std::min(y0, q.y), y1 = std::max(y1, q.y);
     }
-    int ox = std::max(0, (int)floorf(x0) - 1), oy = std::max(0, (int)floorf(y0) - 1);
-    int ex = std::min(W, (int)ceilf(x1) + 1), ey = std::min(H, (int)ceilf(y1) + 1);
+    int ox = std::max(0, toInt(floorf(x0) - 1)), oy = std::max(0, toInt(floorf(y0) - 1));   // (toInt: as rasterMesh's)
+    int ex = std::min(W, toInt(ceilf(x1) + 1)), ey = std::min(H, toInt(ceilf(y1) + 1));
     if (ex <= ox || ey <= oy) return;
     int f = 1;
     while ((double)(ex - ox) / f * ((ey - oy) / f) > (16 << 20)) f *= 2;
