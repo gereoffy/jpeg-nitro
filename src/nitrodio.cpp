@@ -2640,6 +2640,9 @@ uint32_t texLast(const std::string &o) {
         e = lt;
     }
     if (e == 0) return 0;
+    if (e >= 4 && o.compare(e - 4, 4, "&lt;") == 0) return '<';   // (an HTML label's < > &: the sign, not its ;)
+    if (e >= 4 && o.compare(e - 4, 4, "&gt;") == 0) return '>';
+    if (e >= 5 && o.compare(e - 5, 5, "&amp;") == 0) return '&';
     size_t s = e - 1;
     while (s > 0 && ((unsigned char)o[s] & 0xc0) == 0x80) s--;
     size_t k = s;
@@ -2658,8 +2661,10 @@ void texSign(std::string &o, bool html, uint32_t cp) {
     // a relation after a relation: one relation, := ≤= ...)
     bool spaced = last && texOpKind(last) == 0 && last != '(' && last != '[' && last != '{' && (kind == 1 || kind == 2);
     if (kind == 2 && !last) spaced = false;
-    if (kind == 2 && after && texOpKind(last) == 2)   // (:= : the space after the first sign taken back)
+    if (kind == 2 && after && texOpKind(last) == 2) {   // (:= : the space after the first sign taken back, one after the pair)
         while (o.size() >= 2 && o.compare(o.size() - 2, 2, "\xc2\xa0") == 0) o.resize(o.size() - 2);
+        spaced = true, after = true;
+    }
     if (spaced && !after) o += "\xc2\xa0";   // (no break: MathJax keeps a formula on its line)
     if (cp == '-') cp = 0x2212;   // (TeX's minus)
     if (html && cp == '<') o += "&lt;";
@@ -2822,7 +2827,13 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
                 if (cmd == "begin" && (env == "array" || env == "tabular")) texRaw(t, false, i);
             }
             else o += cmd;   // (an operator name, \sin \log \max ..., or one not known: its name)
-        } else if (c == '&') {   // (an alignment, or the label's HTML's &lt; &gt; &amp;)
+        } else if (html && t.compare(i, 4, "&lt;") == 0) {   // (the label's HTML's < and >: relations, spaced as such)
+            texSign(o, html, '<');
+            i += 4;
+        } else if (html && t.compare(i, 4, "&gt;") == 0) {
+            texSign(o, html, '>');
+            i += 4;
+        } else if (c == '&') {   // (an alignment, or the label's HTML's other entities, &amp;)
             size_t e = t.find(';', i);
             if (html && e != std::string::npos && e - i < 8 && t.compare(i, 5, "&amp;") != 0) {
                 o += t.substr(i, e - i + 1);
@@ -2850,12 +2861,6 @@ std::string texText(const std::string &t, bool html, size_t &i, int depth, char 
         } else if (texOpKind((unsigned char)c) && c != '&') {
             texSign(o, html, (unsigned char)c);
             i++;
-        } else if (html && t.compare(i, 4, "&lt;") == 0) {
-            texSign(o, html, '<');
-            i += 4;
-        } else if (html && t.compare(i, 4, "&gt;") == 0) {
-            texSign(o, html, '>');
-            i += 4;
         } else {
             size_t n = (unsigned char)c < 0x80 ? 1 : 1 + ((unsigned char)c >= 0xe0) + ((unsigned char)c >= 0xf0);
             o += t.substr(i, n);
