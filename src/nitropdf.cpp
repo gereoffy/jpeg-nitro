@@ -54,6 +54,8 @@ const size_t MAX_LIST_BYTES = (size_t)768 << 20;   // the pages' display lists k
 const size_t MIN_LISTS = 4;                          // ... but always the last few drawn
 const uint64_t MAX_IMAGE_PIXELS = 32u << 20;   // an image beyond this is decoded smaller (a scanned A0 plan: 17 MP)
 const size_t MAX_MERGED = 4096;            // path elements merged into one stroke
+const float MAX_MERGE_ROWS = 16;           // ... while they cross a row of pixels this many times on average: the rasteriser keeps a
+                                           // row's cells in a sorted list, and lines one over the other cost it their number squared
 const float MAX_DASHES = 1 << 20;           // a stroke's dashes: with more, drawn solid
 const int MAX_COMPS = 32;                  // a colour's components, a function's outputs (the arrays they are read into)
 
@@ -434,6 +436,7 @@ struct Item {
     plutovg_matrix_t shadeM;        // (their space -> the path's)
     int segments = 0;   // (merged strokes: the path's elements so far)
     float length = 0;   // (a dashed stroke: its path's length, in its own units)
+    float span = 0;     // (merged strokes: their boxes' heights together, against MAX_MERGE_ROWS)
     bool text = false;  // (a glyph run's fill: merged with the next)
     nd::Box box;
 };
@@ -2223,10 +2226,12 @@ struct Interp {
             Item &l = out->back();
             if (l.kind == Item::STROKE && !l.shade && !l.tile && l.blend == gs.blend && l.smask == gs.smask && l.clip == clip && l.clipOwn == gs.clip && l.rgb == gs.strokeRgb && l.alpha >= 1 && l.width == gs.width && l.cap == gs.cap &&
                 l.join == gs.join && l.miter == gs.miter && l.dash == gs.dash && l.dashOffset == gs.dashOffset && !memcmp(&l.m, &m, sizeof m) &&
-                l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1) {
+                l.segments + elements <= (int)MAX_MERGED && l.path.use_count() == 1 &&
+                l.span + (b.y1 - b.y0) <= MAX_MERGE_ROWS * std::max(std::max(l.box.y1, b.y1) - std::min(l.box.y0, b.y0), 1.f)) {
                 plutovg_path_add_path(l.path->p, path, nullptr);
                 l.segments += elements;
                 l.length += length;
+                l.span += b.y1 - b.y0;
                 l.clipGap = std::min(l.clipGap, gap);
                 l.box.x0 = std::min(l.box.x0, b.x0), l.box.y0 = std::min(l.box.y0, b.y0);
                 l.box.x1 = std::max(l.box.x1, b.x1), l.box.y1 = std::max(l.box.y1, b.y1);
@@ -2253,6 +2258,7 @@ struct Interp {
         }
         it.segments = elements;
         it.length = length;
+        it.span = b.y1 - b.y0;
         emit(std::move(it));
     }
 
