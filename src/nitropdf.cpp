@@ -2619,10 +2619,13 @@ struct Interp {
                 if (pm.size() == 6) plutovg_matrix_init(&pmat, pm[0], pm[1], pm[2], pm[3], pm[4], pm[5]);
                 else plutovg_matrix_init_identity(&pmat);
                 if (toInt(doc.get(p, "PatternType").num(0)) == 2) {
-                    Val sh = doc.get(p, "Shading");
-                    auto scs = loadCS(P, doc.resolve(sh).get("ColorSpace"), res, 0);
-                    auto fn = loadFunc(P, doc.resolve(sh).get("Function"), 0);
-                    auto dom = nums(doc, doc.resolve(sh).get("Domain"));
+                    // (its reference kept: a mesh's shading is a stream, read by it; its dictionary then the stream's)
+                    Val shRef = p.get("Shading"), sh = doc.resolve(shRef);
+                    if (sh.t != pp::DICT && shRef.t == pp::REF)
+                        if (const pp::Stream *sst = doc.stream(shRef.oid())) sh = sst->dict;
+                    auto scs = loadCS(P, sh.get("ColorSpace"), res, 0);
+                    auto fn = loadFunc(P, sh.get("Function"), 0);
+                    auto dom = nums(doc, sh.get("Domain"));
                     if (scs && fn) {
                         float in[8], out[MAX_COMPS] = {0}, col[3];   // (the middle of each input's domain: a function-based shading has two)
                         for (size_t k = 0; k < 8; k++) in[k] = dom.size() >= 2 * k + 2 ? (dom[2 * k] + dom[2 * k + 1]) / 2 : 0.5f;
@@ -2630,7 +2633,7 @@ struct Interp {
                         scs->toRGB(out, col);
                         rgb = packRgb(col);
                     }
-                    if (fill && (gs.fillShade = loadShade(sh, res))) mul(gs.fillShadeM, pmat, patBase);
+                    if (fill && (gs.fillShade = loadShade(shRef.t == pp::REF ? shRef : sh, res))) mul(gs.fillShadeM, pmat, patBase);
                 } else {
                     if (cs->base && n > 1) {   // (an uncoloured tiling pattern: its colour)
                         float cc[32] = {0};   // (fewer numbers than its space has components: the others 0)
