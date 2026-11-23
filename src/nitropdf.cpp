@@ -2700,6 +2700,10 @@ struct Interp {
         if (g.t != pp::DICT) return;
         Val v;
         if ((v = doc.get(g, "LW")).isNum()) gs.width = (float)v.num();
+        if ((v = doc.get(g, "Font")).t == pp::ARRAY && v.size() >= 2) {   // ([font size]: as Tf, the font by its reference)
+            gs.font = loadFont(P, v.at(0), 0);
+            gs.fontSize = (float)doc.resolve(v.at(1)).num();
+        }
         v = doc.get(g, "SMask");
         if (v.t == pp::NAME) gs.smask.reset();
         else if (v.t == pp::DICT) gs.smask = loadSoftMask(g.get("SMask"), res);
