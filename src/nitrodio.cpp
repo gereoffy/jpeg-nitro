@@ -1920,7 +1920,9 @@ bool turnsByDirection(const std::string &shape) {
     static const char *const turned[] = {"cube", "folder", "component", "message", "umlActor", "hexagon", "parallelogram", "trapezoid",
                                          "step", "card", "note", "process", "document", "cylinder", "cylinder3", "datastore", "cloud", "actor",
                                          "offPageConnector", "note2", "curlyBracket", "dimension", "crossbar", "or", "xor", "delay",
-                                         "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow",
+                                         "dataStorage", "tape", "singleArrow", "corner", "module", "lollipop", "mxgraph.arrows2.arrow", "mxgraph.arrows2.sharpArrow2",
+                                         "mxgraph.arrows2.twoWayArrow", "mxgraph.arrows2.stylisedArrow", "mxgraph.arrows2.uTurnArrow",
+                                         "mxgraph.arrows2.jumpInArrow", "display",
                                          "mxgraph.infographic.ribbonSimple", "mxgraph.infographic.cylinder", "mxgraph.infographic.shadedCube",
                                          "mxgraph.mockup.markup.curlyBrace", "callout", "loopLimit", "collate", "umlBoundary", "umlControl",
                                          "mxgraph.electrical.logic_gates.logic_gate", "mxgraph.electrical.signal_sources.source",
@@ -2182,6 +2184,46 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         polygon(q, {{0, d}, {w - e, d}, {w - e, 0}, {w, h / 2}, {w - e, h}, {w - e, h - d}, {0, h - d}, {f, h / 2}}, b);
         if (str(s, "headCrossline") == "1") line(w - e, d, w - e, h - d);
         if (str(s, "tailCrossline") == "1") line(f, d, f, h - d);
+    } else if (shape == "mxgraph.arrows2.sharpArrow2") {   // (mxArrows2: a shaft dy1 of the height, a head dx2 long, its barbs dx3
+        double d = 0.5 * h * std::clamp(num(s, "dy1", 0.5), 0.0, 1.0), e = std::clamp(num(s, "dx1", 0.5), 0.0, w);   // back, dy3 wide)
+        double f = std::clamp(num(s, "dx2", 0.5), 0.0, w), g = 0.5 * h * std::clamp(num(s, "dy3", 0.5), 0.0, 1.0);
+        double k = std::clamp(num(s, "dx3", 0.5), 0.0, w), n = std::clamp(num(s, "notch", 0), 0.0, w);
+        polygon(q, {{0, d}, {w - e, d}, {w - k, g}, {w - f, 0}, {w, h / 2}, {w - f, h}, {w - k, h - g}, {w - e, h - d}, {0, h - d}, {n, h / 2}}, b);
+    } else if (shape == "display") {   // (Shapes.js DisplayShape: a point size of the width at the left, the right end round)
+        double u = std::min(w, h / 2), e = std::min(w - u, std::max(0.0, num(s, "size", 0.25)) * w);
+        auto Q = [&](double cx, double cy, double px, double py) {
+            plutovg_path_quad_to(q, (float)(b.x + cx), (float)(b.y + cy), (float)(b.x + px), (float)(b.y + py));
+        };
+        plutovg_path_move_to(q, x, (float)(b.y + h / 2));
+        plutovg_path_line_to(q, (float)(b.x + e), y);
+        plutovg_path_line_to(q, (float)(b.x + w - u), y);
+        Q(w, 0, w, h / 2), Q(w, h, w - u, h);
+        plutovg_path_line_to(q, (float)(b.x + e), (float)(b.y + h));
+        plutovg_path_close(q);
+    } else if (shape == "mxgraph.arrows2.twoWayArrow") {   // (mxArrows2: a shaft dy of the height, a head dx long at each end)
+        double d = 0.5 * h * std::clamp(num(s, "dy", 0.5), 0.0, 1.0), e = std::clamp(num(s, "dx", 0.5), 0.0, w);
+        polygon(q, {{e, d}, {w - e, d}, {w - e, 0}, {w, h / 2}, {w - e, h}, {w - e, h - d}, {e, h - d}, {e, h}, {0, h / 2}, {e, 0}}, b);
+    } else if (shape == "mxgraph.arrows2.stylisedArrow") {   // (a tail feather of the height widening to the shaft dy, a head dx
+        double d = 0.5 * h * std::clamp(num(s, "dy", 0.5), 0.0, 1.0), e = std::clamp(num(s, "dx", 0.5), 0.0, w);   // long, its barbs
+        double f = std::clamp(num(s, "notch", 0), 0.0, w), g = 0.5 * h * std::clamp(num(s, "feather", 0.5), 0.0, 1.0);   // 10 back)
+        polygon(q, {{0, g}, {w - e, d}, {w - e - 10, 0}, {w, h / 2}, {w - e - 10, h}, {w - e, h - d}, {0, h - g}, {f, h / 2}}, b);
+    } else if (shape == "mxgraph.arrows2.uTurnArrow" || shape == "mxgraph.arrows2.jumpInArrow") {
+        auto M = [&](double px, double py) { plutovg_path_move_to(q, (float)(b.x + px), (float)(b.y + py)); };
+        auto L = [&](double px, double py) { plutovg_path_line_to(q, (float)(b.x + px), (float)(b.y + py)); };
+        auto A = [&](double rx, double ry, bool sweep, double px, double py) {   // (mxAbstractCanvas2D.arcTo, an SVG arc, small)
+            plutovg_path_arc_to(q, (float)rx, (float)ry, 0, false, sweep, (float)(b.x + px), (float)(b.y + py));
+        };
+        double d = std::clamp(num(s, "dy", 0.5), 0.0, h);
+        if (shape == "mxgraph.arrows2.uTurnArrow") {   // (a band dy wide bent back round, its head arrowHead wide, dx2 long, at the top)
+            double e = std::clamp(num(s, "arrowHead", 40), 0.0, h), f = (h - e / 2 + d) / 2, g = std::max(0.0, num(s, "dx2", 25));
+            M(f, 0), L(f + g, e / 2), L(f, e), L(f, e / 2 + d), A(f - 2 * d, f - 2 * d, false, f, h - 2 * d);
+            L(std::max(w, f), h - 2 * d), L(std::max(w, f), h), L(f, h), A(f, f, true, f, e / 2 - d);
+        } else {   // (jumpInArrow: a band dy wide curving up from the bottom left into its head, arrowHead wide, dx long)
+            double e = std::clamp(num(s, "dx", 0.5), 0.0, w), f = std::clamp(num(s, "arrowHead", 40), 0.0, h);
+            M(w - e, 0), L(w, f / 2), L(w - e, f), L(w - e, f / 2 + d), A(w - e, h - f / 2 - d, false, 0, h);
+            A(w - e, h - f / 2 + d, true, w - e, f / 2 - d);
+        }
+        plutovg_path_close(q);
     } else if (shape == "mxgraph.floorplan.window") {   // (mxFloorplan.js: a wall's band with a line along its middle)
         double th = num(s, "wallThickness", 10);
         polygon(q, {{0, h / 2 - th / 2}, {w, h / 2 - th / 2}, {w, h / 2 + th / 2}, {0, h / 2 + th / 2}}, b);

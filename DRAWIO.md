@@ -131,7 +131,7 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **58 megvan**:
 | gitMergeCommit, gitTag | 2 |
 | ishikawaHead | 2 |
 | ext, requiredInterface, umlState | 1 |
-| a többi 35 (wedgeCallout, manualInput, internalStorage, display, sortShape, tapeData, process2, doubleArrow, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
+| a többi 34 (wedgeCallout, manualInput, internalStorage, sortShape, tapeData, process2, doubleArrow, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
 
 A folyamatábrák gyakori alakzatai (manual input, display, internal storage…) a mintákban `mxgraph.flowchart.*` stencilként
 szerepelnek, és azok megvannak (lásd 3.).
@@ -150,7 +150,8 @@ szándékosan nincsenek benne.
 
 - basic: arc, pie, partConcEllipse, diag_snip_rect;
 - floorplan: wall, wallCorner, wallU, room, doorLeft/Right/Double, window, stairs;
-- arrows2.arrow;
+- arrows2: arrow, sharpArrow2, twoWayArrow, stylisedArrow, uTurnArrow, jumpInArrow;
+- a Shapes.js `display` alakzata;
 - infographic: cylinder, shadedCube, ribbonSimple;
 - gcp2.doubleRect;
 - mockup.markup.curlyBrace;
@@ -188,7 +189,6 @@ nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 | ios7ui | 12 / 0 | horLines, phone, downloadBar, appBar |
 | basic | 11 / 0 | rect, obtuse_triangle, rectCallout, roundRectCallout, drop, polygon |
 | lean_mapping | 9 / 0 | outside_sources, electronic_info_flow_edge, inventory_box, physical_pull |
-| arrows2 | 8 / 1 | uTurnArrow, stylisedArrow, twoWayArrow, jumpInArrow |
 | infographic | 8 / 0 | bannerSingleFold, pyramidStep, circularCallout2, barCallout |
 | sysml | 8 / 0 | package (7), … |
 | rackGeneral | 7 / 0 | container, rackCabinet3, horCableDuct |
@@ -200,7 +200,7 @@ nitrodio szándékosan sosem tölt be, se webről, se más fájlból.
 | ios, aws4, floorplan, eip, pid2\*, sap, er, dfd, gmdl, networks2, android, cisco_safe | 1-3 / 0 | |
 
 A kódból rajzolt családok szinte csak a draw.io saját példáiban és sablonjaiban fordulnak elő. A külső
-mintákban csak a mockup (3), a c4 (3) és az arrows2 (1) jelenik meg.
+mintákban csak a mockup (3) és a c4 (3) jelenik meg.
 
 **BPMN** = Business Process Model and Notation, az OMG szabványos jelölése üzleti folyamatokra (feladatok,
 események, átjárók/elágazások, adatobjektumok). A stencilkönyvtár csak a jelek kis részét adja; a
