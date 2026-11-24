@@ -2200,6 +2200,23 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         Q(w, 0, w, h / 2), Q(w, h, w - u, h);
         plutovg_path_line_to(q, (float)(b.x + e), (float)(b.y + h));
         plutovg_path_close(q);
+    } else if (shape == "requiredInterface") {   // (Shapes.js: a UML socket, a half ellipse open to the left, its outline only)
+        if (!lines) lines = newPath();
+        plutovg_path_t *l = lines.get();
+        plutovg_path_move_to(l, x, y);
+        plutovg_path_quad_to(l, (float)(b.x + w), y, (float)(b.x + w), (float)(b.y + h / 2));
+        plutovg_path_quad_to(l, (float)(b.x + w), (float)(b.y + h), x, (float)(b.y + h));
+    } else if (shape == "mxgraph.mockup.markup.redX") {   // (mxMockup: an X of two bars)
+        polygon(q, {{0.1 * w, 0}, {0.5 * w, 0.4 * h}, {0.9 * w, 0}, {w, 0.1 * h}, {0.6 * w, 0.5 * h}, {w, 0.9 * h}, {0.9 * w, h},
+                    {0.5 * w, 0.6 * h}, {0.1 * w, h}, {0, 0.9 * h}, {0.4 * w, 0.5 * h}, {0, 0.1 * h}}, b);
+    } else if (shape == "mxgraph.basic.rectCallout") {   // (mxBasic: a box, its pointer dx along the bottom, dy high)
+        double dx = std::clamp(num(s, "dx", 0.5), 0.0, w), dy = std::clamp(num(s, "dy", 0.5), 0.0, h);
+        polygon(q, {{dx - 0.5 * dy, h - dy}, {0, h - dy}, {0, 0}, {w, 0}, {w, h - dy}, {dx + 0.5 * dy, h - dy}, {dx - dy, h}}, b);
+    } else if (shape == "mxgraph.sysml.package2") {   // (mxSysML: its frame's outline only, a filled tab labelX wide at its top left)
+        double lx = std::min((double)(int)num(s, "labelX", 90), w);
+        if (lx > 20) polygon(q, {{0, 20}, {lx - 10, 20}, {lx, 10}, {lx, 0}, {0, 0}}, b);
+        if (!lines) lines = newPath();
+        plutovg_path_add_rect(lines.get(), x, y, (float)w, (float)h);
     } else if (shape == "mxgraph.arrows2.twoWayArrow") {   // (mxArrows2: a shaft dy of the height, a head dx long at each end)
         double d = 0.5 * h * std::clamp(num(s, "dy", 0.5), 0.0, 1.0), e = std::clamp(num(s, "dx", 0.5), 0.0, w);
         polygon(q, {{e, d}, {w - e, d}, {w - e, 0}, {w, h / 2}, {w - e, h}, {w - e, h - d}, {e, h - d}, {e, h}, {0, h / 2}, {e, 0}}, b);
@@ -2525,6 +2542,18 @@ PathP shapePath(const std::string &shape, const Style &s, const Box &b, PathP &l
         }
         if (r > 0) plutovg_path_add_round_rect(q, x, y, (float)w, (float)h, (float)r, (float)r);
         else plutovg_path_add_rect(q, x, y, (float)w, (float)h);
+        if (shape == "ext" && str(s, "double") == "1") {   // (Shapes.js ExtendedShape: a second frame inside, max(2, stroke width + 1)
+            double in = std::max(2.0, num(s, "strokeWidth", 1) + 1) + num(s, "margin", 0), iw = w - 2 * in, ih = h - 2 * in;   // + margin in)
+            if (iw > 0 && ih > 0 && std::isfinite(in)) {
+                double ir = 0;
+                if (str(s, "rounded") == "1")
+                    ir = std::clamp(str(s, "absoluteArcSize") == "1" ? num(s, "arcSize", 10) / 2 : std::min(iw, ih) * num(s, "arcSize", 15) / 100, 0.0,
+                                    std::min(iw, ih) / 2);
+                if (!lines) lines = newPath();
+                if (ir > 0) plutovg_path_add_round_rect(lines.get(), (float)(b.x + in), (float)(b.y + in), (float)iw, (float)ih, (float)ir, (float)ir);
+                else plutovg_path_add_rect(lines.get(), (float)(b.x + in), (float)(b.y + in), (float)iw, (float)ih);
+            }
+        }
     }
     return p;
 }

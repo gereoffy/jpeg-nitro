@@ -130,7 +130,7 @@ A Shapes.js 99 alakzatot, élet és markert regisztrál. **58 megvan**:
 |---|---|
 | gitMergeCommit, gitTag | 2 |
 | ishikawaHead | 2 |
-| ext, requiredInterface, umlState | 1 |
+| umlState | 1 |
 | a többi 34 (wedgeCallout, manualInput, internalStorage, sortShape, tapeData, process2, doubleArrow, umlEntity, providedRequiredInterface, seq\*, mermaid\*, mindmapBang, zigzag, …) | 0 |
 
 A folyamatábrák gyakori alakzatai (manual input, display, internal storage…) a mintákban `mxgraph.flowchart.*` stencilként
@@ -148,13 +148,14 @@ szándékosan nincsenek benne.
 
 **Kódból rajzolt alakzatok** a sidebar JS-fájlokban (718 regisztrált `mxgraph.*` név). Ezekből meg van írva:
 
-- basic: arc, pie, partConcEllipse, diag_snip_rect;
+- basic: arc, pie, partConcEllipse, diag_snip_rect, rectCallout;
 - floorplan: wall, wallCorner, wallU, room, doorLeft/Right/Double, window, stairs;
 - arrows2: arrow, sharpArrow2, twoWayArrow, stylisedArrow, uTurnArrow, jumpInArrow;
-- a Shapes.js `display` alakzata;
+- a Shapes.js `display`, `requiredInterface` és `ext` (`double=1`: belső kerettel) alakzata;
 - infographic: cylinder, shadedCube, ribbonSimple;
 - gcp2.doubleRect;
-- mockup.markup.curlyBrace;
+- mockup.markup: curlyBrace, redX;
+- sysml.package2;
 - sysml.x (áthúzás: két átló, kitöltés nélkül), sysml.actFinal (kör, benne 5-tel beljebb a körvonal színével
   kitöltött kör);
 - bpmn.event (körvonal: standard, eventNonint szaggatott, catching / boundInt / boundNonint dupla kör, throwing, end
