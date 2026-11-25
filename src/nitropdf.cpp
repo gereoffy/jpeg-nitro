@@ -936,14 +936,16 @@ std::shared_ptr<CS> loadCS(nitropdf &P, Val v, Val res, int depth) {
 // --- images ------------------------------------------------------------------------
 
 // The samples of an image, rows of w * n components of bpc bits, to 8 bits per component (16-bit
-// ones rounded; fewer bits scaled up), w x h of them, every step-th source pixel (a huge image smaller)
+// ones rounded; fewer bits scaled up), w x h of them, every step-th source pixel (a huge image smaller),
+// or with average the mean of each step x step block of them (not for palette indices, colour keys: a
+// halftone of single dots, of which every second was taken, came out lighter or darker than it is)
 struct Samples {
     int w = 0, h = 0, n = 1;
     std::vector<uint8_t> v;   // h rows of w * n
     std::vector<uint16_t> raw;   // (the samples as they were, for /Mask colour keys; only when asked)
 };
 
-bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step, Samples &out, bool keepRaw) {
+bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step, Samples &out, bool keepRaw, bool average = false) {
     if (W <= 0 || H <= 0 || n <= 0 || n > MAX_COMPS || step <= 0) return false;
     if (bpc != 1 && bpc != 2 && bpc != 4 && bpc != 8 && bpc != 16) return false;   // (the bit depths there are: 0 divided by 0 below)
     size_t rowBytes = ((size_t)W * n * bpc + 7) / 8;
@@ -964,6 +966,18 @@ bool unpack(const uint8_t *d, size_t len, int W, int H, int n, int bpc, int step
                 if (bpc == 8) s = row[i];
                 else if (bpc == 16) s = (unsigned)row[2 * i] << 8 | row[2 * i + 1];
                 else s = (row[i * bpc / 8] >> (8 - bpc - (i * bpc) % 8)) & maxv;
+                if (average && step > 1 && !keepRaw) {
+                    uint64_t sum = 0, cnt = 0;
+                    for (size_t yy = sy; yy < sy + step && yy < (size_t)H && (yy + 1) * rowBytes <= len; yy++) {
+                        const uint8_t *r2 = d + yy * rowBytes;
+                        for (size_t xx = sx; xx < sx + step && xx < (size_t)W; xx++, cnt++) {
+                            size_t j = xx * n + c;
+                            sum += bpc == 8 ? r2[j] : bpc == 16 ? (unsigned)r2[2 * j] << 8 | r2[2 * j + 1] : (r2[j * bpc / 8] >> (8 - bpc - (j * bpc) % 8)) & maxv;
+                        }
+                    }
+                    o[x * n + c] = (uint8_t)((sum * 255 + cnt * maxv / 2) / (cnt * maxv));
+                    continue;
+                }
                 if (keepRaw) out.raw[((size_t)y * out.w + x) * n + c] = (uint16_t)s;
                 o[x * n + c] = (uint8_t)(bpc == 8 ? s : bpc == 16 ? s >> 8 : s * 255 / maxv);
             }
@@ -1279,7 +1293,7 @@ bool maskSamples(nitropdf &P, ImageSource &src, bool stencil, Samples &out) {
                 out.v[(size_t)y * out.w + x] = (uint8_t)((im.samples[(size_t)y * step * im.width + x * step] * 255u + maxv / 2) / maxv);
     } else if (!src.filter.empty())
         return false;
-    if (out.v.empty() && !unpack(d, len, W, H, 1, bpc, step, out, false)) return false;
+    if (out.v.empty() && !unpack(d, len, W, H, 1, bpc, step, out, false, true)) return false;
     auto dec = nums(doc, key(doc, src.dict, "Decode", "D"));
     bool invert = (stencil || src.filter != "JPXDecode") && dec.size() >= 2 && dec[0] > dec[1];
     if (stencil) invert = !invert;   // (a stencil: a 0 sample is painted)
@@ -1415,7 +1429,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             bpc = 1;
             if (!cs || cs->n != 1) cs = deviceCS(CS::GRAY);   // (else its own: a scan's two-colour palette, an ink)
         }
-        if (!unpack(dd, len, W, H, cs->n, bpc, step, smp, colorKey)) return nullptr;
+        if (!unpack(dd, len, W, H, cs->n, bpc, step, smp, colorKey, cs->k != CS::INDEXED)) return nullptr;
         img->s = newSurface(smp.w, smp.h);
         if (!img->s) return nullptr;
         auto dec = nums(doc, key(doc, d, "Decode", "D"));
