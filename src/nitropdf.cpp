@@ -4069,8 +4069,18 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
             int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s), f = 1;
             if (fabsf(m.b) < 1e-6f && fabsf(m.c) < 1e-6f) {
                 // upright: its edges on whole pixels, so that the strips a picture is cut into (a printer
-                // driver's rows of one pixel) meet without the background showing between their edges
-                float x0 = roundf(m.e), y0 = roundf(m.f), x1 = roundf(m.e + m.a * iw), y1 = roundf(m.f + m.d * ih);
+                // driver's rows of one pixel) meet without the background showing between their edges.
+                // A side of 64 pixels or more outwards, to every pixel it reaches into (by more than a
+                // twentieth): rounded to the nearest, a picture ending a third of a pixel short of the
+                // page's edge left a white line there. A shorter side to the nearest pixels: a letter
+                // drawn as a small picture (a bitmap font's) is not to grow bolder by a pixel.
+                auto fit = [](float a, float b, float *lo, float *hi) {
+                    float l = roundf(std::min(a, b)), h = roundf(std::max(a, b));
+                    if (fabsf(b - a) >= 64) l = floorf(std::min(a, b) + 0.05f), h = ceilf(std::max(a, b) - 0.05f);
+                    *lo = a <= b ? l : h, *hi = a <= b ? h : l;
+                };
+                float x0, y0, x1, y1;
+                fit(m.e, m.e + m.a * iw, &x0, &x1), fit(m.f, m.f + m.d * ih, &y0, &y1);
                 plutovg_matrix_init(&m, (x1 - x0) / iw, 0, 0, (y1 - y0) / ih, x0, y0);
                 plutovg_canvas_set_matrix(c, &m);
             }
