@@ -962,6 +962,10 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
         cs = deviceCS(n == 1 ? CS::GRAY : n == 4 ? CS::CMYK : CS::RGB);
     }
     if (cs->n != n || n > NJPX_MAX_COMPS || (smask && alpha < 0)) return nullptr;
+    // a /Decode other than the space's own ranges: each component's samples spread over the pair it gives
+    auto dec = nums(P.doc, key(P.doc, src.dict, "Decode", "D"));
+    bool decode = dec.size() >= 2u * n && (cs->k == CS::INDEXED || cs->k == CS::LAB);
+    for (int j = 0; j < n && !decode && dec.size() >= 2u * n; j++) decode = dec[2 * j] != 0 || dec[2 * j + 1] != 1;
     int step = 1;
     while ((uint64_t)im.width * im.height / ((uint64_t)step * step) > MAX_IMAGE_PIXELS) step++;
     int w = (im.width + step - 1) / step, h = (im.height + step - 1) / step;
@@ -976,7 +980,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     // Opaque device RGB and single-component spaces are common in scanned PDFs. Avoid
     // per-pixel floating point colour conversion: RGB bytes are already the result;
     // gray / Indexed / Separation values repeat, so map their raw samples once.
-    if (!smask && alpha < 0 && cs->k == CS::RGB && im.ncomp == 3 && !colorKey &&
+    if (!smask && alpha < 0 && cs->k == CS::RGB && im.ncomp == 3 && !colorKey && !decode &&
         im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 &&
         (override || im.colorspace != NJPX_SYCC)) {
         for (int y = 0; y < h; y++) {
@@ -986,7 +990,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
         }
         return surface;
     }
-    if (!smask && alpha < 0 && cs->k == CS::CMYK && im.ncomp == 4 && !colorKey &&
+    if (!smask && alpha < 0 && cs->k == CS::CMYK && im.ncomp == 4 && !colorKey && !decode &&
         im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 && im.precision[3] == 8) {
         // The same byte-row conversion as JPEG/ordinary CMYK images; the surface's row
         // holds the CMYK bytes temporarily, then nitro_cmyk converts them in place.
@@ -1004,6 +1008,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
         std::vector<uint32_t> lut(values);
         for (unsigned v = 0; v < values; v++) {
             float c = cs->k == CS::INDEXED ? (float)v : v / (float)(values - 1), rgb[3];
+            if (decode) c = dec[0] + v / (float)(values - 1) * (dec[1] - dec[0]);
             cs->toRGB(&c, rgb);
             lut[v] = colorKey && !(v < range[0] || v > range[1]) ? 0 : 0xff000000u | packRgb(rgb);
         }
@@ -1026,7 +1031,8 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
                 if (j == alpha) continue;
                 float v = s[j] / (float)((1u << im.precision[j]) - 1);
                 if (smask == 2 || (smask && im.premultiplied)) v = a > 0 ? clampf(v / a, 0, 1) : 0;   // (or the JP2's channel definition says so)
-                if (cs->k == CS::INDEXED) v = (float)s[j];
+                if (decode) v = dec[2 * k] + v * (dec[2 * k + 1] - dec[2 * k]);
+                else if (cs->k == CS::INDEXED) v = (float)s[j];
                 else if (cs->k == CS::LAB) v = k == 0 ? v * 100 : cs->range[2 * (k - 1)] + v * (cs->range[2 * k - 1] - cs->range[2 * (k - 1)]);
                 c[k] = v;
                 if (colorKey && (s[j] < range[2 * k] || s[j] > range[2 * k + 1])) transparent = false;
