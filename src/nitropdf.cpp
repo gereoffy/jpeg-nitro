@@ -2200,12 +2200,34 @@ struct Interp {
     }
 
     // painting the current path: fill (0 none, 1 nonzero, 2 even-odd) and / or stroke
+    // the stroke colour (space, pattern, alpha) made the fill's
+    void strokeLikeFill() {
+        gs.strokeCS = gs.fillCS, gs.strokeRgb = gs.fillRgb, gs.strokeA = gs.fillA;
+        memcpy(gs.strokeC, gs.fillC, sizeof gs.strokeC);
+        gs.strokePattern = gs.fillPattern, gs.strokeNone = gs.fillNone;
+        gs.strokeShade = gs.fillShade && !gs.fillShade->mesh ? gs.fillShade : nullptr;
+        gs.strokeTile = gs.fillTile, gs.strokeShadeM = gs.fillShadeM;
+    }
+
     void paint(int fill, bool stroke) {
         if (!path) return newPath();
         if (plutovg_path_get_elements(path, nullptr) > 0 && !hidden) {
             plutovg_matrix_t m;
             mul(m, gs.ctm, base);
             std::shared_ptr<PathRef> shared;
+            // A filled shape of no height or no width (a rectangle "x y w 0 re f" used as a table's rule) covers
+            // no area, yet Acrobat shows it as the thinnest line: drawn as a stroke of the fill colour, a fifth
+            // of a pixel wide whatever the scale (a negative width says so: not widened to a pixel as a
+            // stroke is, or a raster written as such a line and a mask row over it, row by row, turns black).
+            plutovg_rect_t ext;
+            if (fill && !stroke && !gs.fillNone && (plutovg_path_extents(path, &ext, false), (ext.w == 0) != (ext.h == 0))) {
+                GState saved = gs;
+                strokeLikeFill();
+                gs.width = -0.2f, gs.dash = nullptr, gs.cap = 0;
+                strokeItem(m, nullptr);
+                gs = saved;
+                fill = 0;
+            }
             if (fill && !gs.fillNone && (!gs.fillPattern || true)) {
                 Item it;
                 it.kind = Item::FILL;
@@ -2410,7 +2432,7 @@ struct Interp {
     }
 
     void strokeItem(const plutovg_matrix_t &m, std::shared_ptr<PathRef> shared) {
-        nd::Box b = box(path, m, gs.width / 2 * std::max(1.f, gs.join == 0 ? std::min(gs.miter, 4.f) : 1.f));
+        nd::Box b = box(path, m, std::max(gs.width, 0.f) / 2 * std::max(1.f, gs.join == 0 ? std::min(gs.miter, 4.f) : 1.f));
         int clip = gs.clip;
         float gap = 1e30f;
         if (!clipBox(b, clip, &gap)) return;
@@ -3046,6 +3068,12 @@ struct Interp {
         it.img = img;
         it.box = boxOf(0, 0, 1, 1, m);
         if (!clipBox(it.box, it.clip)) return;
+        // A raster written row by row as a shape of no height in black and the row's white pixels over it
+        // as a mask (a printer driver's): the line is not what shows on a screen, the row is.
+        if (!out->empty() && out->back().kind == Item::STROKE && out->back().width < 0) {
+            const nd::Box &l = out->back().box;
+            if (l.x0 >= it.box.x0 - 1 && l.y0 >= it.box.y0 - 1 && l.x1 <= it.box.x1 + 1 && l.y1 <= it.box.y1 + 1) out->pop_back();
+        }
         emit(std::move(it));
     }
 
@@ -3292,11 +3320,7 @@ struct Interp {
             case 'd':
                 if (o == "d" && n >= 2) setDash(a[0], a[1]);
                 else if (o == "d1" && inGlyph) {   // (a shape: its strokes in the fill colour as well)
-                    gs.strokeCS = gs.fillCS, gs.strokeRgb = gs.fillRgb, gs.strokeA = gs.fillA;
-                    memcpy(gs.strokeC, gs.fillC, sizeof gs.strokeC);
-                    gs.strokePattern = gs.fillPattern, gs.strokeNone = gs.fillNone;
-                    gs.strokeShade = gs.fillShade && !gs.fillShade->mesh ? gs.fillShade : nullptr;
-                    gs.strokeTile = gs.fillTile, gs.strokeShadeM = gs.fillShadeM;
+                    strokeLikeFill();
                     glyphShape = true;
                 }
                 break;
@@ -3954,6 +3978,7 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
         } else if (it.kind == Item::STROKE) {
             float k2 = sqrtf(fabsf(m.a * m.d - m.b * m.c));   // (device pixels per unit)
             float w = k2 > 0 ? std::max(it.width, 1 / k2) : it.width;
+            if (it.width < 0) w = k2 > 0 ? -it.width / k2 : 0;   // (so many pixels: a shape of no height's line)
             // Dashes with a period under half a device pixel (they cannot be told apart), or more than
             // MAX_DASHES of them, are not made one by one: a solid line as light as they cover it. (A
             // pattern of a millionth of a point on one line across the page: plutovg made every dash,
