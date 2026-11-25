@@ -7,10 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lcms2.h"
-
-// libcdr's CMYK profile (src/lib/CDRColorProfiles.h of our fork: one copy, linked from there)
-extern const unsigned char CMYK_icc[];
-extern const unsigned CMYK_icc_size;
+#include "nitro_cmyk_table.h"   // (ncm_cmyk9: PDFium's table, 9 steps an ink)
 
 #define G 17   // grid points per component
 enum { S0 = G * G * G, S1 = G * G, S2 = G, S3 = 1 };
@@ -60,11 +57,27 @@ static void fill(cmsHPROFILE cmyk, Lut lut, int intent, int flags) {
     free(in), free(out);
 }
 
+// the built-in table: PDFium's 9 steps an ink spread to the 17 here (every second point one of its own,
+// the ones between by the mean of their neighbours in each ink)
 static void build(void) {
     pthread_once(&g_once_idx, build_idx);
-    cmsHPROFILE cmyk = cmsOpenProfileFromMem(CMYK_icc, CMYK_icc_size);
-    fill(cmyk, g_lut, INTENT_PERCEPTUAL, 0);
-    if (cmyk) cmsCloseProfile(cmyk);
+    for (int i = 0; i < N; i++) {
+        int at[4], half[4], v = i;
+        for (int c = 3; c >= 0; c--, v /= G) at[c] = v % G / 2, half[c] = v % G & 1;
+        unsigned sum[3] = {0, 0, 0}, n = 0;
+        for (int corner = 0; corner < 16; corner++) {
+            int idx = 0, skip = 0;
+            for (int c = 0; c < 4; c++) {
+                int up = corner >> c & 1;
+                if (up && !half[c]) skip = 1;   // (on a point of its own in this ink: that one only)
+                idx = idx * 9 + at[c] + up;
+            }
+            if (skip) continue;
+            for (int c = 0; c < 3; c++) sum[c] += ncm_cmyk9[idx][c];
+            n++;
+        }
+        for (int c = 0; c < 3; c++) g_lut[i][2 - c] = (uint16_t)((sum[c] * 256u + n / 2) / n);
+    }
 }
 
 // the fractions packed with their dimension's stride, sorted descending: the simplex's path from the

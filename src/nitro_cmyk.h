@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 A'rpi - part of jpeg-nitro (https://github.com/gereoffy/jpeg-nitro)
 //
-// nitro_cmyk: CMYK -> sRGB through a printing profile, as Acrobat shows CMYK (the simple formula's
-// colours are far too bright): libcdr's generic CMYK profile (Argyll CMS, public domain), turned by
-// lcms2 into a 17^4 table the first time it is needed (a few ms), then interpolated (4D simplex,
-// 5 of its points a pixel; within a few levels of lcms2's own result, ten times faster). Thread-safe.
+// nitro_cmyk: CMYK -> sRGB as Acrobat shows CMYK that has no profile of its own (the simple formula's
+// colours are far too bright): PDFium's table of 9 steps an ink (nitro_cmyk_table.h; BSD, The PDFium
+// Authors), which is within a few levels of Acrobat's colours, spread to 17^4 points and interpolated
+// (4D simplex, 5 of its points a pixel). A file's own ICC profiles through lcms2 (ncm_profile_*).
+// Thread-safe.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
