@@ -492,6 +492,9 @@ struct nitropdf {
     std::mutex lock;   // (pdfparse3's document and the caches: one page read at a time)
     // the caches, by object number
     std::unordered_map<uint32_t, std::shared_ptr<CS>> spaces;
+    // the ICCBased spaces that convert through their profile, by the profile stream's object number
+    // (nullptr: its values are taken as they are)
+    std::unordered_map<uint32_t, std::shared_ptr<CS>> iccs;
     std::unordered_map<uint32_t, std::shared_ptr<Func>> funcs;
     // large resource dictionaries indexed by name (resource()): by where their pairs are
     std::unordered_map<const pp::Val *, std::unordered_map<std::string_view, pp::Val>> names;
@@ -524,11 +527,23 @@ struct CS {
     std::vector<uint8_t> lookup;
     int hival = 0;
     float wp[3] = {0.9505f, 1, 1.089f}, range[4] = {-100, 100, -100, 100};
+    // GRAY / RGB of an ICCBased space whose profile is not sRGB's: converted through it
+    ncm_profile *icc = nullptr;
 
+    CS() = default;
+    CS(const CS &) = delete;
+    CS &operator=(const CS &) = delete;
+    ~CS() {
+        if (icc) ncm_profile_close(icc);
+    }
     void initial(float *c) const {
         for (int i = 0; i < n; i++) c[i] = k == CMYK && i == 3 ? 1 : k == TINT ? 1 : 0;
     }
     void toRGB(const float *c, float *rgb) const {
+        if (icc) {
+            ncm_profile_color(icc, c, rgb);
+            return;
+        }
         switch (k) {
         case GRAY:
         case PATTERN: rgb[0] = rgb[1] = rgb[2] = clampf(c[0], 0, 1); break;
@@ -747,8 +762,27 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
     if (kind.is("DeviceGray") || kind.is("CalGray") || kind.is("G")) return deviceCS(CS::GRAY);
     if (kind.is("DeviceRGB") || kind.is("CalRGB") || kind.is("RGB")) return deviceCS(CS::RGB);
     if (kind.is("DeviceCMYK") || kind.is("CMYK")) return deviceCS(CS::CMYK);
-    if (kind.is("ICCBased")) {   // (its alternate, or the device space of its number of components)
+    if (kind.is("ICCBased")) {
+        // A gray or RGB profile that is not sRGB's (a display's, Generic RGB, a dot gain): through
+        // the profile. Else its alternate, or the device space of its number of components.
         Val d = doc.resolve(v.at(1));
+        Val sref = v.at(1);
+        int pn = toInt(doc.get(d, "N").num(3));
+        if (sref.t == pp::REF && (pn == 1 || pn == 3)) {
+            auto it = P.iccs.find(sref.oid());
+            if (it == P.iccs.end()) {
+                it = P.iccs.emplace(sref.oid(), nullptr).first;
+                if (const pp::Stream *st = doc.stream(sref.oid())) {
+                    pp::Decoded dec;
+                    doc.decode(*st, dec, 16u << 20);
+                    if (ncm_profile *prof = ncm_profile_open((const uint8_t *)dec.data.data(), dec.data.size(), pn)) {
+                        c->k = pn == 1 ? CS::GRAY : CS::RGB, c->n = pn, c->icc = prof;
+                        it->second = c;
+                    }
+                }
+            }
+            if (it->second) return it->second;
+        }
         Val alt = d.get("Alternate");
         if (alt.t != pp::NUL) {
             auto a = loadCS(P, alt, res, depth + 1);
@@ -983,9 +1017,15 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     if (!smask && alpha < 0 && cs->k == CS::RGB && im.ncomp == 3 && !colorKey && !decode &&
         im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 &&
         (override || im.colorspace != NJPX_SYCC)) {
+        std::vector<uint8_t> in(cs->icc ? (size_t)w * 3 : 0);
         for (int y = 0; y < h; y++) {
             uint32_t *row = (uint32_t *)(dst + (size_t)y * stride);
             const uint16_t *s = im.samples + (size_t)y * step * im.width * 3;
+            if (cs->icc) {   // (through its profile)
+                for (int x = 0; x < w; x++, s += 3 * step) in[3 * x] = (uint8_t)s[0], in[3 * x + 1] = (uint8_t)s[1], in[3 * x + 2] = (uint8_t)s[2];
+                ncm_profile_row_bgra(cs->icc, in.data(), (uint8_t *)row, (size_t)w);
+                continue;
+            }
             for (int x = 0; x < w; x++, s += 3 * step) row[x] = 0xff000000u | s[0] << 16 | s[1] << 8 | s[2];
         }
         return surface;
@@ -1232,9 +1272,18 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     cs->toRGB(c, rgb);
                     q[2] = (uint8_t)lroundf(rgb[0] * 255), q[1] = (uint8_t)lroundf(rgb[1] * 255), q[0] = (uint8_t)lroundf(rgb[2] * 255);
                 }
-        } else if (img->s && nc == 1 && cs && cs->n == 1 && (cs->k == CS::TINT || cs->k == CS::NONE)) {
+        } else if (img->s && nc == 3 && cs && cs->icc && cs->n == 3) {   // (RGB of a profile that is not sRGB's)
+            uint8_t *px = plutovg_surface_get_data(img->s);
+            int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
+            std::vector<uint8_t> in((size_t)w * 3);
+            for (int y = 0; y < plutovg_surface_get_height(img->s); y++) {
+                uint8_t *row = px + (size_t)y * stride;
+                for (int x = 0; x < w; x++) in[3 * x] = row[4 * x + 2], in[3 * x + 1] = row[4 * x + 1], in[3 * x + 2] = row[4 * x];
+                ncm_profile_row_bgra(cs->icc, in.data(), row, (size_t)w);
+            }
+        } else if (img->s && nc == 1 && cs && cs->n == 1 && (cs->k == CS::TINT || cs->k == CS::NONE || cs->icc)) {
             // (a one-component JPEG in a Separation or a one-ink DeviceN: its samples are the ink's amounts,
-            // 0 the bare paper; InDesign's greyscale pictures are such, in /Black)
+            // 0 the bare paper; InDesign's greyscale pictures are such, in /Black. Or gray of a profile.)
             uint32_t lut[256];
             float lo = dec.size() >= 2 ? dec[0] : 0, hi = dec.size() >= 2 ? dec[1] : 1;
             for (int v = 0; v < 256; v++) {
@@ -1314,6 +1363,10 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                 uint8_t *o = (uint8_t *)row;
                 for (int x = 0; x < 4 * smp.w; x++) o[x] = inv[x & 3] ? 255 - s[x] : s[x];
                 ncm_row_bgra(o, o, (size_t)smp.w);
+                continue;
+            }
+            if (cs->icc && n == 3 && plain) {   // (RGB of a profile that is not sRGB's)
+                ncm_profile_row_bgra(cs->icc, s, (uint8_t *)row, (size_t)smp.w);
                 continue;
             }
             for (int x = 0; x < smp.w; x++, s += n) {
