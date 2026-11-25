@@ -529,6 +529,41 @@ struct CS {
     float wp[3] = {0.9505f, 1, 1.089f}, range[4] = {-100, 100, -100, 100};
     // GRAY / RGB of an ICCBased space whose profile is not sRGB's: converted through it
     ncm_profile *icc = nullptr;
+    // GRAY / RGB of a CalGray / CalRGB space: each component to the power of its gamma, then calm
+    // (its /Matrix, the white point's adaptation to D50 and XYZ -> linear sRGB in one; CalGray: a column)
+    bool cal = false;
+    float gamma[3] = {1, 1, 1}, calm[9] = {0};
+
+    static float srgbCurve(float v) {   // (linear -> sRGB's curve, 0..1)
+        static const std::vector<float> t = [] {
+            std::vector<float> e(4098);
+            for (int i = 0; i < 4098; i++) {
+                float x = i / 4096.f;
+                e[i] = x <= 0.0031308f ? 12.92f * x : 1.055f * powf(x, 1 / 2.4f) - 0.055f;
+            }
+            return e;
+        }();
+        float x = clampf(v, 0, 1) * 4096;
+        int i = (int)x;
+        return t[i] + (t[i + 1] - t[i]) * (x - i);
+    }
+    void calRGB(const float *c, float *rgb) const {
+        float l[3];
+        for (int i = 0; i < n; i++) l[i] = powf(clampf(c[i], 0, 1), gamma[i]);
+        for (int j = 0; j < 3; j++) rgb[j] = srgbCurve(n == 1 ? calm[j] * l[0] : calm[3 * j] * l[0] + calm[3 * j + 1] * l[1] + calm[3 * j + 2] * l[2]);
+    }
+    // w pixels of n bytes each to the surface's
+    void calRow(const uint8_t *s, uint32_t *row, int w) const {
+        float lin[3][256];
+        for (int i = 0; i < n; i++)
+            for (int v = 0; v < 256; v++) lin[i][v] = powf(v / 255.f, gamma[i]);
+        for (int x = 0; x < w; x++, s += n) {
+            float rgb[3];
+            for (int j = 0; j < 3; j++)
+                rgb[j] = srgbCurve(n == 1 ? calm[j] * lin[0][s[0]] : calm[3 * j] * lin[0][s[0]] + calm[3 * j + 1] * lin[1][s[1]] + calm[3 * j + 2] * lin[2][s[2]]);
+            row[x] = 0xff000000u | (uint32_t)lroundf(rgb[0] * 255) << 16 | (uint32_t)lroundf(rgb[1] * 255) << 8 | (uint32_t)lroundf(rgb[2] * 255);
+        }
+    }
 
     CS() = default;
     CS(const CS &) = delete;
@@ -542,6 +577,10 @@ struct CS {
     void toRGB(const float *c, float *rgb) const {
         if (icc) {
             ncm_profile_color(icc, c, rgb);
+            return;
+        }
+        if (cal) {
+            calRGB(c, rgb);
             return;
         }
         switch (k) {
@@ -759,8 +798,49 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
     if (v.t != pp::ARRAY || !v.size()) return nullptr;
     Val kind = doc.resolve(v.at(0));
     auto c = std::make_shared<CS>();
-    if (kind.is("DeviceGray") || kind.is("CalGray") || kind.is("G")) return deviceCS(CS::GRAY);
-    if (kind.is("DeviceRGB") || kind.is("CalRGB") || kind.is("RGB")) return deviceCS(CS::RGB);
+    if (kind.is("CalGray") || kind.is("CalRGB")) {
+        // A^gamma (each component), by /Matrix to XYZ, from the space's white point to D50 (Bradford), to linear
+        // sRGB; a space that leaves every colour within 2 of 255 where it is (sRGB's own numbers) is the device's
+        bool gray = kind.is("CalGray");
+        Val d = doc.resolve(v.at(1));
+        auto w = nums(doc, d.get("WhitePoint")), g = nums(doc, d.get("Gamma")), m = nums(doc, d.get("Matrix"));
+        if (w.size() == 3 && w[0] > 0 && w[1] > 0 && w[2] > 0) {
+            double mx[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // (columns: the XYZ of A, B, C; rows here: X, Y, Z)
+            if (gray) mx[0] = w[0], mx[3] = w[1], mx[6] = w[2];
+            else if (m.size() == 9)
+                for (int i = 0; i < 9; i++) mx[i % 3 * 3 + i / 3] = m[i];
+            for (size_t i = 0; i < 3; i++) c->gamma[i] = i < g.size() && g[i] > 0 ? g[i] : 1;
+            static const double B[9] = {0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296},
+                                BI[9] = {0.9869929, -0.1470543, 0.1599627, 0.4323053, 0.5183603, 0.0492912, -0.0085287, 0.0400428, 0.9684867},
+                                S[9] = {3.1338561, -1.6168667, -0.4906146, -0.9787684, 1.9161415, 0.0334540, 0.0719453, -0.2289914, 1.4052427},
+                                D50[3] = {0.9642, 1, 0.8249};
+            auto mul = [](const double *a, const double *b, double *o) {
+                for (int r = 0; r < 3; r++)
+                    for (int q = 0; q < 3; q++) o[3 * r + q] = a[3 * r] * b[q] + a[3 * r + 1] * b[3 + q] + a[3 * r + 2] * b[6 + q];
+            };
+            double sc[9] = {0}, t1[9], t2[9], t3[9];
+            for (int r = 0; r < 3; r++) {
+                double src = B[3 * r] * w[0] + B[3 * r + 1] * w[1] + B[3 * r + 2] * w[2], dst = B[3 * r] * D50[0] + B[3 * r + 1] * D50[1] + B[3 * r + 2] * D50[2];
+                sc[4 * r] = src != 0 ? dst / src : 1;
+            }
+            mul(sc, B, t1), mul(BI, t1, t2), mul(S, t2, t3), mul(t3, mx, t1);   // (t1: sRGB <- D50 <- white point <- A B C)
+            if (gray) c->calm[0] = (float)t1[0], c->calm[1] = (float)t1[3], c->calm[2] = (float)t1[6];
+            else
+                for (int i = 0; i < 9; i++) c->calm[i] = (float)t1[i];
+            c->k = gray ? CS::GRAY : CS::RGB, c->n = gray ? 1 : 3, c->cal = true;
+            bool same = true;
+            for (int i = 0; i < 216 && same; i++) {
+                float in[3] = {i / 36 / 5.f, i / 6 % 6 / 5.f, i % 6 / 5.f}, rgb[3];
+                if (gray) in[1] = in[2] = in[0];
+                c->calRGB(in, rgb);
+                for (int j = 0; j < 3; j++) same = same && fabsf(rgb[j] - in[j]) <= 2 / 255.f;
+            }
+            if (!same) return c;
+        }
+        return deviceCS(gray ? CS::GRAY : CS::RGB);
+    }
+    if (kind.is("DeviceGray") || kind.is("G")) return deviceCS(CS::GRAY);
+    if (kind.is("DeviceRGB") || kind.is("RGB")) return deviceCS(CS::RGB);
     if (kind.is("DeviceCMYK") || kind.is("CMYK")) return deviceCS(CS::CMYK);
     if (kind.is("ICCBased")) {
         // A gray or RGB profile that is not sRGB's (a display's, Generic RGB, a dot gain): through
@@ -1014,7 +1094,7 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
     // Opaque device RGB and single-component spaces are common in scanned PDFs. Avoid
     // per-pixel floating point colour conversion: RGB bytes are already the result;
     // gray / Indexed / Separation values repeat, so map their raw samples once.
-    if (!smask && alpha < 0 && cs->k == CS::RGB && im.ncomp == 3 && !colorKey && !decode &&
+    if (!smask && alpha < 0 && cs->k == CS::RGB && !cs->cal && im.ncomp == 3 && !colorKey && !decode &&
         im.precision[0] == 8 && im.precision[1] == 8 && im.precision[2] == 8 &&
         (override || im.colorspace != NJPX_SYCC)) {
         std::vector<uint8_t> in(cs->icc ? (size_t)w * 3 : 0);
@@ -1272,18 +1352,19 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     cs->toRGB(c, rgb);
                     q[2] = (uint8_t)lroundf(rgb[0] * 255), q[1] = (uint8_t)lroundf(rgb[1] * 255), q[0] = (uint8_t)lroundf(rgb[2] * 255);
                 }
-        } else if (img->s && nc == 3 && cs && cs->icc && cs->n == 3) {   // (RGB of a profile that is not sRGB's)
+        } else if (img->s && nc == 3 && cs && (cs->icc || cs->cal) && cs->n == 3) {   // (RGB of a profile that is not sRGB's, CalRGB)
             uint8_t *px = plutovg_surface_get_data(img->s);
             int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
             std::vector<uint8_t> in((size_t)w * 3);
             for (int y = 0; y < plutovg_surface_get_height(img->s); y++) {
                 uint8_t *row = px + (size_t)y * stride;
                 for (int x = 0; x < w; x++) in[3 * x] = row[4 * x + 2], in[3 * x + 1] = row[4 * x + 1], in[3 * x + 2] = row[4 * x];
-                ncm_profile_row_bgra(cs->icc, in.data(), row, (size_t)w);
+                if (cs->icc) ncm_profile_row_bgra(cs->icc, in.data(), row, (size_t)w);
+                else cs->calRow(in.data(), (uint32_t *)row, w);
             }
-        } else if (img->s && nc == 1 && cs && cs->n == 1 && (cs->k == CS::TINT || cs->k == CS::NONE || cs->icc)) {
+        } else if (img->s && nc == 1 && cs && cs->n == 1 && (cs->k == CS::TINT || cs->k == CS::NONE || cs->icc || cs->cal)) {
             // (a one-component JPEG in a Separation or a one-ink DeviceN: its samples are the ink's amounts,
-            // 0 the bare paper; InDesign's greyscale pictures are such, in /Black. Or gray of a profile.)
+            // 0 the bare paper; InDesign's greyscale pictures are such, in /Black. Or gray of a profile, CalGray.)
             uint32_t lut[256];
             float lo = dec.size() >= 2 ? dec[0] : 0, hi = dec.size() >= 2 ? dec[1] : 1;
             for (int v = 0; v < 256; v++) {
@@ -1367,6 +1448,10 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             }
             if (cs->icc && n == 3 && plain) {   // (RGB of a profile that is not sRGB's)
                 ncm_profile_row_bgra(cs->icc, s, (uint8_t *)row, (size_t)smp.w);
+                continue;
+            }
+            if (cs->cal && n == 3 && plain) {
+                cs->calRow(s, row, smp.w);
                 continue;
             }
             for (int x = 0; x < smp.w; x++, s += n) {
