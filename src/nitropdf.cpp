@@ -1273,7 +1273,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             if (!bilevelRows(P, src, W, H, bits)) return nullptr;
             dd = (const uint8_t *)bits.data(), len = bits.size();
             bpc = 1;
-            cs = deviceCS(CS::GRAY);
+            if (!cs || cs->n != 1) cs = deviceCS(CS::GRAY);   // (else its own: a scan's two-colour palette, an ink)
         }
         if (!unpack(dd, len, W, H, cs->n, bpc, step, smp, colorKey)) return nullptr;
         img->s = newSurface(smp.w, smp.h);
