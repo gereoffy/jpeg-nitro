@@ -1226,6 +1226,22 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
                     cs->toRGB(c, rgb);
                     q[2] = (uint8_t)lroundf(rgb[0] * 255), q[1] = (uint8_t)lroundf(rgb[1] * 255), q[0] = (uint8_t)lroundf(rgb[2] * 255);
                 }
+        } else if (img->s && nc == 1 && cs && cs->n == 1 && (cs->k == CS::TINT || cs->k == CS::NONE)) {
+            // (a one-component JPEG in a Separation or a one-ink DeviceN: its samples are the ink's amounts,
+            // 0 the bare paper; InDesign's greyscale pictures are such, in /Black)
+            uint32_t lut[256];
+            float lo = dec.size() >= 2 ? dec[0] : 0, hi = dec.size() >= 2 ? dec[1] : 1;
+            for (int v = 0; v < 256; v++) {
+                float c = lo + v / 255.f * (hi - lo), rgb[3];
+                cs->toRGB(&c, rgb);
+                lut[v] = 0xff000000u | packRgb(rgb);
+            }
+            uint8_t *px = plutovg_surface_get_data(img->s);
+            int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
+            for (int y = 0; y < plutovg_surface_get_height(img->s); y++) {
+                uint32_t *row = (uint32_t *)(px + (size_t)y * stride);
+                for (int x = 0; x < w; x++) row[x] = lut[row[x] & 255];
+            }
         } else if (img->s && nc != 4 && dec.size() >= 2 && dec[0] > dec[1]) {   // (inverted: a negative gray / RGB; CMYK: above)
             uint8_t *px = plutovg_surface_get_data(img->s);
             int stride = plutovg_surface_get_stride(img->s), w = plutovg_surface_get_width(img->s);
