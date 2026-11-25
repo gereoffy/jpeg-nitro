@@ -3462,6 +3462,58 @@ void drawAnnotations(Interp &in, const pp::Page &page, const GState &initial) {
         }
         const pp::Stream *st = ap.t == pp::REF ? doc.stream(ap.oid()) : nullptr;
         auto rect = nums(doc, a.get("Rect")), bb = nums(doc, st ? st->dict.get("BBox") : Val());
+        if (!st && rect.size() == 4 && doc.get(a, "Subtype").is("Link")) {
+            // A link with no appearance of its own: its border, as Acrobat shows it (hyperref's red and
+            // cyan boxes). /Border [h v width [dash]] or /BS (/W, /S /D with /D, /S /U: underlined);
+            // 1 wide when neither says; /C its colour (black when absent, an empty array: no border).
+            float w = 1;
+            std::vector<float> dash;
+            bool underline = false;
+            Val bo = doc.get(a, "Border"), bs = doc.get(a, "BS"), cv = doc.get(a, "C");
+            if (bo.t == pp::ARRAY && bo.size() >= 3) {
+                w = (float)doc.resolve(bo.at(2)).num(1);
+                if (bo.size() >= 4) dash = nums(doc, bo.at(3));
+            } else if (bo.t == pp::ARRAY) w = 0;   // ("[0]", "[]": written by some for no border)
+            if (bs.t == pp::DICT) {
+                Val bw = doc.get(bs, "W"), style = doc.get(bs, "S");
+                if (bw.isNum()) w = (float)bw.num();
+                underline = style.is("U");
+                dash.clear();
+                if (style.is("D")) {
+                    dash = nums(doc, bs.get("D"));
+                    if (dash.empty()) dash.push_back(3);
+                }
+            }
+            auto col = nums(doc, cv);
+            if (!(w > 0) || (cv.t == pp::ARRAY && col.empty()) || (col.size() != 0 && col.size() != 1 && col.size() != 3 && col.size() != 4)) continue;
+            in.gs = initial;
+            in.stack.clear();
+            in.hidden = 0, in.hiddenStack.clear();
+            plutovg_matrix_init_identity(&in.gs.ctm);
+            in.gs.strokeCS = deviceCS(col.size() == 3 ? CS::RGB : col.size() == 4 ? CS::CMYK : CS::GRAY);
+            for (size_t j = 0; j < 4; j++) in.gs.strokeC[j] = j < col.size() ? col[j] : 0;
+            float rgb[3];
+            in.gs.strokeCS->toRGB(in.gs.strokeC, rgb);
+            in.gs.strokeRgb = packRgb(rgb), in.gs.strokeA = 1, in.gs.strokePattern = in.gs.strokeNone = false;
+            in.gs.strokeShade.reset(), in.gs.strokeTile.reset();
+            in.gs.width = w, in.gs.cap = 0, in.gs.join = 0, in.gs.miter = 10, in.gs.dashOffset = 0;
+            bool any = false;
+            for (float &x : dash) x = std::max(x, 0.f), any |= x > 0;
+            in.gs.dash = any ? std::make_shared<std::vector<float>>(dash) : nullptr;
+            float x0 = std::min(rect[0], rect[2]) + w / 2, y0 = std::min(rect[1], rect[3]) + w / 2;
+            float x1 = std::max(rect[0], rect[2]) - w / 2, y1 = std::max(rect[1], rect[3]) - w / 2;
+            if (!(x1 > x0) || !(y1 > y0)) continue;
+            in.newPath();
+            plutovg_path_move_to(in.path, x0, y0);
+            plutovg_path_line_to(in.path, x1, y0);
+            if (!underline) {
+                plutovg_path_line_to(in.path, x1, y1);
+                plutovg_path_line_to(in.path, x0, y1);
+                plutovg_path_close(in.path);
+            }
+            in.paint(0, true);
+            continue;
+        }
         if (!st || rect.size() != 4 || bb.size() != 4) continue;
         auto mv = nums(doc, st->dict.get("Matrix"));
         plutovg_matrix_t fm;
