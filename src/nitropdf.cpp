@@ -2014,6 +2014,9 @@ struct Interp {
     plutovg_matrix_t patBase;
     float pageW = 0, pageH = 0;   // (its size there)
     int patDepth = 0;   // (a tiling pattern's cell being read: how deep in patterns)
+    // a Type 3 glyph that began with d1 is being read: it is a shape, painted (its strokes too) in the
+    // text's fill colour; what it sets for a colour itself counts for nothing (9.6.5)
+    bool glyphShape = false, inGlyph = false;
     std::unordered_map<uint32_t, std::shared_ptr<Tiling>> tilings;   // (read on this page, by object number)
     std::vector<Item> *out;   // (where items go: the page's list, a group's, a soft mask's)
     std::unordered_map<std::string, std::shared_ptr<SoftMask>> masks;   // (read on this page: by dictionary and matrix)
@@ -2388,7 +2391,10 @@ struct Interp {
         mul(gs.ctm, b2, stack.back().ctm);
         gs.font = nullptr;
         Val fres = doc.resolve(f.resources).t == pp::DICT ? f.resources : res;
+        bool wasShape = glyphShape, wasIn = inGlyph;
+        glyphShape = false, inGlyph = true;
         run(dec.data.data(), dec.data.size(), fres, depth + 1);
+        glyphShape = wasShape, inGlyph = wasIn;
         gs = stack.back();
         stack.pop_back();
     }
@@ -2815,6 +2821,7 @@ struct Interp {
     }
 
     void setColor(bool fill, const Val *args, size_t n, Val res) {
+        if (glyphShape) return;
         std::shared_ptr<CS> &cs = fill ? gs.fillCS : gs.strokeCS;
         float *c = fill ? gs.fillC : gs.strokeC;
         bool &pat = fill ? gs.fillPattern : gs.strokePattern;
@@ -2875,6 +2882,7 @@ struct Interp {
     }
 
     void setSpace(bool fill, Val name, Val res) {
+        if (glyphShape) return;
         auto cs = loadCS(P, name, res, 0);
         if (!cs) cs = deviceCS(CS::GRAY);
         if (fill) gs.fillShade.reset(), gs.fillTile.reset();
@@ -2889,6 +2897,7 @@ struct Interp {
         (fill ? gs.fillNone : gs.strokeNone) = cs->k == CS::NONE;
     }
     void deviceColor(bool fill, CS::K k, const Val *args, size_t n) {
+        if (glyphShape) return;
         (fill ? gs.fillCS : gs.strokeCS) = deviceCS(k);
         (fill ? gs.fillPattern : gs.strokePattern) = false;
         (fill ? gs.fillNone : gs.strokeNone) = false;
@@ -3282,6 +3291,14 @@ struct Interp {
                 break;
             case 'd':
                 if (o == "d" && n >= 2) setDash(a[0], a[1]);
+                else if (o == "d1" && inGlyph) {   // (a shape: its strokes in the fill colour as well)
+                    gs.strokeCS = gs.fillCS, gs.strokeRgb = gs.fillRgb, gs.strokeA = gs.fillA;
+                    memcpy(gs.strokeC, gs.fillC, sizeof gs.strokeC);
+                    gs.strokePattern = gs.fillPattern, gs.strokeNone = gs.fillNone;
+                    gs.strokeShade = gs.fillShade && !gs.fillShade->mesh ? gs.fillShade : nullptr;
+                    gs.strokeTile = gs.fillTile, gs.strokeShadeM = gs.fillShadeM;
+                    glyphShape = true;
+                }
                 break;
             case 'D':
                 if (o == "Do" && n >= 1 && a[0].t == pp::NAME) doXObject(res, a[0], depth);
