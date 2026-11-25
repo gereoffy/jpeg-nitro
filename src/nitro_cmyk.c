@@ -33,7 +33,7 @@ static void build_idx(void) {
 }
 
 // a CMYK profile's table (cmyk NULL, or no transform from it: the simple formula's colours at the grid points)
-static void fill(cmsHPROFILE cmyk, Lut lut) {
+static void fill(cmsHPROFILE cmyk, Lut lut, int intent, int flags) {
     uint16_t (*in)[4] = malloc(sizeof(uint16_t[4]) * N), (*out)[4] = malloc(sizeof(uint16_t[4]) * N);
     if (!in || !out) {
         free(in), free(out);
@@ -45,7 +45,7 @@ static void fill(cmsHPROFILE cmyk, Lut lut) {
         for (int c = 3; c >= 0; c--, v /= G) in[i][c] = (uint16_t)(v % G * 65535 / (G - 1));
     }
     cmsHPROFILE srgb = cmsCreate_sRGBProfile();
-    cmsHTRANSFORM t = cmyk && srgb ? cmsCreateTransform(cmyk, TYPE_CMYK_16, srgb, TYPE_BGRA_16, INTENT_PERCEPTUAL, cmsFLAGS_NOCACHE) : NULL;
+    cmsHTRANSFORM t = cmyk && srgb ? cmsCreateTransform(cmyk, TYPE_CMYK_16, srgb, TYPE_BGRA_16, intent, cmsFLAGS_NOCACHE | flags) : NULL;
     if (t) {
         cmsDoTransform(t, in, out, N);
         cmsDeleteTransform(t);
@@ -63,7 +63,7 @@ static void fill(cmsHPROFILE cmyk, Lut lut) {
 static void build(void) {
     pthread_once(&g_once_idx, build_idx);
     cmsHPROFILE cmyk = cmsOpenProfileFromMem(CMYK_icc, CMYK_icc_size);
-    fill(cmyk, g_lut);
+    fill(cmyk, g_lut, INTENT_PERCEPTUAL, 0);
     if (cmyk) cmsCloseProfile(cmyk);
 }
 
@@ -152,7 +152,7 @@ ncm_profile *ncm_profile_open(const uint8_t *icc, size_t len, int n) {
             cmsCreateTransform(in, TYPE_CMYK_16, srgb, TYPE_BGRA_16, INTENT_PERCEPTUAL, cmsFLAGS_NOCACHE) : NULL;
         if (probe) cmsDeleteTransform(probe);
         if (!probe || !(p->lut = malloc(sizeof(Lut)))) goto fail;   // (not a profile to convert with: the built-in one)
-        fill(in, p->lut);
+        fill(in, p->lut, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION);
         goto done;
     }
     if (!(srgb = cmsCreate_sRGBProfile())) goto fail;

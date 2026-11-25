@@ -527,7 +527,7 @@ struct CS {
     std::vector<uint8_t> lookup;
     int hival = 0;
     float wp[3] = {0.9505f, 1, 1.089f}, range[4] = {-100, 100, -100, 100};
-    // GRAY / RGB of an ICCBased space whose profile is not sRGB's: converted through it
+    // GRAY / RGB of an ICCBased space whose profile is not sRGB's, CMYK of one: converted through it
     ncm_profile *icc = nullptr;
     // GRAY / RGB of a CalGray / CalRGB space: each component to the power of its gamma, then calm
     // (its /Matrix, the white point's adaptation to D50 and XYZ -> linear sRGB in one; CalGray: a column)
@@ -843,12 +843,13 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
     if (kind.is("DeviceRGB") || kind.is("RGB")) return deviceCS(CS::RGB);
     if (kind.is("DeviceCMYK") || kind.is("CMYK")) return deviceCS(CS::CMYK);
     if (kind.is("ICCBased")) {
-        // A gray or RGB profile that is not sRGB's (a display's, Generic RGB, a dot gain): through
-        // the profile. Else its alternate, or the device space of its number of components.
+        // A gray or RGB profile that is not sRGB's (a display's, Generic RGB, a dot gain), or a CMYK
+        // one (a press's): through the profile. Else its alternate, or the device space of its
+        // number of components.
         Val d = doc.resolve(v.at(1));
         Val sref = v.at(1);
         int pn = toInt(doc.get(d, "N").num(3));
-        if (sref.t == pp::REF && (pn == 1 || pn == 3)) {
+        if (sref.t == pp::REF && (pn == 1 || pn == 3 || pn == 4)) {
             auto it = P.iccs.find(sref.oid());
             if (it == P.iccs.end()) {
                 it = P.iccs.emplace(sref.oid(), nullptr).first;
@@ -856,7 +857,7 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
                     pp::Decoded dec;
                     doc.decode(*st, dec, 16u << 20);
                     if (ncm_profile *prof = ncm_profile_open((const uint8_t *)dec.data.data(), dec.data.size(), pn)) {
-                        c->k = pn == 1 ? CS::GRAY : CS::RGB, c->n = pn, c->icc = prof;
+                        c->k = pn == 1 ? CS::GRAY : pn == 3 ? CS::RGB : CS::CMYK, c->n = pn, c->icc = prof;
                         it->second = c;
                     }
                 }
@@ -979,7 +980,8 @@ plutovg_surface_t *newSurface(int w, int h) { return w > 0 && h > 0 ? plutovg_su
 // else by stb_image; nullptr if neither reads it. *ncomp: its components (0 if not known).
 // Bytes before the JPEG's start are skipped: an inline image whose ID is followed by CR LF
 // (FastReport's invoices) comes with the LF in front.
-plutovg_surface_t *jpegSurface(const std::string &all, bool decodeInverted, int *ncomp) {
+// cmyk: the profile a CMYK one's inks go through (nullptr: nitro_cmyk's own).
+plutovg_surface_t *jpegSurface(const std::string &all, bool decodeInverted, int *ncomp, const ncm_profile *cmyk = nullptr) {
     size_t skip = 0;
     for (size_t k = 0; k + 3 <= all.size() && k < 64; k++)
         if ((uint8_t)all[k] == 0xff && (uint8_t)all[k + 1] == 0xd8 && (uint8_t)all[k + 2] == 0xff) {
@@ -1003,7 +1005,14 @@ plutovg_surface_t *jpegSurface(const std::string &all, bool decodeInverted, int 
             plutovg_surface_t *s = buf ? newSurface(ji.width, ji.height) : nullptr;
             uint8_t *planes[4] = {buf.get() + at[0], buf.get() + at[1], buf.get() + at[2], buf.get() + at[3]};
             if (s && !nj_decode_planes(d, data.size(), &ji, planes, pitch, 0, nullptr)) {
-                nc_jpeg_to_bgra(&ji, planes, pitch, decodeInverted, ncm_row_bgra, plutovg_surface_get_data(s), (size_t)plutovg_surface_get_stride(s));
+                // (with a profile of the file's: the rows left as C M Y K, converted here)
+                nc_jpeg_to_bgra(&ji, planes, pitch, decodeInverted, cmyk && ji.ncomp == 4 ? [](const uint8_t *, uint8_t *, size_t) {} : ncm_row_bgra,
+                                plutovg_surface_get_data(s), (size_t)plutovg_surface_get_stride(s));
+                if (cmyk && ji.ncomp == 4)
+                    for (int y = 0; y < ji.height; y++) {
+                        uint8_t *row = plutovg_surface_get_data(s) + (size_t)y * plutovg_surface_get_stride(s);
+                        ncm_profile_row_bgra(cmyk, row, row, (size_t)ji.width);
+                    }
                 return s;
             }
             plutovg_surface_destroy(s);
@@ -1119,7 +1128,8 @@ plutovg_surface_t *jpxSurface(nitropdf &P, ImageSource &src, std::shared_ptr<CS>
             const uint16_t *s = im.samples + (size_t)y * step * im.width * 4;
             for (int x = 0; x < w; x++, s += 4 * step)
                 for (int c = 0; c < 4; c++) row[4 * x + c] = (uint8_t)s[c];
-            ncm_row_bgra(row, row, (size_t)w);
+            if (cs->icc) ncm_profile_row_bgra(cs->icc, row, row, (size_t)w);
+            else ncm_row_bgra(row, row, (size_t)w);
         }
         return surface;
     }
@@ -1331,7 +1341,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
     if (src.filter == "DCTDecode" || src.filter == "DCT") {
         auto dec = nums(doc, key(doc, d, "Decode", "D"));
         int nc;
-        img->s = jpegSurface(src.data, dec.size() >= 2 && dec[0] > dec[1], &nc);
+        img->s = jpegSurface(src.data, dec.size() >= 2 && dec[0] > dec[1], &nc, cs && cs->n == 4 ? cs->icc : nullptr);
         if (!img->s) {   // (one neither decoder reads: a grey area where the picture is)
             img->s = newSurface(1, 1);
             if (img->s) *(uint32_t *)plutovg_surface_get_data(img->s) = 0xffc0c0c0;
@@ -1443,7 +1453,8 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             if (cmykRows) {
                 uint8_t *o = (uint8_t *)row;
                 for (int x = 0; x < 4 * smp.w; x++) o[x] = inv[x & 3] ? 255 - s[x] : s[x];
-                ncm_row_bgra(o, o, (size_t)smp.w);
+                if (cs->icc) ncm_profile_row_bgra(cs->icc, o, o, (size_t)smp.w);
+                else ncm_row_bgra(o, o, (size_t)smp.w);
                 continue;
             }
             if (cs->icc && n == 3 && plain) {   // (RGB of a profile that is not sRGB's)
