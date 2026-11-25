@@ -863,7 +863,16 @@ plutovg_surface_t *newSurface(int w, int h) { return w > 0 && h > 0 ? plutovg_su
 // components: CMYK / YCCK through nitro_cmyk's profile, the values as stored, inverted by
 // an inverting /Decode: Adobe's inverted ones come with one, Adobe's marker alone says nothing),
 // else by stb_image; nullptr if neither reads it. *ncomp: its components (0 if not known).
-plutovg_surface_t *jpegSurface(const std::string &data, bool decodeInverted, int *ncomp) {
+// Bytes before the JPEG's start are skipped: an inline image whose ID is followed by CR LF
+// (FastReport's invoices) comes with the LF in front.
+plutovg_surface_t *jpegSurface(const std::string &all, bool decodeInverted, int *ncomp) {
+    size_t skip = 0;
+    for (size_t k = 0; k + 3 <= all.size() && k < 64; k++)
+        if ((uint8_t)all[k] == 0xff && (uint8_t)all[k + 1] == 0xd8 && (uint8_t)all[k + 2] == 0xff) {
+            skip = k;
+            break;
+        }
+    std::string_view data(all.data() + skip, all.size() - skip);
     const uint8_t *d = (const uint8_t *)data.data();
     nj_info ji;
     *ncomp = 0;
