@@ -3657,7 +3657,20 @@ void rasterMesh(const Mesh &M, const plutovg_matrix_t &d, plutovg_surface_t *s) 
         for (int py = iy0; py <= iy1; py++) {
             uint32_t *row = (uint32_t *)(px + (size_t)py * stride);
             float cy = py + 0.5f;
-            for (int pxi = ix0; pxi <= ix1; pxi++) {
+            // a wide box: only the row's pixels between the edges' crossings, a pixel and the arithmetic's error more on
+            // both sides (the test below decides): every pixel of the box was tested, seven for each one drawn in a
+            // slide's background of long thin triangles. (A patch mesh's small triangles: finding the crossings costs
+            // more than testing their few pixels.)
+            float lo = (float)ix0, hi = (float)ix1;
+            for (int k = 0; k < 3 && ix1 - ix0 >= 16; k++) {
+                float rest = eb[k] * cy + ec[k], aa = fabsf(ea[k]);
+                if (!(aa > 0)) continue;
+                float at = (out[k] - rest) / ea[k] - 0.5f, slack = 1 + (fabsf(eb[k] * cy) + fabsf(ec[k]) + aa * w) * 1e-5f / aa;
+                if (ea[k] > 0 && at - slack > lo) lo = at - slack;
+                if (ea[k] < 0 && at + slack < hi) hi = at + slack;
+            }
+            int xa = std::max(ix0, toInt(floorf(lo))), xb = std::min(ix1, toInt(ceilf(hi)));
+            for (int pxi = xa; pxi <= xb; pxi++) {
                 float cx = pxi + 0.5f, e[3];
                 bool in = true;
                 for (int k = 0; k < 3 && in; k++) {
