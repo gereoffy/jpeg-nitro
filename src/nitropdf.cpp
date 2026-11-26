@@ -2372,7 +2372,7 @@ struct Interp {
         if (plutovg_path_get_elements(run, nullptr) > 0) {
             plutovg_matrix_t m;
             mul(m, gs.ctm, base);
-            if (!hidden && fill) textFill(run, m);
+            if (!hidden && fill && !gs.fillNone) textFill(run, m);
             if (!hidden && stroke && !gs.strokeNone) {
                 plutovg_path_t *saved = path;
                 path = run;
