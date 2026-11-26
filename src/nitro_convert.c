@@ -111,7 +111,10 @@ typedef struct {
 static inline uint8_t mul255(int a, int b) { return (uint8_t)((a * b + 127) / 255); }
 
 static void convert(const Comp *comps, int nc, int W, int H, Out out, uint8_t *dst, size_t stride) {
-    size_t bands = (size_t)W * (size_t)H <= 1024 ? 1 : (size_t)nitro_ncpu() * 4;
+    // (a band of 4096 pixels at least; a picture under 128 x 128 on the calling thread: waking the pool's threads takes
+    // longer than its rows, 40 microseconds against 10 for one of 64 x 64)
+    size_t px = (size_t)W * (size_t)H, bands = px < 16384 ? 1 : px / 4096;
+    if (bands > (size_t)nitro_ncpu() * 4) bands = (size_t)nitro_ncpu() * 4;
     if (bands > (size_t)H) bands = (size_t)H;
     int maxcw = W;
     for (int k = 0; k < nc; k++)
