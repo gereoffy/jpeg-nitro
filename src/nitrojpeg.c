@@ -34,6 +34,10 @@
 #define MAX_BLOCKS 10           // blocks per MCU (JPEG limit)
 #define NJ_MAXC 4               // frame components (CMYK / YCCK)
 #define PAD_BYTES 8192          // zero padding after the unstuffed stream
+// The pieces a file is cut into for the threads are not smaller than these, however many CPUs there are: a thumbnail
+// of 600 bytes was cut into 32 x CPUs chunks like a photo (a millisecond on 16 CPUs, 13 microseconds in one piece).
+#define CHUNK_BYTES 4096        // entropy-coded data in a speculative chunk, or in a task of restart intervals
+#define SCAN_BYTES (256 << 10)  // in a piece of the marker scan and the unstuffing
 
 // ---------------------------------------------------------------------------
 // utilities
@@ -1663,9 +1667,15 @@ static int g_pool_n;
 
 static void *pool_take(size_t need, size_t *cap) {
     pthread_mutex_lock(&g_pool_mu);
+    // From the one given back last, and one of no more than twice the size is taken at once: the picture before
+    // left its buffers there, of the sizes this one asks for if it is as large. (The smallest fit was looked for
+    // among them all, twice a chunk, under the lock: with 512 chunks most of the threads' time.)
     int best = -1;
-    for (int i = 0; i < g_pool_n; i++)
-        if (g_pool[i].cap >= need && (best < 0 || g_pool[i].cap < g_pool[best].cap)) best = i;
+    for (int i = g_pool_n - 1; i >= 0; i--)
+        if (g_pool[i].cap >= need && (best < 0 || g_pool[i].cap < g_pool[best].cap)) {
+            best = i;
+            if (g_pool[i].cap / 2 <= need) break;
+        }
     if (best >= 0) {
         void *p = g_pool[best].p;
         *cap = g_pool[best].cap;
@@ -1884,7 +1894,7 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
 
     // --- 1. scan (parallel): end of scan, stuffing, restart markers ---
     const size_t lo = j->scan_start;
-    const int T = nthreads;
+    const int T = (size_t)nthreads > (len - lo) / SCAN_BYTES + 1 ? (int)((len - lo) / SCAN_BYTES + 1) : nthreads;
     ScanChunk *sc = calloc(T, sizeof *sc);
     if (!sc) { free(j); return -1; }
     for (int t = 0; t < T; t++) {
@@ -1962,8 +1972,9 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
             for (size_t i = 0; i < sc[t].nrstc; i++) istart[k++] = sc[t].rstc[i];
         if (nr + 1 != I) { free(istart); goto out; }   // damaged / unusual
         istart[I] = clean_len;
-        int tasks = g_bands > 0 ? g_bands : T * 2;
+        int tasks = g_bands > 0 ? g_bands : nthreads * 2;
         if ((size_t)tasks > I) tasks = (int)I;
+        if (g_bands <= 0 && (size_t)tasks > clean_len / CHUNK_BYTES + 1) tasks = (int)(clean_len / CHUNK_BYTES + 1);
         double t1 = nitro_now_ms();
         parallel_for((size_t)tasks, ^(size_t ti) {
             size_t k0 = I * ti / tasks, k1 = I * (ti + 1) / tasks;
@@ -1993,8 +2004,11 @@ static int nj_decode_own(const uint8_t *data, size_t len, const Output *o, int n
         // --- 3-5. pipelined: speculative full decode of small chunks, stitching
         // in order, IDCT of stitched chunks while their coefficients are hot ---
         double t1 = nitro_now_ms();
-        const int C = g_chunks > 0 ? g_chunks : 32 * nitro_ncpu();   // ~200 KB of coefficients each
-        const int W = t_workers > 0 ? t_workers : g_max_workers > 0 ? g_max_workers : nitro_ncpu();
+        // (32 x CPUs: ~200 KB of coefficients each in a photo; fewer for a small file, see CHUNK_BYTES)
+        const int cpus = nitro_ncpu(), Cmost = (int)(clean_len / CHUNK_BYTES < (size_t)(32 * cpus) ? clean_len / CHUNK_BYTES + 1 : 32 * cpus);
+        const int C = g_chunks > 0 ? g_chunks : Cmost;
+        const int Wset = t_workers > 0 ? t_workers : g_max_workers > 0 ? g_max_workers : cpus;
+        const int W = Wset < C ? Wset : C;
         Chunk *ch = calloc(C, sizeof *ch);
         if (!ch) goto out;
         for (int i = 0; i < C; i++) {

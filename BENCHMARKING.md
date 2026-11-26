@@ -250,7 +250,8 @@ The Huffman stream is decoded **once**, without libjpeg-turbo:
 1. **Preparation (parallel, ~1 ms):** find the end of the entropy-coded data, remove byte
    stuffing (0xFF 0x00) and restart markers, giving a "clean" bit stream.
 2. **Files without restart markers: speculative full decoding.** The bit stream is cut into
-   ~512 chunks (`32 × CPUs`, ~200 KB of coefficients each, which fits in L2). Every chunk is
+   ~512 chunks (`32 × CPUs`, ~200 KB of coefficients each, which fits in L2; a small file into
+   fewer, a chunk has at least 4 KB of data, so a thumbnail is decoded in one piece). Every chunk is
    decoded by a thread that starts at an arbitrary byte offset, writing coefficients right
    away. Huffman codes self-synchronize with the true decoding path after a few MCUs.
 3. **Stitching, in order, pipelined.** When the true path starts an MCU at a bit position

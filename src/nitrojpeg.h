@@ -97,7 +97,7 @@ void nj_set_max_workers(int n);
 // reference engine (0: 2 x pieces).
 void nj_set_bands(int n);
 void nj_set_scalar_idct(int on);   // testing: plain C IDCT instead of AVX2 / NEON
-void nj_set_chunks(int n);         // own engine: speculative chunks (0 = 32 x CPUs)
+void nj_set_chunks(int n);         // own engine: speculative chunks (0 = 32 x CPUs, fewer for a small file)
 // The decoders keep their work buffers for the next image (they are as large as the largest image
 // so far); this frees them.
 void nj_free_buffers(void);
