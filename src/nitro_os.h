@@ -153,14 +153,19 @@ static inline double nitro_now_ms(void) {
 
 // ---------------------------------------------------------------------------
 static inline int nitro_ncpu(void) {
+    static int known;   // (asked once: glibc reads a file of /sys for it, 3 microseconds, and a small picture's decode asks five times)
+    int n = __atomic_load_n(&known, __ATOMIC_RELAXED);
+    if (n > 0) return n;
 #if defined(_WIN32)
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    int n = (int)si.dwNumberOfProcessors;
+    n = (int)si.dwNumberOfProcessors;
 #else
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    n = (int)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-    return n > 0 ? (int)n : 8;
+    if (n <= 0) n = 8;
+    __atomic_store_n(&known, n, __ATOMIC_RELAXED);
+    return n;
 }
 
 // The CPUs of the fastest kind on a CPU with performance and efficiency cores (Apple M1 and later,
