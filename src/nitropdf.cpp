@@ -1510,7 +1510,7 @@ std::shared_ptr<Img> decodeImage(nitropdf &P, ImageSource &src, Val res, uint32_
             cs->toRGB(m.data(), rgb);
             for (int c = 0; c < 3; c++) matte[c] = rgb[c] * 255;
         }
-    } else if (maskv.t == pp::DICT || d.get("Mask").t == pp::REF) {
+    } else if (!colorKey && (maskv.t == pp::DICT || d.get("Mask").t == pp::REF)) {   // (a colour key may be indirect too)
         ImageSource ms;
         haveAlpha = d.get("Mask").t == pp::REF && imageSource(P, d.get("Mask"), ms) && maskSamples(P, ms, true, alpha);
         // a stencil we cannot read (JBIG2): the image left out; it is often a scan's colour layer
