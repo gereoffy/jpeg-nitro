@@ -3685,7 +3685,9 @@ void rasterMesh(const Mesh &M, const plutovg_matrix_t &d, plutovg_surface_t *s) 
 
 // A fill by a mesh: its triangles drawn into a surface over the part of the canvas the item's box covers
 // (coarser if that is very large), filling the path as a texture
-void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, const plutovg_matrix_t &view) {
+// The part of the canvas an item's box covers, a pixel more on each side: from (ox, oy), a surface of sw x sh pixels
+// over it, each f x f of the canvas's (1, more if it is very large). False: none of it on the canvas.
+bool canvasPart(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &view, int &ox, int &oy, int &sw, int &sh, int &f) {
     plutovg_surface_t *cs = plutovg_canvas_get_surface(c);
     int W = plutovg_surface_get_width(cs), H = plutovg_surface_get_height(cs);
     float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
@@ -3694,12 +3696,18 @@ void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, co
         plutovg_matrix_map_point(&view, &p, &q);
         x0 = std::min(x0, q.x), x1 = std::max(x1, q.x), y0 = std::min(y0, q.y), y1 = std::max(y1, q.y);
     }
-    int ox = std::max(0, toInt(floorf(x0) - 1)), oy = std::max(0, toInt(floorf(y0) - 1));   // (toInt: as rasterMesh's)
+    ox = std::max(0, toInt(floorf(x0) - 1)), oy = std::max(0, toInt(floorf(y0) - 1));   // (toInt: as rasterMesh's)
     int ex = std::min(W, toInt(ceilf(x1) + 1)), ey = std::min(H, toInt(ceilf(y1) + 1));
-    if (ex <= ox || ey <= oy) return;
-    int f = 1;
+    if (ex <= ox || ey <= oy) return false;
+    f = 1;
     while ((double)(ex - ox) / f * ((ey - oy) / f) > (16 << 20)) f *= 2;
-    int sw = (ex - ox + f - 1) / f, sh = (ey - oy + f - 1) / f;
+    sw = (ex - ox + f - 1) / f, sh = (ey - oy + f - 1) / f;
+    return true;
+}
+
+void meshFill(plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, const plutovg_matrix_t &view) {
+    int ox, oy, sw, sh, f;
+    if (!canvasPart(c, it, view, ox, oy, sw, sh, f)) return;
     plutovg_surface_t *s = plutovg_surface_create(sw, sh);
     if (!s) return;
     plutovg_matrix_t toDev, d, sc;   // (the shading's space -> the canvas -> the surface)
@@ -3757,12 +3765,75 @@ void drawItems(nitropdf &P, const PageDL &pg, plutovg_canvas_t *c, const plutovg
 
 const int MAX_TILE_PIXELS = 4 << 20, MIN_TILE = 16, MAX_TILE_COPIES = 4096;
 
+// an uncoloured pattern's cells in its colour (premultiplied: the colour by each pixel's alpha)
+void tint(plutovg_surface_t *s, uint32_t rgb) {
+    uint8_t *px = plutovg_surface_get_data(s);
+    int w = plutovg_surface_get_width(s), h = plutovg_surface_get_height(s), stride = plutovg_surface_get_stride(s);
+    uint32_t r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = (uint32_t *)(px + (size_t)y * stride);
+        for (int x = 0; x < w; x++) {
+            uint32_t a = row[x] >> 24;
+            row[x] = a << 24 | (r * a + 127) / 255 << 16 | (g * a + 127) / 255 << 8 | (b * a + 127) / 255;
+        }
+    }
+}
+
+// A tiling pattern of cells too large for a tile, or larger than the canvas (a slide's background in one cell larger than the page; Distiller's
+// shadings, each a cell shown once in steps of 32767) as the canvas's paint: the cells drawn at the canvas's
+// resolution into a surface over the part of the canvas the item's box covers. pd: the pattern's space -> the canvas.
+bool cellPaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, const plutovg_matrix_t &view,
+               const plutovg_matrix_t &pd, float alpha, TileCache &tc, const nd::Cancel &cancel, int &rc) {
+    const Tiling &T = *it.tile;
+    int ox, oy, sw, sh, f;
+    plutovg_matrix_t inv, pinv;
+    if (!canvasPart(c, it, view, ox, oy, sw, sh, f) || !plutovg_matrix_invert(&m, &inv) || !plutovg_matrix_invert(&pd, &pinv)) return false;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int k = 0; k < 4; k++) {   // (the surface's box in the pattern's space)
+        plutovg_point_t p = {(float)(k & 1 ? ox + sw * f : ox), (float)(k & 2 ? oy + sh * f : oy)}, q;
+        plutovg_matrix_map_point(&pinv, &p, &q);
+        x0 = std::min(x0, q.x), x1 = std::max(x1, q.x), y0 = std::min(y0, q.y), y1 = std::max(y1, q.y);
+    }
+    plutovg_surface_t *s = plutovg_surface_create(sw, sh);
+    plutovg_canvas_t *tcv = s ? plutovg_canvas_create(s) : nullptr;
+    if (!tcv) {
+        plutovg_surface_destroy(s);
+        return false;
+    }
+    plutovg_matrix_t sc, toS, back, tm;   // (the canvas -> the surface; the pattern's space -> the surface)
+    plutovg_matrix_init(&sc, 1.f / f, 0, 0, 1.f / f, -(float)ox / f, -(float)oy / f);
+    plutovg_matrix_multiply(&toS, &pd, &sc);
+    double scale = std::min(hypot(pd.a, pd.b), hypot(pd.c, pd.d)) / f;
+    // the cells whose box reaches into the surface
+    int i0 = (int)std::max(-1e6, floor((x0 - (double)T.bbox[2]) / T.xs)), i1 = (int)std::min(1e6, ceil((x1 - (double)T.bbox[0]) / T.xs));
+    int j0 = (int)std::max(-1e6, floor((y0 - (double)T.bbox[3]) / T.ys)), j1 = (int)std::min(1e6, ceil((y1 - (double)T.bbox[1]) / T.ys));
+    long copies = 0;
+    for (int j = j0; j <= j1 && !rc; j++)
+        for (int i = i0; i <= i1 && !rc && copies < MAX_TILE_COPIES; i++) {
+            float dx = i * T.xs, dy = j * T.ys;
+            if (T.bbox[2] + dx <= x0 || T.bbox[0] + dx >= x1 || T.bbox[3] + dy <= y0 || T.bbox[1] + dy >= y1) continue;
+            copies++;
+            plutovg_matrix_t tr, cv;
+            plutovg_matrix_init_translate(&tr, dx, dy);
+            plutovg_matrix_multiply(&cv, &tr, &toS);
+            double vb[4] = {x0 - dx, y0 - dy, x1 - dx, y1 - dy};
+            drawItems(P, *T.cell, tcv, cv, vb, scale, cancel, rc, &tc);
+        }
+    plutovg_canvas_destroy(tcv);
+    if (T.uncoloured) tint(s, it.rgb);
+    plutovg_matrix_init(&back, (float)f, 0, 0, (float)f, (float)ox, (float)oy);   // (the surface's pixels -> the path's space)
+    plutovg_matrix_multiply(&tm, &back, &inv);
+    plutovg_canvas_set_texture(c, s, PLUTOVG_TEXTURE_TYPE_PLAIN, alpha, &tm);
+    plutovg_surface_destroy(s);   // (the paint keeps it)
+    return true;
+}
+
 // A tiling pattern as the canvas's paint, for a fill or a stroke: its cell drawn into a tile at the canvas's resolution (nx x ny cells
-// of a small pattern in one tile, at least MIN_TILE pixels across; coarser if more than
-// MAX_TILE_PIXELS), with the neighbouring cells' parts reaching into it (a BBox larger than the
+// of a small pattern in one tile, at least MIN_TILE pixels across; a tile of more than MAX_TILE_PIXELS, or larger than
+// the canvas, is not made: cellPaint, or coarser if its cells are narrow), with the neighbouring cells' parts reaching into it (a BBox larger than the
 // steps), set as a repeated texture at alpha. An uncoloured one: the tile in its colour. False: no tile (nothing to paint).
-bool tilePaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, float alpha, TileCache &tc,
-               const nd::Cancel &cancel, int &rc) {
+bool tilePaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_matrix_t &m, const plutovg_matrix_t &view, float alpha,
+               TileCache &tc, const nd::Cancel &cancel, int &rc) {
     const Tiling &T = *it.tile;
     plutovg_matrix_t pd;   // (the pattern's space -> the canvas)
     plutovg_matrix_multiply(&pd, &it.shadeM, &m);
@@ -3770,6 +3841,9 @@ bool tilePaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_m
     if (!(w > 1e-4 && h > 1e-4 && w < 1e9 && h < 1e9)) return false;
     int nx = std::min(64, std::max(1, (int)ceil(MIN_TILE / w))), ny = std::min(64, std::max(1, (int)ceil(MIN_TILE / h)));
     double W = w * nx, H = h * ny;
+    plutovg_surface_t *cs = plutovg_canvas_get_surface(c);
+    double most = std::min((double)MAX_TILE_PIXELS, (double)plutovg_surface_get_width(cs) * plutovg_surface_get_height(cs));
+    if (W * H > most && nx == 1 && ny == 1) return cellPaint(P, c, it, m, view, pd, alpha, tc, cancel, rc);
     if (W * H > MAX_TILE_PIXELS) {
         double k = sqrt(MAX_TILE_PIXELS / (W * H));
         W *= k, H *= k;
@@ -3805,18 +3879,7 @@ bool tilePaint(nitropdf &P, plutovg_canvas_t *c, const Item &it, const plutovg_m
                 drawItems(P, *T.cell, tcv, cv, vb, std::min(kx, ky), cancel, rc, &tc);
             }
         plutovg_canvas_destroy(tcv);
-        if (T.uncoloured) {   // (premultiplied: the colour by each pixel's alpha)
-            uint8_t *px = plutovg_surface_get_data(s);
-            int stride = plutovg_surface_get_stride(s);
-            uint32_t r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
-            for (int y = 0; y < ih; y++) {
-                uint32_t *row = (uint32_t *)(px + (size_t)y * stride);
-                for (int x = 0; x < iw; x++) {
-                    uint32_t a = row[x] >> 24;
-                    row[x] = a << 24 | (r * a + 127) / 255 << 16 | (g * a + 127) / 255 << 8 | (b * a + 127) / 255;
-                }
-            }
-        }
+        if (T.uncoloured) tint(s, rgb);
         size_t total = (size_t)iw * ih;
         for (auto &x : tc.e) total += (size_t)x.w * x.h;
         while (!tc.e.empty() && (tc.e.size() >= 16 || total > 4 * (size_t)MAX_TILE_PIXELS)) {
@@ -4069,7 +4132,7 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
         if (it.kind == Item::FILL && it.shade && it.shade->mesh) {
             meshFill(c, it, m, view);
         } else if (it.kind == Item::FILL && it.tile) {
-            bool painted = tilePaint(P, c, it, m, it.alpha, *tc, cancel, rc);
+            bool painted = tilePaint(P, c, it, m, view, it.alpha, *tc, cancel, rc);
             if (rc) break;
             if (painted) {
                 plutovg_canvas_set_fill_rule(c, it.evenOdd ? PLUTOVG_FILL_RULE_EVEN_ODD : PLUTOVG_FILL_RULE_NON_ZERO);
@@ -4104,7 +4167,7 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
             // (its paint: its colour, or its pattern's axial / radial shading or cell)
             if (it.shade) shadePaint(c, *it.shade, alpha, it.shadeM);
             else if (it.tile) {
-                bool painted = tilePaint(P, c, it, m, alpha, *tc, cancel, rc);
+                bool painted = tilePaint(P, c, it, m, view, alpha, *tc, cancel, rc);
                 if (rc) break;
                 if (!painted) continue;
             } else nd::setRgb(c, it.rgb, alpha);
