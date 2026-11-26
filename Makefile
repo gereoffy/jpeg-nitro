@@ -55,10 +55,14 @@ ARCH       := $(shell uname -m)
 # at a 32-byte boundary (JCC erratum microcode): the Huffman loops became up to 25% slower
 # after edits elsewhere on a Xeon E3-1245 v5. This keeps branches clear; no effect elsewhere.
 X86JCC     := -mbranches-within-32B-boundaries
+# The maths functions set no errno (nothing reads it): lrintf, sqrtf and the like compile to an instruction instead of a
+# call into libm, as they do on macOS, where this is the default. On Linux a mesh shading's pixels spent a tenth of
+# their time in lrintf calls.
+NOERRNO    := -fno-math-errno
 ifeq ($(ARCH),x86_64)
-CPUFLAGS   := -march=native $(X86JCC)
+CPUFLAGS   := -march=native $(X86JCC) $(NOERRNO)
 else
-CPUFLAGS   := -mcpu=native
+CPUFLAGS   := -mcpu=native $(NOERRNO)
 endif
 # extra compiler flags for every build (decoders, viewers, benchmarks), e.g. make -B DEFS=-DLOOK=13
 DEFS       ?=
@@ -279,11 +283,11 @@ sdl: $(SDL_BIN)
 DIST_DIR   := build/dist
 ifeq ($(ARCH),aarch64)
 DIST_ARCH  ?= armv8-a
-DIST_CPU    = -march=$(DIST_ARCH)
+DIST_CPU    = -march=$(DIST_ARCH) $(NOERRNO)
 DIST_TGZ   := nitroview-linux-arm64.tar.gz
 else
 DIST_ARCH  ?= x86-64-v3
-DIST_CPU    = -march=$(DIST_ARCH) $(X86JCC)
+DIST_CPU    = -march=$(DIST_ARCH) $(X86JCC) $(NOERRNO)
 DIST_TGZ   := nitroview-linux-x64.tar.gz
 endif
 DIST_VEC   := $(if $(VEC),$(DIST_DIR)/libnitrovec.a)
@@ -695,7 +699,7 @@ clean:
 # Server 2016 and later). WINARCH=x86-64-v2 for CPUs without AVX2.
 WINCC   ?= x86_64-w64-mingw32-clang
 WINARCH ?= x86-64-v3
-WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(DEFS) -fblocks $(WARN) -static
+WINFLAGS = -O3 -march=$(WINARCH) $(X86JCC) $(NOERRNO) $(DEFS) -fblocks $(WARN) -static
 # everything Windows is built again when WINARCH changes (the v2 and v3 builds share build/win/)
 # or the optional parts do (NITROHEVC=1 left the WIC build in place)
 WIN_STAMP := build/win/.arch-$(WINARCH)-$(CONFIG)
@@ -729,7 +733,7 @@ WIN_AVIF  := $(if $(WIN_DAV1D),-DNV_DAV1D -I$(DAV1D_WIN)/include)
 build/win/%: CC = $(WINCC)
 build/win/%: CXX = $(WINCXX)
 build/win/%: AR = $(WINAR)
-build/win/%: TCPU = -march=$(WINARCH) $(X86JCC) $(DEFS)
+build/win/%: TCPU = -march=$(WINARCH) $(X86JCC) $(NOERRNO) $(DEFS)
 build/win/%: TPORT = -fblocks -static
 build/win/libnitro.a: LIB_AVIF = $(if $(WIN_DAV1D),src/nitroavif.c)
 build/win/libnitro.a: LIB_DEFS = $(WIN_AVIF)
