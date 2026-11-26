@@ -438,6 +438,7 @@ struct Item {
     float length = 0;   // (a dashed stroke: its path's length, in its own units)
     float span = 0;     // (merged strokes: their boxes' heights together, against MAX_MERGE_ROWS)
     bool text = false;  // (a glyph run's fill: merged with the next)
+    bool knock = false; // (a stroke painted in place of what is under it in its group: fill-and-stroke's, see paint)
     nd::Box box;
 };
 
@@ -2238,6 +2239,19 @@ struct Interp {
                 gs = saved;
                 fill = 0;
             }
+            // Fill-and-stroke (B) with a stroke that is not opaque: the stroke knocks the fill out where it lies over
+            // it (11.7.4.4; so Acrobat, MuPDF and PDFium show it: a frame of one tone, not its inner half darker over
+            // the fill). The two in a group of their own, the stroke painted there in place of the fill under it.
+            bool knock = fill && stroke && !gs.fillNone && !gs.strokeNone && gs.strokeA < 1;
+            std::shared_ptr<Group> both;
+            std::vector<Item> *pageOut = out;
+            auto blend0 = gs.blend;
+            auto smask0 = gs.smask;
+            if (knock) {
+                both = std::make_shared<Group>();
+                out = &both->items;
+                gs.blend = 0, gs.smask.reset();
+            }
             if (fill && !gs.fillNone && (!gs.fillPattern || true)) {
                 Item it;
                 it.kind = Item::FILL;
@@ -2261,6 +2275,20 @@ struct Interp {
                 }
             }
             if (stroke && !gs.strokeNone) strokeItem(m, shared);
+            if (knock) {
+                out = pageOut;
+                gs.blend = blend0, gs.smask = smask0;
+                if (both->items.size() == 1) emit(std::move(both->items[0]));   // (the other outside the clip)
+                else if (both->items.size() == 2) {
+                    both->items[1].knock = true;
+                    Item gi;
+                    gi.kind = Item::GROUP;
+                    gi.box = itemsBox(both->items);
+                    gi.group = both;
+                    plutovg_matrix_init_identity(&gi.m);
+                    emit(std::move(gi));
+                }
+            }
         }
         if (pendingClip) addClip(pendingClip == 2);
         pendingClip = 0;
@@ -4089,7 +4117,9 @@ void drawItems(nitropdf &P, const Item *first, const Item *last, const std::vect
             plutovg_canvas_set_miter_limit(c, it.miter);
             if (dashed) plutovg_canvas_set_dash(c, it.dashOffset, it.dash->data(), (int)it.dash->size());
             else plutovg_canvas_set_dash(c, 0, nullptr, 0);
+            if (it.knock) plutovg_canvas_set_operator(c, PLUTOVG_OPERATOR_SRC);
             plutovg_canvas_stroke_path(c, it.path->p);
+            if (it.knock) plutovg_canvas_set_operator(c, PLUTOVG_OPERATOR_SRC_OVER);
         } else {   // (in the picture's pixels; much smaller: one of its halved copies)
             int iw = plutovg_surface_get_width(it.img->s), ih = plutovg_surface_get_height(it.img->s), f = 1;
             if (fabsf(m.b) < 1e-6f && fabsf(m.c) < 1e-6f) {
