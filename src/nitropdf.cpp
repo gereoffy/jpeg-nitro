@@ -2528,6 +2528,14 @@ struct Interp {
             st.color = {clampf(col[0], 0, 1), clampf(col[1], 0, 1), clampf(col[2], 0, 1), 1};
             s->stops.push_back(st);
         }
+        // A radial one shrinking into its start circle (from a disc's edge to its middle): turned round, its end
+        // the larger circle, as the others are written: of one not extended what lies in its end circle is painted.
+        if (type == 3 && s->c[2] >= s->c[5] + hypotf(s->c[3] - s->c[0], s->c[4] - s->c[1]) && s->c[2] > s->c[5]) {
+            std::swap_ranges(s->c, s->c + 3, s->c + 3);
+            std::swap(s->extend[0], s->extend[1]);
+            std::reverse(s->stops.begin(), s->stops.end());
+            for (auto &st : s->stops) st.offset = 1 - st.offset;
+        }
         return s;
     }
 
