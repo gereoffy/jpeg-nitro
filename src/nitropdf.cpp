@@ -804,6 +804,7 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
         bool gray = kind.is("CalGray");
         Val d = doc.resolve(v.at(1));
         auto w = nums(doc, d.get("WhitePoint")), g = nums(doc, d.get("Gamma")), m = nums(doc, d.get("Matrix"));
+        if (Val gv = doc.resolve(d.get("Gamma")); gv.isNum()) g.assign(1, (float)gv.num());   // (CalGray's: a number, not an array)
         if (w.size() == 3 && w[0] > 0 && w[1] > 0 && w[2] > 0) {
             double mx[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // (columns: the XYZ of A, B, C; rows here: X, Y, Z)
             if (gray) mx[0] = w[0], mx[3] = w[1], mx[6] = w[2];
