@@ -2406,9 +2406,11 @@ struct Interp {
         gs.font = nullptr;
         Val fres = doc.resolve(f.resources).t == pp::DICT ? f.resources : res;
         bool wasShape = glyphShape, wasIn = inGlyph;
+        plutovg_matrix_t tm0 = tm, tlm0 = tlm;   // (a text object in the procedure sets them anew: the string's own kept)
         glyphShape = false, inGlyph = true;
         run(dec.data.data(), dec.data.size(), fres, depth + 1);
         glyphShape = wasShape, inGlyph = wasIn;
+        tm = tm0, tlm = tlm0;
         gs = stack.back();
         stack.pop_back();
     }
