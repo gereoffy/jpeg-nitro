@@ -778,14 +778,32 @@ std::shared_ptr<CS> deviceCS(CS::K k) {
 std::shared_ptr<CS> loadCS(nitropdf &P, Val v, Val res, int depth);
 Val resource(nitropdf &P, Val res, const char *category, Val name);
 
+// The space a device space's colours are in: the /DefaultGray, /DefaultRGB or /DefaultCMYK of the resources'
+// /ColorSpace where there is one of that kind (8.6.5.6: a file saying what its device colours mean, a press's
+// profile for its CMYK), else the device space. (Loaded without the resources: what it is built on is not remapped.)
+std::shared_ptr<CS> defaultCS(nitropdf &P, CS::K k, Val res, int depth) {
+    pp::Doc &doc = P.doc;
+    if (doc.resolve(res).t == pp::DICT) {
+        Val d = doc.get(res, "ColorSpace");
+        Val v = d.t == pp::DICT ? d.get(k == CS::GRAY ? "DefaultGray" : k == CS::RGB ? "DefaultRGB" : "DefaultCMYK") : Val();
+        if (v.t != pp::NUL) {
+            auto c = loadCS(P, v, Val(), depth + 1);
+            if (c && c->k == k) return c;
+        }
+    }
+    return deviceCS(k);
+}
+
 std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
     pp::Doc &doc = P.doc;
     if (depth > MAX_DEPTH) return nullptr;
     v = doc.resolve(v);
     if (v.t == pp::NAME) {
-        if (v.is("DeviceGray") || v.is("G") || v.is("CalGray")) return deviceCS(CS::GRAY);
-        if (v.is("DeviceRGB") || v.is("RGB") || v.is("CalRGB")) return deviceCS(CS::RGB);
-        if (v.is("DeviceCMYK") || v.is("CMYK")) return deviceCS(CS::CMYK);
+        if (v.is("DeviceGray") || v.is("G")) return defaultCS(P, CS::GRAY, res, depth);
+        if (v.is("DeviceRGB") || v.is("RGB")) return defaultCS(P, CS::RGB, res, depth);
+        if (v.is("DeviceCMYK") || v.is("CMYK")) return defaultCS(P, CS::CMYK, res, depth);
+        if (v.is("CalGray")) return deviceCS(CS::GRAY);
+        if (v.is("CalRGB")) return deviceCS(CS::RGB);
         if (v.is("Pattern")) {
             auto c = std::make_shared<CS>();
             c->k = CS::PATTERN;
@@ -867,7 +885,7 @@ std::shared_ptr<CS> loadCSUncached(nitropdf &P, Val v, Val res, int depth) {
         }
         Val alt = d.get("Alternate");
         if (alt.t != pp::NUL) {
-            auto a = loadCS(P, alt, res, depth + 1);
+            auto a = loadCS(P, alt, Val(), depth + 1);   // (a device space here is the device's: not a /Default one)
             if (a) return a;
         }
         int n = toInt(doc.get(d, "N").num(3));
@@ -2920,9 +2938,9 @@ struct Interp {
         (fill ? gs.fillPattern : gs.strokePattern) = cs->k == CS::PATTERN;
         (fill ? gs.fillNone : gs.strokeNone) = cs->k == CS::NONE;
     }
-    void deviceColor(bool fill, CS::K k, const Val *args, size_t n) {
+    void deviceColor(bool fill, const std::shared_ptr<CS> &cs, const Val *args, size_t n) {
         if (glyphShape) return;
-        (fill ? gs.fillCS : gs.strokeCS) = deviceCS(k);
+        (fill ? gs.fillCS : gs.strokeCS) = cs;
         (fill ? gs.fillPattern : gs.strokePattern) = false;
         (fill ? gs.fillNone : gs.strokeNone) = false;
         setColor(fill, args, n, Val());
@@ -3180,6 +3198,11 @@ struct Interp {
     void run(const char *data, size_t len, Val res, int depth) {
         if (!path) newPath();
         size_t qBase = stack.size();
+        std::shared_ptr<CS> dev[3];   // (the device spaces of g, rg, k here: these resources' /Default ones, looked up once)
+        auto device = [&](CS::K k) -> const std::shared_ptr<CS> & {
+            if (!dev[k]) dev[k] = defaultCS(P, k, res, 0);
+            return dev[k];
+        };
         pp::ContentLexer lx(data, len);
         pp::Op op;
         while (lx.next(op)) {
@@ -3234,24 +3257,24 @@ struct Interp {
                     plutovg_path_line_to(path, x, y + h);
                     plutovg_path_close(path);
                     cx = x, cy = y;
-                } else if (o == "rg" && n >= 3) deviceColor(true, CS::RGB, a, n);
+                } else if (o == "rg" && n >= 3) deviceColor(true, device(CS::RGB), a, n);
                 else if (o == "ri") {}
                 break;
             case 'R':
-                if (o == "RG" && n >= 3) deviceColor(false, CS::RGB, a, n);
+                if (o == "RG" && n >= 3) deviceColor(false, device(CS::RGB), a, n);
                 break;
             case 'g':
-                if (o == "g" && n >= 1) deviceColor(true, CS::GRAY, a, n);
+                if (o == "g" && n >= 1) deviceColor(true, device(CS::GRAY), a, n);
                 else if (o == "gs" && n >= 1) extGState(res, a[0]);
                 break;
             case 'G':
-                if (o == "G" && n >= 1) deviceColor(false, CS::GRAY, a, n);
+                if (o == "G" && n >= 1) deviceColor(false, device(CS::GRAY), a, n);
                 break;
             case 'k':
-                if (o == "k" && n >= 4) deviceColor(true, CS::CMYK, a, n);
+                if (o == "k" && n >= 4) deviceColor(true, device(CS::CMYK), a, n);
                 break;
             case 'K':
-                if (o == "K" && n >= 4) deviceColor(false, CS::CMYK, a, n);
+                if (o == "K" && n >= 4) deviceColor(false, device(CS::CMYK), a, n);
                 break;
             case 's':
                 if (o == "sc" || o == "scn") setColor(true, a, n, res);
