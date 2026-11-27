@@ -103,14 +103,36 @@ dav1d (AVIF) for Windows. The `SVG`, `CDR` and `NITROHEVC` options apply here to
 
 ## Linux
 
-### Nix development environment
+### Nix build & development environment
 
-Run `nix-shell` in the repository root to load `shell.nix`, which provides the
-compilation environment. Then follow [Optional dependencies](#optional-dependencies)
-and the Linux build instructions below.
+With Nix flakes enabled, build or run directly from the GitHub repository without
+cloning:
 
-A configured `nixpkgs` channel is required; alternatively, use
-`nix-shell -I nixpkgs=/path/to/nixpkgs`.
+```sh
+# Run the SDL3 viewer directly
+nix run github:gereoffy/jpeg-nitro
+
+# Or build locally from the remote repository
+nix build github:gereoffy/jpeg-nitro
+./result/bin/nitroview-sdl
+```
+
+From a local clone, you can build any of the Linux targets (`nitroview-sdl` is
+the default):
+
+```sh
+nix build                   # SDL3 + OpenGL viewer (make sdl)
+nix build .#nitroview-gnome # GTK4 / libadwaita viewer (make gnome)
+nix build .#nitroview-linux # Static libnitro.a and CLI/benchmark tools (make linux)
+```
+
+Alternatively, enter a development shell with all build and runtime dependencies
+configured, then follow [Optional dependencies](#optional-dependencies) and the
+Linux build instructions below:
+
+```sh
+nix develop
+```
 
 ### Build commands
 
