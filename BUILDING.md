@@ -1,56 +1,37 @@
 # Building nitroview and the decoders
 
-[README](README.md) | **Building** | [Benchmarking](BENCHMARKING.md)
+[README](README) | **Building** | [Benchmarking](BENCHMARKING)
 
-Ready-made builds are in the [Releases](https://github.com/gereoffy/jpeg-nitro/releases). This is
-for building the viewers yourself, and for using the decoders in your own program.
+Ready-made builds are in the [Releases](https://github.com/gereoffy/jpeg-nitro/releases). This is for building the viewers yourself, and for using the decoders in your own program.
 
-Everything is built with **clang**: the decoders' parallel loops are clang blocks
-(`^(size_t i) {…}`), which GCC does not support. Nothing else is needed for a basic build; the
-optional dependencies below add formats.
+Everything is built with **clang**: the decoders' parallel loops are clang blocks (`^(size_t i) {…}`), which GCC does not support. Nothing else is needed for a basic build; the optional dependencies below add formats.
 
-| platform | needs |
-|---|---|
-| macOS | Xcode Command Line Tools |
-| Linux | clang and make; the GNOME viewer: the GTK 4 (4.6+) and libadwaita (1.1+) development packages; the SDL viewer: the window systems' development packages listed in `scripts/get-deps.sh` |
-| Windows, cross-compiled on macOS or Linux | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (clang + MinGW-w64; MSYS2's CLANG64 works too) |
+| platform                                  | needs                                                                                                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS                                     | Xcode Command Line Tools                                                                                                                                                                |
+| Linux                                     | clang and make; the GNOME viewer: the GTK 4 (4.6+) and libadwaita (1.1+) development packages; the SDL viewer: the window systems' development packages listed in `scripts/get-deps.sh` |
+| Windows, cross-compiled on macOS or Linux | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (clang + MinGW-w64; MSYS2's CLANG64 works too)                                                                                     |
 
 ## Optional dependencies
 
-`scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is
-installed system-wide). The Makefile uses what it finds there: the vector drawings (SVG, DXF / DWG, WMF / EMF,
-CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and AVIF are built in automatically.
+`scripts/get-deps.sh` downloads and builds them into `third_party/` (about a minute; nothing is installed system-wide). The Makefile uses what it finds there: the vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io: all of them once all their libraries are present) and AVIF are built in automatically.
 
-| dependency | for | option |
-|---|---|---|
-| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg) | SVG; and the rasterizer every reader draws with (DXF, DWG and WMF / EMF: nitrodxf, nitrodwg and nitrometa are our own) | `NITROVEC=0` leaves every drawing format out (libnitrovec.a) |
-| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc | CorelDRAW | part of `NITROVEC`; `MIMALLOC=0`: the C++ code with the system malloc |
-| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio) | part of `NITROVEC` |
-| [pdfparse3](https://github.com/gereoffy/pdfparse3)'s C++ object layer; FreeType (the font drivers `patches/freetype/` configures); Brotli's and Zstandard's decoders | PDF (nitropdf), font files (nitrotype); Brotli: the WOFF2 fonts FreeType reads; Zstandard: the EPS files of Illustrator 24 and later (nitroai) | part of `NITROVEC` |
-| [dav1d](https://code.videolan.org/videolan/dav1d) | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC | `DAV1D=0` |
-| SDL3 | the SDL viewer's window | `SDL=0 scripts/get-deps.sh` skips it |
-| draw.io's stencil libraries (Apache-2.0; not for use in Atlassian products) | the icons and symbols of draw.io diagrams (shape=mxgraph.…): the general-purpose libraries by default | part of `NITROVEC`; `DRAWIO_STENCILS=…` picks the libraries (see below) |
-| zlib-ng | zlib for the drawings in the Windows and the portable Linux build (macOS and Linux have one) | part of `NITROVEC` |
-| libjpeg-turbo | the reference of the tests and benchmarks; an optional fallback decoder in the viewer | `TURBOJPEG=1` |
-| stb_image, Wuffs | the decoder comparison in `bench/bench`; Wuffs also as the viewer's interlaced-PNG decoder | `WUFFS=1` |
+| dependency                                                                                                                                                                                                                                      | for                                                                                                                                            | option                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [lunasvg](https://github.com/gereoffy/lunasvg) (our fork, with plutovg)                                                                                                                                                                         | SVG; and the rasterizer every reader draws with (DXF, DWG and WMF / EMF: nitrodxf, nitrodwg and nitrometa are our own)                         | `NITROVEC=0` leaves every drawing format out (libnitrovec.a)            |
+| [libcdr](https://github.com/gereoffy/libcdr) (our fork), librevenge, lcms2, the boost headers; mimalloc                                                                                                                                         | CorelDRAW                                                                                                                                      | part of `NITROVEC`; `MIMALLOC=0`: the C++ code with the system malloc   |
+| libvisio ([our fork](https://github.com/gereoffy/libvisio) with fixes, iconv instead of ICU), libxml2's XML reader (configured by `patches/libxml2/`, `patches/libxml2.patch`; libvisio's token tables generated once into `patches/libvisio/`) | Visio, through the CorelDRAW code; libxml2 also for draw.io (nitrodio)                                                                         | part of `NITROVEC`                                                      |
+| [pdfparse3](https://github.com/gereoffy/pdfparse3)'s C++ object layer; FreeType (the font drivers `patches/freetype/` configures); Brotli's and Zstandard's decoders                                                                            | PDF (nitropdf), font files (nitrotype); Brotli: the WOFF2 fonts FreeType reads; Zstandard: the EPS files of Illustrator 24 and later (nitroai) | part of `NITROVEC`                                                      |
+| [dav1d](https://code.videolan.org/videolan/dav1d)                                                                                                                                                                                               | AVIF with nitroavif; without it AVIF goes to ImageIO / WIC                                                                                     | `DAV1D=0`                                                               |
+| SDL3                                                                                                                                                                                                                                            | the SDL viewer's window                                                                                                                        | `SDL=0 scripts/get-deps.sh` skips it                                    |
+| draw.io's stencil libraries (Apache-2.0; not for use in Atlassian products)                                                                                                                                                                     | the icons and symbols of draw.io diagrams (shape=mxgraph.…): the general-purpose libraries by default                                          | part of `NITROVEC`; `DRAWIO_STENCILS=…` picks the libraries (see below) |
+| zlib-ng                                                                                                                                                                                                                                         | zlib for the drawings in the Windows and the portable Linux build (macOS and Linux have one)                                                   | part of `NITROVEC`                                                      |
+| libjpeg-turbo                                                                                                                                                                                                                                   | the reference of the tests and benchmarks; an optional fallback decoder in the viewer                                                          | `TURBOJPEG=1`                                                           |
+| stb_image, Wuffs                                                                                                                                                                                                                                | the decoder comparison in `bench/bench`; Wuffs also as the viewer's interlaced-PNG decoder                                                     | `WUFFS=1`                                                               |
 
-dav1d is built with meson + ninja in a Python virtual environment (`third_party/tools/venv`),
-universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it and zlib-ng
-for the Windows viewer (`third_party/dav1d-win`, `third_party/zlib-ng-win`). The script applies two
-patches: `patches/librevenge.patch` (embedded images pass through without base64, property lists
-are moved instead of copied, a damaged OLE header is refused) and `patches/libxml2.patch` (on Windows
-the hash tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in
-our forks, fetched by their pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and
-dav1d's x86 assembly.
+dav1d is built with meson + ninja in a Python virtual environment (`third_party/tools/venv`), universal (x86_64 + arm64) on macOS; `WINCC=… scripts/get-deps.sh` also cross-compiles it and zlib-ng for the Windows viewer (`third_party/dav1d-win`, `third_party/zlib-ng-win`). The script applies two patches: `patches/librevenge.patch` (embedded images pass through without base64, property lists are moved instead of copied, a damaged OLE header is refused) and `patches/libxml2.patch` (on Windows the hash tables' seed without bcrypt.dll); lunasvg's, libcdr's and libvisio's fixes are commits in our forks, fetched by their pinned commits. It also builds NASM 3.02 locally for libjpeg-turbo's and dav1d's x86 assembly.
 
-**draw.io stencils:** `scripts/gen-drawio-stencils.py` (run by `get-deps.sh`; python3) downloads draw.io's
-stencil bundle (`src/main/webapp/js/stencils.min.js` of a pinned draw.io commit, checked by its sha256) into
-`third_party/drawio/` and writes the libraries nitroview draws into `third_party/drawio/nitrodio_stencils.h`.
-By default these are the general-purpose ones: basic, arrows, flowchart, bpmn, lean_mapping, eip, floorplan,
-cabinets, networks, electrical, pid, mockup (about 1450 shapes, 100 KB). The cloud, vendor and brand icon sets
-(aws4, azure, gcp2, cisco19, office, …), signs, fluid_power and sitemap are left out: their shapes show as a
-frame. Another set: the bundle's file names up to their first `/` or `.xml`, comma-separated, or `all` for
-every library (9090 shapes, about 5.5 MB in the program), then rebuild:
+**draw.io stencils:** `scripts/gen-drawio-stencils.py` (run by `get-deps.sh`; python3) downloads draw.io's stencil bundle (`src/main/webapp/js/stencils.min.js` of a pinned draw.io commit, checked by its sha256) into `third_party/drawio/` and writes the libraries nitroview draws into `third_party/drawio/nitrodio_stencils.h`. By default these are the general-purpose ones: basic, arrows, flowchart, bpmn, lean_mapping, eip, floorplan, cabinets, networks, electrical, pid, mockup (about 1450 shapes, 100 KB). The cloud, vendor and brand icon sets (aws4, azure, gcp2, cisco19, office, …), signs, fluid_power and sitemap are left out: their shapes show as a frame. Another set: the bundle's file names up to their first `/` or `.xml`, comma-separated, or `all` for every library (9090 shapes, about 5.5 MB in the program), then rebuild:
 
 ```
 DRAWIO_STENCILS=basic,flowchart,electrical,signs,aws4 scripts/get-deps.sh
@@ -68,26 +49,19 @@ make dmg notarize SIGN_ID="Developer ID Application: Name (TEAMID)" NOTARY_PROFI
 
 Options on the make command line (the defaults depend on what `scripts/get-deps.sh` has built):
 
-| option | effect |
-|---|---|
-| `TURBOJPEG=1` | the JPEGs nitrojpeg does not decode (damaged or cut-off, CMYK, arithmetic coding) go to libjpeg-turbo before ImageIO: about 2× faster on them, 1.2 MB more; `--selftest` needs it |
-| `WUFFS=1` | interlaced PNGs through Wuffs before ImageIO |
-| `DAV1D=0` | AVIF through ImageIO instead of nitroavif + dav1d |
-| `NITROVEC=0` | without the vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io): libnitrovec.a holds nothing, the viewers show bitmaps only |
-| `MIMALLOC=0` | the vector drawings' code with the system malloc instead of mimalloc |
-| `NITROHEVC=1` | HEIC with our own HEVC decoder, nitrohevc, instead of the system's (off by default, see [HEIC](README.md#heic)) |
-| `MAC_ARCHS=x86_64` | `make app` for one architecture only |
+| option             | effect                                                                                                                                                                            |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TURBOJPEG=1`      | the JPEGs nitrojpeg does not decode (damaged or cut-off, CMYK, arithmetic coding) go to libjpeg-turbo before ImageIO: about 2× faster on them, 1.2 MB more; `--selftest` needs it |
+| `WUFFS=1`          | interlaced PNGs through Wuffs before ImageIO                                                                                                                                      |
+| `DAV1D=0`          | AVIF through ImageIO instead of nitroavif + dav1d                                                                                                                                 |
+| `NITROVEC=0`       | without the vector drawings (SVG, DXF / DWG, WMF / EMF, CorelDRAW, Visio, draw.io): libnitrovec.a holds nothing, the viewers show bitmaps only                                    |
+| `MIMALLOC=0`       | the vector drawings' code with the system malloc instead of mimalloc                                                                                                              |
+| `NITROHEVC=1`      | HEIC with our own HEVC decoder, nitrohevc, instead of the system's (off by default, see [HEIC](README#heic))                                                                      |
+| `MAC_ARCHS=x86_64` | `make app` for one architecture only                                                                                                                                              |
 
 Without any optional dependency the viewer needs only macOS frameworks.
 
-**Passing the app on:** the app is ad-hoc signed, so another Mac refuses it the first time:
-right-click → Open (up to macOS 14), System Settings → Privacy & Security → Open Anyway (macOS 15),
-or `xattr -dr com.apple.quarantine nitroview.app`. With an Apple Developer ID, `make dmg notarize
-SIGN_ID=… NOTARY_PROFILE=name` signs it (hardened runtime), has Apple notarize the dmg and staples
-the ticket to it (once before: `xcrun notarytool store-credentials name`). The dmg in the Releases
-is made this way by the workflow in `.github/workflows/macos-release.yml`, run in
-[mgelei's fork](https://github.com/mgelei/jpeg-nitro) with their Developer ID
-(`gh attestation verify nitroview-vN.dmg --repo mgelei/jpeg-nitro` checks the provenance).
+**Passing the app on:** the app is ad-hoc signed, so another Mac refuses it the first time: right-click → Open (up to macOS 14), System Settings → Privacy & Security → Open Anyway (macOS 15), or `xattr -dr com.apple.quarantine nitroview.app`. With an Apple Developer ID, `make dmg notarize SIGN_ID=… NOTARY_PROFILE=name` signs it (hardened runtime), has Apple notarize the dmg and staples the ticket to it (once before: `xcrun notarytool store-credentials name`). The dmg in the Releases is made this way by the workflow in `.github/workflows/macos-release.yml`, run in [mgelei's fork](https://github.com/mgelei/jpeg-nitro) with their Developer ID (`gh attestation verify nitroview-vN.dmg --repo mgelei/jpeg-nitro` checks the provenance).
 
 ## Windows
 
@@ -95,22 +69,36 @@ is made this way by the workflow in `.github/workflows/macos-release.yml`, run i
 make windows WINCC=…/llvm-mingw/bin/x86_64-w64-mingw32-clang
 ```
 
-cross-compiles `nitroview.exe` (with its icon), `bench/nbench.exe` and `bench/psdverify.exe`:
-static, only system DLLs, Windows 10 or later, built for AVX2 (x86-64-v3). `WINARCH=x86-64-v2` builds
-for CPUs without AVX2 (switching it rebuilds everything Windows, the vector libraries too).
-First `WINCC=… scripts/get-deps.sh` with the same compiler: it builds zlib-ng (the drawings) and
-dav1d (AVIF) for Windows. The `SVG`, `CDR` and `NITROHEVC` options apply here too.
+cross-compiles `nitroview.exe` (with its icon), `bench/nbench.exe` and `bench/psdverify.exe`: static, only system DLLs, Windows 10 or later, built for AVX2 (x86-64-v3). `WINARCH=x86-64-v2` builds for CPUs without AVX2 (switching it rebuilds everything Windows, the vector libraries too). First `WINCC=… scripts/get-deps.sh` with the same compiler: it builds zlib-ng (the drawings) and dav1d (AVIF) for Windows. The `SVG`, `CDR` and `NITROHEVC` options apply here too.
 
 ## Linux
 
-### Nix development environment
+### Nix build & development environment
 
-Run `nix-shell` in the repository root to load `shell.nix`, which provides the
-compilation environment. Then follow [Optional dependencies](#optional-dependencies)
-and the Linux build instructions below.
+With Nix flakes enabled, build or run directly from the GitHub repository without cloning:
 
-A configured `nixpkgs` channel is required; alternatively, use
-`nix-shell -I nixpkgs=/path/to/nixpkgs`.
+``` sh
+# Run the SDL3 viewer directly
+nix run github:gereoffy/jpeg-nitro
+
+# Or build locally from the remote repository
+nix build github:gereoffy/jpeg-nitro
+./result/bin/nitroview-sdl
+```
+
+From a local clone, you can build any of the Linux targets (`nitroview-sdl` is the default):
+
+``` sh
+nix build                   # SDL3 + OpenGL viewer (make sdl)
+nix build .#nitroview-gnome # GTK4 / libadwaita viewer (make gnome)
+nix build .#nitroview-linux # Static libnitro.a and CLI/benchmark tools (make linux)
+```
+
+Alternatively, enter a development shell with all build and runtime dependencies configured, then follow [Optional dependencies](#optional-dependencies) and the Linux build instructions below:
+
+``` sh
+nix develop
+```
 
 ### Build commands
 
@@ -123,57 +111,27 @@ make sdl             # nitroview-sdl (SDL3 + OpenGL)
 make sdl-dist        # nitroview-linux-x64.tar.gz (on ARM: -arm64): the viewer as one portable file
 ```
 
-**GNOME:** needs GTK 4.6+ and libadwaita 1.1+ (Ubuntu 22.04 is enough; there clang also needs
-`libstdc++-12-dev` for nitrosvg). Before GTK 4.10 textures are drawn only with a linear filter:
-large images get mipmaps made on the CPU, and the pixel-exact 200–800% zoom is smoothed.
-`make flatpak` needs Flathub's `org.flatpak.Builder` where the distribution's own flatpak-builder
-is too old for a GNOME 50 build (Ubuntu 22.04's is).
+**GNOME:** needs GTK 4.6+ and libadwaita 1.1+ (Ubuntu 22.04 is enough; there clang also needs `libstdc++-12-dev` for nitrosvg). Before GTK 4.10 textures are drawn only with a linear filter: large images get mipmaps made on the CPU, and the pixel-exact 200–800% zoom is smoothed. `make flatpak` needs Flathub's `org.flatpak.Builder` where the distribution's own flatpak-builder is too old for a GNOME 50 build (Ubuntu 22.04's is).
 
-**SDL:** SDL3 is linked in statically (built by `scripts/get-deps.sh`); OpenGL and Wayland / X11 are
-loaded at run time, so the viewer needs no GTK. `make sdl-dist` builds for x86-64-v3 instead of the
-build machine's CPU, with libstdc++, zlib and dav1d linked in, so the tarball needs only glibc
-(2.35+ when built on Ubuntu 22.04). On 64-bit ARM Linux (Asahi Linux on an Apple M1 / M2, Raspberry
-Pi 4 / 5) the same makes `nitroview-linux-arm64.tar.gz`, built for armv8-a (tested on an M1 MacBook
-Air under Fedora Asahi Remix 44, KDE Plasma on Wayland). It builds on macOS too, only for testing:
-there OpenGL is slow, the Metal viewer is the one to use.
+**SDL:** SDL3 is linked in statically (built by `scripts/get-deps.sh`); OpenGL and Wayland / X11 are loaded at run time, so the viewer needs no GTK. `make sdl-dist` builds for x86-64-v3 instead of the build machine's CPU, with libstdc++, zlib and dav1d linked in, so the tarball needs only glibc (2.35+ when built on Ubuntu 22.04). On 64-bit ARM Linux (Asahi Linux on an Apple M1 / M2, Raspberry Pi 4 / 5) the same makes `nitroview-linux-arm64.tar.gz`, built for armv8-a (tested on an M1 MacBook Air under Fedora Asahi Remix 44, KDE Plasma on Wayland). It builds on macOS too, only for testing: there OpenGL is slow, the Metal viewer is the one to use.
 
 ## Using the decoders in your own program
 
-`make lib` builds `build/libnitro.a` on every platform (the app's universal build, the Windows
-build and the portable Linux build make their own copy per target): all the decoders and
-`nitro_load`, the viewers' common path from a file to a decoded image.
+`make lib` builds `build/libnitro.a` on every platform (the app's universal build, the Windows build and the portable Linux build make their own copy per target): all the decoders and `nitro_load`, the viewers' common path from a file to a decoded image.
 
-- `nv_read_image()` reads what is needed of the file: a PSD's merged image only, a camera raw's
-  embedded JPEG only, otherwise the whole file.
-- `nv_decode()` recognizes the format and decodes it with its decoder into one buffer, and fills
-  an `NvImage` that says what is in it: YUV planes (JPEG, HEIC, AVIF, WebP), a PSD's planes, 8-bit
-  BGRX pixels (TIFF, DNG, palette / 16-bit PNG) or a PNG's unfiltered rows, plus the EXIF
-  orientation and the ICC profile.
-- `nitro_convert` (`nc_yuv_to_rgb()`, `nc_psd_to_rgb()`) makes RGB of the planes, in parallel, for
-  a program without a GPU shader for them.
+- `nv_read_image()` reads what is needed of the file: a PSD's merged image only, a camera raw's embedded JPEG only, otherwise the whole file.
+- `nv_decode()` recognizes the format and decodes it with its decoder into one buffer, and fills an `NvImage` that says what is in it: YUV planes (JPEG, HEIC, AVIF, WebP), a PSD's planes, 8-bit BGRX pixels (TIFF, DNG, palette / 16-bit PNG) or a PNG's unfiltered rows, plus the EXIF orientation and the ICC profile.
+- `nitro_convert` (`nc_yuv_to_rgb()`, `nc_psd_to_rgb()`) makes RGB of the planes, in parallel, for a program without a GPU shader for them.
 
-`examples/nitroconvert.c` is the whole thing in a hundred lines: any image the library decodes to a
-24-bit BMP, with its orientation applied. `make examples/nitroconvert` builds it; by hand:
+`examples/nitroconvert.c` is the whole thing in a hundred lines: any image the library decodes to a 24-bit BMP, with its orientation applied. `make examples/nitroconvert` builds it; by hand:
 
 ```
 clang -O3 -fblocks -Isrc examples/nitroconvert.c build/libnitro.a -lpthread -lm
 ```
 
-plus `third_party/dav1d/lib/libdav1d.a` when the library was built with dav1d; on macOS
-`-framework CoreFoundation` instead of `-lm`, and `-framework VideoToolbox -framework CoreMedia
--framework CoreVideo` for HEIC (unless built with `NITROHEVC=1`).
+plus `third_party/dav1d/lib/libdav1d.a` when the library was built with dav1d; on macOS `-framework CoreFoundation` instead of `-lm`, and `-framework VideoToolbox -framework CoreMedia -framework CoreVideo` for HEIC (unless built with `NITROHEVC=1`).
 
-**The vector drawings** are a second library, `build/libnitrovec.a` (built with the viewers; per
-target as `libnitro.a`): `nitro_vector`, the viewers' interface in `src/nitro_vector.h`, over the
-readers (SVG with lunasvg, DXF / DWG, WMF / EMF, CorelDRAW and Visio with libcdr / libvisio,
-draw.io) and the libraries they are built on, each compiled from its checkout under `third_party/`
-into its own object directory (`build/vec/`) and all archived together: one library to link
-(`make NITROVEC=0` leaves all of it out). `nv_vector_open()` loads a file by
-its extension, `nv_vector_pages()` and `nv_vector_size()` say what is in it, `nv_vector_page_size()`
-picks the size a page is shown at, `nv_vector_render()` draws any part of a page at any scale into
-a BGRA buffer, in parallel bands, over a white, dark or black background (`nv_vector_cycle_background()`).
-`examples/nitrodraw.c` renders a page to a 24-bit BMP (`-p` page, `-s` pixels, `-b` background; `-t`
-the pages and the load / render times only). `make examples/nitrodraw` builds it; by hand:
+**The vector drawings** are a second library, `build/libnitrovec.a` (built with the viewers; per target as `libnitro.a`): `nitro_vector`, the viewers' interface in `src/nitro_vector.h`, over the readers (SVG with lunasvg, DXF / DWG, WMF / EMF, CorelDRAW and Visio with libcdr / libvisio, draw.io) and the libraries they are built on, each compiled from its checkout under `third_party/` into its own object directory (`build/vec/`) and all archived together: one library to link (`make NITROVEC=0` leaves all of it out). `nv_vector_open()` loads a file by its extension, `nv_vector_pages()` and `nv_vector_size()` say what is in it, `nv_vector_page_size()` picks the size a page is shown at, `nv_vector_render()` draws any part of a page at any scale into a BGRA buffer, in parallel bands, over a white, dark or black background (`nv_vector_cycle_background()`). `examples/nitrodraw.c` renders a page to a 24-bit BMP (`-p` page, `-s` pixels, `-b` background; `-t` the pages and the load / render times only). `make examples/nitrodraw` builds it; by hand:
 
 ```
 clang -O3 -fblocks -Isrc examples/nitrodraw.c build/libnitrovec.a build/libnitro.a -lz -lstdc++ -lpthread -lm
@@ -181,22 +139,20 @@ clang -O3 -fblocks -Isrc examples/nitrodraw.c build/libnitrovec.a build/libnitro
 
 (on macOS `-lc++ -liconv` for `-lstdc++`, plus the frameworks and libdav1d.a as above).
 
-**The decoders one by one** are self-contained too (C, pthreads, optional AVX2 / NEON), all of the
-same shape: `*_read_info()` says whether the decoder takes the file and gives its size and
-orientation, `*_decode()` writes the pixels.
+**The decoders one by one** are self-contained too (C, pthreads, optional AVX2 / NEON), all of the same shape: `*_read_info()` says whether the decoder takes the file and gives its size and orientation, `*_decode()` writes the pixels.
 
-| decoder | files | decodes | output |
-|---|---|---|---|
-| nitrojpeg | `src/nitrojpeg.c/.h` | baseline and progressive JPEG: 8-bit Huffman, 1 or 3 components, any chroma subsampling | planar Y/Cb/Cr (`nj_decode_planes()`); `nj_find_embedded()` finds a camera raw's full-size JPEG, with the orientation the JPEG itself lacks |
-| nitropng | `src/nitropng.c/.h` | non-interlaced PNG | the unfiltered rows, each after its filter byte (row y at `out + y * (stride + 1) + 1`); palette, 1 / 2 / 4 / 16-bit and transparency-key PNGs (`info.convertible`) to BGRX with `np_to_bgrx()`; `np_zlib_decompress()` is the parallel inflate on its own, for any zlib stream of known size |
-| nitropsd | `src/nitropsd.c/.h` (needs nitropng) | a PSD / PSB's merged image, 8-bit RGB or gray | the planes one after the other: R, G, B or gray, then transparency if `info.alpha` |
-| nitrotiff | `src/nitrotiff.c/.h` (needs nitropng) | the first full-size image of a TIFF | 8-bit BGRX; `nt_dir_size()` gives the size from the directory alone (a Photoshop TIFF has it at the end of the file) |
-| nitrodng | `src/nitrodng.c/.h` | a DNG's raw image: 2×2 Bayer, uncompressed 8 / 16-bit or lossless JPEG | 8-bit sRGB BGRX, developed (the default crop) |
-| nitroheic, nitrowebp, nitroavif | `src/nitroheic.c/.h`, `src/nitrowebp.c/.h`, `src/nitroavif.c/.h` (with `src/heif.h`) | HEIC (through the system's HEVC decoder, or nitrohevc), lossy WebP, AVIF (with dav1d) | planar Y/Cb/Cr |
+| decoder                         | files                                                                                | decodes                                                                                 | output                                                                                                                                                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| nitrojpeg                       | `src/nitrojpeg.c/.h`                                                                 | baseline and progressive JPEG: 8-bit Huffman, 1 or 3 components, any chroma subsampling | planar Y/Cb/Cr (`nj_decode_planes()`); `nj_find_embedded()` finds a camera raw's full-size JPEG, with the orientation the JPEG itself lacks                                                                                                                                                   |
+| nitropng                        | `src/nitropng.c/.h`                                                                  | non-interlaced PNG                                                                      | the unfiltered rows, each after its filter byte (row y at `out + y * (stride + 1) + 1`); palette, 1 / 2 / 4 / 16-bit and transparency-key PNGs (`info.convertible`) to BGRX with `np_to_bgrx()`; `np_zlib_decompress()` is the parallel inflate on its own, for any zlib stream of known size |
+| nitropsd                        | `src/nitropsd.c/.h` (needs nitropng)                                                 | a PSD / PSB's merged image, 8-bit RGB or gray                                           | the planes one after the other: R, G, B or gray, then transparency if `info.alpha`                                                                                                                                                                                                            |
+| nitrotiff                       | `src/nitrotiff.c/.h` (needs nitropng)                                                | the first full-size image of a TIFF                                                     | 8-bit BGRX; `nt_dir_size()` gives the size from the directory alone (a Photoshop TIFF has it at the end of the file)                                                                                                                                                                          |
+| nitrodng                        | `src/nitrodng.c/.h`                                                                  | a DNG's raw image: 2×2 Bayer, uncompressed 8 / 16-bit or lossless JPEG                  | 8-bit sRGB BGRX, developed (the default crop)                                                                                                                                                                                                                                                 |
+| nitroheic, nitrowebp, nitroavif | `src/nitroheic.c/.h`, `src/nitrowebp.c/.h`, `src/nitroavif.c/.h` (with `src/heif.h`) | HEIC (through the system's HEVC decoder, or nitrohevc), lossy WebP, AVIF (with dav1d)   | planar Y/Cb/Cr                                                                                                                                                                                                                                                                                |
 
 nitrojpeg, for example:
 
-```c
+``` c
 #include "nitrojpeg.h"
 
 nj_info info;
@@ -216,16 +172,13 @@ if (nj_read_info(data, len, &info) == 0 && info.supported) {
 }
 ```
 
-nitrojpeg and nitropng keep their work buffers for the next image; `nj_free_buffers()` /
-`np_free_buffers()` free them. All the decoders need from the OS is in `src/nitro_os.h`: a parallel
-loop (a small pthread pool, the same on every system), a clock and the CPU count. They need clang
-with `-fblocks`; no blocks runtime library is needed.
+nitrojpeg and nitropng keep their work buffers for the next image; `nj_free_buffers()` / `np_free_buffers()` free them. All the decoders need from the OS is in `src/nitro_os.h`: a parallel loop (a small pthread pool, the same on every system), a clock and the CPU count. They need clang with `-fblocks`; no blocks runtime library is needed.
 
 ## Tests and benchmarks
 
 JPEG 2000 / PDF JPX checks (the decoder and viewers need no OpenJPEG library):
 
-```bash
+``` bash
 make bench/jpxrobust
 bench/jpxrobust small.jp2 small.j2k        # ASan + UBSan, damaged inputs
 make examples/nitrodraw
@@ -240,52 +193,28 @@ bench/jpxbench -r 5 images/*.jp2           # median decode time, input read once
 
 JPEG XL checks (libjxl is only the reference; nitrojxl needs no library):
 
-```bash
+``` bash
 make bench/jxldec bench/jxlrobust
 bench/jxldec image.jxl out.pam             # 16-bit RGBA PAM (premultiplied alpha) and the decode time
 bench/jxltest.sh djxl bench/jxldec /tmp/jxlref samples_jxl/*/*.jxl   # vs libjxl's djxl (float PFM)
 bench/jxlrobust small.jxl ...              # ASan + UBSan, damaged inputs
 ```
 
-`jxltest.sh` prints the largest and the mean difference in 8-bit units; djxl writes the image's own
-colour encoding, so linear images are compared after sRGB encoding, and HDR (tone mapped here),
-noise (not drawn) and images in other encodings (converted to sRGB here) differ by design.
+`jxltest.sh` prints the largest and the mean difference in 8-bit units; djxl writes the image's own colour encoding, so linear images are compared after sRGB encoding, and HDR (tone mapped here), noise (not drawn) and images in other encodings (converted to sRGB here) differ by design.
 
-`OPENJPEG_CFLAGS` and `OPENJPEG_LIBS` can specify a reference library outside pkg-config.
-The generated tests cover all 64 code-block styles, the five progression orders, tiles,
-precincts, layers, signed samples, 1/8/12/16-bit components, sub-sampling, ROI, and both
-wavelet transforms, including serial/parallel pixel equality on larger images.
-Independent JPX code-blocks and component wavelet transforms use the existing pthread worker
-pool; `NJPX_SINGLE_THREAD` keeps a call serial when the caller parallelizes images itself.
-JP2 ICC profiles use device-space alternates, as PDF ICCBased spaces do;
-POC, PPM/PPT, Part 2 coding extensions and HTJ2K are not decoded (see `src/nitrojpx.h`).
+`OPENJPEG_CFLAGS` and `OPENJPEG_LIBS` can specify a reference library outside pkg-config. The generated tests cover all 64 code-block styles, the five progression orders, tiles, precincts, layers, signed samples, 1/8/12/16-bit components, sub-sampling, ROI, and both wavelet transforms, including serial/parallel pixel equality on larger images. Independent JPX code-blocks and component wavelet transforms use the existing pthread worker pool; `NJPX_SINGLE_THREAD` keeps a call serial when the caller parallelizes images itself. JP2 ICC profiles use device-space alternates, as PDF ICCBased spaces do; POC, PPM/PPT, Part 2 coding extensions and HTJ2K are not decoded (see `src/nitrojpx.h`).
 
-`make tools` (macOS) builds `bench/bench`, `verify`, `robust`, `freqprobe`, `sustain`, the PNG,
-PSD and BGRX checks, `rgbverify` and `nbench`; on Linux `make` builds the portable ones (`nbench`,
-`pngverify`, `psdverify`, the ASan robustness tests, and `verify`, `robust`, `rgbverify` once
-`scripts/get-deps.sh` has built libjpeg-turbo 3: the TurboJPEG 3 API is needed, older system
-packages don't have it). They look for images in `samples/`: put your own there, or a symlink. The
-measurements in [BENCHMARKING.md](BENCHMARKING.md) were made on 50 private photos that are not in the
-repo.
+`make tools` (macOS) builds `bench/bench`, `verify`, `robust`, `freqprobe`, `sustain`, the PNG, PSD and BGRX checks, `rgbverify` and `nbench`; on Linux `make` builds the portable ones (`nbench`, `pngverify`, `psdverify`, the ASan robustness tests, and `verify`, `robust`, `rgbverify` once `scripts/get-deps.sh` has built libjpeg-turbo 3: the TurboJPEG 3 API is needed, older system packages don't have it). They look for images in `samples/`: put your own there, or a symlink. The measurements in [BENCHMARKING.md](BENCHMARKING) were made on 50 private photos that are not in the repo.
 
-`bench/nbench` is the portable benchmark: it reads each JPEG, PNG or PSD file into memory and decodes
-it several times (`-r`, default 5); `-j N` limits the threads, `-1` also runs single-threaded.
-`nbench.exe` runs on Windows with the same results (wildcards are expanded by the program,
-directories work as arguments too). By hand:
+`bench/nbench` is the portable benchmark: it reads each JPEG, PNG or PSD file into memory and decodes it several times (`-r`, default 5); `-j N` limits the threads, `-1` also runs single-threaded. `nbench.exe` runs on Windows with the same results (wildcards are expanded by the program, directories work as arguments too). By hand:
 
 ```
 clang -O3 -march=native -fblocks bench/nbench.c src/nitrojpeg.c src/nitropng.c src/nitropsd.c -lpthread -o nbench
 clang -O3 -fblocks bench/pngverify.c src/nitropng.c -lz -lpthread -o pngverify   # byte-exact check vs zlib
 ```
 
-The parts of nitrojpeg that need libjpeg-turbo are behind `#ifdef NJ_REFERENCE`: the old engine
-where libjpeg-turbo decodes the bands, the CPU BGRX output and the single-threaded pass experiment
-(`build/nitrojpeg_ref.o`, only the tests and benchmarks use them); in the viewer the TurboJPEG
-fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`, `--selftest`,
-`--zoomtest`, …): [BENCHMARKING.md](BENCHMARKING.md#the-viewers-test-and-benchmark-modes).
-
+The parts of nitrojpeg that need libjpeg-turbo are behind `#ifdef NJ_REFERENCE`: the old engine where libjpeg-turbo decodes the bands, the CPU BGRX output and the single-threaded pass experiment (`build/nitrojpeg_ref.o`, only the tests and benchmarks use them); in the viewer the TurboJPEG fallback is behind `#ifdef NV_TURBOJPEG`. The viewer's own test modes (`--bench`, `--selftest`, `--zoomtest`, …): [BENCHMARKING.md](BENCHMARKING#the-viewers-test-and-benchmark-modes).
 
 ## Licenses
 
-The viewer is MIT; the code it takes from others and the licenses of the optional dependencies are
-in [LICENSE](LICENSE).
+The viewer is MIT; the code it takes from others and the licenses of the optional dependencies are in [LICENSE](LICENSE).
